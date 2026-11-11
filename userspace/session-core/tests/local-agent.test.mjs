@@ -6251,3 +6251,35 @@ test('explicit GUI rebind preserves waiting and uses the new catalog only for su
   assert.equal(rebindEvents[0].payload.toolView.kernelCatalogSnapshotRef, 'catalog:new-gui');
   assert.equal((await actor.submit({ ...command, commandId: 'command:finished' })).error.code, 'host_rebind_not_waiting');
 });
+
+
+for (const mode of ['streaming', 'retrying', 'waiting']) test(`confirmed update shutdown settles ${mode} as cancelled`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:update-${mode}`;
+  await createSession(journal, sessionId);
+  let sends = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request, signal) {
+    sends++;
+    if (mode === 'retrying') yield providerEvent(request.requestId, 'failed', {
+      code: 'provider_transport_failed', message: 'Reset', diagnostics: {
+        source: 'providerTransport', phase: 'send', category: 'network', retryable: true, causes: [],
+      },
+    });
+    else if (mode === 'waiting') {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'question:update', name: 'interaction_request',
+        input: { mode: 'wait', kind: 'question', prompt: 'Continue?', allowFreeform: true } });
+      yield providerEvent(request.requestId, 'completed', {});
+    } else { await waitForAbort(signal); throw signal.reason; }
+  } }, emptyKernel(), fakeRunPreparation().port, `update-${mode}`);
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Wait for the update.'));
+  await waitForProjection(actor, p => mode === 'waiting' ? p.run?.status === 'waiting'
+    : mode === 'retrying' ? p.providerAttempts?.at(-1)?.phase === 'retryWaiting' : sends === 1);
+  await actor.dispose(true);
+  const state = projectSession(recoverSession(sessionId, await readEvents(journal, sessionId)));
+  assert.equal(state.run.status, 'cancelled');
+  assert.equal(state.terminalError, null);
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(event => event.type === 'run.settled').length, 1);
+  assert.equal(events.filter(event => event.type === 'run.runtime.released').length, 1);
+  assert.equal(sends, 1);
+});

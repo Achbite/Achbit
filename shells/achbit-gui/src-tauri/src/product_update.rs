@@ -41,7 +41,13 @@ struct Restart {
     error: Option<String>,
 }
 
-type Reply = Option<BTreeMap<String, String>>;
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preparation {
+    storage: BTreeMap<String, String>,
+    confirmed: bool,
+}
+type Reply = Option<Preparation>;
 pub struct ProductUpdates {
     status: Mutex<Status>,
     preparation: Mutex<Option<(u64, oneshot::Sender<Reply>)>>,
@@ -210,7 +216,7 @@ pub fn achbit_update_prepare_response(
     storage: Reply,
 ) -> Result<(), String> {
     if let Some(storage) = &storage {
-        if storage.keys().any(|key| {
+        if storage.storage.keys().any(|key| {
             !(key.starts_with("achbit:composer:")
                 || key.starts_with("achbit:reader:")
                 || key == "achbit:interface-reload")
@@ -323,6 +329,7 @@ async fn check(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let bytes = Arc::new(bytes);
     state.publish(app, "waiting", None, None);
+    let mut confirmed = false;
     loop {
         if !state.automatic.load(Ordering::SeqCst)
             && !state.install_requested.load(Ordering::SeqCst)
@@ -348,16 +355,29 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             .map_err(|_| "Update preparation lock poisoned")? = Some((nonce, send));
         app.emit(
             "achbit:update-prepare",
-            json!({ "nonce": nonce, "manual": manual }),
+            json!({ "nonce": nonce, "manual": manual, "busy": if manual && !confirmed {
+                let host = local_host(app)?.ok_or("Local update Host is unavailable")?;
+                tauri::async_runtime::spawn_blocking(move || host.request("status", None, false, false))
+                    .await.map_err(|error| error.to_string())??["active"].as_bool().ok_or("Invalid Host update activity")?
+            } else { false } }),
         )
         .map_err(|error| error.to_string())?;
-        let reply = tokio::time::timeout(Duration::from_secs(5), receive).await;
+        let reply = if manual {
+            receive.await.ok()
+        } else {
+            tokio::time::timeout(Duration::from_secs(5), receive)
+                .await
+                .ok()
+                .and_then(Result::ok)
+        };
         state
             .preparation
             .lock()
             .map_err(|_| "Update preparation lock poisoned")?
             .take();
-        if let Ok(Ok(Some(storage))) = reply {
+        if let Some(Some(mut preparation)) = reply {
+            confirmed |= preparation.confirmed;
+            preparation.confirmed = confirmed;
             if !manual && !state.automatic.load(Ordering::SeqCst) {
                 let _ = app.emit("achbit:update-resume", ());
                 continue;
@@ -367,15 +387,21 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             let update = update.clone();
             let bytes = bytes.clone();
             match tauri::async_runtime::spawn_blocking(move || {
-                install(&handle, &update, &bytes, storage)
+                install(&handle, &update, &bytes, preparation, manual)
             })
             .await
             .map_err(|error| error.to_string())??
             {
                 true => app.restart(),
-                false => state.publish(app, "waiting", Some("tasks"), None),
+                false => {
+                    if manual {
+                        state.install_requested.store(true, Ordering::SeqCst);
+                    }
+                    state.publish(app, "waiting", Some("tasks"), None);
+                }
             }
         } else {
+            confirmed = false;
             state.publish(app, "waiting", Some("interface"), None);
         }
         let _ = app.emit("achbit:update-resume", ());
@@ -391,9 +417,15 @@ struct Host {
     identity: HostProcessIdentity,
 }
 impl Host {
-    fn request(&self, action: &str, token: Option<u64>) -> Result<Value, String> {
+    fn request(
+        &self,
+        action: &str,
+        token: Option<u64>,
+        manual: bool,
+        confirmed: bool,
+    ) -> Result<Value, String> {
         let body =
-            json!({"action":action,"token":token,"expectedIdentity":self.identity}).to_string();
+            json!({"action":action,"token":token,"expectedIdentity":self.identity,"manual":manual,"confirmed":confirmed}).to_string();
         let request = format!("POST /api/host/update HTTP/1.1\r\nHost: {}:{}\r\n{}: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             self.host,self.port,HOST_SHELL_TOKEN_HEADER,self.token,body.len(),body);
         let reply: HostApiEnvelope<Value> = request_loopback_json_until(
@@ -438,7 +470,8 @@ fn install(
     app: &AppHandle,
     update: &Update,
     bytes: &[u8],
-    storage: BTreeMap<String, String>,
+    preparation: Preparation,
+    manual: bool,
 ) -> Result<bool, String> {
     let state = app.state::<ProductUpdates>();
     let host = local_host(app)?;
@@ -447,7 +480,7 @@ fn install(
     }
     let token = match &host {
         Some(host) => {
-            let reply = host.request("prepare", None)?;
+            let reply = host.request("prepare", None, manual, preparation.confirmed)?;
             if reply["prepared"] != true {
                 return Ok(false);
             }
@@ -463,7 +496,7 @@ fn install(
     let mut can_restart = true;
     let mut restart = Restart {
         version: update.version.clone(),
-        storage,
+        storage: preparation.storage,
         error: None,
     };
     let result = (|| -> Result<bool, String> {
@@ -471,16 +504,20 @@ fn install(
             .installation
             .release()
             .map_err(|error| error.to_string())?;
-        let _exclusive = match state.installation.exclusive() {
-            Ok(exclusive) => exclusive,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
-            Err(error) => return Err(error.to_string()),
+        let mut exclusive = if manual {
+            None
+        } else {
+            Some(match state.installation.exclusive() {
+                Ok(exclusive) => exclusive,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+                Err(error) => return Err(error.to_string()),
+            })
         };
         save_restart(&restart)?;
         if let Some(host) = &host {
             committed = true;
             let receipt: HostShutdownReceipt =
-                serde_json::from_value(host.request("commit", token)?)
+                serde_json::from_value(host.request("commit", token, manual, false)?)
                     .map_err(|error| error.to_string())?;
             wait_for_process_exit(host.identity.pid, Duration::from_secs(30))
                 .map_err(|error| error.to_string())?;
@@ -490,6 +527,29 @@ fn install(
         }
         committed = true;
         app.state::<HostProcessGroup>().detach();
+        if manual {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                match state.installation.exclusive() {
+                    Ok(lease) => {
+                        exclusive = Some(lease);
+                        break;
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(100))
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "Another running Achbit installation client has not exited: {error}"
+                        ))
+                    }
+                }
+            }
+        }
+        let _exclusive = exclusive;
         if let Some(browser) = app.try_state::<super::native_browser::NativeBrowser>() {
             browser.stop();
         }
@@ -519,7 +579,7 @@ fn install(
             .resume()
             .map_err(|error| error.to_string())?;
         if let Some(host) = &host {
-            host.request("abort", token)?;
+            host.request("abort", token, false, false)?;
         }
         if let Err(error) = &result {
             let _ = app.emit("achbit:update-resume", ());

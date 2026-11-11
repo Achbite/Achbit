@@ -81,6 +81,13 @@ pub(crate) async fn host_shutdown(
 }
 
 pub(crate) async fn shutdown_owned_host_resources(host: &HostState) -> bool {
+    shutdown_owned_host_resources_for_update(host, false).await
+}
+
+pub(crate) async fn shutdown_owned_host_resources_for_update(
+    host: &HostState,
+    cancel_active_runs: bool,
+) -> bool {
     host.execution.stop_admission();
     crate::host_lifecycle::begin_host_shutdown();
     let gui = host.gui.clone();
@@ -110,18 +117,25 @@ pub(crate) async fn shutdown_owned_host_resources(host: &HostState) -> bool {
     };
     crate::conversation_api::shutdown_conversation_titles(state).await;
     let session_service = state.session_service.clone();
-    let session_cleanup_ok =
-        match tokio::task::spawn_blocking(move || session_service.shutdown()).await {
-            Ok(Ok(())) => true,
-            Ok(Err(error)) => {
-                eprintln!("Session shutdown failed: {}: {}", error.code, error.message);
-                false
-            }
-            Err(error) => {
-                eprintln!("Session shutdown task failed: {error}");
-                false
-            }
-        };
+    let session_cleanup_ok = match tokio::task::spawn_blocking(move || {
+        if cancel_active_runs {
+            session_service.shutdown_for_update(true)
+        } else {
+            session_service.shutdown()
+        }
+    })
+    .await
+    {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            eprintln!("Session shutdown failed: {}: {}", error.code, error.message);
+            false
+        }
+        Err(error) => {
+            eprintln!("Session shutdown task failed: {error}");
+            false
+        }
+    };
     let local_agent = state.local_agent.clone();
     let plugin_cleanup_ok =
         match tokio::task::spawn_blocking(move || local_agent.shutdown_plugins()).await {

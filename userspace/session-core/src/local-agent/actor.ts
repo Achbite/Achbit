@@ -397,23 +397,34 @@ export class SessionActor {
     catch (error) { try { this.#observation?.failed(this.sessionId, error); } catch { /* Observers do not own execution. */ } }
   }
 
-  dispose(): Promise<void> {
+  dispose(cancelActiveRun = false): Promise<void> {
     if (this.#disposeTask) return this.#disposeTask;
     this.#disposed = true;
     for (const timer of this.#wakeTimers.values()) clearTimeout(timer);
     this.#wakeTimers.clear();
     for (const wake of this.#changes) wake();
-    this.#active?.controller.abort('session_service_stopped');
-    this.#disposeTask = this.disposeResources();
+    if (!cancelActiveRun) this.#active?.controller.abort('session_service_stopped');
+    this.#disposeTask = this.disposeResources(cancelActiveRun);
     return this.#disposeTask;
   }
 
-  private async disposeResources(): Promise<void> {
+  private async disposeResources(cancelActiveRun: boolean): Promise<void> {
     // Commands already admitted to the mailbox may still be preparing a run.
     // Drain them, then also stop any Loop they started before releasing ports.
     await this.#mailbox;
-    this.#active?.controller.abort('session_service_stopped');
     const errors: unknown[] = [];
+    if (cancelActiveRun) {
+      try {
+        const snapshot = await this.loadSnapshot();
+        if (snapshot.state.run && !isTerminal(snapshot.state.run.status)) {
+          await this.handleCancel({ schemaVersion: 'achbit.command.v3', type: 'run.cancel',
+            sessionId: this.sessionId, runId: snapshot.state.run.runId, commandId: this.#nextId('update-cancel') });
+        }
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    this.#active?.controller.abort('session_service_stopped');
     try {
       await this.#active?.task;
     } catch (error) {

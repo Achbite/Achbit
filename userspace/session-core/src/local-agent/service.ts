@@ -60,7 +60,7 @@ export interface SessionServicePort extends ConversationPort {
   activity: SessionService['activity'];
   contextComposition: SessionService['contextComposition'];
   read: SessionService['read'];
-  dispose(): Promise<void>;
+  dispose(cancelActiveRuns?: boolean): Promise<void>;
 }
 
 export type SessionServiceFactory = (input: {
@@ -448,16 +448,16 @@ export class SessionService implements ConversationPort {
     return await readConversation(this.journal, query);
   }
 
-  dispose(): Promise<void> {
+  dispose(cancelActiveRuns = false): Promise<void> {
     if (this.#disposeTask) return this.#disposeTask;
     this.#lifetime.abort(new Error('session_service_disposed'));
-    this.#disposeTask = this.disposeActors();
+    this.#disposeTask = this.disposeActors(cancelActiveRuns);
     return this.#disposeTask;
   }
 
-  private async disposeActors(): Promise<void> {
+  private async disposeActors(cancelActiveRuns: boolean): Promise<void> {
     let agentError: unknown;
-    try { await this.#agents?.dispose(); } catch (error) { agentError = error; }
+    if (!cancelActiveRuns) try { await this.#agents?.dispose(); } catch (error) { agentError = error; }
     const actorPromises = [...this.#actors.values()];
     const results = await Promise.allSettled(actorPromises.map(async pending => {
       let actor: SessionActor;
@@ -467,8 +467,9 @@ export class SessionService implements ConversationPort {
         if (error !== this.#lifetime.signal.reason) throw error;
         return;
       }
-      await actor.dispose();
+      await actor.dispose(cancelActiveRuns);
     }));
+    if (cancelActiveRuns) try { await this.#agents?.dispose(); } catch (error) { agentError = error; }
     await this.#defaultWrites;
     this.#actors.clear();
     this.#statusStates.clear();

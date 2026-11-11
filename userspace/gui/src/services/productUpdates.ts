@@ -8,6 +8,22 @@ export interface ProductUpdateStatus {
 }
 let state: ProductUpdateStatus = { phase: 'disabled', currentVersion: '', version: null,
   downloaded: 0, total: null, reason: null, error: null };
+export interface ProductUpdateConfirmation { busy: boolean; unsaved: string[] }
+let confirmation: ProductUpdateConfirmation | null = null;
+let confirmReply: ((accepted: boolean) => void) | undefined;
+export const productUpdateConfirmation = () => confirmation;
+export function respondProductUpdate(accepted: boolean) {
+  const reply = confirmReply;
+  confirmReply = undefined; confirmation = null;
+  for (const listener of listeners) listener();
+  reply?.(accepted);
+}
+function confirmUpdate(value: ProductUpdateConfirmation): Promise<boolean> {
+  confirmation = value;
+  const result = new Promise<boolean>(resolve => { confirmReply = resolve; });
+  for (const listener of listeners) listener();
+  return result;
+}
 const listeners = new Set<() => void>();
 export const productUpdateSnapshot = () => state;
 export const subscribeProductUpdates = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); };
@@ -62,20 +78,30 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
     if (!['preparing', 'installing'].includes(event.payload.phase)) thaw();
   });
   const stopResume = await window.__TAURI__.event.listen('achbit:update-resume', thaw);
-  const stopPrepare = await window.__TAURI__.event.listen<{ nonce: number; manual: boolean }>('achbit:update-prepare', event => {
+  const stopPrepare = await window.__TAURI__.event.listen<{ nonce: number; manual: boolean; busy: boolean }>('achbit:update-prepare', event => {
     void (async () => {
-      let storage: Record<string, string> | null = null;
+      let storage: { storage: Record<string, string>; confirmed: boolean } | null = null;
       const agent = useLocalAgentStore.getState();
       const settings = useSettingsStore.getState();
       const automatic = settings.storePath !== null && settings.effectiveSettings['gui.autoUpdate'] === true;
-      if (!disposed && !composing && !settings.loading
-        && (event.payload.manual || (automatic && Date.now() - lastInput >= 15_000))
-        && !interfaceReloadGuards().length && agent.runtimeReady && !agent.loading
-        && !agent.submitting && !agent.catalogBusy && !agent.modelSettingsBusy && !agent.subagentSettingsBusy) {
-        // Freeze inputs before the snapshot; the native Host then checks all Sessions.
+      const guards = interfaceReloadGuards();
+      let ready = !disposed;
+      let confirmed = false;
+      if (event.payload.manual) {
+        if (event.payload.busy || guards.length || composing) {
+          ready = await confirmUpdate({ busy: event.payload.busy, unsaved: guards.map(guard => guard.label) });
+          confirmed = ready;
+        }
+      } else {
+        ready = ready && !composing && !settings.loading && automatic && Date.now() - lastInput >= 15_000
+          && !guards.length && agent.runtimeReady && !agent.loading
+          && !agent.submitting && !agent.catalogBusy && !agent.modelSettingsBusy && !agent.subagentSettingsBusy;
+      }
+      if (ready && !disposed) {
+        // Freeze only after confirmation. Session cancellation remains owned by the Host.
         if (root) root.inert = true;
         document.documentElement.dataset.updating = 'true';
-        storage = snapshotForProductUpdate();
+        storage = { storage: snapshotForProductUpdate(), confirmed };
       }
       await invoke('achbit_update_prepare_response', { nonce: event.payload.nonce, storage });
     })().catch(error => {
@@ -99,7 +125,7 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
   const stopSettings = useSettingsStore.subscribe(configure);
   configure();
   return () => {
-    disposed = true; thaw(); stopStatus(); stopResume(); stopPrepare(); stopSettings();
+    disposed = true; respondProductUpdate(false); thaw(); stopStatus(); stopResume(); stopPrepare(); stopSettings();
     for (const event of events) window.removeEventListener(event, activity, true);
     window.removeEventListener('compositionstart', compositionStart, true);
     window.removeEventListener('compositionend', compositionEnd, true);

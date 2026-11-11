@@ -75,7 +75,7 @@ class Provider(fixture.MockProviderHandler):
                     choices = results['discover']
                     require({preset['id'] for preset in choices['presets']} == {'analysis', 'collaboration'}, 'Default templates missing')
                     require(any(item['id'] == 'fixture-driver' for item in choices['runners']), 'Registered driver not discoverable')
-                    require(choices['fullConfiguration'] is True, 'Default composition choices are restricted')
+                    require(choices['fullConfiguration'] is True, 'Explicit full-configuration permission was not applied')
                     call('widen', 'agent', dict(action='spawn', task='MUST_NOT_START', name='Rejected', delivery='wait',
                          permissions={'agent.permissions.workspaceMutation': 'allow'}))
                 elif ordinal == 3:
@@ -179,7 +179,7 @@ def run():
         sentinel = root / 'sentinel.py'
         sentinel.write_text('from pathlib import Path\nPath(' + repr(str(marker)) + ').write_text("started")\n', encoding='utf-8')
         fixture.write_configuration(daemon.config_root, f'http://127.0.0.1:{server.server_port}/v1', {
-            'agent.subagents.enabled': True, 'agent.subagents.maxConcurrent': 2,
+            'agent.subagents.enabled': True, 'agent.subagents.allowFullConfiguration': True, 'agent.subagents.maxConcurrent': 2,
             'mcp.servers': json.dumps([dict(id='sentinel', name='Sentinel', transport='stdio', command=sys.executable,
                                           args=str(sentinel), enabled=True)]),
         })
