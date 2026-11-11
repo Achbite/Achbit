@@ -279,7 +279,10 @@ async fn run() {
     configure_host_lifetime().expect("初始化 Host 生命周期");
     let app = routes::build_app(state.clone());
     achbit_host_connection::startup::timing("kernel.routes");
-    let lifetime_monitor = tokio::spawn(monitor_host_lifetime(state.clone()));
+    let lifetime_monitor = tokio::spawn(monitor_host_lifetime(
+        state.clone(),
+        user_directories.data_dir.clone(),
+    ));
     let power_monitor = tokio::spawn(host_power::monitor_host_power(state.clone()));
     // Host bootstrap publishes transport credentials while the config-root lease
     // is held. Shells attach to this instance; they never copy Session state.

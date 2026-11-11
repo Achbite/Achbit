@@ -318,8 +318,8 @@ impl Drop for PublishedHostConnection {
     }
 }
 
-/// Serializes shell startup for one config root, including port selection and
-/// authenticated readiness. Kernel's existing config-root lease remains the owner.
+/// Serializes shell startup and automatic shutdown for one config root, including
+/// authenticated client attachment. Kernel's config-root lease remains the owner.
 pub struct HostStartGuard {
     _file: File,
 }
@@ -327,6 +327,20 @@ pub struct HostStartGuard {
 impl HostStartGuard {
     pub fn acquire(root: &Path) -> io::Result<Self> {
         Self::acquire_until(root, Instant::now() + Duration::from_secs(10))
+    }
+
+    /// Automatic shutdown yields to a shell that is discovering or attaching.
+    pub fn try_acquire(root: &Path) -> io::Result<Option<Self>> {
+        let path = root.join("agent-runtime/host-start.lock");
+        let file = Self::open(&path)?;
+        match lock_file(&file) {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(host_io_error(
+                format!("Lock Host startup {}", path.display()),
+                error,
+            )),
+        }
     }
 
     pub fn acquire_until(root: &Path, deadline: Instant) -> io::Result<Self> {
