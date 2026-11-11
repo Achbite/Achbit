@@ -152,6 +152,31 @@ Function-tool usage travels with the active wire declaration and its prepared bi
 
 Product guides are ordinary Markdown files under `productDocsPath`. When selected, the product operations component contributes an on-demand documentation index using the run’s actual product guide directory, including the plugin interface guide under `../plugins/README.md`. The component also supplies Shell resource details after the product or iteration Skill is selected or read. Search and read the guides with Shell; packaging copies `docs/product` into runtime resources. Built-in Skills/references remain registered in `local_agent_product_tools.rs`. Rebuild/restart the owning Host after changing bundled resources. Keep long-lived guidance separate from task receipts.
 
+### Loop assembly
+
+The standard driver follows the request → tools → follow-up/settlement shape of [PI's agent loop](https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts). `local-agent/loop.ts` owns orchestration and terminal recovery. `loopProvider.ts` owns stream interpretation, `loopTools.ts` owns Kernel dispatch/cancellation, `loopTurn.ts` owns control and answer settlement, and `loopContext.ts` owns request budgets and optional summaries. `loopCapabilities.ts` owns per-turn implementation leases. Existing journal facts, execution identities and resource ownership remain authoritative.
+
+`SessionConfigurationRegistry` instantiates only the selected context, controls and compaction implementations. `AgentLoopRegistry` selects installed drivers; it does not load code from model-supplied paths. This follows the service ownership and explicit composition separation in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md), using Achbit's existing registries rather than another plugin runtime.
+
+A minimal read-only `AgentRecipe` is:
+
+```json
+{
+  "runner": { "id": "standard" },
+  "configuration": {
+    "context": { "id": "coding" },
+    "compaction": { "id": "none" },
+    "controls": { "id": "none" }
+  },
+  "tools": { "kernel": ["fs.read"], "controls": [], "plugins": false },
+  "productComponents": []
+}
+```
+
+Add the available shell, `fs.edit` and `fs.write` to the selected Kernel tools when the task needs them; the existing permissions still apply. The coding context exposes their actual read/shell/edit/write wire names and generates guidance only for the declared tools, following [PI's tool-aware prompt assembly](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts). Add `controls: {"id":"standard","parameters":{"optionalTools":["todo.update"]}}` and select `todo.update` in `tools.controls` for progress. Select `compaction: {"id":"summary"}` for context summaries. The default product assembly also includes the existing Plan, interaction, Session, artifact and agent components according to the recipe and permissions. Context admission, cancellation and durable recovery remain active in the minimal assembly.
+
+For focused configuration debugging, `context-management.test.mjs` exercises bare read → result → answer, then adds controls and summaries through the same registry. `provider-stages.test.mjs` checks narrowed tool stages; `subagent-configuration.test.mjs` checks recipe propagation. Inspect `context.composed`, `provider.attempt`, tool results and `run.finishing`/`run.settled` in that order. A live managed process continues to belong to its owner; an assistant answer does not transfer process ownership or prove that the run has finished.
+
 ### Shared UI components and regions
 
 Built-in GUI controls are registered in `userspace/gui/src/ui-components/index.ts`. Feature code imports from that catalog, first reusing existing controls and variants, then composing specialized controls, and only then registering new primitives. Registration retains the original React component identity. Geometry and interaction states belong to shared styles; business callbacks, localized copy and `useUiOwner` identities remain with their existing owners. See the [component guide](../userspace/gui/src/ui-components/README.md).

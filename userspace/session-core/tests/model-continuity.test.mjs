@@ -20,6 +20,10 @@ function setup(sessionId, journal, options = {}) {
     prepared.runtimeSnapshot.provider.continuationKey = `native:${request.profileId}`;
     prepared.runtimeSnapshot.provider.providerRuntimeRef = `runtime:${request.runId}`;
     prepared.runtimeSnapshot.provider.apiSurface = request.profileId === 'deepseek-chat' ? 'chatCompletions' : 'responses';
+    if (options.hosted && prepared.runtimeSnapshot.provider.apiSurface === 'responses') {
+      prepared.runtimeSnapshot.provider.hostedWebSearch = 'web_search';
+      prepared.runtimeSnapshot.webSearch = { owner: 'providerHosted', providerToolType: 'web_search' };
+    }
     return prepared;
   } };
   const kernel = emptyKernel({ async execute(request) {
@@ -30,6 +34,8 @@ function setup(sessionId, journal, options = {}) {
   const provider = { async *stream(request) {
     requests.push(structuredClone(request));
     const reading = request.tools.length === 1 && request.tools[0].name === 'session_read';
+    assert.deepEqual(request.hostedTools, options.hosted && !reading && request.profileId !== 'deepseek-chat'
+      ? [{ type: 'webSearch', providerToolType: 'web_search' }] : []);
     if (request.purpose === 'contextCompaction') {
       yield providerEvent(request.requestId, 'text.delta', { text: `Checkpoint for ${request.profileId}` });
     } else if (reading && !options.answerWithoutRead) {
@@ -48,10 +54,10 @@ function setup(sessionId, journal, options = {}) {
   return { preparation, requests, port, kernel, provider };
 }
 
-test('GPT → DeepSeek → GPT creates fresh contexts while retaining history and inherited plugins across Actor reload', async t => {
+for (const hosted of [false, true]) test(`model handoff retains history and plugins across Actor reload (hosted search=${hosted})`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:handoff';
   await createSession(journal, sessionId, [workspaceBinding]);
-  const f = setup(sessionId, journal);
+  const f = setup(sessionId, journal, { hosted });
   let actor = actorWith(journal, sessionId, f.provider, f.kernel, f.port, 'switch');
   t.after(() => actor.dispose());
   let step = 0;
@@ -114,10 +120,10 @@ for (const [name, options, code] of [
   if (options.readFails) assert.equal(state.terminalError.message, 'Original archive failure');
 });
 
-test('native reasoning objects, frozen model views and compaction checkpoints cannot cross a switch', async t => {
+for (const hosted of [false, true]) test(`native reasoning and compaction checkpoints cannot cross a switch (hosted search=${hosted})`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:native-boundary';
   await createSession(journal, sessionId, [workspaceBinding]);
-  const f = setup(sessionId, journal, { native: true, compact: true });
+  const f = setup(sessionId, journal, { native: true, compact: true, hosted });
   const actor = actorWith(journal, sessionId, f.provider, f.kernel, f.port, 'native');
   t.after(() => actor.dispose());
   for (const profileId of ['gpt', 'deepseek', 'gpt']) {
@@ -138,6 +144,58 @@ test('native reasoning objects, frozen model views and compaction checkpoints ca
       assert.ok(request.messages.every(message => message.providerOutputBlocks?.every(block => !previous.has(block.item.id)) ?? true));
     }
   }
+});
+
+for (const [budget, text, code] of [
+  [512, 'Continue', 'context_budget_invalid'],
+  [4096, 'New input that cannot be compacted. '.repeat(1500), 'context_input_budget_exceeded'],
+]) test(`history-read stage enforces the input/output budget: ${code}`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:handoff-${code}`;
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const f = setup(sessionId, journal, { hosted: true });
+  const port = { ...f.port, async prepare(request) {
+    const prepared = await f.port.prepare(request);
+    if (request.profileId === 'small') prepared.runtimeSnapshot.provider.contextWindowTokens = budget;
+    return prepared;
+  } };
+  const actor = actorWith(journal, sessionId, f.provider, f.kernel, port, 'budget');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:first', 'First task', 'gpt'));
+  await waitForProjection(actor, state => state.run?.status === 'completed');
+  await actor.submit(messageCommand(sessionId, 'command:switch', text, 'small'));
+  const result = await waitForProjection(actor, state => ['completed', 'failed'].includes(state.run?.status));
+  assert.equal(result.run.status, 'failed');
+  assert.equal(result.terminalError.code, code);
+  assert.equal(result.contextHandoff.status, 'reading');
+  assert.equal(f.requests.filter(request => request.profileId === 'small').length, 0, 'reject before any Provider send');
+  assert.equal((await readEvents(journal, sessionId)).some(event => event.type === 'context.compacted'), false);
+  assert.equal(result.messages.filter(message => message.role === 'user').at(-1).content, text);
+});
+
+test('a failed handoff can retry on the same model without replaying old tools or opening search early', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:handoff-retry';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const options = { hosted: true, readFails: true };
+  const f = setup(sessionId, journal, options);
+  const actor = actorWith(journal, sessionId, f.provider, f.kernel, f.port, 'retry');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:first', 'Original task', 'gpt'));
+  await waitForProjection(actor, state => state.run?.status === 'completed');
+  await actor.submit(messageCommand(sessionId, 'command:switch', 'Take over', 'deepseek'));
+  const failed = await waitForProjection(actor, state => state.run?.status === 'failed');
+  assert.equal(failed.terminalError.code, 'model_handoff_read_failed');
+  options.readFails = false;
+  await actor.submit(messageCommand(sessionId, 'command:retry', 'Retry the history read', 'deepseek'));
+  const result = await waitForProjection(actor, state => ['completed', 'failed'].includes(state.run?.status));
+  assert.equal(result.run.status, 'completed', JSON.stringify(result.terminalError));
+  assert.equal(result.contextHandoff.status, 'ready');
+  const requests = f.requests.filter(request => request.runId === result.run.runId);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0].tools.map(tool => tool.name), ['session_read']);
+  assert.deepEqual(requests[0].hostedTools, []);
+  assert.equal(requests[1].hostedTools.length, 1);
+  assert.equal((await readEvents(journal, sessionId)).filter(event => event.type === 'tool.completed'
+    && event.runId === result.run.runId).length, 1);
 });
 
 test('continuation identity does not conflate protocol, model, endpoint, account or absent provenance', () => {

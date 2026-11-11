@@ -10,7 +10,8 @@ import type {
   RunPreparationPort,
 } from '@achbit/protocol';
 import type { buildAgentProviderRequest } from './contextComposer.js';
-import type { estimateContextInput, prepareContextCompaction, pressureCompactionCutoff } from './compaction.js';
+import type { estimateContextInput } from './contextBudget.js';
+import type { prepareContextCompaction, pressureCompactionCutoff } from './compaction.js';
 import type { decodeSessionControlCall } from './sessionControls.js';
 import type { publishPlan } from './planStage.js';
 import type { presentArtifacts } from './deliverables.js';

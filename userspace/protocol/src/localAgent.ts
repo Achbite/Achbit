@@ -1930,6 +1930,7 @@ export interface ProviderRequest {
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   messages: readonly ModelMessage[];
   tools: readonly ProviderToolDefinition[];
+  /** Stage-selected subset of the frozen run's hosted capabilities; omission never changes ownership. */
   hostedTools: readonly ProviderHostedToolDefinition[];
 }
 

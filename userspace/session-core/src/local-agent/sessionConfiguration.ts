@@ -1,8 +1,7 @@
 import type { AgentConfiguration, AgentContributionSelection, AgentRecipe, JsonObject } from '@achbit/protocol';
 import { SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_SESSION, SESSION_CONTROL_TODO_UPDATE } from '@achbit/protocol';
 import type { SessionCapabilities } from './plugins.js';
-import { createSessionCapabilities } from './sessionCapabilities.js';
-import { buildAgentProviderRequest } from './contextComposer.js';
+import { createContextCapability, createCompactionCapability, createControlCapability } from './sessionCapabilities.js';
 import { DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
 import type { ToolGuidanceContributor } from './toolPromptContributions.js';
 import type { InstructionContribution } from './skillPlugins.js';
@@ -152,8 +151,7 @@ export function builtinSessionContributions(): SessionContribution[] {
   };
   return [
     { kind: 'context', id: 'coding', description: 'Journal context with the read, shell, edit and write coding interface.',
-      ...noParameters, create: () => ({ implementation: { prepare: buildAgentProviderRequest,
-        windowTokens: runtime => runtime.provider.contextWindowTokens } }) },
+      ...noParameters, create: () => ({ implementation: createContextCapability() }) },
     { kind: 'controls', id: 'none', description: 'No Session control tools or turn hooks.',
       ...noParameters, create: () => ({ implementation: undefined }) },
     { kind: 'compaction', id: 'none', description: 'No automatic or scheduled summary requests.',
@@ -166,7 +164,7 @@ export function builtinSessionContributions(): SessionContribution[] {
         if (Object.keys(parameters).some(key => key !== 'maxTokens') || parameters.maxTokens !== undefined
           && (!Number.isSafeInteger(parameters.maxTokens) || Number(parameters.maxTokens) <= 0)) throw new Error('agent_context_parameters_invalid');
       },
-      create: parameters => ({ implementation: { prepare: buildAgentProviderRequest,
+      create: parameters => ({ implementation: { ...createContextCapability(),
         windowTokens: runtime => Math.min(runtime.provider.contextWindowTokens, Number(parameters.maxTokens ?? runtime.provider.contextWindowTokens)),
       } }) },
     { kind: 'compaction', id: 'summary', description: 'Summarize at the context budget; optional automatic management at task boundaries.',
@@ -184,7 +182,7 @@ export function builtinSessionContributions(): SessionContribution[] {
             || parameters.pressureRatio <= 0 || parameters.pressureRatio > 1)) throw new Error('agent_compaction_parameters_invalid');
       },
       create(parameters) {
-        const compaction = createSessionCapabilities().compaction;
+        const compaction = createCompactionCapability();
         return { implementation: { ...compaction,
           settings: runtime => ({ enabled: parameters.enabled as boolean ?? runtime.contextManagement.enabled,
             thresholdTokens: parameters.thresholdTokens as number ?? runtime.contextManagement.thresholdTokens }),
@@ -206,7 +204,7 @@ export function builtinSessionContributions(): SessionContribution[] {
       },
       create(parameters) {
         const optionalTools = [...(parameters.optionalTools as string[] ?? OPTIONAL_CONTROLS)];
-        const controls = createSessionCapabilities().controls;
+        const controls = createControlCapability();
         return { implementation: { ...controls, optionalTools,
           decode(callId, name, input) {
             if (OPTIONAL_CONTROLS.includes(name as typeof OPTIONAL_CONTROLS[number]) && !optionalTools.includes(name)) {

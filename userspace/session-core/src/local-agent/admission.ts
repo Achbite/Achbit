@@ -271,7 +271,9 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
         throw new Error('tool_request_binding_missing');
       }
       const hosted = event.payload.tools.filter((tool) => tool.origin === 'providerHosted').length;
-      if (hosted !== Number(event.payload.purpose !== 'approvalReview' && state.contextHandoff?.status !== 'reading' && runtime.webSearch.owner === 'providerHosted')) {
+      // Match the Provider boundary: a stage may omit an allowed capability.
+      // Admission checks the ceiling, not an exact copy of the frozen tool set.
+      if (hosted > Number(event.payload.purpose !== 'approvalReview' && state.contextHandoff?.status !== 'reading' && runtime.webSearch.owner === 'providerHosted')) {
         throw new Error('context_composition_search_owner_mismatch');
       }
       break;
