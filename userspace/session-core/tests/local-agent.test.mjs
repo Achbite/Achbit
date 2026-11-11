@@ -3621,7 +3621,8 @@ test('an explicit Plan uses read tools until user confirmation, then restores ex
     name, toolBindingRef: `binding:${name}`, description: name, availability: 'callable', origin: 'coreBuiltin',
     possibleEffects: [effect], inputSchema: { type: 'object', properties: {}, required: [] },
   }));
-  const preparation = fakeRunPreparation({ tools, permissions: { 'agent.permissions.workspaceMutation': 'allow' } });
+  const preparation = fakeRunPreparation({ tools, contextWindowTokens: 100_000,
+    permissions: { 'agent.permissions.workspaceMutation': 'allow' } });
   const requests = [];
   const provider = { async *stream(request) {
     requests.push(request);
