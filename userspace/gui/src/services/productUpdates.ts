@@ -80,6 +80,10 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
   const stopResume = await window.__TAURI__.event.listen('achbit:update-resume', thaw);
   const stopPrepare = await window.__TAURI__.event.listen<{ nonce: number; manual: boolean; busy: boolean }>('achbit:update-prepare', event => {
     void (async () => {
+      if (disposed || confirmation !== null) {
+        await invoke('achbit_update_prepare_response', { nonce: event.payload.nonce, storage: null });
+        return;
+      }
       let storage: { storage: Record<string, string>; confirmed: boolean } | null = null;
       const agent = useLocalAgentStore.getState();
       const settings = useSettingsStore.getState();
@@ -89,6 +93,7 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
       let confirmed = false;
       if (event.payload.manual) {
         if (event.payload.busy || guards.length || composing) {
+          thaw();
           ready = await confirmUpdate({ busy: event.payload.busy, unsaved: guards.map(guard => guard.label) });
           confirmed = ready;
         }

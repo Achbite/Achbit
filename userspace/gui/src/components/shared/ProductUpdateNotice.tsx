@@ -13,11 +13,12 @@ export function ProductUpdateNotice() {
   const language = useUiLanguage();
   const confirmation = useSyncExternalStore(subscribeProductUpdates, productUpdateConfirmation, productUpdateConfirmation);
   const update = useSyncExternalStore(subscribeProductUpdates, productUpdateSnapshot, productUpdateSnapshot);
+  const phase = confirmation ? 'confirming' : update.phase;
   const automatic = useSettingsStore(state => state.effectiveSettings['gui.autoUpdate'] === true);
   const [retryError, setRetryError] = useState<string | null>(null);
-  if (!['downloading', 'waiting', 'preparing', 'installing', 'error'].includes(update.phase)) return null;
-  const label = ['preparing', 'installing'].includes(update.phase) ? 'installing'
-    : update.phase === 'waiting' && !automatic ? 'ready' : update.phase;
+  if (!['downloading', 'waiting', 'confirming', 'preparing', 'installing', 'error'].includes(phase)) return null;
+  const label = ['preparing', 'installing'].includes(phase) ? 'installing'
+    : phase === 'waiting' && !automatic ? 'ready' : phase;
   const progress = update.phase === 'downloading' && update.total
     ? Math.min(100, Math.max(0, Math.floor(update.downloaded * 100 / update.total))) : null;
   const description = [t(language, `productUpdate.${label}`, { version: update.version ?? '' }),
@@ -26,8 +27,8 @@ export function ProductUpdateNotice() {
     .filter(Boolean).join(' · ');
   const error = retryError ?? update.error;
   const action = t(language, update.phase === 'waiting' ? 'productUpdate.installNow' : 'productUpdate.retry');
-  return <><div {...identity.part('notice')} className="product-update-notice" role="status" data-product-update={update.phase}>
-    {['waiting', 'error'].includes(update.phase) ? <button type="button" className="product-update-notice__icon"
+  return <><div {...identity.part('notice')} className="product-update-notice" role="status" data-product-update={phase}>
+    {['waiting', 'error'].includes(phase) ? <button type="button" className="product-update-notice__icon"
       title={[description, error, action].filter(Boolean).join('\n')}
       aria-label={`${description}. ${action}`}
       {...identity.action('install', 'click')} onClick={() => {

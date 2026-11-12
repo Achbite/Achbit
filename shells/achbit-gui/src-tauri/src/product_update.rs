@@ -228,14 +228,21 @@ pub fn achbit_update_prepare_response(
         .preparation
         .lock()
         .map_err(|_| "Update preparation lock poisoned")?;
-    if pending
-        .as_ref()
-        .is_some_and(|(expected, _)| *expected == nonce)
-    {
-        let (_, reply) = pending.take().expect("Matching preparation");
-        let _ = reply.send(storage);
+    resolve_preparation(&mut pending, nonce, storage)
+}
+
+fn resolve_preparation(
+    pending: &mut Option<(u64, oneshot::Sender<Reply>)>,
+    nonce: u64,
+    storage: Reply,
+) -> Result<(), String> {
+    if pending.as_ref().map(|(expected, _)| *expected) != Some(nonce) {
+        return Err("Update preparation expired or does not match".into());
     }
-    Ok(())
+    let (_, reply) = pending.take().expect("Matching preparation");
+    reply
+        .send(storage)
+        .map_err(|_| "Update preparation is no longer waiting".into())
 }
 #[tauri::command]
 pub fn achbit_update_restore() -> Result<Option<BTreeMap<String, String>>, String> {
@@ -392,12 +399,12 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             .await
             .map_err(|error| error.to_string())??
             {
-                true => app.restart(),
-                false => {
+                InstallOutcome::Installed => app.restart(),
+                InstallOutcome::Blocked(reason) => {
                     if manual {
                         state.install_requested.store(true, Ordering::SeqCst);
                     }
-                    state.publish(app, "waiting", Some("tasks"), None);
+                    state.publish(app, "waiting", Some(&reason), None);
                 }
             }
         } else {
@@ -466,23 +473,31 @@ fn save_restart(restart: &Restart) -> Result<(), String> {
     Ok(())
 }
 
+enum InstallOutcome {
+    Installed,
+    Blocked(String),
+}
+
 fn install(
     app: &AppHandle,
     update: &Update,
     bytes: &[u8],
     preparation: Preparation,
     manual: bool,
-) -> Result<bool, String> {
+) -> Result<InstallOutcome, String> {
     let state = app.state::<ProductUpdates>();
     let host = local_host(app)?;
     if host.is_none() {
-        return Ok(false);
+        return Ok(InstallOutcome::Blocked("clients".into()));
     }
     let token = match &host {
         Some(host) => {
             let reply = host.request("prepare", None, manual, preparation.confirmed)?;
             if reply["prepared"] != true {
-                return Ok(false);
+                let reason = reply["reason"]
+                    .as_str()
+                    .ok_or("Host update reason is missing")?;
+                return Ok(InstallOutcome::Blocked(reason.into()));
             }
             Some(
                 reply["token"]
@@ -499,7 +514,7 @@ fn install(
         storage: preparation.storage,
         error: None,
     };
-    let result = (|| -> Result<bool, String> {
+    let result = (|| -> Result<InstallOutcome, String> {
         state
             .installation
             .release()
@@ -509,7 +524,9 @@ fn install(
         } else {
             Some(match state.installation.exclusive() {
                 Ok(exclusive) => exclusive,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(InstallOutcome::Blocked("clients".into()));
+                }
                 Err(error) => return Err(error.to_string()),
             })
         };
@@ -571,7 +588,7 @@ fn install(
             can_restart = restart_allowed;
             return Err(error);
         }
-        Ok(true)
+        Ok(InstallOutcome::Installed)
     })();
     if !committed {
         state
@@ -612,4 +629,49 @@ fn install(
         return Err(failure);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparation_replies_are_bound_to_one_attempt_and_consumed_once() {
+        for confirmed in [false, true] {
+            let (send, mut receive) = oneshot::channel();
+            let mut pending = Some((7, send));
+            assert!(resolve_preparation(&mut pending, 6, None).is_err());
+            assert!(matches!(
+                receive.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            resolve_preparation(
+                &mut pending,
+                7,
+                Some(Preparation {
+                    storage: BTreeMap::new(),
+                    confirmed,
+                }),
+            )
+            .unwrap();
+            assert_eq!(receive.try_recv().unwrap().unwrap().confirmed, confirmed);
+            assert!(pending.is_none());
+            assert!(resolve_preparation(&mut pending, 7, None).is_err());
+        }
+    }
+
+    #[test]
+    fn declined_and_expired_preparations_do_not_accept_late_replies() {
+        let (send, mut receive) = oneshot::channel();
+        let mut pending = Some((8, send));
+        resolve_preparation(&mut pending, 8, None).unwrap();
+        assert!(receive.try_recv().unwrap().is_none());
+        assert!(resolve_preparation(&mut pending, 8, None).is_err());
+
+        let (send, receive) = oneshot::channel();
+        let mut pending = Some((9, send));
+        drop(receive);
+        assert!(resolve_preparation(&mut pending, 9, None).is_err());
+        assert!(pending.is_none());
+    }
 }

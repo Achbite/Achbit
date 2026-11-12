@@ -1,7 +1,7 @@
 import CommandRuleSettings from './CommandRuleSettings';
 import { requestInterfaceReload } from '../../../services/interfaceReload';
 import React, { useMemo, useState, useSyncExternalStore } from 'react';
-import { productUpdateSnapshot, subscribeProductUpdates, requestProductUpdate } from '../../../services/productUpdates';
+import { productUpdateSnapshot, subscribeProductUpdates, requestProductUpdate, productUpdateConfirmation } from '../../../services/productUpdates';
 import type { UserSettingValue } from '@achbit/protocol';
 import { normalizeUiLanguage, t } from '../../../i18n';
 import { localizeSettingDefinition } from '../../../settingsLocalization';
@@ -95,6 +95,8 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   category = 'appearance',
 }) => {
   const update = useSyncExternalStore(subscribeProductUpdates, productUpdateSnapshot, productUpdateSnapshot);
+  const confirmation = useSyncExternalStore(subscribeProductUpdates, productUpdateConfirmation, productUpdateConfirmation);
+  const updatePhase = confirmation ? 'confirming' : update.phase;
   const [updateError, setUpdateError] = useState<string | null>(null);
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
   const loading = useSettingsStore((state) => state.loading);
@@ -113,10 +115,10 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   const onChange = (key: string, value: UserSettingValue) => {
     return patchUserSetting(key, value);
   };
-  const updateBusy = ['checking', 'downloading', 'preparing', 'installing'].includes(update.phase);
-  const updateAction = update.phase === 'waiting' ? 'installNow'
-    : ['preparing', 'installing'].includes(update.phase) ? 'installing'
-      : updateBusy ? update.phase : 'check';
+  const updateBusy = ['checking', 'downloading', 'confirming', 'preparing', 'installing'].includes(updatePhase);
+  const updateAction = updatePhase === 'waiting' ? 'installNow'
+    : ['preparing', 'installing'].includes(updatePhase) ? 'installing'
+      : updateBusy ? updatePhase : 'check';
 
   return (
     <div>
