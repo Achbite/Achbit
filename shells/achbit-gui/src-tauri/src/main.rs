@@ -547,7 +547,11 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            WindowEvent::Resized(_) if window.label() == "main" => {
+            WindowEvent::Resized(_)
+            | WindowEvent::Moved(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+                if window.label() == "main" =>
+            {
                 if let Some(state) = window.try_state::<window_state::WindowState>() {
                     if let Err(error) = state.observe(window) {
                         eprintln!("[window-state] {error}");
@@ -1009,8 +1013,7 @@ fn create_main_window(
         .inner_size(geometry.width, geometry.height)
         .min_inner_size(1120.0, 720.0)
         .resizable(true)
-        .maximized(geometry.maximized)
-        .fullscreen(geometry.fullscreen);
+        .visible(false);
 
     #[cfg(feature = "debug-control")]
     let builder = builder
@@ -1032,7 +1035,8 @@ fn create_main_window(
         .decorations(false)
         .background_color(tauri::window::Color(245, 246, 247, 255));
 
-    builder.build()?;
+    let window = builder.build()?;
+    app.state::<window_state::WindowState>().restore(&window)?;
     Ok(())
 }
 

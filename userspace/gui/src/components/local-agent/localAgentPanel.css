@@ -646,6 +646,16 @@
   white-space: nowrap;
 }
 
+/* Keep the compact resting row, but never hide its text while it is being read. */
+.local-agent__tool-group-summary:hover > strong,
+.local-agent__tool-group-summary:focus-visible > strong,
+.local-agent__tool-group-summary[aria-expanded='true'] > strong {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .local-agent__tool-group-summary > span:nth-last-child(2) {
   flex: 0 0 auto;
   color: var(--ac-faint);

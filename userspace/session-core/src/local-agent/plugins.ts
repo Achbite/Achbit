@@ -35,7 +35,6 @@ export interface RunActivity {
   checkpoint(snapshot: LoopSnapshot): void;
   needsContinuation(snapshot: LoopSnapshot): boolean;
   wait(signal: AbortSignal): Promise<void>;
-  blocksFollowingCalls(snapshot: LoopSnapshot, call: Extract<SessionEvent, { type: 'tool.requested' }>): boolean;
 }
 
 export interface PluginActivationInput {

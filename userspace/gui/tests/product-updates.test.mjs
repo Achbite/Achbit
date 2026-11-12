@@ -5,9 +5,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, installGuiFetch, loadGuiModules } from './gui-projection-contract.mjs';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function capture(Component, props) {
+function capture(Component, props, render = true) {
   let tree;
-  function Probe() { tree = Component(props); return tree; }
+  function Probe() { tree = Component(props); return render ? tree : null; }
   return { html: renderToStaticMarkup(createElement(Probe)), tree };
 }
 function browser(t) {
@@ -28,8 +28,9 @@ function browser(t) {
     get length() { return saved.size; }, key(index) { return [...saved.keys()][index] ?? null; },
     getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); }, removeItem(key) { saved.delete(key); },
   };
-  t.after(() => {
+  t.after(async () => {
     for (const cleanup of cleanups) cleanup();
+    await flush();
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
     }
@@ -49,6 +50,7 @@ test('product update notice renders the current update snapshot on the server', 
   findReactElement(capture(ProductUpdateNotice).tree, node => node.type === 'button').props.onClick();
   await flush();
   assert.equal(b.calls.some(call => call.command === 'achbit_update_install'), true);
+  assert.equal(updates.productUpdateConfirmation(), null, 'an idle install click does not require confirmation');
   b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase: 'downloading', downloaded: 25, total: 100 } });
   const downloading = render();
   assert.match(downloading, /role="progressbar"/);
@@ -57,6 +59,13 @@ test('product update notice renders the current update snapshot on the server', 
   const failed = render();
   assert.match(failed, /data-product-update="error"/);
   assert.match(failed, /Download interrupted/);
+  for (const [reason, expected] of [
+    ['requests', /等待正在处理的请求结束|Waiting for in-flight requests/],
+    ['clients', /等待其他 Achbit 入口或常驻 Host 关闭|Waiting for other Achbit clients or a persistent Host/],
+  ]) {
+    b.handlers.get('achbit:product-update')({ payload: { ...b.status, reason } });
+    assert.match(render(), expected);
+  }
 });
 
 test('a real restart snapshot restores the draft and selected conversation before mounting', async t => {
@@ -182,6 +191,73 @@ test('About Achbit exposes a manual check and a ready installation action', asyn
   b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase: 'current' } });
   action().props.onClick(); await flush();
   assert.equal(b.calls.at(-1).command, 'achbit_update_check');
+});
+
+test('a pending confirmation remains interactive and cannot be replaced by another preparation', async t => {
+  const b = browser(t);
+  const [updates, { ProductUpdateNotice }, { GuiSettingsSection }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
+    '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+  ]);
+  const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
+  b.root.inert = true;
+  b.handlers.get('achbit:update-prepare')({ payload: { nonce: 7, manual: true, busy: true } }); await flush();
+  assert.equal(b.root.inert, false);
+  const pending = updates.productUpdateConfirmation();
+  assert.deepEqual(pending, { busy: true, unsaved: [] });
+  const notice = capture(ProductUpdateNotice, undefined, false).tree;
+  assert.equal(findReactElement(notice, node => node.props['data-product-update']).props['data-product-update'], 'confirming');
+  assert.equal(findReactElement(notice, node => node.props.className === 'product-update-notice__icon').props.onClick, undefined);
+  const about = capture(GuiSettingsSection, { category: 'about', apiStatus: 'connected' }).tree;
+  assert.equal(findReactElement(about, node => node.type === 'button' && /等待确认更新|Waiting for confirmation/.test(node.props.children)).props.disabled, true);
+  b.handlers.get('achbit:update-prepare')({ payload: { nonce: 8, manual: true, busy: false } }); await flush();
+  assert.deepEqual(b.calls.at(-1), { command: 'achbit_update_prepare_response', args: { nonce: 8, storage: null } });
+  assert.equal(updates.productUpdateConfirmation(), pending);
+  assert.equal(b.calls.some(call => call.command === 'achbit_update_prepare_response' && call.args.nonce === 7), false);
+  findReactElement(notice, node => node.type === 'button' && /继续更新并重启|Update and restart/.test(node.props.children)).props.onClick();
+  await flush();
+  assert.equal(updates.productUpdateConfirmation(), null);
+  const reply = b.calls.at(-1);
+  assert.equal(reply.command, 'achbit_update_prepare_response');
+  assert.equal(reply.args.nonce, 7);
+  assert.equal(reply.args.storage.confirmed, true);
+  assert.equal(b.root.inert, true, 'freeze only after the explicit decision');
+});
+
+test('cancel and dismiss decline the preparation without requesting another install', async t => {
+  const b = browser(t);
+  const [updates, { ProductUpdateNotice }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
+  ]);
+  const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
+  for (const nonce of [10, 11]) {
+    b.handlers.get('achbit:update-prepare')({ payload: { nonce, manual: true, busy: true } }); await flush();
+    const notice = capture(ProductUpdateNotice, undefined, false).tree;
+    if (nonce === 10) findReactElement(notice, node => node.type === 'button' && node.props.autoFocus).props.onClick();
+    else findReactElement(notice, node => typeof node.props.onClose === 'function').props.onClose();
+    await flush();
+    assert.equal(updates.productUpdateConfirmation(), null);
+    assert.deepEqual(b.calls.at(-1), { command: 'achbit_update_prepare_response', args: { nonce, storage: null } });
+    assert.equal(b.root.inert, false);
+  }
+  assert.equal(b.calls.some(call => call.command === 'achbit_update_install'), false);
+});
+
+test('disposing the monitor declines a pending confirmation and ignores late acceptance', async t => {
+  const b = browser(t);
+  const [updates] = await loadGuiModules(t, ['/src/services/productUpdates.ts']);
+  const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
+  const prepare = b.handlers.get('achbit:update-prepare');
+  prepare({ payload: { nonce: 20, manual: true, busy: true } }); await flush();
+  assert.notEqual(updates.productUpdateConfirmation(), null);
+  stop(); updates.respondProductUpdate(true); await flush();
+  assert.deepEqual(b.calls.filter(call => call.command === 'achbit_update_prepare_response'), [
+    { command: 'achbit_update_prepare_response', args: { nonce: 20, storage: null } },
+  ]);
+  prepare({ payload: { nonce: 21, manual: true, busy: true } }); await flush();
+  assert.equal(updates.productUpdateConfirmation(), null);
+  assert.deepEqual(b.calls.at(-1), { command: 'achbit_update_prepare_response', args: { nonce: 21, storage: null } });
+  assert.equal(b.root.inert, false);
 });
 
 test('the automatic update setting survives reload and a failed save preserves the saved value', async t => {

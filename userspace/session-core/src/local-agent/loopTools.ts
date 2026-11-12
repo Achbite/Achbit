@@ -353,26 +353,41 @@ export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, s
   const pending = pendingToolRequests(snapshot.events, runId);
   const isRead = (event: ToolRequestEvent) => event.payload.toolName === 'fs.read';
   const isFile = (event: ToolRequestEvent) => event.payload.toolName === 'fs.write' || event.payload.toolName === 'fs.edit';
+  const isCommand = (event: ToolRequestEvent) => ['bash', 'powershell'].includes(event.payload.toolName)
+    || event.payload.toolName === 'process' && event.payload.input.action === 'start'
+    || event.payload.toolName === 'container' && ['create', 'exec'].includes(String(event.payload.input.action));
   let enteredSegmentEnd = 0;
   try {
     for (let offset = 0; offset < pending.length;) {
       signal.throwIfAborted();
-      const first = pending[offset]!;
-      let end = offset + 1;
-      if (isFile(first)) while (end < pending.length && isFile(pending[end]!)) end += 1;
-      else if (isRead(first)) while (end < pending.length && isRead(pending[end]!)) end += 1;
+      let end = offset;
+      let filePhase: 'read' | 'mutation' | undefined;
+      // Commands may overlap the neighboring file phase. Their foreground
+      // receipt (including an automatically managed job) is not a dependency
+      // of unrelated sibling calls. Keep file read/write ordering and leave
+      // other tool families on their existing single-call boundaries.
+      while (end < pending.length) {
+        const event = pending[end]!;
+        if (isCommand(event)) { end += 1; continue; }
+        const phase = isRead(event) ? 'read' : isFile(event) ? 'mutation' : undefined;
+        if (!phase || filePhase && phase !== filePhase) break;
+        filePhase = phase;
+        end += 1;
+      }
+      if (end === offset) end += 1;
       const segment = pending.slice(offset, end);
+      const files = segment.filter(isFile);
       const dependencies = new Map<string, string[]>();
-      if (isFile(first)) {
+      if (files.length) {
         snapshot = await deps.readSnapshot();
-        const preparation = await deps.composition.kernel.prepareFileCalls({ requests: segment.map(event => executionRequest(snapshot, event, deps)) });
-        if (preparation.calls.length !== segment.length || preparation.calls.some((item, index) => item.callId !== segment[index]!.callId
-          || item.conflictsWith.some(id => !segment.slice(0, index).some(event => event.callId === id)))) {
+        const preparation = await deps.composition.kernel.prepareFileCalls({ requests: files.map(event => executionRequest(snapshot, event, deps)) });
+        if (preparation.calls.length !== files.length || preparation.calls.some((item, index) => item.callId !== files[index]!.callId
+          || item.conflictsWith.some(id => !files.slice(0, index).some(event => event.callId === id)))) {
           throw new LoopFailure('tool_preparation_identity_mismatch', 'Kernel 文件准备结果与原始调用顺序不一致。');
         }
         for (const item of preparation.calls) {
           dependencies.set(item.callId, item.conflictsWith);
-          if (item.rejection) await acceptToolReply(deps, segment.find(event => event.callId === item.callId)!, {
+          if (item.rejection) await acceptToolReply(deps, files.find(event => event.callId === item.callId)!, {
             schemaVersion: KERNEL_REPLY_VERSION, type: 'tool.execution', requestId: deps.nextId('kernel-request'),
             callId: item.callId, status: 'inputRejected', rejection: item.rejection,
           }, signal);
@@ -381,15 +396,8 @@ export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, s
       enteredSegmentEnd = end;
       const waiting = await executeToolSegment(deps, segment, dependencies, signal);
       if (waiting) return waiting;
-      snapshot = await deps.readSnapshot();
-      if (deps.activity?.blocksFollowingCalls(snapshot, first)) {
-        // A yielded execution is not successful completion of a sequential barrier.
-        // Pair the remaining calls with honest non-execution receipts before review.
-        for (const later of pending.slice(end)) await deps.commit({type: 'tool.not-executed',
-          sessionId: later.sessionId, runId, callId: later.callId,
-          payload: {attemptId: later.payload.attemptId, reason: 'dependencyPending', predecessorCallId: first.callId}});
-        break;
-      }
+      // Explicit waits are applied by RunActivity after this batch's actual
+      // tool replies have been collected; no sibling needs model resubmission.
       offset = end;
     }
   } catch (error) {

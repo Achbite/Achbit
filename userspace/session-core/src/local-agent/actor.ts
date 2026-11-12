@@ -1615,6 +1615,11 @@ export class SessionActor {
     const composition = current.events.findLast(event => event.type === 'context.composed' && event.runId === runId && event.payload.purpose === 'agent');
     const boundary = controlWait?.afterSequence ?? (composition?.type === 'context.composed'
       ? composition.payload.modelView?.throughSequence ?? composition.sequence : current.state.revision);
+    // Automatic collection must deliver a result that arrived during the last
+    // model request before waiting for the other jobs. Read/subscribe races
+    // remain covered by waitForInput's revision check below.
+    if (jobIds === undefined && !controlWait && current.events.some(event => event.type === 'process.updated'
+      && event.runId === runId && event.sequence > boundary && event.payload.job.status !== 'active')) return;
     // After recovery, an already delivered wake still belongs to the next model turn.
     if (previous && previous.afterSequence === boundary && previous.phase !== 'waiting') return;
 
@@ -1627,8 +1632,9 @@ export class SessionActor {
     const revisions = new Map(targets.map(id => [id, current.state.processes[id]?.revision]));
     const hasResult = (snapshot: LoopSnapshot) => targets.some(id => snapshot.state.processes[id]?.status !== 'active'
       && snapshot.state.processes[id]?.revision !== revisions.get(id));
-    // An explicit wait uses its own budget. The implicit review fires once per logical wait.
-    const deadline = explicitDeadline ?? (wait.reviewed ? undefined : wait.reviewAt);
+    // Automatic run-completion collection is event-only, not a timed model
+    // review. Explicit process.wait keeps its one-review/deadline contract.
+    const deadline = explicitDeadline ?? (jobIds === undefined || wait.reviewed ? undefined : wait.reviewAt);
     const result = await this.waitForInput(runId, signal, undefined, snapshot => !active(snapshot) || hasResult(snapshot),
       {afterSequence: boundary, ...(deadline === undefined ? {} : {deadline})});
     signal.throwIfAborted();

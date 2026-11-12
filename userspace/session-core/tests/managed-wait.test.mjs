@@ -13,7 +13,7 @@ async function until(predicate) {
   assert.fail('Expected lifecycle boundary was not reached');
 }
 
-for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'batch-yield', 'batch-start', 'explicit-timeout', 'long-explicit', 'user-input']) test(`dependency wait: ${scenario}`, async t => {
+for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'batch-yield', 'batch-start', 'batch-wait', 'explicit-timeout', 'long-explicit', 'user-input']) test(`dependency wait: ${scenario}`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = `session:wait-${scenario}`;
   await createSession(journal, sessionId, [workspaceBinding]);
   const jobs = new Map(); let wake = () => {}, requests = [], commands = [];
@@ -59,7 +59,10 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
       if (scenario.startsWith('batch-')) yield providerEvent(request.requestId, 'tool.call', {callId: 'native:peer', name: 'fs_read', input: {path: 'independent.md'}});
     }
     else if (n === 2) { await independent; yield call('fs_read', {path: 'independent.md'}); }
-    else if (n === 3) yield call('process', {action: 'wait', jobId: 'job:1', ...(scenario === 'explicit-timeout' ? {waitSeconds: 5} : scenario === 'long-explicit' ? {waitSeconds: 180} : {})});
+    else if (n === 3) {
+      yield call('process', {action: 'wait', jobId: 'job:1', ...(scenario === 'explicit-timeout' ? {waitSeconds: 5} : scenario === 'long-explicit' ? {waitSeconds: 180} : {})});
+      if (scenario === 'batch-wait') yield providerEvent(request.requestId, 'tool.call', {callId: 'native:wait-peer', name: 'fs_read', input: {path: 'independent.md'}});
+    }
     else if (scenario === 'repair' && n === 4) yield call('process', {action: 'cancel', jobId: 'job:1'});
     else if (scenario === 'repair' && n === 5) yield call('process', {action: 'start', tool: 'bash', input: {command: 'retry'}});
     else if (scenario === 'repair' && n === 6) yield call('process', {action: 'wait', jobId: 'job:2'});
@@ -133,10 +136,10 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
   assert.equal(requests.length, scenario === 'repair' ? 7 : ['user-cancel','completion-race'].includes(scenario) ? 4 : 5);
   if (['explicit-timeout','long-explicit'].includes(scenario)) assert.equal(jobs.get('job:1').status, 'cancelled', 'a waited-for job was cancelled by a model decision');
   if (scenario === 'user-cancel') assert.equal(jobs.get('job:1').status, 'cancelled');
-  assert.equal(commands.filter(c => c.toolName === 'fs.read').length, scenario === 'batch-start' ? 2 : 1);
-  if (scenario === 'batch-yield') {
+  assert.equal(commands.filter(c => c.toolName === 'fs.read').length, scenario === 'batch-wait' ? 3 : scenario.startsWith('batch-') ? 2 : 1);
+  if (scenario.startsWith('batch-')) {
     const skipped = (await readEvents(journal, sessionId)).filter(e => e.type === 'tool.not-executed');
-    assert.equal(skipped.length, 1); assert.equal(skipped[0].payload.reason, 'dependencyPending');
+    assert.equal(skipped.length, 0, 'a yielded ordinary Shell never discards an independent sibling');
     assert.equal(requests[1].messages.filter(m => m.role === 'tool').length, 2, 'every batch call has a paired result before the model resumes');
   }
 });

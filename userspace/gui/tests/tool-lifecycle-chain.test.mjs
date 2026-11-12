@@ -118,7 +118,7 @@ test('independent file calls keep their review turns separate from each other an
   assert.equal(new Set(readTurns.flatMap(e => e.payload.orderedCallIds)).size, 2);
 });
 
-test('yielded Shell leaves later calls honestly unexecuted and readable after cancellation', async t => {
+test('yielded Shell preserves independent file results through cancellation and reopening', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:yielded-shell-projection';
   await createSession(journal, sessionId, [workspaceBinding]);
   let job, wake = () => {}, turns = 0, executions = 0;
@@ -131,14 +131,15 @@ test('yielded Shell leaves later calls honestly unexecuted and readable after ca
   const actor = actorWith(journal, sessionId, { async *stream(request) {
     if (++turns === 1) {
       yield* call(request, 'first', 'bash', { command: 'sleep 120' }, true, 0);
-      yield* call(request, 'later', 'bash', { command: 'printf after' }, true, 1);
+      yield* call(request, 'later', 'fs_write', { path: 'independent.txt', content: 'after' }, true, 1);
     } else {
-      assert.match(JSON.stringify(request.messages), /dependencyPending/);
+      assert.doesNotMatch(JSON.stringify(request.messages), /dependencyPending/);
       yield providerEvent(request.requestId, 'assistant.message', { content: 'Waiting for the first command.' });
     }
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({ async execute(request) {
     executions++;
+    if (request.toolName === 'fs.write') return completedExecutionReply(request, { saved: true });
     job = { jobId: 'job:yielded', sessionId, runId: request.runId, callId: request.callId, revision: 1,
       toolName: 'bash', command: request.input.command, targets: ['.'], status: 'active', startedAt: String(Date.now()),
       output: { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, truncated: false } };
@@ -153,17 +154,18 @@ test('yielded Shell leaves later calls honestly unexecuted and readable after ca
       wake = done; signal?.addEventListener('abort', done, { once: true }); if (signal?.aborted) done();
     });
     return changed() ? [structuredClone(job)] : [];
-  } }), preparation([shell, tool('process', { action: { type: 'string' } }, ['process'])]), 'yielded-shell');
+  } }), preparation([shell, file, tool('process', { action: { type: 'string' } }, ['process'])]), 'yielded-shell');
   t.after(async () => { finish(); wake(); await actor.dispose(); });
-  await actor.submit(messageCommand(sessionId, 'command:start', 'Run the two commands in order.'));
-  const active = await waitForProjection(actor, p => p.activities.some(a => a.notExecuted));
-  assert.equal(executions, 1);
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Start the long command and write an independent file.'));
+  const active = await waitForProjection(actor, p => p.activities.some(a => a.tool?.operation === 'fs.write' && a.status === 'completed')
+    && p.activities.some(a => a.tool?.process && a.status === 'active'));
+  assert.equal(executions, 2);
   assert.deepEqual(await decodeGuiProjection(active), active);
-  const skipped = active.activities.find(a => a.notExecuted);
-  assert.equal(skipped.notExecuted.reason, 'dependencyPending');
-  assert.equal(skipped.tool, undefined);
+  assert.equal(active.activities.some(a => a.notExecuted), false);
   await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', commandId: 'command:stop', sessionId, runId: active.run.runId });
   const final = await waitForProjection(actor, p => p.run?.status === 'cancelled');
+  assert.ok(final.activities.some(a => a.tool?.operation === 'fs.write' && a.status === 'completed'));
+  assert.equal(executions, 2, 'history and cancellation do not replay the independent write');
   await readableHistory(journal, sessionId, final);
 });
 

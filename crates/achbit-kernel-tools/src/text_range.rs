@@ -90,7 +90,14 @@ pub fn read_text_range(
     }
     if start_byte.is_some_and(|start| start > offset) || (start_byte.is_none() && start_line > line)
     {
-        return Err("text_read_range_beyond_end".into());
+        return Err(match start_byte {
+            Some(start) => format!(
+                "text_read_range_beyond_end: startByte {start} exceeds file size {offset} bytes"
+            ),
+            None => format!(
+                "text_read_range_beyond_end: startLine {start_line} exceeds file length {line} lines"
+            ),
+        });
     }
     // A byte window may end inside a scalar; leave that scalar for nextByte.
     let valid = std::str::from_utf8(&output).map_or_else(|error| error.valid_up_to(), str::len);
@@ -139,6 +146,39 @@ mod tests {
             let _ = std::fs::remove_file(&self.0);
         }
     }
+    #[test]
+    fn out_of_range_reports_requested_and_available_bounds() {
+        let sample = Sample(std::env::temp_dir().join(format!(
+            "achbit-range-bounds-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        std::fs::write(&sample.0, "one\ntwo\n").unwrap();
+        assert_eq!(
+            read_text_range(&sample.0, 4, None, 10, 1024).unwrap_err(),
+            "text_read_range_beyond_end: startLine 4 exceeds file length 3 lines"
+        );
+        assert_eq!(
+            read_text_range(&sample.0, 1, Some(9), 10, 1024).unwrap_err(),
+            "text_read_range_beyond_end: startByte 9 exceeds file size 8 bytes"
+        );
+        let page = read_text_range(&sample.0, 1, None, 1, 1024).unwrap();
+        assert_eq!(page["content"], "one\n");
+        assert_eq!(page["nextStartLine"], 2);
+        assert_eq!(page["nextByte"], 4);
+        assert_eq!(
+            read_text_range(&sample.0, 3, None, 10, 1024).unwrap()["content"],
+            ""
+        );
+        assert_eq!(
+            read_text_range(&sample.0, 99, Some(8), 10, 1024).unwrap()["content"],
+            ""
+        );
+    }
+
     #[test]
     fn large_utf8_line_is_read_completely_in_bounded_windows() {
         let path = std::env::temp_dir().join(format!(

@@ -63,6 +63,7 @@ export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> =
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
+        title={summary}
         data-conversation-disclosure={`hosted-group:${blocks[0]?.providerCallId}`}
         onClick={() => changeExpanded(current => !current)}
       >
@@ -109,6 +110,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
     setExpanded(next);
   };
   const tools = activities.filter(activity => !activity.agent);
+  const summary = toolGroupSummary(tools, language);
   return (
     <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
       <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded: changeExpanded }}><button
@@ -116,6 +118,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
+        title={summary}
         data-conversation-disclosure={`tool-group:${activities[0]?.activityId}`}
         onClick={() => changeExpanded(current => !current)}
       >
@@ -126,7 +129,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
               : 'tool'}
           />
         </span>
-        <strong>{toolGroupSummary(tools, language)}</strong>
+        <strong>{summary}</strong>
         <span className="local-agent__tool-group-chevron" aria-hidden="true">
           <AchbitShellIcon name="chevronRight" />
         </span>
@@ -573,7 +576,7 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
 
 function notExecutedStatus(activity: ActivityProjection, language: UiLanguage): string {
   if (activity.notExecuted?.reason === 'approvalRequired') return t(language, 'agent.tool.notExecuted.approvalRequired');
-  if (activity.notExecuted?.reason === 'dependencyPending') return language === 'zh-CN' ? '尚未执行：前序命令仍在运行' : 'Not executed: predecessor still running';
+  if (activity.notExecuted?.reason === 'dependencyPending') return language === 'zh-CN' ? '本次未执行：当时前序命令尚未完成' : 'Not executed: predecessor was still running at the time';
   return t(language, activity.notExecuted?.reason === 'cancelled'
     ? 'agent.tool.notExecuted.cancelled' : 'agent.tool.notExecuted.dependencyFailed');
 }
