@@ -71,6 +71,22 @@ if (layoutCheck) {
     messages[3]!.content += '\n\n' + Array.from({ length: 10 }, (_, i) => `最终回答 ${i + 1}：正文保持原有顺序与折叠语义，检查展开时按钮的位置。`).join('\n\n');
   }
 }
+// Long mixed terminal summaries must remain readable on hover, keyboard focus and expansion.
+if (previewParams.has('tool-summary')) {
+  const operations = ['plugin.search', 'plugin.activate', 'fs.read', 'fs.write', 'powershell'];
+  initial.activities = Array.from({ length: 26 }, (_, index) => ({
+    activityId: `activity:summary:${index}`, kind: 'tool', runId: 'run:second', sequence: 5,
+    status: index < 22 ? 'completed' : index < 24 ? 'rejected' : index === 24 ? 'failed' : 'cancelled',
+    label: operations[index % operations.length]!,
+    tool: { operation: operations[index % operations.length]!, resources: [] },
+  }));
+  initial.messages[3] = { ...initial.messages[3]!, sequence: 6, content: '工具汇总阅读检查。展开、悬停及键盘聚焦均应显示完整摘要。' };
+  initial.timeline = [...initial.timeline.slice(0, 3),
+    { kind: 'toolGroup', timelineId: 'timeline:summary', activityIds: initial.activities.map(activity => activity.activityId), sequence: 5 },
+    { ...initial.timeline[3]!, sequence: 6 },
+  ];
+  initial.revision = 6;
+}
 const approval = { approvalId: 'approval:preview', callId: 'call:preview', runId: 'run:second', sequence: 5, createdAt: '2026-09-16T08:35:00Z', preview: { summary: '执行 bash：make test', effects: ['external'], logicalTargets: ['host:container'],
   authorizationScope: 'runHostShell', authorizationContext: { workspaceRoot: '/project/example' } } };
 const question: InteractionProjection = { interactionId: 'question:preview', callId: 'call:question-preview',

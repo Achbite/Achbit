@@ -13,10 +13,10 @@ function computer(id) {
     computer:{action:'observe',input:{action:'observe'},window:{title:`Editor ${id}`}}}};
 }
 async function renderer(t) {
-  const [{ToolActivityGroup},{ConversationVirtualRow}]=await loadGuiModules(t,[
+  const [{ToolActivityGroup,toolGroupSummary},{ConversationVirtualRow}]=await loadGuiModules(t,[
     '/src/components/local-agent/ToolActivityDetails.tsx','/src/components/local-agent/ConversationVirtualRow.tsx']);
   const layout={state:new Map()};
-  return {layout,render:activities=>renderToStaticMarkup(createElement(ConversationVirtualRow,{
+  return {layout,summary:activities=>toolGroupSummary(activities,'en-US'),render:activities=>renderToStaticMarkup(createElement(ConversationVirtualRow,{
     rowKey:'mixed-history',eager:true,virtualizer:{layout:()=>layout},
     children:()=>createElement(ToolActivityGroup,{activities,language:'en-US',onExpand(){},onOpenWorkspaceResource(){}}),
   }))};
@@ -49,6 +49,23 @@ test('ordinary, browser, computer and approval activities use exactly one shared
     const only=render(computers);
     assert.equal((only.match(/class="local-agent__tool-group-summary"/g)??[]).length,1,'computer-only groups use the same disclosure');
     assert.doesNotMatch(only,/Observe · Editor/);
+  }
+});
+
+test('long mixed tool summaries retain their full text and title across disclosure states',async t=>{
+  const {layout,summary,render}=await renderer(t);
+  const operations=['plugin.search','plugin.activate','fs.read','fs.write','powershell'];
+  const activities=Array.from({length:26},(_,index)=>({...tool(`long-${index}`,operations[index%operations.length]),
+    status:index<22?'completed':index<24?'rejected':index===24?'failed':'cancelled'}));
+  const full=summary(activities);
+  assert.ok(full.length>100,'fixture must exercise a long summary');
+  const escaped=full.replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+  for(const expanded of [false,true]) {
+    layout.state.set('tool-group:expanded',expanded);
+    const html=render(activities);
+    assert.ok(html.includes(`title="${escaped}"`),'the original full summary remains available as a title fallback');
+    assert.ok(html.includes(`<strong>${escaped}</strong>`),'presentation must not pre-truncate the summary string');
+    assert.equal((html.match(/class="local-agent__tool-group-summary"/g)??[]).length,1);
   }
 });
 
