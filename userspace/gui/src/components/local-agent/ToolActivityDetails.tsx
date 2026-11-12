@@ -576,7 +576,7 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
 
 function notExecutedStatus(activity: ActivityProjection, language: UiLanguage): string {
   if (activity.notExecuted?.reason === 'approvalRequired') return t(language, 'agent.tool.notExecuted.approvalRequired');
-  if (activity.notExecuted?.reason === 'dependencyPending') return language === 'zh-CN' ? '尚未执行：前序命令仍在运行' : 'Not executed: predecessor still running';
+  if (activity.notExecuted?.reason === 'dependencyPending') return language === 'zh-CN' ? '本次未执行：当时前序命令尚未完成' : 'Not executed: predecessor was still running at the time';
   return t(language, activity.notExecuted?.reason === 'cancelled'
     ? 'agent.tool.notExecuted.cancelled' : 'agent.tool.notExecuted.dependencyFailed');
 }
