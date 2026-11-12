@@ -1322,6 +1322,10 @@ export class SessionActor {
     if (this.#active?.runId === command.runId) {
       this.#active.controller.abort('user_cancelled');
       await this.#active.task;
+    } else if (snapshot.state.run.status === 'releasing' || snapshot.state.run.status === 'releaseFailed') {
+      const settlement = snapshot.state.pendingRunSettlements[command.runId];
+      if (!settlement) throw new Error('run_finishing_settlement_missing');
+      await this.finalizeRunRuntime(snapshot, command.runId, settlement);
     } else {
       await this.runLoop({ type: 'cancel', runId: command.runId });
     }
@@ -1730,9 +1734,8 @@ export class SessionActor {
       }]);
       return false;
     }
-    const tools = await terminalToolEvents(
-      await this.loadSnapshot(), runId, this.#composition.kernel, settlement,
-    );
+    // Persist the small release receipt before gathering/writing tool results.
+    // A later journal failure must not erase the physical cleanup acknowledgement.
     await this.appendLifecycleEvents([
       {
         type: 'run.runtime.released',
@@ -1747,8 +1750,14 @@ export class SessionActor {
             plugin.pluginInstanceRef
           )),
           alreadyReleased: released.alreadyReleased,
+          ...(released.recoveredAfterRestart ? { recoveredAfterRestart: true as const } : {}),
         },
       },
+    ]);
+    const tools = await terminalToolEvents(
+      await this.loadSnapshot(), runId, this.#composition.kernel, settlement,
+    );
+    await this.appendLifecycleEvents([
       ...tools,
       {
         type: 'run.settled',

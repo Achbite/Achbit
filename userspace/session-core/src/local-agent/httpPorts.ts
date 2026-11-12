@@ -615,6 +615,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
     return Object.freeze({
       kernelCatalogSnapshotRef: released.kernelCatalogSnapshotRef,
       alreadyReleased: released.alreadyReleased,
+      ...(released.recoveredAfterRestart ? { recoveredAfterRestart: true as const } : {}),
     });
   }
 }
@@ -782,7 +783,7 @@ function decodeRunRuntimeReleased(
       'kernelCatalogSnapshotRef',
       'released',
       'alreadyReleased',
-    ])
+    ], ['recoveredAfterRestart'])
     || value.schemaVersion !== KERNEL_REPLY_VERSION
     || value.type !== 'tool.catalog.released'
     || value.sessionId !== request.sessionId
@@ -790,10 +791,12 @@ function decodeRunRuntimeReleased(
     || value.kernelCatalogSnapshotRef !== request.kernelCatalogSnapshotRef
     || value.released !== true
     || typeof value.alreadyReleased !== 'boolean'
+    || (value.recoveredAfterRestart !== undefined && value.recoveredAfterRestart !== true)
   ) throw new Error('kernel_tool_catalog_released_invalid');
   return Object.freeze({
     kernelCatalogSnapshotRef: request.kernelCatalogSnapshotRef,
     alreadyReleased: value.alreadyReleased,
+    ...(value.recoveredAfterRestart ? { recoveredAfterRestart: true as const } : {}),
   });
 }
 

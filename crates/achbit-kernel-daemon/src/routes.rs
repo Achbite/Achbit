@@ -113,17 +113,19 @@ pub(crate) fn build_app(state: HostState) -> Router {
             "/api/local-agent/journal/sessions/:session_id",
             delete(local_agent_session_delete),
         )
+        // Session-service journal writes carry complete, validated runtime facts.
+        // Their size is not the default 2 MiB limit for external JSON inputs.
         .route(
             "/api/local-agent/journal/events",
-            post(local_agent_event_append),
+            post(local_agent_event_append).layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/api/local-agent/journal/events/batch",
-            post(local_agent_events_append_batch),
+            post(local_agent_events_append_batch).layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/api/local-agent/journal/commands",
-            post(local_agent_command_commit),
+            post(local_agent_command_commit).layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/api/local-agent/journal/sessions/:session_id/events",

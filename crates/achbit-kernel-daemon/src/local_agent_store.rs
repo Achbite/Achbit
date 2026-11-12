@@ -543,6 +543,64 @@ impl LocalAgentJournal {
         Ok(result)
     }
 
+    /// Capture only catalog identities whose previous owner had begun finishing.
+    /// Called once while opening the Kernel under the exclusive configuration-root lease.
+    pub(crate) fn unfinished_catalogs(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, LocalAgentStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT e.session_id, e.run_id,
+               CASE e.event_type WHEN 'run.started'
+                 THEN json_extract(e.payload_json, '$.runtimeSnapshot.kernelCatalogSnapshotRef')
+                 ELSE json_extract(e.payload_json, '$.toolView.kernelCatalogSnapshotRef') END
+             FROM session_events e
+             WHERE e.event_type IN ('run.started', 'run.tools.prepared')
+               AND EXISTS (SELECT 1 FROM session_events f
+                 WHERE f.session_id=e.session_id AND f.run_id=e.run_id AND f.event_type='run.finishing')
+               AND NOT EXISTS (SELECT 1 FROM session_events s
+                 WHERE s.session_id=e.session_id AND s.run_id=e.run_id
+                   AND s.event_type IN ('run.runtime.released','run.settled'))",
+        ).map_err(sql_error("session_unfinished_catalogs_read_failed"))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(sql_error("session_unfinished_catalogs_read_failed"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error("session_unfinished_catalogs_read_failed"))
+    }
+
+    /// Raw attempt identities and latest resource status, without loading tool output bodies.
+    pub(crate) fn run_cleanup_facts(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<(Vec<(String, String)>, bool), LocalAgentStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT call_id,json_extract(payload_json,'$.attemptId') FROM session_events
+             WHERE session_id=?1 AND run_id=?2 AND event_type='tool.started'",
+            )
+            .map_err(sql_error("session_cleanup_facts_read_failed"))?;
+        let attempts = statement
+            .query_map(params![session_id, run_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(sql_error("session_cleanup_facts_read_failed"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error("session_cleanup_facts_read_failed"))?;
+        let active = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_events e
+             WHERE e.session_id=?1 AND e.run_id=?2 AND e.event_type='process.updated'
+               AND json_extract(e.payload_json,'$.job.status')='active'
+               AND NOT EXISTS(SELECT 1 FROM session_events n
+                 WHERE n.session_id=e.session_id AND n.run_id=e.run_id AND n.event_type='process.updated'
+                   AND json_extract(n.payload_json,'$.job.jobId')=json_extract(e.payload_json,'$.job.jobId')
+                   AND n.sequence>e.sequence))", params![session_id,run_id], |row| row.get(0)
+        ).map_err(sql_error("session_cleanup_facts_read_failed"))?;
+        Ok((attempts, active))
+    }
+
     /// Project journal fields only. Run status semantics belong to Session.
     pub(crate) fn read_run_lifecycle(
         &self,
@@ -3275,7 +3333,7 @@ fn validate_new_event(
                     "pluginInstanceRefs",
                     "alreadyReleased",
                 ],
-                &[],
+                &["recoveredAfterRestart"],
             )?;
             for field in [
                 "runRuntimeSnapshotRef",
@@ -3286,6 +3344,15 @@ fn validate_new_event(
                 validate_runtime_identity(field, required_string(payload, field)?)?;
             }
             validate_unique_ids(payload, "pluginInstanceRefs")?;
+            if payload
+                .get("recoveredAfterRestart")
+                .is_some_and(|value| value != &json!(true))
+            {
+                return Err(LocalAgentStoreError::new(
+                    "session_event_invalid",
+                    "recoveredAfterRestart must be true when present.",
+                ));
+            }
             if !payload
                 .get("alreadyReleased")
                 .is_some_and(Value::is_boolean)

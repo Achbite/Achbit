@@ -478,11 +478,13 @@ struct RunCatalogKey {
 struct KernelGenerationState {
     run_bindings: HashMap<RunCatalogKey, Arc<KernelGeneration>>,
     released_run_bindings: HashMap<RunCatalogKey, ReleasedRunBinding>,
+    previous_owner_bindings: std::collections::HashSet<RunCatalogKey>,
     run_containers: HashMap<(String, String), Arc<crate::container_tools::Containers>>,
 }
 
 struct ReleasedRunBinding {
     retirement: Option<CatalogRetirement>,
+    recovered_after_restart: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -589,6 +591,19 @@ impl LocalAgentKernel {
         journal: LocalAgentJournal,
         resolver: Arc<dyn WorkspaceResolverPort>,
     ) -> Result<Self, LocalAgentKernelError> {
+        // The Host already owns the exclusive root lease. The previous Kernel's
+        // physical catalog instances cannot still own this root. Preserve the exact
+        // archived identities for finishing only; never reconstruct a tool executor.
+        let previous_owner_bindings = journal
+            .unfinished_catalogs()
+            .map_err(|error| LocalAgentKernelError::new(error.code, error.message))?
+            .into_iter()
+            .map(|(session_id, run_id, snapshot_ref)| RunCatalogKey {
+                session_id,
+                run_id,
+                snapshot_ref,
+            })
+            .collect();
         Ok(Self {
             records: LocalToolRecordStore::open(record_path)?,
             output_root: record_path.with_extension("outputs"),
@@ -604,6 +619,7 @@ impl LocalAgentKernel {
             generations: Arc::new(Mutex::new(KernelGenerationState {
                 run_bindings: HashMap::new(),
                 released_run_bindings: HashMap::new(),
+                previous_owner_bindings,
                 run_containers: HashMap::new(),
             })),
             active: Arc::new(Mutex::new(HashMap::new())),
@@ -782,9 +798,13 @@ impl LocalAgentKernel {
                 .values()
                 .any(|candidate| Arc::ptr_eq(candidate, &generation));
             let retirement = (!still_pinned).then(|| generation.catalog.retirement());
-            state
-                .released_run_bindings
-                .insert(key, ReleasedRunBinding { retirement });
+            state.released_run_bindings.insert(
+                key,
+                ReleasedRunBinding {
+                    retirement,
+                    recovered_after_restart: false,
+                },
+            );
         }
         let mut errors = Vec::new();
         for (key, released) in &state.released_run_bindings {
@@ -829,10 +849,36 @@ impl LocalAgentKernel {
             let state = self.lock_generations()?;
             if !state.run_bindings.contains_key(&key)
                 && !state.released_run_bindings.contains_key(&key)
+                && !state.previous_owner_bindings.contains(&key)
             {
                 return Err(LocalAgentKernelError::new(
                     "tool_catalog_run_binding_not_found",
                     "当前 run 的物理 catalog 绑定已丢失，无法确认旧实例已经释放。",
+                ));
+            }
+        }
+        if self
+            .lock_generations()?
+            .previous_owner_bindings
+            .contains(&key)
+        {
+            let (attempts, active_process) = self
+                .journal
+                .run_cleanup_facts(&request.session_id, &request.run_id)
+                .map_err(|error| LocalAgentKernelError::new(error.code, error.message))?;
+            // A dead Host proves loss of in-process catalogs, not cleanup of external
+            // resources. Missing/indeterminate attempts and persistent containers
+            // require their owner's evidence; never report them released by default.
+            if active_process
+                || !self.records.run_cleanup_recorded(
+                    &request.session_id,
+                    &request.run_id,
+                    &attempts,
+                )?
+            {
+                return Err(LocalAgentKernelError::new(
+                    "run_runtime_cleanup_unconfirmed",
+                    "旧运行仍有未确认的工具执行或外部资源，重启不能代替资源清理回执。",
                 ));
             }
         }
@@ -854,19 +900,37 @@ impl LocalAgentKernel {
                 .values()
                 .any(|candidate| Arc::ptr_eq(candidate, &generation));
             let retirement = (!still_pinned).then(|| generation.catalog.retirement());
+            state.released_run_bindings.insert(
+                key.clone(),
+                ReleasedRunBinding {
+                    retirement,
+                    recovered_after_restart: false,
+                },
+            );
+        }
+        if state.previous_owner_bindings.remove(&key) {
+            // This is a new recovery receipt, not an acknowledgement from the old
+            // process. Current run-owned work was drained above before publication.
             state
                 .released_run_bindings
-                .insert(key.clone(), ReleasedRunBinding { retirement });
+                .entry(key.clone())
+                .or_insert(ReleasedRunBinding {
+                    retirement: None,
+                    recovered_after_restart: true,
+                });
         }
-        if let Some(retirement) = &state
+        let released = state
             .released_run_bindings
             .get(&key)
-            .expect("validated run binding exists")
-            .retirement
-        {
+            .expect("validated run binding exists");
+        if let Some(retirement) = &released.retirement {
             retirement.finish().map_err(catalog_error)?;
         }
-        Ok(catalog_release_reply(&request, already_released))
+        let mut reply = catalog_release_reply(&request, already_released);
+        if released.recovered_after_restart {
+            reply["recoveredAfterRestart"] = json!(true);
+        }
+        Ok(reply)
     }
 
     #[cfg(test)]
@@ -3392,6 +3456,30 @@ impl LocalToolRecordStore {
                 })
             })
             .transpose()
+    }
+
+    fn run_cleanup_recorded(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        attempts: &[(String, String)],
+    ) -> Result<bool, LocalAgentKernelError> {
+        let connection = self.connection.lock().map_err(|_| {
+            LocalAgentKernelError::new("tool_record_lock_failed", "ToolRecord Store 锁已损坏。")
+        })?;
+        let attempts = serde_json::to_string(attempts).map_err(|error| {
+            LocalAgentKernelError::new("tool_record_encode_failed", error.to_string())
+        })?;
+        connection.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM json_each(?3) a LEFT JOIN tool_records r
+               ON r.call_id=json_extract(a.value,'$[0]') AND r.attempt_id=json_extract(a.value,'$[1]')
+                 AND r.session_id=?1 AND r.run_id=?2
+               WHERE r.record_id IS NULL OR r.outcome='indeterminate')
+             AND NOT EXISTS(SELECT 1 FROM tool_records WHERE session_id=?1 AND run_id=?2
+               AND tool_name='container' AND json_extract(record_json,'$.input.action')='create'
+               AND outcome<>'denied')",
+            params![session_id,run_id,attempts], |row| row.get(0),
+        ).map_err(|error| LocalAgentKernelError::new("tool_record_read_failed", error.to_string()))
     }
 
     fn insert(&self, record: &Value) -> Result<(), LocalAgentKernelError> {
@@ -6105,6 +6193,138 @@ mod attempt_control_tests {
             assert_eq!(reply["rejection"]["input"], request.input);
             assert!(kernel.records.read(&request.call_id).unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn restart_does_not_substitute_process_exit_for_missing_cleanup_evidence() {
+        struct UnexpectedResolver;
+        impl WorkspaceResolverPort for UnexpectedResolver {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                panic!("unexpected tool execution")
+            }
+        }
+        for active_process in [false, true] {
+            let resolver: Arc<dyn WorkspaceResolverPort> = Arc::new(UnexpectedResolver);
+            let (kernel, request, catalog) = kernel_with_request(
+                resolver.clone(),
+                "fs.read",
+                json!({"workspaceId":"workspace:test","path":"fixture.txt"}),
+            );
+            let journal = kernel.journal.clone();
+            journal.append(&json!({"type":"tool.requested", "sessionId":"session:reject", "runId":"run:reject", "callId":request.call_id,
+                "payload":{"providerCallId":"provider:unfinished", "attemptId":request.attempt_id, "toolName":"fs.read", "input":request.input}})).unwrap();
+            let mut fact = if active_process {
+                json!({"type":"process.updated", "payload":{"job":{
+                "jobId":"job:unfinished", "sessionId":"session:reject", "runId":"run:reject", "callId":request.call_id,
+                "revision":1, "status":"active"}}})
+            } else {
+                json!({"type":"tool.started", "payload":{"attemptId":request.attempt_id, "startedAt":"1"}})
+            };
+            fact["sessionId"] = json!("session:reject");
+            fact["runId"] = json!("run:reject");
+            fact["callId"] = json!(request.call_id);
+            journal.append(&fact).unwrap();
+            journal.append(&json!({"type":"run.finishing","sessionId":"session:reject","runId":"run:reject","payload":{"outcome":"cancelled"}})).unwrap();
+            kernel.shutdown_plugins().unwrap();
+            drop(kernel);
+            let restored =
+                LocalAgentKernel::open(Path::new(":memory:"), journal, resolver).unwrap();
+            let error = restored
+                .release_catalog(ReleaseToolCatalogRequest::new(
+                    "session:reject",
+                    "run:reject",
+                    catalog["kernelCatalogSnapshotRef"].as_str().unwrap(),
+                ))
+                .unwrap_err();
+            assert_eq!(error.code, "run_runtime_cleanup_unconfirmed");
+            assert!(restored
+                .lock_generations()
+                .unwrap()
+                .released_run_bindings
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn restart_finishes_only_preexisting_unreleased_catalogs_without_rebinding_tools() {
+        struct UnexpectedResolver;
+        impl WorkspaceResolverPort for UnexpectedResolver {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                panic!("recovery must not execute tools")
+            }
+        }
+        let resolver: Arc<dyn WorkspaceResolverPort> = Arc::new(UnexpectedResolver);
+        let (kernel, request, catalog) = kernel_with_request(
+            resolver.clone(),
+            "fs.read",
+            json!({"workspaceId":"workspace:test", "path":"fixture.txt"}),
+        );
+        let journal = kernel.journal.clone();
+        let release = ReleaseToolCatalogRequest::new(
+            "session:reject",
+            "run:reject",
+            catalog["kernelCatalogSnapshotRef"].as_str().unwrap(),
+        );
+        // A journal fact written after this Kernel opened cannot authorize recovery.
+        let before =
+            LocalAgentKernel::open(Path::new(":memory:"), journal.clone(), resolver.clone())
+                .unwrap();
+        journal.append(&json!({"type":"run.finishing", "sessionId":"session:reject", "runId":"run:reject",
+            "payload":{"outcome":"failed", "error":{"code":"original_failure", "message":"Keep this error"}}})).unwrap();
+        assert_eq!(
+            before.release_catalog(release.clone()).unwrap_err().code,
+            "tool_catalog_run_binding_not_found"
+        );
+        drop(before);
+        kernel.shutdown_plugins().unwrap();
+        drop(kernel);
+        let restored =
+            LocalAgentKernel::open(Path::new(":memory:"), journal.clone(), resolver.clone())
+                .unwrap();
+        assert!(restored.lock_generations().unwrap().run_bindings.is_empty());
+        for (session, run, snapshot) in [
+            (
+                "session:other",
+                "run:reject",
+                release.kernel_catalog_snapshot_ref.as_str(),
+            ),
+            (
+                "session:reject",
+                "run:other",
+                release.kernel_catalog_snapshot_ref.as_str(),
+            ),
+            ("session:reject", "run:reject", "catalog:unknown"),
+        ] {
+            assert_eq!(
+                restored
+                    .release_catalog(ReleaseToolCatalogRequest::new(session, run, snapshot))
+                    .unwrap_err()
+                    .code,
+                "tool_catalog_run_binding_not_found"
+            );
+        }
+        let receipt = restored.release_catalog(release.clone()).unwrap();
+        assert_eq!(receipt["released"], true);
+        assert_eq!(receipt["recoveredAfterRestart"], true);
+        assert_eq!(receipt["alreadyReleased"], false);
+        assert_eq!(
+            restored.release_catalog(release.clone()).unwrap()["alreadyReleased"],
+            true
+        );
+        assert!(
+            restored.execute(request).is_err(),
+            "a recovery receipt must not recreate executors"
+        );
+        journal.append(&json!({"type":"run.runtime.released", "sessionId":"session:reject", "runId":"run:reject",
+            "payload":{"runRuntimeSnapshotRef":"runtime:test", "extensionGenerationRef":"extension:test",
+                "kernelCatalogSnapshotRef":release.kernel_catalog_snapshot_ref, "providerRuntimeRef":"provider:test",
+                "pluginInstanceRefs":[], "alreadyReleased":false, "recoveredAfterRestart":true}})).unwrap();
+        drop(restored);
+        let finished = LocalAgentKernel::open(Path::new(":memory:"), journal, resolver).unwrap();
+        assert_eq!(
+            finished.release_catalog(release).unwrap_err().code,
+            "tool_catalog_run_binding_not_found"
+        );
     }
 
     #[test]
