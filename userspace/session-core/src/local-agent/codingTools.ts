@@ -38,6 +38,9 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
     }
   }
   if (!descriptions.length) return;
+  if (active.has('process') && (active.has('bash') || active.has('powershell'))) rules.push(
+    '- Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.',
+  );
   if (active.has('bash') || active.has('powershell')) rules.push(
     '- Track commands through completion and check their exit status before using their outputs. Use bounded validation runs for interactive applications; keep ownership of test processes until they exit or are explicitly stopped.',
   );

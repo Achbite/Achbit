@@ -20,13 +20,5 @@ export function createProcessActivity(runId: string, sync: () => Promise<void>,
         && (job.status === 'active' || job.revision !== revisions.get(job.jobId)));
     },
     wait: signal => wait(signal),
-    blocksFollowingCalls(snapshot, call) {
-      const job = Object.values(snapshot.state.processes).find(job => job.callId === call.callId && job.status === 'active');
-      const completed = snapshot.events.findLast(event => event.type === 'tool.completed' && event.callId === call.callId);
-      const result = completed?.type === 'tool.completed' && 'output' in completed.payload.record
-        ? completed.payload.record.output as {job?: {status?: string}} | null : null;
-      const explicitWait = call.payload.toolName === 'process' && call.payload.input.action === 'wait' && result?.job?.status === 'active';
-      return Boolean(job && call.payload.toolName !== 'process' || explicitWait && pendingProcessWait(snapshot.events, runId));
-    },
   };
 }

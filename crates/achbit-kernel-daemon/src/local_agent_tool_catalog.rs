@@ -765,9 +765,9 @@ impl ToolCatalogSnapshot {
             let start_description = if process_targets.is_empty() {
                 "Manage existing commands: ".to_string()
             } else {
-                format!("Start independent long tasks with action=start so later calls can proceed. Each run admits up to {} active jobs; completed jobs release capacity. Ordinary calls retain their result dependencies. ", crate::managed_processes::MAX_ACTIVE_JOBS_PER_RUN)
+                format!("Shell commands automatically continue as managed jobs when long-running; independent sibling calls still execute. Use action=start to explicitly start background work. Each run admits up to {} active jobs; completed jobs release capacity. ", crate::managed_processes::MAX_ACTIVE_JOBS_PER_RUN)
             };
-            process.description = format!("{start_description}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Completion resumes the task automatically. Use status when a current snapshot is needed.");
+            process.description = format!("{start_description}action=wait with jobId waits at a dependency; action=cancel stops that job; action=status inspects once. Terminal results arrive automatically and resume the task; no polling or output-collection call is required. Use status only when a current snapshot is needed.");
         }
 
         if let Some(names) = &selection.kernel {
