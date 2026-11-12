@@ -112,6 +112,7 @@ run_cli_e2e() {
   python3 -I -S ./scripts/tests/managed-process-cli.py
   python3 -I -S ./scripts/tests/subagent-cli.py
   python3 -I -S ./scripts/tests/conversation-storage.py
+  python3 -I -S ./scripts/tests/large-journal-cli.py
 }
 
 # E2E scripts consume the outputs selected here; direct calls must supply these paths.

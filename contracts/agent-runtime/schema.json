@@ -1138,7 +1138,8 @@
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/Id" }
         },
-        "alreadyReleased": { "type": "boolean" }
+        "alreadyReleased": { "type": "boolean" },
+        "recoveredAfterRestart": { "const": true }
       }
     },
     "RunRuntimeReleaseFailedPayload": {

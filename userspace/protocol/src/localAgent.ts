@@ -729,6 +729,7 @@ export interface RunRuntimeReleaseReceipt {
   providerRuntimeRef: string;
   pluginInstanceRefs: string[];
   alreadyReleased: boolean;
+  recoveredAfterRestart?: true;
 }
 
 export interface InteractionOption {
@@ -2135,6 +2136,7 @@ export interface ReleaseRunRuntimeRequest {
 export interface ReleaseRunRuntimeResult {
   kernelCatalogSnapshotRef: string;
   alreadyReleased: boolean;
+  recoveredAfterRestart?: true;
 }
 
 export interface RetireToolViewsRequest {
