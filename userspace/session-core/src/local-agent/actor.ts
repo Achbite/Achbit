@@ -252,7 +252,10 @@ export class SessionActor {
           if (this.#disposed) throw new Error('session_actor_disposed');
           if (this.#loopFailure) throw this.#loopFailure;
           if (snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) return {};
-          if (inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
+          // A request can observe queued facts during tool-view preparation without
+          // consuming their input. The journal watermark is not a consumption cursor.
+          if (snapshot.state.queuedInputs.some(input => input.runId === runId && input.status === 'queued')
+            || inputAfter(snapshot.events, runId, boundary) || done?.(snapshot)) return {};
           if (now >= deadline) return { timedOut: true };
           if (Number.isFinite(deadline)) timer = setTimeout(wake, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
           await changed;
