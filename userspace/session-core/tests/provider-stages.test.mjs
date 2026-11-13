@@ -76,3 +76,46 @@ for (const owner of ['providerHosted', 'kernelAdapter', 'unavailable']) {
     });
   }
 }
+
+test('selected Skill references survive handoff message freezing without widening the stage tools', async () => {
+  const sessionId = 'session:skill-handoff', runId = 'run:skill-handoff';
+  const uri = 'plugin://selected-notes@skill', path = '/fixture/selected-notes/SKILL.md';
+  const runtime = runtimeSnapshot(runId, { tools: [tool('session.read', 'localRead'), tool('fs.read', 'workspaceRead')] });
+  runtime.selectedPlugins.plugins = [{ uri, pluginArtifactRef: 'artifact:notes', pluginInstanceRef: 'instance:notes',
+    extensionGenerationRef: runtime.extensionGenerationRef, capabilityRefs: [], skillEntryPath: path }];
+  const state = emptySessionState(sessionId);
+  const contextStart = { historyThroughSequence: 1, previousProfileId: 'profile:previous' };
+  state.contextHandoff = { ...contextStart, runId, status: 'reading' };
+  const events = [
+    { type: 'session.created', sessionId, sequence: 1,
+      payload: { displayTitle: 'Skill handoff', workspaceBindings: [workspaceBinding] } },
+    { type: 'message.committed', sessionId, sequence: 2,
+      payload: { messageId: 'message:skill-handoff', role: 'user', content: 'Continue with the selected Skill.' } },
+    { type: 'run.started', sessionId, runId, sequence: 3,
+      payload: { inputMessageId: 'message:skill-handoff', workspaceBindings: [workspaceBinding], runtimeSnapshot: runtime, contextStart } },
+  ];
+  const frozen = structuredClone(runtime);
+  const input = { sessionId, runId, runtime, events, workspaceBindings: [workspaceBinding], responseConstraint: 'normal' };
+  const first = await buildAgentProviderRequest({ ...input, providerRequestId: 'request:skill-handoff',
+    toolStage: stageForRequest(createSessionCapabilities(), runtime, state) });
+  assert.deepEqual(first.request.tools.map(item => item.name), ['session_read']);
+  const user = first.request.messages.find(message => message.role === 'user');
+  assert.ok(user.content.includes(JSON.stringify({ uri, path })), 'the selected reference must exist before its input message is frozen');
+
+  state.contextHandoff = { ...state.contextHandoff, status: 'ready' };
+  const second = await buildAgentProviderRequest({ ...input, providerRequestId: 'request:skill-work',
+    events: [...events, { type: 'context.composed', sessionId, runId, sequence: 4, payload: first.receipt }],
+    toolStage: stageForRequest(createSessionCapabilities(), runtime, state) });
+  assert.ok(second.request.tools.some(item => item.name === 'fs_read'));
+  assert.deepEqual(second.request.messages.find(message => message.role === 'user'), user,
+    'normal work retains the exact already-sent input, rather than patching its missing reference');
+  assert.deepEqual(runtime, frozen, 'reference publication grants no new tool or permission');
+
+  const withoutReader = structuredClone(runtime);
+  withoutReader.tools = withoutReader.tools.filter(item => item.name !== 'fs.read');
+  const unavailable = await buildAgentProviderRequest({ ...input, runtime: withoutReader, providerRequestId: 'request:no-file-reader',
+    events: events.map(event => event.type === 'run.started'
+      ? { ...event, payload: { ...event.payload, runtimeSnapshot: withoutReader } } : event) });
+  assert.ok(unavailable.request.messages.every(message => !message.content.includes(path)),
+    'a run with no callable file reader must not advertise mounted Skill entries');
+});
