@@ -381,20 +381,35 @@ def main() -> None:
             fixture.cli(daemon, session_id, "/reply 确认", expected=5)
             state.assert_healthy()
             pipeline_waiting = fixture.projection(daemon, session_id)
-            pipeline_approval = require_unexecuted_approval(daemon, pipeline_waiting)
-            require("set -o pipefail" in pipeline_approval["preview"]["summary"]
-                    and "external" in pipeline_approval["preview"]["effects"],
-                    "已确认 Plan 不能代替本次 Host 管道命令审批")
+            host_approvals = pipeline_waiting["pendingApprovals"]
+            require(len(host_approvals) == 2, "两条独立 Host 命令必须各自请求审批")
+            expected_commands = {
+                "set -o pipefail\n(printf 'expected failure\\n'; exit 7) | tail -1",
+                'if (exit 7); then rc=0; else rc=$?; fi\ntest "$rc" -eq 7',
+            }
+            require({item["preview"]["operation"]["arguments"]["command"] for item in host_approvals} == expected_commands,
+                    "审批未精确关联到两条原始 Host 命令")
+            require(len({item["callId"] for item in host_approvals}) == 2, "两条 Host 命令复用了调用身份")
+            for approval in host_approvals:
+                require_unexecuted_approval(daemon, {**pipeline_waiting, "pendingApproval": approval})
+                require(approval["preview"]["operation"]["arguments"]["command"] in approval["preview"]["summary"]
+                        and "external" in approval["preview"]["effects"]
+                        and approval["preview"]["approvalReviewer"] == "user",
+                        "已确认 Plan 不能代替本次 Host 命令审批")
             require(pipeline_waiting["plans"][-1]["mutationManifest"] == extension["pendingPlan"]["mutationManifest"],
                     "Host 调用审批改变了 Plan 范围")
+            first_approval = pipeline_waiting["pendingApproval"]
+            remaining_approval = next(item for item in host_approvals if item["callId"] != first_approval["callId"])
             fixture.cli(daemon, session_id, "/reply 1", expected=5)
             state.assert_healthy()
             expected_waiting = fixture.projection(daemon, session_id)
             expected_approval = require_unexecuted_approval(daemon, expected_waiting)
-            require('test "$rc" -eq 7' in expected_approval["preview"]["summary"]
-                    and "external" in expected_approval["preview"]["effects"],
-                    "前一调用审批不能覆盖下一次 Host 调用")
-            require(pipeline_approval["callId"] != expected_approval["callId"], "两条 Host 命令复用了调用身份")
+            require(len(expected_waiting["pendingApprovals"]) == 1
+                    and expected_approval["callId"] == remaining_approval["callId"]
+                    and expected_approval["approvalId"] == remaining_approval["approvalId"],
+                    "前一调用审批不能覆盖另一条并发 Host 调用")
+            require(expected_waiting["plans"][-1]["mutationManifest"] == extension["pendingPlan"]["mutationManifest"],
+                    "单次 Host 批准改变了 Plan 范围")
             require("tool-input-cli-complete" in fixture.cli(daemon, session_id, "/reply 1").stdout, "CLI 未输出完成正文")
             state.assert_healthy()
             after_extension = fixture.projection(daemon, session_id)
