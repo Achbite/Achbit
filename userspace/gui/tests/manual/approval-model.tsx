@@ -17,7 +17,10 @@ const originalFetch = window.fetch;
 window.fetch = async input => {
   const path = new URL(String(input), location.origin).pathname;
   const data = path.endsWith('/llm/profiles') ? { profiles, connections: [connection], defaultProfileId: 'model:enabled' }
-    : path.endsWith('/llm/connections') ? { connections: [], adapters: [] }
+    : path.endsWith('/llm/connections') ? { connections: [{ ...connection, authStatus: 'ready' }], adapters: [{
+      id: 'custom', name: 'Fixture adapter', billingModes: ['metered'], authMethods: ['apiKey'],
+      protocols: ['openaiCompatible'], defaultBaseUrl: connection.baseUrl, models: [],
+    }] }
     : path.endsWith('/llm/usage') ? { connections: [] } : undefined;
   if (!data) throw new Error(`Unexpected fixture request: ${path}`);
   return Response.json({ ok: true, data });
