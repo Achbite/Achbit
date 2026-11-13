@@ -1,6 +1,7 @@
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { requestReader } from './readerState';
+import { resourceFilename } from './resourceLinks';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ActivityProjection } from '@achbit/protocol';
@@ -68,7 +69,7 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
     const statistic = counts.get(file.key);
     return <div className="conversation-change-row" key={file.key}>
       <button {...identity.action('open-file', 'click', { fileKey: file.key })} type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId, { kind: 'diff', file })}>
-        <span>{file.path}</span>{statistic?.kind === 'text' ? <DiffCounts counts={statistic.counts} /> : <small>{statistic?.kind === 'binary' ? t(language, 'changes.binaryPrefix') : ''}{file.changes.length > 1 ? t(language, 'changes.count', { count: file.changes.length }) : ({ create: t(language, 'changes.create'), modify: t(language, 'changes.modify'), delete: t(language, 'changes.delete') }[file.changes[0]!.change.kind])}</small>}
+        <span>{resourceFilename(file.path)}</span>{statistic?.kind === 'text' ? <DiffCounts counts={statistic.counts} /> : <small>{statistic?.kind === 'binary' ? t(language, 'changes.binaryPrefix') : ''}{file.changes.length > 1 ? t(language, 'changes.count', { count: file.changes.length }) : ({ create: t(language, 'changes.create'), modify: t(language, 'changes.modify'), delete: t(language, 'changes.delete') }[file.changes[0]!.change.kind])}</small>}
       </button>
     </div>;
   });
@@ -107,7 +108,7 @@ function InlineFileChange({ sessionId, groupId, file }: { sessionId: string; gro
   return <div className="conversation-change-row">
     <button {...identity.action('open-file', 'click')} type="button" className="conversation-change-file" title={file.path} onClick={() => requestReader(sessionId,
       latest.after.exists ? { kind: 'workspace', workspaceId: latest.workspaceId, logicalPath: file.path } : { kind: 'diff', file })}>
-      <span>{file.path}</span>{state.preview && <DiffCounts counts={state.preview.counts} />}
+      <span>{resourceFilename(file.path)}</span>{state.preview && <DiffCounts counts={state.preview.counts} />}
     </button>
     {state.error ? <p className="conversation-inline-notice" role="alert">{state.error}</p>
       : state.binary ? <p className="conversation-inline-notice">{t(language, 'changes.binaryDescription')}</p>

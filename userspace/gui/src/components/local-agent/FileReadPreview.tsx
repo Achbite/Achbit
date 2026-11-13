@@ -3,6 +3,7 @@ import type { ConversationResourceReadResult } from '../../services/localAgentAp
 import type { UiLanguage } from '../../i18n';
 import { useConversationHost } from './ConversationHost';
 import { requestReader } from './readerState';
+import { resourceFilename } from './resourceLinks';
 
 /** Same workspace resource as the Reader; label it as current content, not a historical tool snapshot. */
 export function FileReadPreview({ sessionId, workspaceId, path, language }: {
@@ -22,7 +23,7 @@ export function FileReadPreview({ sessionId, workspaceId, path, language }: {
     <div className="conversation-change-row">
       <button type="button" className="conversation-change-file" title={path}
         onClick={() => requestReader(sessionId, { kind: 'workspace', workspaceId, logicalPath: path })}>
-        <span>{path}</span><small>{language === 'zh-CN' ? '当前文件' : 'Current file'}</small>
+        <span>{resourceFilename(path)}</span><small>{language === 'zh-CN' ? '当前文件' : 'Current file'}</small>
       </button>
       {state.error ? <p className="conversation-inline-notice" role="alert">{state.error}</p>
         : !state.result ? <p className="conversation-inline-notice" role="status">{language === 'zh-CN' ? '正在读取…' : 'Loading…'}</p>

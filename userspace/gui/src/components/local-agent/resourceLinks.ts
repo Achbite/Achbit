@@ -94,7 +94,8 @@ export async function resolveLocalTargets(
   return [...matches.values()];
 }
 
-function label(path: string): string {
+/** Display only; navigation and tool facts retain the original path. */
+export function resourceFilename(path: string): string {
   return (
     path
       .replace(/[\\/]+$/u, '')
@@ -108,7 +109,7 @@ function link(path: string): Element {
     type: 'element',
     tagName: 'a',
     properties: { href: path, title: path },
-    children: [{ type: 'text', value: target ? label(target.path) + (target.line ? `:${target.line}${target.column && target.column > 1 ? `:${target.column}` : ''}` : '') : label(path) }],
+    children: [{ type: 'text', value: target ? resourceFilename(target.path) + (target.line ? `:${target.line}${target.column && target.column > 1 ? `:${target.column}` : ''}` : '') : resourceFilename(path) }],
   };
 }
 
@@ -164,7 +165,7 @@ export function readableResourceLinks(tree: Root): Root {
   };
   const result = { ...tree, children: tree.children.flatMap(visit) };
   for (const entry of shortened) {
-    const peers = shortened.filter(({ target }) => label(target.path) === label(entry.target.path) && target.path !== entry.target.path);
+    const peers = shortened.filter(({ target }) => resourceFilename(target.path) === resourceFilename(entry.target.path) && target.path !== entry.target.path);
     if (!peers.length) continue;
     const parts = entry.target.path.replace(/\\/gu, '/').split('/').filter(Boolean);
     let count = 2;
