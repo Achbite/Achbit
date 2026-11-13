@@ -40,6 +40,8 @@ Settings switches/selections save immediately; numeric fields commit with Enter.
 
 ## Execution approval
 
+The **Review for me** preset allows network reads directly, keeps Shell execution scoped to the workspace, and delegates commands needing additional permission and external actions to the approval model. Plan settings, engineering decisions and command rules stay independent. Custom network policies can still ask, delegate review or deny. Existing saved settings are not migrated automatically. Web-tool access does not grant Shell networking or Host execution.
+
 Delegated execution review may read the current conversation and related files in its bound workspaces before deciding. It uses the existing `session.read` and `fs.read` tools, including project rules and earlier user corrections; recorded preferences help interpret the task but do not grant permission. Other sessions, write tools, desktop control and network tools are unavailable to the reviewer. A read that needs additional permission remains unexecuted and is reported as missing evidence, without recursive approval.
 
 Reviews make at most six evidence rounds, then return allow, deny or ask for the specific missing evidence. Their input budget follows the configured reviewer model's context window and output reserve. Repetitive accessibility errors are grouped with a reference to the original tool record; the complete user instructions and proposed operation are retained. A manual decision or permission change stops obsolete review work. Plan approval remains a separate decision.
@@ -62,9 +64,11 @@ Use `interaction.request` alone to ask a necessary question. `mode: continue` pe
 
 Call `agent` with `action: models` for the current operation schemas. When enabled, delegate useful independent work with enough context, scope and expected evidence; keep short or coupled work local. Use collaboration for communicating teammates and assign one writer per shared file.
 
-The fixed templates are `analysis` (read exact file references and return findings; no messaging controls) and `collaboration` (communicate with teammates). Permissions and runtime configuration inherit from the parent within each template's tool selection. The main conversation can configure templates and customize a child within its authority; ordinary members select those templates and cannot override permissions or Loop configuration.
+The built-in templates are `analysis` (read exact file references, return findings, and send questions to its task owner) and `collaboration` (also communicate with teammates). Permissions and runtime configuration inherit from the parent within each template's tool selection. Per-task tool, permission and Loop overrides require **Full configuration** in the main conversation; ordinary members select configured templates and cannot override permissions or Loop configuration.
 
-Await final results and verify them. Completed tasks release execution automatically; `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message, not authorization or a new assignment.
+Use `spawn` with `delivery: async` to overlap independent work after child startup, or `delivery: wait` when the next step depends on the child. A child can send findings or questions with `agent` → `send`, continue independent work, or use `session` → `wait` when it needs a reply. Messages interrupt result waits; final results arrive automatically at a model request boundary. Do not repeatedly query status to drive collaboration.
+
+Await final results and verify them. Completed tasks release execution automatically; the coordinator uses `assign` to give an idle retained member another task with its original Session, model and configuration. `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message to an active task, not authorization or a new assignment.
 
 Disabling delegation prevents new spawns/assignments while existing tasks may continue, communicate or be cancelled. Conversation settings saves also update future-conversation defaults, not other existing conversations. Child Plan/approval decisions belong to that child's Session.
 
