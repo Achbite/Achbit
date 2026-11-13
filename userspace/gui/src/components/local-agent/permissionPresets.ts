@@ -8,7 +8,7 @@ export const PERMISSION_PRESETS = [
   } },
   { id: 'review', label: 'agent.permission.review', help: 'agent.permission.preset.reviewHelp', patches: {
     'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'workspace',
-    'agent.permissions.networkRead': 'review', 'agent.permissions.external': 'review',
+    'agent.permissions.networkRead': 'allow', 'agent.permissions.external': 'review',
   } },
   { id: 'full', label: 'agent.permission.fullAccess', help: 'agent.permission.preset.fullHelp', patches: {
     'agent.permissions.shell': 'allow', 'agent.permissions.shellAccess': 'full',

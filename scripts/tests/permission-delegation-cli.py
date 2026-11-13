@@ -165,6 +165,143 @@ def check_mode(mode):
                 require(not thread.is_alive(), 'Provider fixture did not exit')
 
 
+class WebReadPolicyProvider(fixture.MockProviderHandler):
+    def do_GET(self):
+        self.provider_state.web_requests.append(self.path)
+        super().do_GET()
+
+    def do_POST(self):
+        state = self.provider_state
+        try:
+            body = json.loads(self.rfile.read(int(self.headers['content-length'])))
+            if self.respond_to_title(body):
+                return
+            self.send_response(200)
+            self.send_header('content-type', 'text/event-stream')
+            self.send_header('connection', 'close')
+            self.end_headers()
+            if execution_review_request(body):
+                packet = json.loads(body['messages'][1]['content'])
+                subject = packet['reviewPolicy']['subject']
+                state.review_subjects.append(subject)
+                require(packet['grant'] == 'thisCallOnly', 'Web policy widened the review grant')
+                require(packet['restrictions']['network'] == state.network_mode, 'Reviewer received stale network policy')
+                if subject == 'network':
+                    require(state.network_mode == 'review', 'Allowed Web reads unnecessarily invoked the reviewer')
+                    decision = 'allow'
+                else:
+                    require(subject == 'shell', f'Unexpected approval domain: {subject}')
+                    require(packet['reviewPolicy']['mode'] == 'review', 'Web access changed Shell review')
+                    decision = 'deny'
+                self._send_text(json.dumps({'decision': decision, 'reason':
+                    'Read the requested Web resources; do not grant Host execution or Shell networking.'}))
+                return
+            ordinal, names, results = state.inspect(body)
+            wire_names = {tool['function']['name'] for tool in body['tools']}
+            require({'web_search', 'web_fetch'} <= wire_names, 'Web tools missing from the full Loop')
+            if ordinal == 1:
+                self._send_tool_calls([
+                    ('local-read', names['read'], {'path': 'note.txt'}),
+                    ('search', 'web_search', {'query': 'fixture', 'limit': 1}),
+                    ('fetch', 'web_fetch', {'url': f'http://127.0.0.1:{self.server.server_port}/fixture-resource'}),
+                ])
+            elif ordinal == 2:
+                require(results['local-read'] == 'local-read-ok', results['local-read'])
+                require(results['search']['results'][0]['title'] == 'Fixture search result', results['search'])
+                require(results['fetch']['content'] == 'web-fetch-ok', results['fetch'])
+                self._send_tool_calls([
+                    ('shell-network', names['bash'], {'command': 'echo separate-network-gate',
+                        'requestNetworkPermission': 'Check that Web permission does not grant Shell networking.'}),
+                    ('host', names['bash'], {'command': COMMAND,
+                        'requestHostPermission': 'Check that Web permission does not grant Host execution.'}),
+                ])
+            elif ordinal == 3:
+                require(results['shell-network']['status'] == 'denied', results['shell-network'])
+                require(results['host']['status'] == 'denied', results['host'])
+                self._send_tool_calls([('repeat-search', 'web_search', {'query': 'fixture follow-up', 'limit': 1})])
+            else:
+                require(ordinal == 4, f'Unexpected Web policy request: {ordinal}')
+                require(results['repeat-search']['results'][0]['title'] == 'Fixture search result', results['repeat-search'])
+                self._send_text('web-read-policy-complete')
+        except BaseException as error:
+            state.record_failure(error)
+            self.close_connection = True
+
+
+def check_web_read_policy(network_mode='allow'):
+    """New preset and retained custom review both use the real permission owners."""
+    with tempfile.TemporaryDirectory(prefix='achbit-web-read-policy-') as directory:
+        root = Path(directory)
+        workspace = root / 'workspace'
+        workspace.mkdir()
+        (workspace / 'note.txt').write_text('local-read-ok', encoding='utf-8')
+        state = fixture.ProviderState(workspace)
+        state.network_mode, state.review_subjects, state.web_requests = network_mode, [], []
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), WebReadPolicyProvider)
+        server.provider_state = state
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        daemon = fixture.OwnedDaemon(root / 'config')
+        try:
+            configure_review(daemon, server, 'e2e-reviewer')
+            settings_file = daemon.config_root / 'config/user/local/settings/user-settings.json'
+            settings = json.loads(settings_file.read_text(encoding='utf-8'))
+            settings.update({'agent.web.search.endpointTemplate':
+                f'http://127.0.0.1:{server.server_port}/search?q={{query}}&limit={{limit}}'})
+            settings_file.write_text(json.dumps(settings), encoding='utf-8')
+            daemon.start()
+            session = fixture.create_session(daemon, workspace)['sessionId']
+            fixture.cli(daemon, session, '/permissions ' + json.dumps({
+                'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'workspace',
+                'agent.permissions.networkRead': network_mode, 'agent.permissions.external': 'review',
+            }))
+            started = time.monotonic()
+            result = fixture.cli(daemon, session,
+                'Read note.txt, search and read the Web resource, then search again. Do not execute on the Host or grant Shell networking.',
+                run_timeout_seconds=45)
+            elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+            state.assert_healthy()
+            require('web-read-policy-complete' in result.stdout, result.stdout)
+            done = fixture.projection(daemon, session)
+            require(done['run']['status'] == 'completed' and not done['pendingApproval'], 'Web policy task did not settle')
+            require(not done['shellAuthorizations'], 'Web read policy left an execution grant')
+            require(done['effectivePermissions']['agent.permissions.workspaceMutation'] == 'plan', 'Preset changed Plan policy')
+            require(not (workspace / 'approved.txt').exists(), 'Web permission authorized the Host write')
+            require((workspace / 'note.txt').read_text(encoding='utf-8') == 'local-read-ok', 'Read changed the workspace')
+            events = stored_events(daemon, session)
+            expected_network_reviews = 3 if network_mode == 'review' else 0
+            require(state.review_subjects.count('network') == expected_network_reviews, state.review_subjects)
+            require(state.review_subjects.count('shell') == 2, state.review_subjects)
+            decisions = [payload for kind, payload in events if kind == 'approval.resolved']
+            require(len(decisions) == expected_network_reviews + 2, decisions)
+            require(sum(item['decision'] == 'deny' for item in decisions) == 2, decisions)
+            require(all(item['source'] == 'agent' for item in decisions), 'Unexpected manual approval')
+            records = [payload['record'] for kind, payload in events if kind == 'tool.completed']
+            web_records = [record for record in records if record['toolName'] in ('web.search', 'web.fetch')]
+            require(len(web_records) == 3 and all(record['outcome'] == 'completed' for record in web_records), web_records)
+            require(len(state.web_requests) == 3, 'Web effects did not occur exactly once per call')
+            require(sum(kind == 'run.runtime.released' for kind, _ in events) == 1, 'Web policy runtime was not released')
+            report = dict(networkMode=network_mode, webReads=3, webReviews=expected_network_reviews,
+                shellDenials=2, mainRequests=len(state.requests), reviewRequests=len(state.review_subjects),
+                elapsedMs=elapsed_ms, runTimings=done.get('runTimings'), provider='deterministic fixture')
+            daemon.shutdown()
+            report['cleanupComplete'] = True
+            print('[permission-delegation-cli] PASS: ' + json.dumps(report))
+            return report
+        except BaseException:
+            print(daemon.log_tail())
+            state.assert_healthy()
+            raise
+        finally:
+            try:
+                daemon.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
+                require(not thread.is_alive(), 'Web policy Provider fixture did not exit')
+
+
 class ReadScopeProvider(fixture.MockProviderHandler):
     """Fixed operations; the real Kernel decides whether each needs a review."""
     def do_POST(self):
@@ -791,6 +928,8 @@ def check_plan_mode(mode, verdict='allow', *, delegate_pending=False):
 
 
 if __name__ == '__main__':
+    for network_mode in ('review', 'allow'):
+        check_web_read_policy(network_mode)
     for plan_mode in ('plan', 'review', 'allow'):
         check_plan_mode(plan_mode)
     check_plan_mode('review', 'deny')

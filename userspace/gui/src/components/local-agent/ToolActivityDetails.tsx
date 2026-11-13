@@ -15,6 +15,7 @@ import { FileReadPreview } from './FileReadPreview';
 import { changedFiles } from './fileChangeSummary';
 import { useConversationSessionId } from './ConversationSessionScope';
 import { requestReader } from './readerState';
+import { resourceFilename } from './resourceLinks';
 import { useConversationRowState } from './ConversationVirtualRow';
 import { ComputerActivity, computerActivitySummary } from './ComputerActivity';
 
@@ -290,7 +291,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
             : { kind: 'diff', file: file! });
         }}>
           <span className="local-agent__tool-entry-icon"><AchbitShellIcon name={readFile ? 'artifact' : 'compose'} /></span>
-          <strong>{t(language, readFile ? 'agent.tool.activity.readPath' : tool?.operation === 'fs.delete' ? 'agent.tool.activity.deletedPath' : 'agent.tool.activity.editedPath', { path: '' })}<span>{filePath.split('/').at(-1)}</span></strong>
+          <strong>{t(language, readFile ? 'agent.tool.activity.readPath' : tool?.operation === 'fs.delete' ? 'agent.tool.activity.deletedPath' : 'agent.tool.activity.editedPath', { path: '' })}<span>{resourceFilename(filePath)}</span></strong>
         </button>
         <button {...identity.action('toggle', 'click')} type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`tool:${activity.activityId}`} aria-label={toolActivitySummary(activity, language)} aria-expanded={expanded} onClick={toggleExpanded}>
           <span className="local-agent__tool-entry-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>

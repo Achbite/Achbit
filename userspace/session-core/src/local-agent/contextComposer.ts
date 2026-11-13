@@ -154,7 +154,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     const initial = inputRuntimes.get(event.payload.messageId);
     const selected = initial?.selectedPlugins.plugins ?? input.runtime.selectedPlugins.plugins.filter(plugin =>
       event.payload.pluginSelections?.some(selection => selection.uri === plugin.uri));
-    const entries = mountedSkillEntries(selected, runtimeTools);
+    // Freeze selected locations with their input even when handoff temporarily
+    // exposes only session.read. The active stage still owns callable tools.
+    const entries = mountedSkillEntries(selected, initial?.tools ?? input.runtime.tools);
     if (!entries.length) continue;
     const contributionId = `message:${event.payload.messageId}`;
     resourceGuidance.set(contributionId, [

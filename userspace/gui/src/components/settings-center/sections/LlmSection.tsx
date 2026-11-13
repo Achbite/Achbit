@@ -181,8 +181,10 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
       setPage({ kind: 'list' });
       requestAnimationFrame(() => returnInteractionFocus({ ...origin, target: addButton.current }, interaction?.keyboard ?? true));
     };
-    document.addEventListener('keydown', escape, true);
-    return () => document.removeEventListener('keydown', escape, true);
+    // Inner editors own Escape first (for example, cancelling a number draft).
+    // Handle navigation only after their React handlers have had a chance to stop it.
+    document.addEventListener('keydown', escape);
+    return () => document.removeEventListener('keydown', escape);
   }, [active, page.kind, interaction]);
   const refresh = useCallback(async (id?: string) => {
     const [connectionsResult, profilesResult] = await Promise.all([getModelConnections(), getLlmProfiles()]);

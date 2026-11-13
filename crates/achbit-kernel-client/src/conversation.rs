@@ -322,6 +322,7 @@ pub struct SessionProjection {
     pub pending_plan: Option<PendingPlanProjection>,
     pub todo_list: Option<TodoListProjection>,
     pub context_usage: Option<ContextUsageProjection>,
+    pub context_handoff: Option<ContextHandoffProjection>,
     pub context_compositions: Vec<ContextCompositionProjection>,
     pub token_usage: TokenUsageProjection,
     pub total_token_usage: TokenUsageProjection,
@@ -342,6 +343,16 @@ pub struct SessionProjection {
     pub agent_tasks: Option<Vec<AgentTaskProjection>>,
     pub agent_children: Option<Vec<AgentChildProjection>>,
     pub pending_agent_decisions: Option<Vec<PendingAgentDecision>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextHandoffProjection {
+    pub run_id: String,
+    pub history_through_sequence: u64,
+    pub previous_profile_id: String,
+    pub profile_id: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -609,6 +620,15 @@ impl SessionProjection {
                 })
         }) {
             return Err("shared Provider attempt projection is invalid".into());
+        }
+        if self.context_handoff.as_ref().is_some_and(|handoff| {
+            handoff.run_id.is_empty()
+                || handoff.history_through_sequence == 0
+                || handoff.previous_profile_id.is_empty()
+                || handoff.profile_id.is_empty()
+                || !matches!(handoff.status.as_str(), "reading" | "ready")
+        }) {
+            return Err("shared model context handoff projection is invalid".into());
         }
         if self.run_timings.iter().any(|timing| {
             timing.run_id.is_empty()
@@ -3016,6 +3036,46 @@ mod tests {
         assert!(serde_json::from_value::<SessionProjection>(value).is_err());
         let missing: SessionProjection = serde_json::from_value(projection_value()).unwrap();
         assert!(missing.subagent_settings.is_none());
+    }
+
+    #[test]
+    fn context_handoff_decodes_the_shared_contract_without_ignoring_invalid_facts() {
+        let missing: SessionProjection = serde_json::from_value(projection_value()).unwrap();
+        assert!(missing.context_handoff.is_none());
+        let mut value = projection_value();
+        for status in ["reading", "ready"] {
+            value["contextHandoff"] = json!({
+                "runId":"run:handoff", "historyThroughSequence":1,
+                "previousProfileId":"profile:previous", "profileId":"profile:current", "status":status
+            });
+            let projection: SessionProjection = serde_json::from_value(value.clone()).unwrap();
+            projection.validate().unwrap();
+            let handoff = projection.context_handoff.unwrap();
+            assert_eq!(handoff.run_id, "run:handoff");
+            assert_eq!(handoff.history_through_sequence, 1);
+            assert_eq!(handoff.previous_profile_id, "profile:previous");
+            assert_eq!(handoff.profile_id, "profile:current");
+            assert_eq!(handoff.status, status);
+        }
+        for (field, invalid) in [
+            ("historyThroughSequence", json!(0)),
+            ("status", json!("unknown")),
+        ] {
+            let mut invalid_value = value.clone();
+            invalid_value["contextHandoff"][field] = invalid;
+            assert!(serde_json::from_value::<SessionProjection>(invalid_value)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+        let mut incomplete = value.clone();
+        incomplete["contextHandoff"]
+            .as_object_mut()
+            .unwrap()
+            .remove("profileId");
+        assert!(serde_json::from_value::<SessionProjection>(incomplete).is_err());
+        value["contextHandoff"]["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<SessionProjection>(value).is_err());
     }
 
     #[test]

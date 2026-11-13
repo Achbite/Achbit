@@ -161,7 +161,7 @@
 .settings-appearance__body > .settings-appearance__setting { display:flex; align-items:center; justify-content:space-between; gap:20px; min-height:var(--ac-settings-row-height,52px); padding:10px 0; border:0; }
 .settings-appearance__header { display:flex; align-items:center; gap:12px; min-width:0; }
 .settings-appearance__header .settings-field__title-row { margin:0; }
-.settings-theme-grid, .settings-accent-options { display:flex; align-items:center; gap:10px; }
+.settings-theme-grid, .settings-accent-options { display:flex; flex-wrap:wrap; align-items:center; gap:10px; max-width:100%; }
 .settings-theme-card, .settings-accent-option { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:var(--ac-control-size,30px); padding:4px 7px; border:0; border-radius:var(--ac-radius-control); background:transparent; color:var(--ac-muted); cursor:pointer; font:inherit; font-size:var(--ac-font-caption); }
 .settings-theme-card:hover, .settings-accent-option:hover { background:var(--ac-surface-hover); }
 .settings-theme-card[aria-pressed='true'], .settings-accent-option[aria-pressed='true'] { color:var(--ac-foreground); font-weight:var(--ac-weight-medium); }
@@ -201,6 +201,7 @@
   padding: 15px 16px;
   border-bottom: 1px solid var(--line-soft);
   vertical-align: middle;
+  overflow-wrap: anywhere;
 }
 
 .settings-kv tr:last-child td {
@@ -368,7 +369,7 @@
   }
 
   .settings-kv td:last-child {
-    width: 200px;
+    width: 50%;
   }
 }
 
@@ -382,10 +383,14 @@
 .settings-field--multiline { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .settings-field--multiline .settings-field__control { align-items: flex-end; }
 .settings-field--multiline .settings-field__textarea { width: 100%; }
-.settings-button { flex-shrink: 0; min-height: 30px; padding: 5px 12px; border: 1px solid var(--ac-border); border-radius: 7px; background: var(--ac-surface); color: var(--ac-foreground); font: inherit; font-size: calc(12px * var(--ac-ui-font-scale, 1)); cursor: pointer; }
+.settings-button { flex-shrink: 0; max-width: 100%; overflow-wrap: anywhere; min-height: 30px; padding: 5px 12px; border: 1px solid var(--ac-border); border-radius: 7px; background: var(--ac-surface); color: var(--ac-foreground); font: inherit; font-size: calc(12px * var(--ac-ui-font-scale, 1)); cursor: pointer; }
 .settings-button:hover:not(:disabled) { background: var(--ac-surface-hover); }
 .settings-button:disabled { opacity: 0.45; cursor: default; }
-.settings-actions { display: flex; gap: 8px; padding: 12px 0; }
+.settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; }
+/* Feedback stays below the complete action group, including after a status change. */
+.settings-runtime-card .settings-card__body { display: grid; gap: 12px; }
+.settings-runtime-card .settings-actions { padding: 0; }
+.settings-runtime-card .settings-card__body > :is([role="status"], .settings-error) { margin: 0; }
 .settings-plugin-empty { color: var(--ac-muted, var(--text-muted)); font-size: calc(12px * var(--ac-ui-font-scale, 1)); margin: 12px 0; }
 .settings-button--primary { background: var(--ac-control-background); color: var(--ac-control-foreground); border-color: var(--ac-control-border); font-weight: 600; }
 .settings-button--primary:hover:not(:disabled) { background: var(--ac-surface-hover); }
@@ -447,7 +452,7 @@
 
 /* Keep editing controls compact while making drafts and search results readable. */
 .settings-field__control { flex-wrap: wrap; }
-.settings-field__edit-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
+.settings-field__edit-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
 .settings-field__control > .settings-error { flex-basis: 100%; margin: 0; }
 .settings-field--multiline .settings-field__control { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; justify-items: stretch; width: 100%; }
 .settings-field--multiline .settings-field__textarea { box-sizing: border-box; min-height: 110px; max-height: 320px; resize: vertical; }
@@ -479,14 +484,16 @@
 .settings-palette__preview strong { font-weight: 560; }
 .settings-palette__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; }
 .settings-palette__field { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--ac-border); font-size: calc(12px * var(--ac-ui-font-scale, 1)); }
-.settings-palette__color-control { display: flex; align-items: center; gap: 7px; border: 1px solid var(--ac-border); border-radius: 6px; background: var(--ac-surface-subtle); padding: 3px 6px; }
+.settings-palette__field > span { min-width: 0; overflow-wrap: anywhere; }
+.settings-palette__color-control { display: flex; flex-shrink: 0; align-items: center; gap: 7px; border: 1px solid var(--ac-border); border-radius: 6px; background: var(--ac-surface-subtle); padding: 3px 6px; }
 .settings-palette__color-control input[type='color'] { appearance: none; -webkit-appearance: none; display: block; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; overflow: hidden; background: transparent; cursor: pointer; }
 .settings-palette__color-control input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
 .settings-palette__color-control input[type='color']::-webkit-color-swatch { border: 1px solid var(--ac-border-strong); border-radius: 50%; }
 .settings-palette__color-control input[type='text'] { width: 86px; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--ac-foreground); font: calc(12px * var(--ac-ui-font-scale, 1))/22px var(--ac-font-mono); }
 .settings-palette__color-control:has(input[aria-invalid='true']) { border-color: var(--ac-danger); }
-.settings-palette__actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.settings-palette__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 @media (max-width: 860px) { .settings-palette__fields { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 620px) { .settings-palette__fields { grid-template-columns: minmax(0, 1fr); } }
 
 /* Reviewed settings hierarchy: spacing between groups, no per-row rules. */
 .settings-body { padding: 34px 44px 56px; background: var(--ac-surface); }

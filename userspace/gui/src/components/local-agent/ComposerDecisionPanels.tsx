@@ -118,21 +118,43 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const patchSetting = useSettingsStore(state => state.patchUserSetting);
   const [ruleDecision, setRuleDecision] = useState<'allow' | 'ask' | 'deny'>('allow');
   const [ruleSaved, setRuleSaved] = useState(false);
+  const [ruleSaving, setRuleSaving] = useState(false);
+  const pendingRuleSave = useRef<symbol | null>(null);
   const [ruleError, setRuleError] = useState<string | null>(null);
   const reviewing = isAutomaticApproval(pendingApproval, projection?.run);
   const reviewingPlan = isAutomaticPlanReview(pendingPlan, projection?.effectivePermissions);
-  useLayoutEffect(() => { setRuleSaved(false); setRuleError(null); }, [pendingApproval?.approvalId]);
+  useLayoutEffect(() => {
+    pendingRuleSave.current = null;
+    setRuleSaved(false); setRuleSaving(false); setRuleError(null);
+    return () => { pendingRuleSave.current = null; };
+  }, [projection?.sessionId, pendingApproval?.runId, pendingApproval?.approvalId]);
   const saveRule = async () => {
-    if (!pendingApproval?.preview.authorizationContext) return;
+    if (!pendingApproval?.preview.authorizationContext || pendingRuleSave.current) return;
+    const sessionId = projection?.sessionId;
+    const operation = Symbol('save-rule');
+    pendingRuleSave.current = operation;
+    setRuleSaving(true); setRuleError(null);
+    // Child decisions already supply a Session-bound callback. The main store's
+    // callback selects at call time, so never invoke it after navigation away.
+    const stillCurrent = () => pendingRuleSave.current === operation
+      && (Boolean(onSetPermissions) || useLocalAgentStore.getState().sessionId === sessionId);
     try {
       const rules = decodeShellCommandRules(savedRules);
       const context = pendingApproval.preview.authorizationContext;
       const next = JSON.stringify([...rules.filter(rule => JSON.stringify(rule.context) !== JSON.stringify(context)), { decision: ruleDecision, context }]);
       const saved = await patchSetting('agent.permissions.commandRules', next);
       if (!saved) throw new Error(useSettingsStore.getState().errorMessage ?? t(language, 'settings.common.saveFailed'));
+      if (!stillCurrent()) return;
       await setPermissions({ 'agent.permissions.commandRules': next });
-      setRuleSaved(true);
-    } catch (error) { setRuleError(error instanceof Error ? error.message : String(error)); }
+      if (stillCurrent()) setRuleSaved(true);
+    } catch (error) {
+      if (stillCurrent()) setRuleError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (pendingRuleSave.current === operation) {
+        pendingRuleSave.current = null;
+        setRuleSaving(false);
+      }
+    }
   };
   useLayoutEffect(() => {
     // A native Reader WebView can own focus while this document still reports body.
@@ -235,10 +257,10 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
               {sessionBrowser && <pre className="local-agent__decision-command"><code>{pendingApproval.preview.summary}</code></pre>}
               {runCommand && <p>{t(language, 'agent.permission.grantHelp')}</p>}
               {runCommand && <div className="local-agent__permission-save-rule">
-                <select {...identity.action('rule-decision', 'select')} aria-label={t(language, 'settings.commandRules.title')} value={ruleDecision} onChange={event => setRuleDecision(event.target.value as 'allow' | 'ask' | 'deny')}>
+                <select {...identity.action('rule-decision', 'select')} aria-label={t(language, 'settings.commandRules.title')} disabled={ruleSaving} value={ruleDecision} onChange={event => setRuleDecision(event.target.value as 'allow' | 'ask' | 'deny')}>
                   {(['allow', 'ask', 'deny'] as const).map(mode => <option key={mode} value={mode}>{t(language, `agent.permission.${mode}`)}</option>)}
                 </select>
-                <button {...identity.action('save-rule', 'click')} type="button" disabled={submitting || reviewing || ruleSaved} onClick={() => void saveRule()}>{t(language, ruleSaved ? 'agent.permission.ruleSaved' : 'agent.permission.saveRule')}</button>
+                <button {...identity.action('save-rule', 'click')} type="button" disabled={submitting || reviewing || ruleSaving || ruleSaved} onClick={() => void saveRule()}>{t(language, ruleSaved ? 'agent.permission.ruleSaved' : 'agent.permission.saveRule')}</button>
                 {ruleError && <p role="alert">{ruleError}</p>}
               </div>}
 

@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { productUpdateSnapshot, subscribeProductUpdates, requestProductUpdate, productUpdateConfirmation, respondProductUpdate } from '../../services/productUpdates';
@@ -16,6 +16,7 @@ export function ProductUpdateNotice() {
   const phase = confirmation ? 'confirming' : update.phase;
   const automatic = useSettingsStore(state => state.effectiveSettings['gui.autoUpdate'] === true);
   const [retryError, setRetryError] = useState<string | null>(null);
+  useEffect(() => setRetryError(null), [update]);
   if (!['downloading', 'waiting', 'confirming', 'preparing', 'installing', 'error'].includes(phase)) return null;
   const label = ['preparing', 'installing'].includes(phase) ? 'installing'
     : phase === 'waiting' && !automatic ? 'ready' : phase;
@@ -30,11 +31,13 @@ export function ProductUpdateNotice() {
   return <><div {...identity.part('notice')} className="product-update-notice" role="status" data-product-update={phase}>
     {['waiting', 'error'].includes(phase) ? <button type="button" className="product-update-notice__icon"
       title={[description, error, action].filter(Boolean).join('\n')}
-      aria-label={`${description}. ${action}`}
+      aria-label={[description, error, action].filter(Boolean).join('. ')}
       {...identity.action('install', 'click')} onClick={() => {
         setRetryError(null);
-        void requestProductUpdate().catch(reason => setRetryError(String(reason)));
-      }}><AchbitShellIcon name="download" /></button>
+        void requestProductUpdate().catch(reason => {
+          if (productUpdateSnapshot() === update) setRetryError(String(reason));
+        });
+      }}><AchbitShellIcon name={phase === 'error' ? 'warning' : 'refresh'} /></button>
       : <span className="product-update-notice__icon" tabIndex={0} title={description} aria-label={description}>
         {update.phase === 'downloading' && <svg className="product-update-notice__progress"
           viewBox="0 0 28 28" role="progressbar" aria-label={description}

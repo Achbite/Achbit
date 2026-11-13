@@ -1,6 +1,6 @@
 import CommandRuleSettings from './CommandRuleSettings';
 import { requestInterfaceReload } from '../../../services/interfaceReload';
-import React, { useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { productUpdateSnapshot, subscribeProductUpdates, requestProductUpdate, productUpdateConfirmation } from '../../../services/productUpdates';
 import type { UserSettingValue } from '@achbit/protocol';
 import { normalizeUiLanguage, t } from '../../../i18n';
@@ -98,6 +98,7 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   const confirmation = useSyncExternalStore(subscribeProductUpdates, productUpdateConfirmation, productUpdateConfirmation);
   const updatePhase = confirmation ? 'confirming' : update.phase;
   const [updateError, setUpdateError] = useState<string | null>(null);
+  useEffect(() => setUpdateError(null), [update]);
   const effectiveSettings = useSettingsStore((state) => state.effectiveSettings);
   const loading = useSettingsStore((state) => state.loading);
   const errorMessage = useSettingsStore((state) => state.errorMessage);
@@ -159,19 +160,23 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
             </tbody>
           </table>
           <div className="settings-card__body">
-            {update.phase !== 'disabled' && <button type="button" className="settings-button"
-              disabled={updateBusy}
-              onClick={() => {
-                setUpdateError(null);
-                void requestProductUpdate().catch(reason => setUpdateError(String(reason)));
-              }}>
-              {t(language, `productUpdate.${updateAction}`, { version: update.version ?? '' })}
-            </button>}
+            <div className="settings-actions">
+              {update.phase !== 'disabled' && <button type="button" className="settings-button"
+                disabled={updateBusy}
+                onClick={() => {
+                  setUpdateError(null);
+                  void requestProductUpdate().catch(reason => {
+                    if (productUpdateSnapshot() === update) setUpdateError(String(reason));
+                  });
+                }}>
+                {t(language, `productUpdate.${updateAction}`, { version: update.version ?? '' })}
+              </button>}
+              <button type="button" className="settings-button" onClick={() => requestInterfaceReload()}>
+                {language === 'zh-CN' ? '重新加载界面' : 'Reload interface'}
+              </button>
+            </div>
             {update.phase === 'current' && <p role="status">{t(language, 'productUpdate.current')}</p>}
             {(updateError || update.error) && <div className="settings-error" role="alert">{updateError || update.error}</div>}
-            <button type="button" className="settings-button" onClick={() => requestInterfaceReload()}>
-              {language === 'zh-CN' ? '重新加载界面' : 'Reload interface'}
-            </button>
           </div>
         </div>
       )}

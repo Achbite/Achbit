@@ -689,7 +689,7 @@
     "agent.permission.custom": "Custom",
     "agent.permission.details": "Custom permissions",
     "agent.permission.preset.askHelp": "Ask you when additional permission is needed.",
-    "agent.permission.preset.reviewHelp": "Let the approval model review operations and ask you when uncertain.",
+    "agent.permission.preset.reviewHelp": "Allow web reads directly. Review commands that need extra permission and external actions; ask you when uncertain.",
     "agent.permission.preset.fullHelp": "Allow execution, network reads and external actions with full execution scope. Plan settings, engineering decisions and command rules stay unchanged.",
     "agent.permission.workspaceRead": "Workspace read",
     "agent.permission.workspaceReadAllowed": "Allowed when bound",

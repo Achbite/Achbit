@@ -73,7 +73,9 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
   for (const event of events) window.addEventListener(event, activity, true);
   window.addEventListener('compositionstart', compositionStart, true);
   window.addEventListener('compositionend', compositionEnd, true);
+  let statusEvents = 0;
   const stopStatus = await window.__TAURI__.event.listen<ProductUpdateStatus>('achbit:product-update', event => {
+    statusEvents++;
     publish(event.payload);
     if (!['preparing', 'installing'].includes(event.payload.phase)) thaw();
   });
@@ -115,7 +117,10 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
       void invoke('achbit_update_prepare_response', { nonce: event.payload.nonce, storage: null }).catch(console.error);
     });
   });
-  publish(await invoke<ProductUpdateStatus>('achbit_update_status'));
+  const beforeStatusRead = statusEvents;
+  const initialStatus = await invoke<ProductUpdateStatus>('achbit_update_status');
+  // An event arriving during the IPC read is newer than its initial snapshot.
+  if (statusEvents === beforeStatusRead) publish(initialStatus);
   let configured: boolean | undefined;
   let configuration = Promise.resolve();
   const configure = () => {

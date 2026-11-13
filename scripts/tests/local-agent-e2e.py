@@ -43,6 +43,16 @@ FIRST_PARTY_PLUGIN_URIS = set(FIRST_PARTY_TOOL_OWNERS.values())
 MCP_SERVER = fixture.ROOT / "fixtures" / "skill-mcp-smoke" / "mcp" / "mcp-text-tools" / "server.py"
 
 
+def reference_list(text: str, marker: str) -> list[dict[str, Any]]:
+    """Read the named contribution without assuming it is the message's last line."""
+    _, found, tail = text.partition(marker)
+    fixture.require(bool(found), f"Provider 消息缺少引用片段：{marker}")
+    value, _ = json.JSONDecoder().raw_decode(tail.lstrip())
+    fixture.require(isinstance(value, list) and all(isinstance(item, dict) for item in value),
+                    f"Provider 引用片段不是对象数组：{marker}")
+    return value
+
+
 class ProviderState:
     """Routes deterministic fixture responses by request order, never by prompt text."""
 
@@ -89,6 +99,9 @@ class ProviderState:
         expected_model = "mock-main" if ordinal <= 2 else "mock-main-next"
         fixture.require(body.get("model") == expected_model,
                         f"Provider 请求 {ordinal} 未保留当前 run 的模型绑定：{body.get('model')}")
+        if ordinal == 3:
+            fixture.require(set(tools_by_name) == {"session.read"}, "模型接手阶段必须只暴露历史读取工具")
+            return {"history": tools_by_name["session.read"]["wireName"]}
         wire_name = None
         if ordinal == 2:
             fixture.require(not any(name.startswith("mcp.") for name in tools_by_name),
@@ -132,7 +145,7 @@ class ProviderState:
                 and '"path":"e2e-note.txt"' in fixture.message_text(message.get("content"))
             ]
             fixture.require(len(attachment_messages) == 1, "文件引用逻辑路径未唯一进入首轮用户消息")
-            references = json.loads(attachment_messages[0].rsplit("\n", 1)[-1])
+            references = reference_list(attachment_messages[0], "User-attached resources.\n")
             fixture.require(isinstance(references, list) and len(references) == 1, "Provider 文件引用必须唯一")
             attachment_reference = references[0]
             fixture.require(attachment_reference.get("mediaType") == "text/plain", "文件引用 mediaType 未进入首轮请求")
@@ -173,15 +186,18 @@ class ProviderState:
                 any(PDF_CONTENT in content for content in results.values()),
                 "第一轮 pdf.read 未从 Kernel prepared workspace binding 提取正文",
             )
-        elif ordinal == 3:
+        elif ordinal == 4:
             fixture.require(LONG_INPUT not in joined, "长文本仍被整篇内联到 Provider 请求")
             fixture.require('"path":"user-input.txt"' in joined, "长文本资源引用未进入当前输入")
-            fixture.require(GENERATION_TWO in joined, "下一 run 丢失上一轮 Skill 读取结果")
+            handoff = json.loads(results.get("provider-call-handoff", "null"))
+            fixture.require(isinstance(handoff, dict) and handoff.get("view") == "summary"
+                            and handoff.get("summary", {}).get("lastAssistantMessage", {}).get("content") == "round-one-complete",
+                            "下一模型没有收到已完成上一轮工作的历史摘要")
             fixture.require(GENERATION_ONE not in joined, "下一 run 仍暴露旧 Skill generation")
             fixture.require(wire_name != self.old_wire_name(), "下一 run 未取得新的 MCP wire tool")
             with self._lock:
                 self._new_wire_name = wire_name
-        elif ordinal == 4:
+        elif ordinal == 5:
             fixture.require(GENERATION_TWO in results.get("provider-call-skill-two", ""), "第二轮显式读取未返回当前 Skill 正文")
             fixture.require(GENERATION_ONE not in joined, "第二轮 continuation 混入旧 Skill snapshot")
             fixture.require(wire_name == self.new_wire_name(), "第二轮 continuation 的 MCP 目录漂移")
@@ -264,10 +280,13 @@ class ProviderState:
             for item in body["tools"]
         ]
         fixture.require(provider_wire_names == wire_names, "Provider 请求的工具目录与当前 context receipt 不一致")
-        fixture.require(
-            REQUIRED_CORE_TOOLS.issubset(tool["canonicalName"] for tool in receipt_tools if tool.get("origin") == "coreBuiltin"),
-            "Provider 缺少本场景需要的基础工具",
-        )
+        if ordinal == 3:
+            fixture.require(set(tools_by_name) == {"session.read"}, "接手请求越过了只读历史阶段")
+        else:
+            fixture.require(
+                REQUIRED_CORE_TOOLS.issubset(tool["canonicalName"] for tool in receipt_tools if tool.get("origin") == "coreBuiltin"),
+                "Provider 缺少本场景需要的基础工具",
+            )
         return tools_by_name
 
     def first_started(self) -> bool:
@@ -323,11 +342,12 @@ class MockProviderHandler(fixture.MockProviderHandler):
                 return
             ordinal = self.provider_state.register(body)
             wire_names = self.provider_state.inspect(ordinal, body)
-            if ordinal in (1, 3):
-                read = next(tool["function"] for tool in body["tools"] if tool["function"]["name"] == wire_names["read"])
-                start = read["description"].find("[{")
-                fixture.require(start >= 0, "读取工具没有给出 Skill 文件引用")
-                entries, _ = json.JSONDecoder().raw_decode(read["description"][start:])
+            if ordinal in (1, 4):
+                marker = "Selected Skill files (read on demand): "
+                skill_messages = [fixture.message_text(message.get("content")) for message in reversed(body["messages"])
+                                  if message.get("role") == "user" and marker in fixture.message_text(message.get("content"))]
+                fixture.require(bool(skill_messages), "当前用户消息没有给出按需 Skill 文件引用")
+                entries = reference_list(skill_messages[0], marker)
                 fixture.require(len(entries) == 1 and entries[0]["uri"].endswith("@skill")
                                 and Path(entries[0]["path"]).name == "SKILL.md", "缺少已选 Skill 正文引用")
                 skill_entry = entries[0]
@@ -370,6 +390,13 @@ class MockProviderHandler(fixture.MockProviderHandler):
             elif ordinal == 2:
                 self._send_text("round-one-complete")
             elif ordinal == 3:
+                reader = next(tool["function"] for tool in body["tools"] if tool["function"]["name"] == wire_names["history"])
+                session_id = reader["parameters"]["properties"]["sessionId"]["const"]
+                fixture.require(session_id == self.provider_state._session_id, "接手读取没有绑定当前 Session")
+                self._send_tool_calls([("provider-call-handoff", wire_names["history"], {
+                    "sessionId": session_id, "view": "summary",
+                })])
+            elif ordinal == 4:
                 self._send_tool_calls([
                     ("provider-call-two", wire_names["reverse"], {"text": "beta"}),
                     ("provider-call-search-two", wire_names["search"], {
@@ -383,7 +410,7 @@ class MockProviderHandler(fixture.MockProviderHandler):
                         "workspace": "primary", "path": skill_entry["path"],
                     }),
                 ])
-            elif ordinal == 4:
+            elif ordinal == 5:
                 self._send_text("round-two-complete")
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -637,17 +664,17 @@ def assert_projection_flow(value: dict[str, Any]) -> None:
         if activity.get("kind") == "tool" and activity.get("status") == "completed"
     ]
     fixture.require(
-        len(completed_tools) == 10,
-        "两轮附件/Skill 读取/MCP/PDF/web 调用未形成十个 completed activity",
+        len(completed_tools) == 11,
+        "两轮十个业务工具调用与一次接手读取未形成十一个 completed activity",
     )
 
     usage = value.get("tokenUsage") or {}
-    fixture.require(usage.get("providerCallCount") == 4, "Provider 调用聚合错误")
-    fixture.require(usage.get("reportedCallCount") == 4, "缓存报告调用聚合错误")
-    fixture.require(usage.get("inputTokens") == 400, "输入 token 聚合错误")
-    fixture.require(usage.get("outputTokens") == 40, "输出 token 聚合错误")
-    fixture.require(usage.get("cacheReadInputTokens") == 160, "缓存读取 token 聚合错误")
-    fixture.require(usage.get("cacheMissInputTokens") == 240, "缓存未命中 token 聚合错误")
+    fixture.require(usage.get("providerCallCount") == 5, "四次业务请求加一次接手请求的聚合错误")
+    fixture.require(usage.get("reportedCallCount") == 5, "缓存报告调用聚合错误")
+    fixture.require(usage.get("inputTokens") == 500, "输入 token 聚合错误")
+    fixture.require(usage.get("outputTokens") == 50, "输出 token 聚合错误")
+    fixture.require(usage.get("cacheReadInputTokens") == 200, "缓存读取 token 聚合错误")
+    fixture.require(usage.get("cacheMissInputTokens") == 300, "缓存未命中 token 聚合错误")
     fixture.require(usage.get("cacheAvailable") is True, "缓存事实未标记 available")
     fixture.require(usage.get("cacheComplete") is True, "缓存事实未标记 complete")
     ratio = usage.get("cacheHitRatio")
@@ -710,7 +737,7 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
             "WHERE session_id=? ORDER BY completed_at, call_id",
             (session_id,),
         ).fetchall()
-    fixture.require(len(record_rows) == 10, "两轮链路没有十个附件/Skill 读取/MCP/PDF/web ToolRecord")
+    fixture.require(len(record_rows) == 11, "两轮链路必须保留十个业务 ToolRecord 和一个接手读取 ToolRecord")
     records_by_run: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for run_id, call_id, encoded in record_rows:
         records_by_run.setdefault(run_id, []).append((call_id, json.loads(encoded)))
@@ -737,10 +764,16 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
                 active_view = {**runtime, **event_payload["toolView"]}
                 views[active_view["kernelCatalogSnapshotRef"]] = active_view
         receipts = [event_payload for event_type, _, event_payload in lifecycle if event_type == "context.composed"]
-        fixture.require(len(receipts) == 2, "每个 run 必须有 tool turn 与 continuation 两个 context receipt")
+        fixture.require(len(receipts) == (2 if run_index == 0 else 3),
+                        "每轮必须保留业务工具及 continuation，第二轮另有一个接手读取 receipt")
+        history_receipts = [receipt for receipt in receipts
+                            if [item["canonicalName"] for item in receipt["tools"]] == ["session.read"]]
+        fixture.require(len(history_receipts) == run_index, "接手阶段数量或唯一工具目录错误")
         fixture.require(all(receipt.get("kernelCatalogSnapshotRef") in views for receipt in receipts),
             "context receipt 未引用已记录的工具视图")
-        runtime = views[receipts[0]["kernelCatalogSnapshotRef"]]
+        business_receipts = [receipt for receipt in receipts if receipt not in history_receipts]
+        fixture.require(len(business_receipts) == 2, "每轮必须保留两个完整业务请求")
+        runtime = views[business_receipts[0]["kernelCatalogSnapshotRef"]]
         fixture.require(runtime["permissions"]["agent.permissions.networkRead"] == "allow",
                         "当前 run 未保留允许真实 web 工具的权限快照")
         if run_index == 0:
@@ -802,11 +835,22 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
             "MCP prepared tool 缺少精确 pluginUri",
         )
         run_records = records_by_run.get(run_id, [])
-        expected_record_count = 6 if run_index == 0 else 4
+        expected_record_count = 6 if run_index == 0 else 5
         fixture.require(
             len(run_records) == expected_record_count,
             f"当前 run 没有精确 {expected_record_count} 个 ToolRecord",
         )
+        history_records = [record for _, record in run_records if record.get("toolName") == "session.read"]
+        fixture.require(len(history_records) == run_index, "历史接手读取次数错误")
+        if run_index == 1:
+            history = history_records[0]
+            fixture.require(history["outcome"] == "completed" and history["input"]["view"] == "summary"
+                            and history["input"]["sessionId"] == session_id, "接手没有完成本会话真实历史读取")
+            fixture.require(history["input"]["throughSequence"] == payload["contextStart"]["historyThroughSequence"],
+                            "接手读取未限制在已冻结的历史边界")
+            fixture.require(history["output"]["revision"] == payload["contextStart"]["historyThroughSequence"]
+                            and history["output"]["summary"]["lastAssistantMessage"]["content"] == "round-one-complete",
+                            "接手摘要没有保留此前工作或越过冻结的历史边界")
         mcp_records = [entry for entry in run_records if entry[1].get("toolName") == tool.get("name")]
         fixture.require(len(mcp_records) == 1, "MCP ToolRecord 未唯一关联到 runtime tool")
         call_id, record = mcp_records[0]
@@ -898,7 +942,7 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
         expected_completed_order = (
             ["fs.read", tool.get("name"), "pdf.read", "web.search", "web.fetch", "fs.read"]
             if run_index == 0
-            else [tool.get("name"), "web.search", "web.fetch", "fs.read"]
+            else ["session.read", tool.get("name"), "web.search", "web.fetch", "fs.read"]
         )
         fixture.require(completed_order == expected_completed_order, "同一 Provider turn 的工具没有严格按请求顺序完成")
         for receipt in receipts:
@@ -917,8 +961,12 @@ def assert_persisted_tool_bindings_and_release(config_root: Path, session_id: st
                 and item.get("availability") == "callable"
                 for item in provider_tools
             ), "context receipt 工具来源字段不完整")
-            assert_received_tool_guidance(provider.request_for(receipt["providerRequestId"]), receipt,
-                                          views[receipt["kernelCatalogSnapshotRef"]])
+            body = provider.request_for(receipt["providerRequestId"])
+            if receipt in history_receipts:
+                fixture.require([item["function"]["name"] for item in body["tools"]] == [receipt["tools"][0]["wireName"]],
+                                "接手 Provider 请求泄漏了非历史读取工具")
+            else:
+                assert_received_tool_guidance(body, receipt, views[receipt["kernelCatalogSnapshotRef"]])
         snapshots.append(runtime)
 
     for key in (
@@ -1198,7 +1246,7 @@ def main() -> None:
             submit_message(daemon_one, session_id, "command-round-two", LONG_INPUT)
             final = fixture.wait_completed(daemon_one, provider, session_id, "second run completed")
             provider.assert_healthy()
-            fixture.require(provider.count() == 4, "两轮 tool/continuation Provider 调用数不是四次")
+            fixture.require(provider.count() == 5, "两轮四次业务请求加一次接手请求的总数不是五次")
             fixture.require(provider.old_wire_name() != provider.new_wire_name(), "MCP wire tool 未热更新")
             assert_runtime_activated(daemon_one, new_plugins)
             assert_projection_flow(final)
@@ -1233,7 +1281,7 @@ def main() -> None:
                 fixture.require(next_byte > (cursor or 0), "资源续读游标没有前进")
                 cursor = next_byte
             fixture.require(len(segments) > 1 and "".join(segments) == LONG_INPUT, "分页读取未完整保留 Unicode 原文")
-            assert_provider_count_stable(provider, 4)
+            assert_provider_count_stable(provider, 5)
             fixture.require(len(provider.title_requests) == 1, "标题请求未独立处理或在重启后重复生成")
             assert_shells_read_projection(daemon_two, session_id, final_revision)
             path_id = urllib.parse.quote(session_id, safe="")
@@ -1276,7 +1324,7 @@ def main() -> None:
 
             print(
                 "[local-agent-e2e] PASS "
-                "basic-loop/sequential-tools/web/first-party-plugin/pdf-binding/cache/release/restart/"
+                "basic-loop/model-handoff/sequential-tools/web/first-party-plugin/pdf-binding/cache/release/restart/"
                 "filesystem-reference/long-input/bounded-read/shared-projection "
                 "(CLI chain verification only; not GUI, package, or release acceptance)"
             )

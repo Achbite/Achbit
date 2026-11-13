@@ -282,6 +282,20 @@ export function useAgentComposer(
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
   }, [attachmentMenuOpen, permissionMenuOpen, pluginPickerOpen]);
 
+  useEffect(() => {
+    if (!attachmentMenuOpen) return;
+    attachmentControlRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.repeat || event.isComposing
+        || document.querySelector('dialog[open]')) return;
+      event.preventDefault(); event.stopPropagation();
+      setAttachmentMenuOpen(false);
+      attachmentControlRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.focus({ preventScroll: true });
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [attachmentMenuOpen]);
+
   const submitDraft = async () => {
     const submittedText = draft;
     if (compositionActiveRef.current || compositionCommitPendingRef.current) return;
@@ -731,7 +745,7 @@ export function useAgentComposer(
     setAttachmentError(null);
   };
   const editPastedText = (inputId: string, text: string) => setPastedTexts((current) => current.map((item) => (
-    item.inputId === inputId ? { ...item, inputId: nextPanelId('paste'), text } : item
+    item.inputId === inputId ? { ...item, viewId: item.viewId ?? item.inputId, inputId: nextPanelId('paste'), text } : item
   )));
   const selectedProfile = profiles.find(profile => profile.id === selectedProfileId);
   // A null Session override inherits the Profile, as it does in Provider binding.

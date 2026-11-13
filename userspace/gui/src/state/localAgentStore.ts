@@ -19,7 +19,7 @@ import type {
   SessionProjection,
   HostWindowBinding,
 } from '@achbit/protocol';
-import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings } from '@achbit/protocol';
+import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings, modelReasoningEfforts } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
@@ -527,7 +527,8 @@ const store = create<LocalAgentState>((set, get) => ({
 
   selectModel: async (profileId, reasoningEffortOverride) => {
     const profile = get().profiles.find(profile => profile.id === profileId && profile.enabled);
-    if (!profile || (profile.thinking !== 'disabled' && !(reasoningEffortOverride ?? profile.reasoningEffort))) return false;
+    if (!profile || (profile.thinking !== 'disabled' && modelReasoningEfforts(profile).length > 0
+      && !(reasoningEffortOverride ?? profile.reasoningEffort))) return false;
     return saveModelSettings(set, get, { profileId, reasoningEffortOverride });
   },
 

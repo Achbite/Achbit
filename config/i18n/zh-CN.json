@@ -689,7 +689,7 @@
     "agent.permission.custom": "自定义",
     "agent.permission.details": "自定义权限",
     "agent.permission.preset.askHelp": "需要额外权限时询问你。",
-    "agent.permission.preset.reviewHelp": "由审批模型审查操作，无法判断时询问你。",
+    "agent.permission.preset.reviewHelp": "网络读取直接允许；需额外权限的命令和外部操作由审批模型审查，无法判断时询问你。",
     "agent.permission.preset.fullHelp": "允许执行、网络读取及外部操作，并使用完整执行范围。计划、工程路线和命令规则保持不变。",
     "agent.permission.workspaceRead": "工作区读取",
     "agent.permission.workspaceReadAllowed": "绑定目录内允许",
