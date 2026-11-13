@@ -379,7 +379,7 @@ export function ConversationComposer({
                 <button type="button" aria-label={language === 'zh-CN' ? '移除批注' : 'Remove annotation'} onClick={() => composer.removeBrowserReview(paste.inputId)}><AchbitShellIcon name="close" size={14} /></button>
               </div>
             ) : (
-              <div className="local-agent__pasted-text" key={paste.inputId} data-attachment-id={paste.inputId}>
+              <div className="local-agent__pasted-text" key={paste.viewId ?? paste.inputId} data-attachment-id={paste.viewId ?? paste.inputId}>
                 <div className="local-agent__pasted-text-header">
                   <AchbitShellIcon name="artifact" />
                   <span><strong>{pastedTextTitle(paste.text)}</strong><small>TXT · {(new TextEncoder().encode(paste.text).byteLength / 1024).toFixed(1)} KiB</small></span>
@@ -519,7 +519,16 @@ export function ConversationComposer({
                 <AchbitShellIcon name="plus" />
               </button>
               {attachmentMenuOpen && (
-                <div className="local-agent__attachment-menu" role="menu">
+                <div className="local-agent__attachment-menu" role="menu" onKeyDown={event => {
+                  if (event.nativeEvent.isComposing || event.defaultPrevented || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+                  const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+                  if (!items.length) return;
+                  event.preventDefault(); event.stopPropagation();
+                  const index = items.indexOf(document.activeElement as HTMLButtonElement);
+                  const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+                    : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+                  items[next]?.focus();
+                }}>
                   <button
                     {...identity.action('choose-files', 'click')}
                     type="button"

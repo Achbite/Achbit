@@ -5,7 +5,8 @@ import type { PastedTextInput } from '../../services/pastedText';
 
 export interface ComposerState {
   draft: string;
-  pastedTexts: Array<PastedTextInput & { expanded: boolean; browserReview?: BrowserAnnotationDraft }>;
+  /** Stable view identity is separate from the versioned upload inputId. */
+  pastedTexts: Array<PastedTextInput & { viewId?: string; expanded: boolean; browserReview?: BrowserAnnotationDraft }>;
   pastedImages: PastedImageInput[];
   filesystemPaths: Array<{ path: string; kind: 'file' | 'directory' }>;
   pluginSelections: PluginSelectionInput[];
