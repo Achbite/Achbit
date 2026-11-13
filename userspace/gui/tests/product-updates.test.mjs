@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createElement } from 'react';
+import { Children, createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, installGuiFetch, loadGuiModules } from './gui-projection-contract.mjs';
 
@@ -66,6 +66,49 @@ test('product update notice renders the current update snapshot on the server', 
     b.handlers.get('achbit:product-update')({ payload: { ...b.status, reason } });
     assert.match(render(), expected);
   }
+});
+
+for (const target of [null, '0.7.79']) test(`updater errors are warnings, not download offers (target=${target})`, async t => {
+  const b = browser(t);
+  const [updates, { ProductUpdateNotice }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
+  ]);
+  b.cleanups.push(await updates.installProductUpdateMonitor()); await flush();
+  b.handlers.get('achbit:product-update')({ payload: { ...b.status, currentVersion: '0.7.79', version: target,
+    phase: 'error', error: 'feed_unavailable: original failure' } });
+  const { html, tree } = capture(ProductUpdateNotice);
+  assert.match(html, /data-ui-icon="warning"/);
+  assert.doesNotMatch(html, /data-ui-icon="download"/);
+  const retry = findReactElement(tree, node => node.type === 'button');
+  assert.match(retry.props['aria-label'], /feed_unavailable: original failure/);
+  retry.props.onClick(); await flush();
+  assert.equal(b.calls.at(-1).command, 'achbit_update_check');
+  b.handlers.get('achbit:product-update')({ payload: b.status });
+  const ready = capture(ProductUpdateNotice);
+  assert.match(ready.html, /data-ui-icon="refresh"/);
+  findReactElement(ready.tree, node => node.type === 'button').props.onClick(); await flush();
+  assert.equal(b.calls.at(-1).command, 'achbit_update_install', 'ready action still installs, not downloads again');
+});
+
+test('a newer updater event wins over a delayed initial status read', async t => {
+  const b = browser(t);
+  let resolveStatus;
+  const pending = new Promise(resolve => { resolveStatus = resolve; });
+  b.window.__TAURI__.core.invoke = async (command, args) => {
+    b.calls.push({ command, args });
+    return command === 'achbit_update_status' ? pending : null;
+  };
+  const [updates, { ProductUpdateNotice }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
+  ]);
+  const installing = updates.installProductUpdateMonitor(); await flush();
+  const current = { ...b.status, phase: 'current', version: null };
+  b.handlers.get('achbit:product-update')({ payload: current });
+  resolveStatus(b.status);
+  b.cleanups.push(await installing); await flush();
+  assert.deepEqual(updates.productUpdateSnapshot(), current);
+  assert.equal(renderToStaticMarkup(createElement(ProductUpdateNotice)), '');
+  assert.equal(b.calls.some(call => ['achbit_update_check', 'achbit_update_install'].includes(call.command)), false);
 });
 
 test('a real restart snapshot restores the draft and selected conversation before mounting', async t => {
@@ -191,6 +234,44 @@ test('About Achbit exposes a manual check and a ready installation action', asyn
   b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase: 'current' } });
   action().props.onClick(); await flush();
   assert.equal(b.calls.at(-1).command, 'achbit_update_check');
+});
+
+for (const language of ['zh-CN', 'en-US']) test(`About keeps update feedback outside its action group (${language})`, async t => {
+  const b = browser(t);
+  const [updates, { GuiSettingsSection }, { useSettingsStore }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+    '/src/state/settingsStore.ts',
+  ]);
+  const initial = useSettingsStore.getInitialState(), original = { ...initial };
+  initial.effectiveSettings = { ...initial.effectiveSettings, 'workbench.language': language };
+  t.after(() => Object.assign(initial, original));
+  const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
+  let reloads = 0;
+  b.window.addEventListener('achbit:request-interface-reload', () => { reloads++; });
+  const isButton = node => isValidElement(node) && node.type === 'button';
+  for (const phase of ['current', 'error', 'checking', 'downloading', 'waiting', 'preparing', 'installing']) {
+    const error = phase === 'error' ? 'update_failed: /a/long/path/download could not be verified' : null;
+    b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase, error } });
+    const { html, tree } = capture(GuiSettingsSection, { category: 'about', apiStatus: 'connected' });
+    const actions = findReactElement(tree, node => Children.toArray(node.props.children).filter(isButton).length === 2);
+    const children = Children.toArray(actions.props.children);
+    assert.ok(children.every(isButton), 'status/error content cannot split the two actions');
+    const [update, reload] = children;
+    assert.equal(update.props.disabled, ['checking', 'downloading', 'preparing', 'installing'].includes(phase));
+    assert.notEqual(reload.props.disabled, true, 'update feedback does not disable interface reload');
+    reload.props.onClick();
+    if (phase === 'current') assert.match(html, /role="status"/);
+    if (error) { assert.match(html, /role="alert"/); assert.ok(html.includes(error)); }
+    if (!update.props.disabled) {
+      update.props.onClick(); await flush();
+      assert.equal(b.calls.at(-1).command, phase === 'waiting' ? 'achbit_update_install' : 'achbit_update_check');
+    }
+  }
+  assert.equal(reloads, 7);
+  b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase: 'disabled' } });
+  const disabled = capture(GuiSettingsSection, { category: 'about', apiStatus: 'connected' });
+  const reload = findReactElement(disabled.tree, isButton);
+  assert.match(reload.props.children, /重新加载界面|Reload interface/);
 });
 
 test('a pending confirmation remains interactive and cannot be replaced by another preparation', async t => {
