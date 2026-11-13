@@ -1,6 +1,6 @@
 import AchbitShellIcon from '../shared/AchbitShellIcon';
-import { CloseButton, ModalDialog, PanelHeader } from '../../ui-components';
-import React, { useEffect, useMemo, useState } from 'react';
+import { Button, CloseButton, ModalDialog, PanelHeader } from '../../ui-components';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { BrowseEntry, BrowsePathResult, InitialLocation } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { browsePath, getInitialLocations, hasNativePathPicker, type NativePathOptions, type NativePathSelection } from '../../services/runtimeAdapter';
@@ -34,40 +34,54 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const navigation = useRef(0);
 
   const navigateTo = async (absolutePath: string): Promise<void> => {
+    const request = ++navigation.current;
     setLoading(true);
     setError(null);
+    setBrowseResult(null);
+    setAddressInput(absolutePath);
     setSelectedEntry(null);
     setSelectedFiles([]);
-    const result = await browsePath(absolutePath);
-    if (result.ok && result.data) {
-      setBrowseResult(result.data);
-      setAddressInput(result.data.absolutePath);
-    } else {
-      setError(result.message ?? t(language, 'workspaceDialog.error.browse'));
+    try {
+      const result = await browsePath(absolutePath);
+      if (request !== navigation.current) return;
+      if (result.ok && result.data) {
+        setBrowseResult(result.data);
+        setAddressInput(result.data.absolutePath);
+      } else {
+        setError(result.message ?? t(language, 'workspaceDialog.error.browse'));
+      }
+    } catch (cause) {
+      if (request === navigation.current) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (request === navigation.current) setLoading(false);
     }
-    setLoading(false);
   };
 
   useEffect(() => {
     let cancelled = false;
+    const initialNavigation = navigation.current;
     void (async () => {
       setLoading(true);
       const result = await getInitialLocations();
       if (cancelled) return;
       if (!result.ok || !result.data) {
+        if (navigation.current !== initialNavigation) return;
         setError(result.message ?? t(language, 'workspaceDialog.error.initialLocations'));
         setLoading(false);
         return;
       }
       setLocations(result.data.locations);
+      if (navigation.current !== initialNavigation) return;
       const first = result.data.locations[0];
       if (first) await navigateTo(first.absolutePath);
       else setLoading(false);
     })();
     return () => {
       cancelled = true;
+      navigation.current++;
     };
     // navigateTo deliberately remains local to this modal instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -87,6 +101,23 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
   );
   const selectedPath = selectedEntry?.absolutePath ?? browseResult?.absolutePath ?? '';
   const selectedType = selectedEntry?.type ?? 'directory';
+  const canConfirm = !loading && !error && Boolean(selectedPath)
+    && (selectionMode !== 'file' || selectedType === 'file');
+  const selectEntry = (entry: BrowseEntry, additive = false) => {
+    if (isAttachmentSelection && entry.type === 'file') {
+      setSelectedEntry(null);
+      setSelectedFiles(current => additive
+        ? current.some(file => file.absolutePath === entry.absolutePath)
+          ? current.filter(file => file.absolutePath !== entry.absolutePath) : [...current, entry]
+        : [entry]);
+    } else { setSelectedFiles([]); setSelectedEntry(entry); }
+  };
+  const openEntry = (entry: BrowseEntry) => {
+    if (entry.type === 'directory') void navigateTo(entry.absolutePath);
+    else if (allowsFiles) {
+      onSelectMany ? onSelectMany([{ path: entry.absolutePath, kind: entry.type }]) : onSelect(entry.absolutePath, entry.type);
+    }
+  };
 
   return (
     <ModalDialog className="ws-open-dialog__backdrop" onClose={onCancel} aria-label={title ?? t(language, 'achbitGui.project.folderDialogTitle')}>
@@ -122,7 +153,8 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
             value={addressInput}
             onChange={(event) => setAddressInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && addressInput.trim()) {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing && addressInput.trim()) {
+                event.preventDefault();
                 void navigateTo(addressInput.trim());
               }
             }}
@@ -175,22 +207,6 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
                   <li
                     key={entry.absolutePath}
                     className={`ws-open-dialog__entry${selectedEntry?.absolutePath === entry.absolutePath || selectedFiles.some(file => file.absolutePath === entry.absolutePath) ? ' ws-open-dialog__entry--selected' : ''}`}
-                    onClick={(event) => {
-                      if (isAttachmentSelection && entry.type === 'file') {
-                        setSelectedEntry(null);
-                        setSelectedFiles(current => event.metaKey || event.ctrlKey
-                          ? current.some(file => file.absolutePath === entry.absolutePath)
-                            ? current.filter(file => file.absolutePath !== entry.absolutePath) : [...current, entry]
-                          : [entry]);
-                      } else { setSelectedFiles([]); setSelectedEntry(entry); }
-                    }}
-                    onDoubleClick={() => {
-                      if (entry.type === 'directory') {
-                        void navigateTo(entry.absolutePath);
-                      } else if (allowsFiles) {
-                        onSelectMany ? onSelectMany([{ path: entry.absolutePath, kind: entry.type }]) : onSelect(entry.absolutePath, entry.type);
-                      }
-                    }}
                     title={entry.absolutePath}
                   >
                     {isAttachmentSelection && entry.type === 'file' && <input type="checkbox"
@@ -200,10 +216,27 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
                         setSelectedFiles(current => current.some(file => file.absolutePath === entry.absolutePath)
                           ? current.filter(file => file.absolutePath !== entry.absolutePath) : [...current, entry]);
                       }} />}
-                    <span className="ws-open-dialog__entry-icon">
-                      <AchbitShellIcon name={entry.type === 'directory' ? 'folder' : 'file'} size={16} />
-                    </span>
-                    <span className="ws-open-dialog__entry-name">{entry.name}</span>
+                    <Button size="compact" className="ws-open-dialog__entry-action"
+                      aria-pressed={selectedEntry?.absolutePath === entry.absolutePath || selectedFiles.some(file => file.absolutePath === entry.absolutePath)}
+                      onClick={event => selectEntry(entry, event.metaKey || event.ctrlKey)}
+                      onDoubleClick={() => openEntry(entry)}
+                      onKeyDown={event => {
+                        if (event.nativeEvent.isComposing || event.repeat) return;
+                        if (event.key === 'Enter') {
+                          event.preventDefault(); event.stopPropagation(); openEntry(entry); return;
+                        }
+                        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+                        const rows = [...(event.currentTarget.closest('ul')?.querySelectorAll<HTMLButtonElement>('.ws-open-dialog__entry-action') ?? [])];
+                        const index = rows.indexOf(event.currentTarget);
+                        const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
+                          : Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
+                        event.preventDefault(); rows[next]?.focus();
+                      }}>
+                      <span className="ws-open-dialog__entry-icon">
+                        <AchbitShellIcon name={entry.type === 'directory' ? 'folder' : 'file'} size={16} />
+                      </span>
+                      <span className="ws-open-dialog__entry-name">{entry.name}</span>
+                    </Button>
                   </li>
                 ))}
               </ul>
@@ -219,8 +252,9 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
             <button
               type="button"
               className="ws-open-dialog__btn ws-open-dialog__btn--primary"
-              disabled={!selectedPath || !selectedType || (selectionMode === 'file' && selectedType !== 'file')}
+              disabled={!canConfirm}
               onClick={() => {
+                if (!canConfirm) return;
                 if (selectedFiles.length && onSelectMany) onSelectMany(selectedFiles.map(file => ({ path: file.absolutePath, kind: 'file' })));
                 else if (selectedPath && selectedType) onSelect(selectedPath, selectedType);
               }}
