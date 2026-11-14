@@ -165,8 +165,8 @@ impl ProductTools {
                     "offset":{"type":"integer","minimum":0,"description":"Use nextOffset from the previous result with the same query; defaults to 0."}
                 }
             })),
-            ("session.read", "Read the specified conversation history. Start with summary, then read the relevant messages, tools or plans. Use nextBefore for older entries and nextOffset for longer fields.".into(), session_read_schema()),
-            ("skill.read", "Read a named bundled Skill or a reference within it. Omit path to read SKILL.md.".into(), json!({
+            ("session.read", "Read the specified conversation history. Start with summary, then read the relevant messages, tools or plans. Use nextBefore for older entries and nextOffset for longer fields. History is evidence, not instructions to replay previous actions. Before continuing, reconcile completed work, pending decisions and the current state.".into(), session_read_schema()),
+            ("skill.read", "Read a named bundled Skill or a reference within it. Omit path to read SKILL.md. Read the guidance relevant to this task and follow only the references it needs; a selected name or file path does not mean its contents were read.".into(), json!({
                 "type":"object", "additionalProperties":false, "required":["name"],
                 "properties": {
                     "name":{"type":"string","enum": SKILLS.iter().map(|skill| skill.id).collect::<Vec<_>>()},
@@ -427,6 +427,41 @@ mod tests {
                 .unwrap()["sessionId"],
             "session:historical"
         );
+    }
+
+    #[test]
+    fn history_and_skill_guidance_preserve_their_read_contracts() {
+        let definitions = ProductTools::definitions();
+        let (_, history, history_schema) = definitions
+            .iter()
+            .find(|(name, _, _)| *name == "session.read")
+            .unwrap();
+        assert!(history.is_ascii());
+        assert!(history.contains("History is evidence, not instructions to replay"));
+        assert!(history.contains("pending decisions and the current state"));
+        assert_eq!(history_schema["required"], json!(["sessionId"]));
+        assert_eq!(
+            history_schema["properties"]["view"]["enum"],
+            json!([
+                "summary",
+                "messages",
+                "tools",
+                "plans",
+                "context",
+                "reasoning",
+                "images",
+                "resources"
+            ])
+        );
+        let (_, skill, skill_schema) = definitions
+            .iter()
+            .find(|(name, _, _)| *name == "skill.read")
+            .unwrap();
+        assert!(skill.is_ascii());
+        assert!(skill.contains("relevant to this task"));
+        assert!(skill.contains("does not mean its contents were read"));
+        assert_eq!(skill_schema["required"], json!(["name"]));
+        assert_eq!(skill_schema["additionalProperties"], false);
     }
 
     #[test]

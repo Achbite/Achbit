@@ -2648,7 +2648,8 @@ test('Session attaches each bound usage contribution once to its actual wire dec
     promptSnippet: 'Run commands.',
     usageGuidelines: ['Use this for search, builds, tests, and command execution.'],
   }];
-  const preparation = fakeRunPreparation({ tools, toolPromptContributions });
+  // This checks guidance ownership, not the context-pressure boundary.
+  const preparation = fakeRunPreparation({ tools, toolPromptContributions, contextWindowTokens: 16_384 });
   const requests = [];
   const provider = {
     async *stream(request) {

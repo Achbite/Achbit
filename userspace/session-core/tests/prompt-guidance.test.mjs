@@ -5,7 +5,7 @@ import { achbitProductComponents } from '../dist/local-agent/productInstructions
 import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
 import { requestedPlanToolStage } from '../dist/local-agent/planStage.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
-import { codingToolView } from '../dist/local-agent/codingTools.js';
+import { codingToolInstruction, codingToolView } from '../dist/local-agent/codingTools.js';
 import { stableCoreInstructions } from '../dist/local-agent/coreInstructions.js';
 import { agentOperationDefinitions, sessionControlToolDefinitions } from '../dist/local-agent/sessionControls.js';
 import { buildConversationProviderRequest } from '../dist/local-agent/contextComposer.js';
@@ -25,6 +25,86 @@ test('stable core stays separate from dynamic control syntax', () => {
   const text = stableCoreInstructions.map(slice => slice.text).join('\n');
   assert.doesNotMatch(text, /plan_publish|interaction_request|workspaceId|mutationManifest|\[DONE:|\[PLAN MODE ACTIVE\]/u,
     'tool syntax, dynamic identities and mode-specific formats do not belong in the stable core');
+});
+
+test('English review guidance distinguishes file links, preparation and output delivery', () => {
+  const registry = new SessionConfigurationRegistry(undefined, achbitProductComponents);
+  const core = stableCoreInstructions.map(item => item.text).join('\n');
+  assert.match(core, /clickable file links.*line numbers/u);
+  assert.doesNotMatch(core, /outputs table|artifact[._]present|plugin[._]activate|process[._]wait/u);
+  const selected = registry.productInstructions({ productComponents: ['achbit.delivery'] });
+  assert.equal(selected.length, 1);
+  assert.match(selected[0].text, /user review as clickable links.*outputs table/u);
+  assert.match(selected[0].text, /Writing a file, archiving it and delivering it are separate/u);
+  assert.match(selected[0].text, /simple explanations inline/u);
+  assert.deepEqual(registry.productInstructions({ productComponents: [] }), []);
+  const text = [core, ...registry.productInstructions().map(item => item.text),
+    ...sessionControlToolDefinitions(capabilities).map(tool => tool.description)].join('\n');
+  assert.doesNotMatch(text, /\bplease\b|\bkindly\b|\bMUST\b|\bIMPORTANT\b|[\u3400-\u9fff]/iu);
+});
+
+test('delivery and workflow tool descriptions retain their contracts without adding operations', () => {
+  const tools = new Map(sessionControlToolDefinitions(capabilities).map(tool => [tool.name, tool]));
+  assert.deepEqual([...tools.keys()].sort(), [
+    'session', 'agent', 'artifact.present', 'plugin.activate', 'interaction.request', 'plan.publish', 'todo.update',
+  ].sort());
+  const delivery = tools.get('artifact.present');
+  assert.match(delivery.description, /outputs table[\s\S]*clickable Markdown links/u);
+  assert.match(delivery.description, /Writing or archiving a file alone does not deliver/u);
+  assert.match(delivery.description, /Re-prepare changed files.*reuse deliveryId/u);
+  assert.match(delivery.description, /does not load pixels/u);
+  assert.deepEqual(delivery.inputSchema.required, ['items']);
+  assert.deepEqual(delivery.inputSchema.properties.items.items.required, ['artifactId', 'label']);
+  assert.match(tools.get('interaction.request').description, /clickable options[\s\S]*silence is not a choice/u);
+  assert.match(tools.get('plan.publish').description, /confirmation, execution permission and engineering decisions remain separate/u);
+  assert.match(tools.get('plugin.activate').description, /installation, enablement, task activation and execution permission are separate/u);
+  assert.match(tools.get('session').description, /statement about later work does not schedule/u);
+  assert.match(tools.get('agent').description, /tightly coupled work local[\s\S]*verify final results/u);
+  for (const name of ['artifact.present', 'plugin.activate', 'interaction.request', 'plan.publish', 'session']) {
+    assert.match(tools.get(name).description, /Submit alone/u);
+  }
+});
+
+test('minimal and full requests keep selected delivery guidance and actual aliases separate', () => {
+  const definitions = ['fs.read', 'bash', 'fs.edit', 'fs.write', 'plugin.search'].map(name => ({
+    name, description: name, origin: 'coreBuiltin', availability: 'callable', toolBindingRef: `binding:${name}`,
+    possibleEffects: [name === 'bash' ? 'process' : name === 'fs.read' ? 'workspaceRead'
+      : name === 'plugin.search' ? 'localRead' : 'workspaceMutation'],
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: [] },
+  }));
+  const registry = new SessionConfigurationRegistry(undefined, achbitProductComponents);
+  const compose = full => {
+    const tools = full ? definitions : definitions.filter(tool => tool.name !== 'plugin.search');
+    const runtime = runtimeSnapshot('run:delivery-guidance', { tools, permissions: {
+      'agent.permissions.workspaceMutation': 'allow', 'agent.permissions.engineeringDecisions': 'delegate',
+    } });
+    runtime.toolSelection = { controls: full ? ['artifact.present', 'plugin.activate'] : [] };
+    runtime.instructions = [...stableCoreInstructions, ...registry.productInstructions(full ? {} : { productComponents: [] })];
+    runtime.providerToolAliases.find(alias => alias.canonicalName === 'artifact.present').wireName = 'deliver_review';
+    return buildConversationProviderRequest({ runtime, sessionId: 'session:delivery-guidance', runId: 'run:delivery-guidance',
+      purpose: 'agent', providerRequestId: 'request:delivery-guidance', events: [], workspaceBindings: [workspaceBinding] }).request;
+  };
+  const minimal = compose(false), full = compose(true);
+  assert.equal(minimal.tools.some(tool => tool.name === 'deliver_review'), false);
+  assert.equal(full.tools.some(tool => tool.name === 'deliver_review'), true);
+  assert.doesNotMatch(minimal.messages.map(message => message.content).join('\n'), /outputs table|register an output/u);
+  assert.match(full.messages.map(message => message.content).join('\n'), /review as clickable links.*outputs table/u);
+  assert.match(full.tools.find(tool => tool.name === 'deliver_review').description, /returned references as clickable Markdown links/u);
+  assert.equal(full.tools.some(tool => tool.name === 'artifact.present'), false);
+});
+
+test('file and managed execution guidance follows the available capabilities', () => {
+  const tools = ['fs.read', 'bash', 'process'].map(name => ({ name, origin: 'coreBuiltin', availability: 'callable' }));
+  const aliases = new Map([['fs.read', 'inspect_file'], ['bash', 'run_shell'], ['process', 'manage_command']]);
+  const ordinary = codingToolInstruction(tools.filter(tool => tool.name !== 'process'), aliases).text;
+  assert.match(ordinary, /Follow returned cursors or full-output paths/u);
+  assert.match(ordinary, /Preserve the target exit status/u);
+  assert.doesNotMatch(ordinary, /wait deadline|automatically managed/u);
+  const managed = codingToolInstruction(tools, aliases).text;
+  assert.match(managed, /wait deadline leaves the command running/u);
+  assert.match(managed, /resources this task is authorized to manage/u);
+  assert.match(managed, /inspect_file:.*contents[\s\S]*run_shell:/u);
+  assert.equal(codingToolInstruction([], aliases), undefined);
 });
 
 test('Host-installed product slices compose independently from tools, metadata and registration', () => {

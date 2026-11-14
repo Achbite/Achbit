@@ -16,7 +16,8 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
       case 'fs.read':
         descriptions.push(`- ${name}: Read file or directory contents.`);
         rules.push(`- Use ${name} to examine files. Use paths observed in listings, tool results or user input; do not guess generated filenames.`,
-          '- Read generated output after its producing command has completed. If a path is missing, inspect the producer result and containing directory before retrying.');
+          '- Read generated output after its producing command has completed. If a path is missing, inspect the producer result and containing directory before retrying.',
+          '- Follow returned cursors or full-output paths when content is truncated. A summary or excerpt does not establish that the full content was reviewed.');
         break;
       case 'bash':
         descriptions.push(`- ${name}: Execute Bash commands.`);
@@ -28,7 +29,7 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
         break;
       case 'fs.edit':
         descriptions.push(`- ${name}: Make precise file edits with exact text replacement, including multiple disjoint edits in one call.`);
-        rules.push(`- Use ${name} for targeted changes. Batch changes to one file in a single call.`,
+        rules.push(`- Use ${name} for targeted changes. Read the relevant content before editing. Batch changes to one file in a single call.`,
           '- Each edits[].oldText must exactly and uniquely match the original file. Keep matches short and non-overlapping. Merge nearby changes without including large unchanged regions.');
         break;
       case 'fs.write':
@@ -38,11 +39,13 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
     }
   }
   if (!descriptions.length) return;
+  rules.push('- Use the current tool declarations for callable names and arguments. Tool availability does not grant additional access.');
   if (active.has('process') && (active.has('bash') || active.has('powershell'))) rules.push(
     '- Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.',
+    '- Use dependency waiting when the next step needs a managed result, and status only for a current snapshot. A wait deadline leaves the command running; cancellation targets the returned job handle.',
   );
   if (active.has('bash') || active.has('powershell')) rules.push(
-    '- Track commands through completion and check their exit status before using their outputs. Use bounded validation runs for interactive applications; keep ownership of test processes until they exit or are explicitly stopped.',
+    '- Track commands through completion and check their exit status before using their outputs. Preserve the target exit status through pipelines and later diagnostics. Use bounded validation runs for interactive applications; keep ownership of test processes until they exit or are explicitly stopped. Clean up only resources this task is authorized to manage.',
   );
   return { id: 'achbit.coding-tools', text: [
     '<tools>', ...descriptions, '</tools>', '', '<rules>', ...rules, '</rules>',

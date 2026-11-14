@@ -310,7 +310,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
   return [
     {
       name: SESSION_CONTROL_SESSION,
-      description: 'Schedule a follow-up or wait for input in this task. Call action=describe for the exact operations. Submit alone.',
+      description: 'Schedule a follow-up or wait for input in this task. Call action=describe for the exact operations. A statement about later work does not schedule it. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1 },
       } },
@@ -321,14 +321,14 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
         ? capabilities.messaging === 'parent'
           ? 'Contact your task owner with findings, questions or scope needs. Return a final answer with evidence when the task is complete. Call action=models for contacts and operations.'
           : 'Coordinate with available teammates, agree on shared interfaces and one writer per shared file. Return a final answer with evidence when the task is complete. Call action=models for contacts and operations.'
-        : 'Proactively delegate useful independent work using available templates. Supply context, scope and expected evidence; coordinate shared edits and integrate results. Call action=models for operations and configuration.',
+        : 'Proactively delegate useful independent work using available templates; keep short or tightly coupled work local. Supply necessary context, scope, file references and expected evidence. Coordinate one writer per shared file, wait at dependencies, and verify final results before integrating them. Call action=models for operations and configuration.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
       } },
     },
     {
       name: SESSION_CONTROL_ARTIFACT_PRESENT,
-      description: 'Deliver requested results using artifactIds from tools, artifact.prepare or artifact.preview. Reuse deliveryId to update. Submit alone. Archiving alone does not deliver. Cite returned references in final prose; presentation does not load pixels into model context.',
+      description: 'Register requested results and review materials in the outputs table using artifactIds returned by tools or resource preparation. Use the returned references as clickable Markdown links in the final reply. Writing or archiving a file alone does not deliver it. Re-prepare changed files and reuse deliveryId to update. Keep temporary scripts, logs and observation images intermediate unless selected for review. Presentation does not load pixels into model context. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['items'], properties: {
         items: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
           required: ['artifactId', 'label'], properties: {
@@ -338,7 +338,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Activate discovered plugins by exact URI. Their tools appear on the next request. Submit alone.',
+      description: 'Activate discovered plugins by exact URI. Their tools and guidance appear on the next request; use the new declarations for calls. Discovery, installation, enablement, task activation and execution permission are separate. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -346,17 +346,17 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_INTERACTION_REQUEST,
-      description: 'Ask missing facts or required decisions once; an unanswered question stays pending. mode=continue allows independent work. Confirmations wait for a response. Submit alone.',
+      description: 'Ask missing facts or required decisions once; an unanswered question stays pending. Supply clickable options when offering alternatives. mode=continue allows independent work. Confirmations wait for a response; silence is not a choice or authorization. Submit alone.',
       inputSchema: structuredClone(INTERACTION_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Submit scope for confirmation. You execute the steps after approval. extendScope adds scope. A full revision replaces the plan and its manifest. For Shell, writablePaths lists write targets and command gives an example. Submit alone.',
+      description: 'Submit the goal, phases, verification and modification scope for confirmation. You execute the steps after approval. extendScope adds scope. A full revision replaces the plan and its manifest. For Shell, writablePaths lists write targets and command gives an example. Plan confirmation, execution permission and engineering decisions remain separate. Submit alone.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_TODO_UPDATE,
-      description: 'Replace the full progress list when it changes; [] clears it. Use meaningful phases. Todo grants no authority and unfinished items do not prevent answering. At most one update per turn; ordinary calls may accompany it.',
+      description: 'Replace the full progress list when it changes; [] clears it. Use meaningful phases and skip trivial or unchanged updates. Keep unfinished items honest. Todo grants no authority and unfinished items do not prevent answering. At most one update per turn; ordinary calls may accompany it.',
       inputSchema: {
         type: 'object', additionalProperties: false, required: ['items'],
         properties: { items: { type: 'array', items: {

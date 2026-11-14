@@ -542,7 +542,9 @@ test('Plan and Shell use distinct independent review contexts and distinct autho
   await createSession(journal, sessionId, [workspaceBinding]);
   let turns = 0, executions = 0;
   const reviews = [];
-  const prep = reviewerPreparation({ tools: [shell], permissions: { 'agent.permissions.workspaceMutation': 'review', 'agent.permissions.shell': 'review' } });
+  // Keep this authority-isolation scenario independent of context compaction.
+  const prep = reviewerPreparation({ tools: [shell], contextWindowTokens: 16_384,
+    permissions: { 'agent.permissions.workspaceMutation': 'review', 'agent.permissions.shell': 'review' } });
   const actor = actorWith(journal, sessionId, { async *stream(request) {
     if (request.purpose === 'approvalReview') {
       reviews.push(structuredClone(request));
