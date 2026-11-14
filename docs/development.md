@@ -33,17 +33,83 @@ Replace `<next-version>` with the intended semantic version, without a `v` prefi
 
 Build and package producers read the canonical version. `package-updates.py manifest` also defaults to it; an explicit `--version` remains available when preparing a feed for an isolated Debug build or an existing release. `ACHBIT_BUILD_VERSION` applies only to isolated Debug builds and leaves source metadata unchanged.
 
-Follow the authorized delivery scope:
+A version edit changes source metadata; Git operations, builds and publication remain separate authorized actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
 
-1. Review the version diff and run the applicable checks. Group complete changes by responsibility, with release metadata in its own commit when it forms a separate change.
-2. When code synchronization is requested, inspect the current local and remote branches, stage the intended changes, commit with a description of their behavior, and push the agreed branch. Handle PRs and merges according to the current repository settings and agreed target. Preserve the requested local development branch after synchronization.
-3. When local products are requested, use the [build entrypoints](#build-and-update). `bash ./build.sh` updates runnable products; `bash ./build.sh --stage package` additionally produces distribution archives and installers. Select explicit platform stages when the delivery calls for particular targets, and record any requested platform that is unavailable.
-4. For an authorized release, derive the tag and asset names from `release_version=$(python3 scripts/version.py show)` at the intended release source. Create that tag on the agreed commit, build the requested platforms from that source, then follow [automatic application updates](#automatic-application-updates) to sign updater assets, generate the feed and upload the distribution files. Reuse applicable completed standard-package acceptance; additional acceptance follows the explicit task scope below.
-5. Confirm the pushed branch/tag and the published assets/feed from the remote service. Report source synchronization, local package updates and publication separately.
+### Automated submission and release
 
-An explicit version-update or release instruction reuses applicable completed validation. It does not start a full packaging test run, repeat the full suite, or add an all-platform acceptance matrix. Perform version consistency checks, the builds/signing needed for the intended release assets, and remote delivery checks. Additional focused verification follows a concrete new change/failure or a separately requested capability check. Preserve the user's auto-update preference and existing running installations; use isolated output directories when necessary. Artifact/cache cleanup is not a release prerequisite.
+Use the host entrypoint `bash scripts/release.sh`. The agent fills in UTF-8 JSON text and activates this entrypoint; `scripts/release.py` owns staging, grouped commits, version synchronization, tests, compilation and the selected remote operations. Do not pre-commit changes or reproduce the stages with separate agent-issued Git/`gh` commands.
 
-A version edit changes source metadata; Git operations, builds and publication are separate requested actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
+| `mode` | Effects after `--confirm` |
+| --- | --- |
+| `local` | Grouped local commits, optional version commit, `test.sh required`, `build.sh --stage code`; no remote access |
+| `pr` | Local flow, push to `origin`, create/update the matching open PR; no merge |
+| `merge` | PR flow, merge commit, fast-forward the selected local source branch; no tag or Release |
+| `release` | Merge flow, package explicit platforms from the merged commit, sign/feed, tag, draft/upload, publish and verify |
+
+Prepare the development container with the existing `make shell` entrypoint. The script reads `container` and `workdir` from `make docker-info` (including `.achbit-worktree.mk`), then verifies the running container's exact source mount. Tests and general builds run inside that container with the installed Cargo/pnpm PATH; macOS packaging uses its existing host bridge. Remote modes require an authenticated `gh` and access to `origin`. The script does not install dependencies on the host, start replacement containers or restart applications.
+
+A minimal local input is:
+
+```json
+{
+  "mode": "local",
+  "branch": "fix/my-change",
+  "commits": [
+    {
+      "message": "docs: clarify the development workflow",
+      "paths": ["docs/development.md"]
+    }
+  ]
+}
+```
+
+`branch` must be the current non-protected branch. Each `paths` item is an exact repository-relative file, not a directory, glob or hunk. Groups must cover all current non-ignored changes exactly once; an existing staged index or unlisted change is rejected rather than silently included. Renames are represented by old and new paths. Use `"commits": []` for already committed, clean source. Optional `version` and `version_message` delegate synchronization to `version.py` and produce a separate version commit only if its owned files change.
+
+For `pr`, `merge` or `release`, also fill in `base` and `pr`:
+
+```json
+{
+  "base": "main",
+  "pr": {
+    "title": "Release <version>: <user-visible changes>",
+    "body": "## 变更\n<changes>\n\n## 验证\n<completed checks and planned automated checks>\n\n## 发布\n<intended scope>"
+  }
+}
+```
+
+This fragment is merged into the same input object; replace placeholders with the authorized version and actual changes. `release` mode additionally requires:
+
+```json
+{
+  "release": {
+    "title": "Release <version>",
+    "notes": "<solved problems and user-visible changes>",
+    "platforms": ["macos", "windows", "linux"],
+    "prerelease": false
+  }
+}
+```
+
+Select only requested platforms; every selected platform must build successfully. PR and Release text are passed as actual UTF-8 files to `gh`, then read back and compared. Do not describe the workflow's future checks as already passed. The supplied PR title/body also provide the merge commit text. Public notes exclude test counts, TCRs and build receipts.
+
+```bash
+# Read-only plan: no version writes, commits, container work or remote requests.
+bash scripts/release.sh --input .task-artifacts/submission.json
+
+# Execute only the scope authorized in that input.
+bash scripts/release.sh --input .task-artifacts/submission.json --confirm
+# Optional: --output .task-artifacts/my-submission (must not already exist)
+```
+
+`--confirm` activates local effects too; it does not grant authority beyond the user's request. There are no `--skip-tests`, `--from` or `--resume` flags. One activation owns one `required` run and one code build; do not duplicate them manually. Reuse separately completed package acceptance without expanding it into a new full suite, real-model conversation or all-platform acceptance matrix. If a request forbids the workflow's required check, report the unsupported scope instead of bypassing it.
+
+The program uses merge commits, never force-pushes or bypasses repository checks. The remote base must already be an ancestor of the source. The pushed head is pinned for merging; if GitHub queues the merge rather than completing it, the workflow stops before packaging/tagging. If the actual merge tree differs from the validated source tree, it also stops. Packages are built after the merge from that exact merge commit, not relabeled pre-merge binaries. Only the selected local source branch is advanced; unrelated local branches/worktrees are untouched.
+
+By default, source branches are retained. If repository policy deletes the remote source branch on merge, the program requires explicit authorization via `"allow_remote_branch_deletion": true`; it never deletes the local source branch. Temporary test-branch cleanup is a separate, explicitly authorized action.
+
+Each activation writes `input.json`, per-stage logs and `receipt.json` under a new `.task-artifacts/submission-<timestamp>/` directory. Release output is isolated in its `bin/`, not the running application's `bin/`. A failure preserves local commits, remote effects and the original exit status; it does not roll back or blindly replay. An existing output directory is rejected. Inspect the receipt and resolve the failed operation before defining another authorized invocation; this initial entrypoint does not resume partial remote releases. Interrupts stop owned host/container processes; an unconfirmed container cleanup retains its PID evidence and release lock for diagnosis.
+
+Publication first uploads the complete requested asset set to a draft, compares names/sizes and stored notes, then publishes and downloads the feed for comparison. Stable releases are checked against the remote latest-release record; prereleases are not marked latest. A passed fixture test or successful build does not establish live GitHub delivery, signing, native GUI startup or real-provider acceptance. Report those evidence levels separately. Preserve existing installations, auto-update preferences and unrelated sessions; cache cleanup is not a release requirement.
 
 ## Build and update
 
@@ -116,6 +182,8 @@ python3 scripts/package-updates.py manifest \
   --artifact "linux-aarch64=bin/Achbit-${release_version}-linux-arm64.AppImage" \
   --output bin/latest.json
 ```
+
+For Linux AppImage creation, `package-updates.py` first uses `ACHBIT_APPIMAGE_RUNTIME` when explicitly set, otherwise an architecture-matching `.build-cache/*/runtime-<arch>` file if present. With neither, appimagetool retains its normal download behavior. An invalid explicit path fails instead of silently selecting another runtime. For host activation of the submission script, the explicit runtime must be inside the mounted checkout; the script maps it to its container path.
 
 Keep the private signing key outside the checkout. The local signing command reads `TAURI_SIGNING_PRIVATE_KEY` or `TAURI_SIGNING_PRIVATE_KEY_PATH`; its macOS default is `~/Library/Application Support/Achbit-build/updater.key`. CI can supply the same key and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` through secrets. Back up the existing key: changing the compiled public key does not make already-installed clients trust a new private key.
 

@@ -134,6 +134,7 @@ docker-info:
 	@echo "rustVersion=$(ACHBIT_RUST_VERSION)"
 	@echo "image=$(IMAGE)"
 	@echo "container=$(CONTAINER_NAME)"
+	@echo "workdir=$(WORKDIR_IN_CTNR)"
 	@echo "hostname=$(CONTAINER_HOSTNAME)"
 	@echo "hostPort=$(ACHBIT_HOST_PORT)"
 	@echo "containerPort=$(ACHBIT_CONTAINER_PORT)"

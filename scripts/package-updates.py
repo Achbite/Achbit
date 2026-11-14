@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tarfile
@@ -40,6 +41,22 @@ def macos(app, output):
     print(f'Updater bundle {output}')
 
 
+def appimage_runtime():
+    """Reuse an explicitly selected or cached runtime before appimagetool downloads one."""
+    explicit = os.environ.get('ACHBIT_APPIMAGE_RUNTIME')
+    if explicit:
+        path = Path(explicit)
+        if not path.is_file():
+            raise FileNotFoundError(f'ACHBIT_APPIMAGE_RUNTIME is not a file: {path}')
+        return path.resolve()
+    arch = {'arm64': 'aarch64', 'aarch64': 'aarch64', 'x86_64': 'x86_64'}.get(platform.machine())
+    if arch:
+        cached = sorted(path for path in (ROOT / '.build-cache').glob(f'*/runtime-{arch}') if path.is_file())
+        if cached:
+            return cached[-1]
+    return None
+
+
 def linux(stage, output):
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='appimage-', dir=output.parent) as temporary:
@@ -61,7 +78,13 @@ case "${1:-}" in
 esac
 """)
         launcher.chmod(0o755)
-        subprocess.run(['appimagetool', '--no-appstream', str(appdir), str(output)], check=True)
+        command = ['appimagetool', '--no-appstream']
+        runtime = appimage_runtime()
+        if runtime:
+            command += ['--runtime-file', str(runtime)]
+            print(f'AppImage runtime {runtime}')
+        command += [str(appdir), str(output)]
+        subprocess.run(command, check=True)
     print(f'Updater AppImage {output}')
 
 
@@ -78,13 +101,14 @@ def sign(artifact):
     else:
         relative = artifact.resolve().relative_to(ROOT)
         container = environment.get('CONTAINER_NAME', 'achbit-dev')
+        workdir = environment.get('WORKDIR_IN_CTNR', '/workspace')
         mount = subprocess.check_output(['docker', 'inspect', '-f',
-            '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', container], text=True).strip()
+            '{{range .Mounts}}{{if eq .Destination ' + json.dumps(workdir) + '}}{{.Source}}{{end}}{{end}}', container], text=True).strip()
         if Path(mount).resolve() != ROOT:
             raise ValueError('Signing container mounts another worktree.')
         command = ['docker', 'exec', '-e', 'TAURI_SIGNING_PRIVATE_KEY',
-            '-e', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '-w', '/workspace', container,
-            *command, '/workspace/' + str(relative)]
+            '-e', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '-w', workdir, container,
+            *command, workdir.rstrip('/') + '/' + str(relative)]
     # Signer output may contain key setup hints; only print the public artifact path.
     result = subprocess.run(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode:
