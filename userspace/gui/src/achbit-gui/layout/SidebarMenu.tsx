@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { captureFocusReturn, focusOpenedPanel, useInteractionFocus } from '../../components/shared/interactionFocus';
 import { useDismissibleLayer } from '../../components/shared/useDismissibleLayer';
+import { nextEnabledIndex } from '../../components/shared/keyboardNavigation';
 
 /** Sidebar menus share viewport coordinates with the pointer, outside pane clipping. */
 export default function SidebarMenu({ x, y, className, id, children, onClose }: {
@@ -34,9 +35,7 @@ export default function SidebarMenu({ x, y, className, id, children, onClose }: 
       if (!buttons.length) return;
       event.preventDefault();
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
-        : index < 0 ? (event.key === 'ArrowDown' ? 0 : buttons.length - 1)
-        : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+      const next = nextEnabledIndex(buttons.map(() => true), index, event.key);
       buttons[next]?.focus();
     }}>
     {children}

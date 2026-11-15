@@ -1305,18 +1305,21 @@ function isContextTool(value: unknown): boolean {
           .test(value.pluginUri));
 }
 
+const TOKEN_USAGE_REQUIRED_FIELDS = [
+  'providerCallCount',
+  'reportedCallCount',
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheMissInputTokens',
+  'cacheAvailable',
+  'cacheComplete',
+  'cacheHitRatio',
+] as const;
+const TOKEN_USAGE_OPTIONAL_FIELDS = ['reasoningUsage'] as const;
+
 function isTokenUsage(value: unknown): boolean {
-  return isExactRecord(value, [
-    'providerCallCount',
-    'reportedCallCount',
-    'inputTokens',
-    'outputTokens',
-    'cacheReadInputTokens',
-    'cacheMissInputTokens',
-    'cacheAvailable',
-    'cacheComplete',
-    'cacheHitRatio',
-  ], ['reasoningUsage'])
+  return isExactRecord(value, TOKEN_USAGE_REQUIRED_FIELDS, TOKEN_USAGE_OPTIONAL_FIELDS)
     && isTokenUsageFields(value);
 }
 
@@ -1332,16 +1335,8 @@ function isTokenUsageRound(value: unknown): value is Record<string, unknown> & {
     'title',
     'sequence',
     'startedAt',
-    'providerCallCount',
-    'reportedCallCount',
-    'inputTokens',
-    'outputTokens',
-    'cacheReadInputTokens',
-    'cacheMissInputTokens',
-    'cacheAvailable',
-    'cacheComplete',
-    'cacheHitRatio',
-  ], ['completedAt', 'outcome', 'reasoningUsage'])
+    ...TOKEN_USAGE_REQUIRED_FIELDS,
+  ], ['completedAt', 'outcome', ...TOKEN_USAGE_OPTIONAL_FIELDS])
     && isIdentifier(value.runId)
     && isIdentifier(value.inputMessageId)
     && isNonEmptyText(value.title)

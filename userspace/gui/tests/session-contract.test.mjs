@@ -3590,6 +3590,19 @@ test('picker navigation skips unavailable tools and supports wrapping and tab en
   assert.equal(nextEnabledIndex([false], 0, 'Home'), -1);
   assert.equal(nextEnabledIndex([true, true], 1, 'Home'), 0);
   assert.equal(nextEnabledIndex([true, true], 0, 'End'), 1);
+  // Model and sidebar menus filter disabled buttons before sharing this navigation.
+  for (const key of ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End']) {
+    assert.equal(nextEnabledIndex([], -1, key), -1, `empty menu: ${key}`);
+    assert.equal(nextEnabledIndex([true], -1, key), 0, `single button: ${key}`);
+  }
+  for (const key of ['ArrowDown', 'ArrowRight']) {
+    assert.equal(nextEnabledIndex([true, true, true], -1, key), 0, `neutral focus forward: ${key}`);
+    assert.equal(nextEnabledIndex([true, true, true], 2, key), 0, `forward wrap: ${key}`);
+  }
+  for (const key of ['ArrowUp', 'ArrowLeft']) {
+    assert.equal(nextEnabledIndex([true, true, true], -1, key), 2, `neutral focus backward: ${key}`);
+    assert.equal(nextEnabledIndex([true, true, true], 0, key), 2, `backward wrap: ${key}`);
+  }
 });
 
 test('UI update detection compares entry resources and retains the original load failure', async (t) => {

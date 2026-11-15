@@ -17,6 +17,7 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useViewportBounds } from '../shared/useViewportBounds';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
+import { nextEnabledIndex } from '../shared/keyboardNavigation';
 
 interface SessionModelSelectorProps {
   language: UiLanguage;
@@ -129,10 +130,7 @@ export default function SessionModelSelector({ language, profiles, connections =
             if (!buttons.length) return;
             event.preventDefault();
             const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-            const forward = ['ArrowDown', 'ArrowRight'].includes(event.key);
-            const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
-              : index < 0 ? (forward ? 0 : buttons.length - 1)
-              : (index + (forward ? 1 : -1) + buttons.length) % buttons.length;
+            const next = nextEnabledIndex(buttons.map(() => true), index, event.key);
             buttons[next]?.focus();
           }
         }}>
