@@ -686,8 +686,16 @@ impl SessionProjection {
         }) {
             return Err("shared Session projection has an invalid run status".to_string());
         }
-        if self.mode.as_deref().is_some_and(|mode| !matches!(mode, "minimal" | "full"))
-            || self.run.as_ref().and_then(|run| run.mode.as_deref()).is_some_and(|mode| !matches!(mode, "minimal" | "full")) {
+        if self
+            .mode
+            .as_deref()
+            .is_some_and(|mode| !matches!(mode, "minimal" | "full"))
+            || self
+                .run
+                .as_ref()
+                .and_then(|run| run.mode.as_deref())
+                .is_some_and(|mode| !matches!(mode, "minimal" | "full"))
+        {
             return Err("shared Session projection has an invalid mode".into());
         }
         if self.model_settings.as_ref().is_some_and(|settings| {
