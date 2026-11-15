@@ -47,6 +47,13 @@ function admitCommandBatch(command: ConversationCommand, events: readonly NewSes
       || event.payload.hostBinding.windowLabel !== command.hostBinding.windowLabel) throw new Error('host_rebind_command_event_invalid');
     return;
   }
+  if (command.type === 'session.mode.set') {
+    if (events.length > 1 || events.some(event => event.type !== 'session.mode.updated'
+      || event.payload.commandId !== command.commandId || event.payload.mode !== command.mode)) {
+      throw new Error('session_mode_command_event_invalid');
+    }
+    return;
+  }
   if (command.type !== 'plan.respond') return;
   const decisions = events.filter((event) => (event.type === 'plan.confirmed'
     || event.type === 'plan.revision.requested' || event.type === 'plan.cancelled')
@@ -74,6 +81,9 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     throw new Error('session_event_run_not_active');
   }
   switch (event.type) {
+    case 'session.mode.updated':
+      if (!['minimal', 'full'].includes(event.payload.mode)) throw new Error('session_mode_invalid');
+      break;
     case 'session.subagent-settings.updated':
       decodeAgentSettings(event.payload.settings);
       break;

@@ -5475,6 +5475,17 @@ test('the real Session bridge persists model commands and passes effort through 
     'the ordinary bridge pushes committed changes without a debug subscription');
   assert.ok(notifications.every(value => !('content' in value) && !('messages' in value)));
   assert.equal(prepared.length, 0);
+  for (const mode of ['minimal', 'full']) {
+    const choice = {schemaVersion:'achbit.command.v3',type:'session.mode.set',sessionId,commandId:`command:mode-${mode}`,mode};
+    const result = await send('submit', {command:choice});
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal((await send('snapshot', {sessionId})).data.mode, mode);
+    assert.equal((await send('submit', {command:choice})).data.status, 'replayed');
+  }
+  const invalidMode = await send('submit', {command:{schemaVersion:'achbit.command.v3',type:'session.mode.set',sessionId,commandId:'command:bad-mode',mode:'fast'}});
+  assert.equal(invalidMode.ok, false);
+  assert.equal(invalidMode.error.code, 'conversation_command_invalid');
+  assert.equal(prepared.length, 0, 'mode commands cross the bridge without preparing a run');
   for (const type of ['message.submit', 'context.focus']) {
     const reply = await send('submit', { command: { schemaVersion: 'achbit.command.v3', type, commandId: `command:${type}`, sessionId, [type === 'message.submit' ? 'text' : 'task']: 'Inspect source.', reasoningEffortOverride: 'low' } });
     assert.equal(reply.ok, false);

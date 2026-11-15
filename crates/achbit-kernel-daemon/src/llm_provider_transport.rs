@@ -18,36 +18,12 @@ pub(crate) fn anthropic_stream_request_body(
         "max_tokens": max_tokens,
         "stream": true,
     });
-    if profile.provider_flavor.as_deref() == Some("deepseek") {
-        if let Some(thinking) = &profile.thinking {
-            body["thinking"] = json!({"type": thinking});
-        }
-        if let Some(effort) = &profile.reasoning_effort {
-            body["output_config"] = json!({"effort": effort});
-        }
-    } else if matches!(
-        profile.connection.adapter_id.as_str(),
-        "minimax"
-            | "minimax-cn"
-            | "minimax-coding"
-            | "minimax-coding-cn"
-            | "kimi-coding"
-            | "kimi-coding-global"
-    ) {
-        if let Some(thinking) = &profile.thinking {
-            body["thinking"] =
-                json!({"type": if thinking == "enabled" { "adaptive" } else { thinking }});
-        }
-        if let Some(effort) = &profile.reasoning_effort {
-            body["output_config"] = json!({"effort": effort});
-        }
-    } else if profile.thinking.as_deref() == Some("enabled") {
-        if max_tokens > 1024 {
-            body["thinking"] = json!({
-                "type": "enabled",
-                "budget_tokens": (max_tokens / 2).max(1024).min(max_tokens - 1),
-            });
-        }
+    let controls = crate::llm_protocol::anthropic_controls(profile, max_tokens)?;
+    if let Some(thinking) = controls.thinking {
+        body["thinking"] = thinking;
+    }
+    if let Some(effort) = controls.effort {
+        body["output_config"] = json!({"effort":effort});
     }
     if !system.is_empty() {
         body["system"] = json!(system);
@@ -148,6 +124,12 @@ fn anthropic_messages(
 fn anthropic_assistant_message(
     message: &LocalProviderMessage,
 ) -> Result<Value, ProviderTransportError> {
+    if let Some(replay) = &message.provider_replay {
+        replay.validate().map_err(|error| {
+            ProviderTransportError::message("provider_native_replay_invalid", error)
+        })?;
+        return Ok(json!({"role":"assistant", "content": replay.content}));
+    }
     let mut content = Vec::new();
     if let Some(reasoning) = message
         .reasoning_content
@@ -195,12 +177,16 @@ fn anthropic_assistant_message(
 }
 
 fn append_anthropic_tool_result(messages: &mut Vec<Value>, message: &LocalProviderMessage) {
-    let block = json!({
+    let mut block = json!({
         "type": "tool_result",
         "tool_use_id": message.provider_call_id.as_deref()
             .expect("validated tool message has providerCallId"),
         "content": message.content
     });
+    if let Some(outcome) = message.tool_outcome {
+        block["is_error"] =
+            json!(outcome != crate::local_agent_api::ProviderToolOutcome::Completed);
+    }
     if let Some(content) = messages
         .last_mut()
         .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"))
@@ -223,6 +209,7 @@ pub(crate) fn ollama_stream_request_body(
     messages: &[LocalProviderMessage],
     tools: &[LlmToolDefinition],
 ) -> Result<Value, ProviderTransportError> {
+    let thinking = crate::llm_protocol::ollama_thinking(profile)?;
     let mut tool_names = HashMap::new();
     let mut chat_messages = Vec::with_capacity(messages.len());
     for message in messages {
@@ -281,7 +268,7 @@ pub(crate) fn ollama_stream_request_body(
         "model": profile.model,
         "messages": chat_messages,
         "stream": true,
-        "think": profile.thinking.as_deref() == Some("enabled"),
+        "think": thinking,
     });
     body["options"] = json!({
         "num_predict": profile
@@ -307,6 +294,124 @@ pub(crate) fn ollama_stream_request_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thinking_controls_follow_shared_model_policy_without_clamping_explicit_effort() {
+        let mut adaptive = profile("anthropic");
+        adaptive.model = "claude-opus-4-7".into();
+        adaptive.thinking = Some("enabled".into());
+        adaptive.reasoning_effort = Some("xhigh".into());
+        let body = anthropic_stream_request_body(&adaptive, &[], &[]).unwrap();
+        assert_eq!(body["thinking"], json!({"type":"adaptive"}));
+        assert_eq!(body["output_config"]["effort"], "xhigh");
+        adaptive.model = "claude-sonnet-4-6".into();
+        assert_eq!(
+            anthropic_stream_request_body(&adaptive, &[], &[])
+                .unwrap_err()
+                .code,
+            "provider_reasoning_effort_unsupported"
+        );
+        adaptive.model = "claude-sonnet-5-5".into();
+        adaptive.thinking = Some("disabled".into());
+        assert_eq!(
+            anthropic_stream_request_body(&adaptive, &[], &[])
+                .unwrap_err()
+                .code,
+            "provider_thinking_disable_unsupported"
+        );
+        adaptive.model = "claude-opus-5-5".into();
+        adaptive.reasoning_effort = Some("low".into());
+        assert_eq!(
+            anthropic_stream_request_body(&adaptive, &[], &[])
+                .unwrap_err()
+                .code,
+            "provider_thinking_disable_unsupported"
+        );
+        let mut manual = profile("anthropic");
+        manual.model = "claude-sonnet-4-5".into();
+        manual.thinking = Some("enabled".into());
+        let body = anthropic_stream_request_body(&manual, &[], &[]).unwrap();
+        assert_eq!(
+            body["thinking"],
+            json!({"type":"enabled","budget_tokens":2048})
+        );
+        manual.max_output_tokens = Some(1024);
+        assert_eq!(
+            anthropic_stream_request_body(&manual, &[], &[])
+                .unwrap_err()
+                .code,
+            "provider_thinking_budget_invalid"
+        );
+        let mut ollama = profile("ollama");
+        ollama.kind = "ollama".into();
+        ollama.model = "gpt-oss:20b".into();
+        ollama.thinking = Some("enabled".into());
+        ollama.reasoning_effort = Some("high".into());
+        assert_eq!(
+            ollama_stream_request_body(&ollama, &[], &[]).unwrap()["think"],
+            "high"
+        );
+        ollama.reasoning_effort = Some("max".into());
+        assert_eq!(
+            ollama_stream_request_body(&ollama, &[], &[])
+                .unwrap_err()
+                .code,
+            "provider_reasoning_effort_unsupported"
+        );
+        ollama.thinking = Some("disabled".into());
+        assert_eq!(
+            ollama_stream_request_body(&ollama, &[], &[])
+                .unwrap_err()
+                .code,
+            "provider_thinking_disable_unsupported"
+        );
+        ollama.model = "qwen3:8b".into();
+        ollama.thinking = Some("enabled".into());
+        ollama.reasoning_effort = Some("high".into());
+        assert_eq!(
+            ollama_stream_request_body(&ollama, &[], &[])
+                .unwrap_err()
+                .code,
+            "provider_reasoning_effort_unsupported"
+        );
+        ollama.thinking = Some("disabled".into());
+        ollama.reasoning_effort = None;
+        assert_eq!(
+            ollama_stream_request_body(&ollama, &[], &[]).unwrap()["think"],
+            false
+        );
+    }
+
+    #[test]
+    fn anthropic_tool_error_flag_follows_terminal_facts_without_changing_result_text() {
+        for outcome in [
+            "completed",
+            "denied",
+            "failed",
+            "cancelled",
+            "inputRejected",
+            "notExecuted",
+            "indeterminate",
+        ] {
+            let messages: Vec<LocalProviderMessage> = serde_json::from_value(json!([
+                {"role":"assistant","content":"","toolCalls":[{"callId":"logical:1","providerCallId":"native:1","name":"read","input":{}}]},
+                {"role":"tool","toolCallId":"logical:1","providerCallId":"native:1","toolOutcome":outcome,"content":"Original result, including partial effects."}
+            ])).unwrap();
+            let original = serde_json::to_value(&messages).unwrap();
+            let body =
+                anthropic_stream_request_body(&profile("anthropic"), &messages, &[]).unwrap();
+            assert_eq!(
+                body["messages"][1]["content"][0]["is_error"],
+                outcome != "completed"
+            );
+            assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "native:1");
+            assert_eq!(
+                body["messages"][1]["content"][0]["content"],
+                messages[1].content
+            );
+            assert_eq!(serde_json::to_value(&messages).unwrap(), original);
+        }
+    }
 
     fn profile(adapter: &str) -> ResolvedLlmProfile {
         ResolvedLlmProfile {

@@ -1,3 +1,5 @@
+import thinkingPolicies from './modelThinkingPolicies.json' with { type: 'json' };
+
 export type LlmProviderKind =
   | 'openaiCompatible'
   | 'responses'
@@ -10,9 +12,21 @@ export type LlmReasoningEffort = typeof LLM_REASONING_EFFORTS[number];
 export function isLlmReasoningEffort(value: unknown): value is LlmReasoningEffort {
   return typeof value === 'string' && LLM_REASONING_EFFORTS.some(effort => effort === value);
 }
-type ModelThinkingProfile = Pick<LlmProviderProfile, 'providerFlavor'> & Partial<Pick<LlmProviderProfile, 'model'>>;
+type ModelThinkingProfile = Pick<LlmProviderProfile, 'providerFlavor'> & Partial<Pick<LlmProviderProfile, 'model' | 'kind' | 'reasoningEffort'>>;
+function anthropicThinkingPolicy(profile?: ModelThinkingProfile) {
+  if (profile?.kind !== 'anthropic' || profile.providerFlavor === 'deepseek') return undefined;
+  return thinkingPolicies.anthropicAdaptive.find(rule => profile.model?.startsWith(rule.prefix))
+    ?? thinkingPolicies.anthropicManual.find(rule => profile.model?.startsWith(rule.prefix));
+}
 export function modelReasoningEfforts(profile?: ModelThinkingProfile): readonly LlmReasoningEffort[] {
   const model = profile?.model ?? '';
+  const declared = profile?.kind === 'ollama'
+    ? (thinkingPolicies.ollamaAlwaysThinking.includes(model.split(':')[0]!) ? thinkingPolicies.ollamaEfforts : [])
+    : anthropicThinkingPolicy(profile)?.efforts;
+  if (declared) return declared.map(value => {
+    if (!isLlmReasoningEffort(value)) throw new Error('model_thinking_policy_invalid');
+    return value;
+  });
   if (profile?.providerFlavor === 'deepseek'
     || profile?.providerFlavor === 'zhipu' && model === 'glm-5.3') return ['low', 'high', 'max'];
   if (profile?.providerFlavor === 'moonshot') {
@@ -24,7 +38,11 @@ export function modelReasoningEfforts(profile?: ModelThinkingProfile): readonly 
 export type LlmThinkingMode = 'enabled' | 'disabled';
 export function modelThinkingModes(profile?: ModelThinkingProfile): readonly LlmThinkingMode[] {
   const model = profile?.model ?? '';
-  const required = profile?.providerFlavor === 'zhipu' && model === 'glm-5.3'
+  const adaptive = anthropicThinkingPolicy(profile);
+  const declaredRequired = adaptive?.disable === 'never'
+    || adaptive?.disable === 'throughHigh' && ['xhigh', 'max'].includes(profile?.reasoningEffort ?? '')
+    || profile?.kind === 'ollama' && thinkingPolicies.ollamaAlwaysThinking.includes(model.split(':')[0]);
+  const required = declaredRequired || profile?.providerFlavor === 'zhipu' && model === 'glm-5.3'
     || profile?.providerFlavor === 'moonshot' && (model.startsWith('kimi-k3') || ['k3.1-pro', 'k3.1-pro-highspeed'].includes(model))
     || profile?.providerFlavor === 'openai' && ['gpt-6-astra', 'gpt-6.1-sol', 'MiniMax-M3.1-Flash'].includes(model);
   return required ? ['enabled'] : ['enabled', 'disabled'];

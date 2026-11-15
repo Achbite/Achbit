@@ -1,13 +1,23 @@
-/** Stable, tool-independent instructions shared by all coding sessions. */
-export const stableCoreInstructions = Object.freeze([{
-  id: 'achbit.coding-agent',
-  text: "You are a coding assistant running inside Achbit. Help the user understand projects, investigate problems, inspect and change files, run commands, and deliver verifiable results. Follow the user's goal, the task stage, and the project's instructions.",
-}, {
-  id: 'achbit.reply-format',
-  text: `<response>
+/** One shared preamble; the full context inserts detail without replacing its base sentences. */
+export function corePromptInstructions(expanded = true) {
+  return [{
+    id: 'achbit.coding-agent',
+    text: [
+      'You are a coding assistant running inside Achbit, a coding agent harness.',
+      ...(expanded ? ['Help the user understand projects, investigate problems, and deliver verifiable results.'] : []),
+      'Help users inspect files, run commands, and modify code.',
+      ...(expanded ? ["Follow the user's goal, the task stage, and the project's instructions."] : []),
+    ].join(' '),
+  }, ...(expanded ? [{
+    id: 'achbit.reply-format',
+    text: `<response>
 - Follow the requested response format and response language.
 - Match detail to the task. Include the evidence needed to understand the result, without repetition or courtesy filler.
 - Use clickable file links with readable paths and relevant line numbers.
 - Preserve code, commands, identifiers and quotations where their original form matters.
 </response>`,
-}]);
+  }] : [])];
+}
+
+/** Stable instruction identities also identify the non-dynamic portion of context receipts. */
+export const stableCoreInstructions = Object.freeze(corePromptInstructions());

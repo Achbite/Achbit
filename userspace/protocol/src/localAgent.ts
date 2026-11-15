@@ -522,7 +522,11 @@ export type MessageFeedback = 'up' | 'down';
 
 export interface HostWindowBinding { hostInstanceId: string; windowLabel: string }
 
+/** Full restores the creation recipe; minimal narrows it without granting permissions. */
+export type SessionMode = 'minimal' | 'full';
+
 export type ConversationCommand =
+  | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.mode.set'; commandId: string; sessionId: string; mode: SessionMode }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.workspaces.set'; commandId: string; sessionId: string; workspaceBindings: WorkspaceBindingDisplay[] }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.subagent-settings.set'; commandId: string; sessionId: string; settings: AgentSettings }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'run.host.rebind'; commandId: string; sessionId: string; runId: string; expectedHostBinding: HostWindowBinding; hostBinding: HostWindowBinding }
@@ -701,6 +705,30 @@ export interface ProviderToolCallInput {
   error?: LocalAgentError & { issues: ToolInputIssue[] };
 }
 
+/** Adapter-owned native content; signatures and redacted data are opaque and retain block order. */
+export interface ProviderNativeReplay {
+  apiSurface: 'anthropicMessages';
+  content: JsonObject[];
+}
+
+export function decodeProviderNativeReplay(value: unknown): ProviderNativeReplay {
+  const object = (item: unknown): item is JsonObject => !!item && typeof item === 'object' && !Array.isArray(item);
+  if (!object(value) || Object.keys(value).some(key => key !== 'apiSurface' && key !== 'content')
+    || value.apiSurface !== 'anthropicMessages' || !Array.isArray(value.content) || !value.content.length) {
+    throw new Error('provider_native_replay_invalid');
+  }
+  for (const block of value.content) {
+    if (!object(block)) throw new Error('provider_native_replay_invalid');
+    const valid = block.type === 'text' ? typeof block.text === 'string'
+      : block.type === 'thinking' ? typeof block.thinking === 'string' && (block.signature === undefined || typeof block.signature === 'string')
+      : block.type === 'redacted_thinking' ? typeof block.data === 'string' && block.data.length > 0
+      : block.type === 'tool_use' && typeof block.id === 'string' && block.id.length > 0
+        && typeof block.name === 'string' && block.name.length > 0 && object(block.input);
+    if (!valid) throw new Error('provider_native_replay_invalid');
+  }
+  return { apiSurface: 'anthropicMessages', content: structuredClone(value.content) as JsonObject[] };
+}
+
 export type ProviderTurnSettlement = {
   providerRequestId: string;
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
@@ -710,6 +738,7 @@ export type ProviderTurnSettlement = {
   | {
       outcome: 'completed';
       orderedCallIds: string[];
+      providerReplay?: ProviderNativeReplay;
       reasoningContent?: string;
       reasoningSignature?: string;
       hostedWebSearchCalls?: JsonObject[];
@@ -719,6 +748,8 @@ export type ProviderTurnSettlement = {
   | {
       outcome: 'failed' | 'indeterminate';
       error: LocalAgentError;
+      /** Truncated Agent output only: every raw call is rejected, none requested an effect. */
+      toolCallInputs?: ProviderToolCallInput[];
     }
 );
 
@@ -751,6 +782,8 @@ export interface ProviderTokenUsage {
   /** Complete input including cache reads/writes exactly once; normalized by Provider adapter. */
   inputTokens: number;
   outputTokens: number;
+  /** Actual reported subset of outputTokens; omitted when the Provider does not report it. */
+  reasoningOutputTokens?: number;
   contextWindowTokens: number;
   cacheReadInputTokens?: number;
   /** Ordinary input + cache writes; together with reads exactly partitions inputTokens. */
@@ -766,6 +799,8 @@ export interface ContextUsageProjection extends ProviderTokenUsage {
 }
 
 export interface TokenUsageProjection {
+  /** Known reasoning subset and its coverage; absent when no call reported it. */
+  reasoningUsage?: { outputTokens: number; reportedCallCount: number; complete: boolean };
   providerCallCount: number;
   reportedCallCount: number;
   inputTokens: number;
@@ -995,6 +1030,7 @@ export interface EffectPreview {
 }
 
 export type SessionEvent =
+  | (SessionEventBase & { type: 'session.mode.updated'; payload: { commandId: string; mode: SessionMode } })
   | (SessionEventBase & { type: 'artifacts.presented'; runId: string; callId: string; payload: {
       providerCallId: string;
       items: Array<{ artifactId: string; label: string; deliveryId: string }>;
@@ -1557,6 +1593,8 @@ export const RUN_PROJECTION_STATUSES = [
 export type RunProjectionStatus = typeof RUN_PROJECTION_STATUSES[number];
 
 export interface RunProjection {
+  /** Captured mode; a later Session selection does not change this run. */
+  mode?: SessionMode;
   runId: string;
   /** Current GUI target, changed only by an explicit user rebind command. */
   hostBinding?: HostWindowBinding;
@@ -1767,6 +1805,8 @@ export interface QueuedInputProjection {
 }
 
 export interface SessionProjection {
+  /** Saved selection for the next run. */
+  mode?: SessionMode;
   contextHandoff?: { runId: string; historyThroughSequence: number; previousProfileId: string; profileId: string; status: 'reading' | 'ready' };
   subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
@@ -1857,6 +1897,8 @@ export interface ConversationReadResult {
   nextBefore: number | null;
 }
 
+export type ModelToolOutcome = 'completed' | 'denied' | 'failed' | 'cancelled' | 'inputRejected' | 'notExecuted' | 'indeterminate';
+
 export interface ModelMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
@@ -1867,8 +1909,11 @@ export interface ModelMessage {
   files?: readonly { workspaceId: string; logicalPath: string; mediaType: string; displayName: string }[];
   reasoningContent?: string;
   reasoningSignature?: string;
+  providerReplay?: ProviderNativeReplay;
   toolCallId?: string;
   providerCallId?: string;
+  /** Terminal tool fact, separate from its textual result; never inferred by an adapter. */
+  toolOutcome?: ModelToolOutcome;
   toolCalls?: readonly ModelToolCall[];
   providerItems?: readonly JsonObject[];
   providerOutputBlocks?: readonly ProviderOutputBlock[];
@@ -1967,6 +2012,7 @@ export type ProviderEvent = { providerAttemptId?: string } & (
       data: {
         messageId: string;
         content: string;
+        providerReplay?: ProviderNativeReplay;
         reasoningContent?: string;
         reasoningSignature?: string;
       };
@@ -2065,6 +2111,8 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  /** Captured at run preparation, independent of later Session selections. */
+  mode?: SessionMode;
   /** Model-facing coding interface selected by the Session context contribution. */
   codingTools?: true;
   /** Explicit confirmation requested for this run only. */

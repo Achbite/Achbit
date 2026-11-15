@@ -1,6 +1,6 @@
 import { permissionSettings, decodeAgentCapabilities, decodeAgentSettings, decodeAgentModelParameters, decodeContextManagementSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { isManagedProcessSnapshot, type ManagedProcessSnapshot, type ProcessReadRequest } from '@achbit/protocol';
-import { isLocalAgentErrorValue } from '@achbit/protocol';
+import { isLocalAgentErrorValue, decodeProviderNativeReplay } from '@achbit/protocol';
 import type {
   JsonObject,
   AgentHostPort,
@@ -504,7 +504,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'environment',
       'agentCapabilities',
       'contextManagement',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions', 'mode'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -519,6 +519,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       kernelCatalogSnapshotRef: value.kernelCatalogSnapshotRef,
     };
     try {
+      if (value.mode !== undefined && value.mode !== 'minimal' && value.mode !== 'full') throw new Error('session_mode_invalid');
       const agentCapabilities = decodeAgentCapabilities(value.agentCapabilities);
       const toolSelection = value.toolSelection === undefined ? undefined : decodeAgentToolSelection(value.toolSelection);
       if (value.agentToolsEnabled !== undefined && typeof value.agentToolsEnabled !== 'boolean') throw new Error('agent_runtime_capabilities_invalid');
@@ -561,6 +562,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       ], previousProviderToolAliases, this.#codingTools);
       return {
         runtimeSnapshot: Object.freeze({
+          ...(value.mode ? { mode: value.mode as 'minimal' | 'full' } : {}),
           ...(this.#codingTools ? { codingTools: true as const } : {}),
           contextManagement: decodeContextManagementSettings(value.contextManagement),
           agentCapabilities,
@@ -577,7 +579,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
             ...this.#instructions, environmentInstruction(value.environment),
-            ...projectInstructionContributions(value.projectInstructions),
+            ...projectInstructionContributions(value.projectInstructions, this.#codingTools),
             ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
           ])],
           tools,
@@ -620,7 +622,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
   }
 }
 
-function projectInstructionContributions(value: unknown): InstructionContribution[] {
+function projectInstructionContributions(value: unknown, coding = false): InstructionContribution[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error('run_runtime_project_instructions_invalid');
   const sources = value.map(source => {
@@ -631,9 +633,11 @@ function projectInstructionContributions(value: unknown): InstructionContributio
   if (sources.length === 0) return [];
   return [{
     id: 'achbit.project-instructions',
-    text: 'Project instructions apply to the directory containing each file and its descendants. '
-      + 'More specific instructions take precedence within their scope.\n\n'
-      + sources.map(source => `Instructions from ${JSON.stringify(source.path)}:\n${source.text}`).join('\n\n'),
+    text: ['Project-specific instructions and guidelines:',
+      ...(!coding ? ['Project instructions apply to the directory containing each file and its descendants. '
+        + 'More specific instructions take precedence within their scope.'] : []),
+      ...sources.map(source => `<project_instructions path=${JSON.stringify(source.path)}>\n${source.text}\n</project_instructions>`),
+    ].join('\n\n'),
   }];
 }
 
@@ -910,6 +914,10 @@ function decodeProviderFrame(frame: string): ProviderEvent {
         const fields = ['messageId', 'content'];
         if (Object.hasOwn(value.data, 'reasoningContent')) fields.push('reasoningContent');
         if (Object.hasOwn(value.data, 'reasoningSignature')) fields.push('reasoningSignature');
+        if (Object.hasOwn(value.data, 'providerReplay')) {
+          fields.push('providerReplay');
+          decodeProviderNativeReplay(value.data.providerReplay);
+        }
       if (
         !isExactRecord(value.data, fields)
         || !isNonEmptyText(value.data.messageId)
@@ -919,7 +927,7 @@ function decodeProviderFrame(frame: string): ProviderEvent {
         || value.data.reasoningSignature !== undefined
           && !isNonEmptyText(value.data.reasoningSignature)
         || value.data.reasoningSignature !== undefined
-          && value.data.reasoningContent === undefined
+          && (value.data.reasoningContent === undefined || value.data.providerReplay !== undefined)
       ) throw new LoopFailure('provider_event_invalid', 'Provider 事件字段不符合协议。');
       break;
       }

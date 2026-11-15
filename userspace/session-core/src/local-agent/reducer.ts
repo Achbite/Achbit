@@ -1,7 +1,7 @@
 import { isHandoffRead } from './modelContext.js';
 import { shellCommandIntents } from './shellIntent.js';
 import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from './agentLifecycle.js';
-import { isManagedProcessSnapshot, providerRuntimeForPurpose } from '@achbit/protocol';
+import { isManagedProcessSnapshot, providerRuntimeForPurpose, decodeProviderNativeReplay } from '@achbit/protocol';
 import { advanceDeliverables, compareDeliverables } from './deliverables.js';
 import { advanceTodoList } from './todoState.js';
 import { providerTextStreamId } from './streamIdentity.js';
@@ -21,6 +21,7 @@ import type {
   PlanProjection,
   ProviderOutputBlock,
   ProviderToolCallInput,
+  ProviderNativeReplay,
   RunSettlement,
   RunProjection,
   RunRuntimeSnapshot,
@@ -41,6 +42,7 @@ import {
 } from '@achbit/protocol';
 
 export interface SessionState {
+  mode: NonNullable<SessionProjection['mode']>;
   contextHandoff?: SessionProjection['contextHandoff'];
   subagentSettings?: SessionProjection['subagentSettings'];
   recipe?: SessionProjection['recipe'];
@@ -100,6 +102,7 @@ export interface ProviderTurnState {
   providerRuntimeRef: string;
   outcome: 'completed' | 'failed' | 'cancelled' | 'indeterminate';
   orderedCallIds?: string[];
+  providerReplay?: ProviderNativeReplay;
   reasoningContent?: string;
   reasoningSignature?: string;
   hostedWebSearchCalls?: Record<string, unknown>[];
@@ -122,6 +125,7 @@ export function emptySessionState(sessionId: string): SessionState {
     runTimings: {}, providerAttempts: {}, failureSnapshots: {},
     permissionOverrides: {}, shellAuthorizations: [],
     modelSettings: null,
+    mode: 'full',
     sessionId,
     revision: 0,
     display: { creationTitle: '新对话' },
@@ -303,6 +307,9 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       writableRecord(next, 'activities')[activityId] = { ...next.activities[activityId], approvalReview: review };
       break;
     }
+    case 'session.mode.updated':
+      next.mode = event.payload.mode;
+      break;
     case 'session.model-settings.updated':
       next.modelSettings = { ...event.payload.settings };
       break;
@@ -379,6 +386,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       }
       next.run = {
         ...lifecycle!.run!,
+        mode: event.payload.runtimeSnapshot.mode ?? 'full',
         ...(event.payload.runtimeSnapshot.environment.hostBinding
           ? { hostBinding: structuredClone(event.payload.runtimeSnapshot.environment.hostBinding) as unknown as NonNullable<RunProjection['hostBinding']> } : {}),
         workspaceBindings: event.payload.workspaceBindings.map((binding) => ({ ...binding })),
@@ -952,6 +960,15 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       const currentTurnCallIds = currentTurnCallFacts.map(([callId]) => callId);
       const settlement = event.payload;
       if (settlement.outcome === 'completed') {
+        if (settlement.providerReplay !== undefined) {
+          const native = decodeProviderNativeReplay(settlement.providerReplay);
+          if (providerRuntimeForPurpose(runtime, settlement.purpose).apiSurface !== native.apiSurface
+            || settlement.orderedOutputBlocks !== undefined || settlement.hostedWebSearchCalls !== undefined
+            || settlement.reasoningSignature !== undefined) throw new Error('provider_native_replay_source_mismatch');
+          const calls = native.content.filter(block => block.type === 'tool_use');
+          if (calls.length !== (settlement.toolCallInputs?.length ?? 0)
+            || calls.some((block, index) => block.id !== settlement.toolCallInputs?.[index]?.providerCallId)) throw new Error('provider_native_replay_calls_mismatch');
+        }
         if (settlement.purpose === 'approvalReview'
           && (currentTurnCallFacts.some(([, fact]) => !['fs.read', 'session.read'].includes(fact.toolName))
             || settlement.hostedWebSearchCalls?.length
@@ -1008,6 +1025,15 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       } else if (currentTurnCallIds.length > 0) {
         throw new Error('provider_turn_terminal_call_facts_invalid');
       }
+      if (settlement.outcome !== 'completed' && settlement.outcome !== 'cancelled' && settlement.toolCallInputs) {
+        const calls = settlement.toolCallInputs;
+        if (settlement.outcome !== 'failed' || settlement.purpose !== 'agent' || settlement.error.code !== 'provider_output_truncated'
+          || !calls.length || new Set(calls.map(call => call.callId)).size !== calls.length
+          || new Set(calls.map(call => call.providerCallId)).size !== calls.length
+          || calls.some(call => !call.error || !['provider_output_truncated', 'provider_tool_alias_unknown'].includes(call.error.code))) {
+          throw new Error('provider_truncated_calls_invalid');
+        }
+      }
       next.providerTurns[event.payload.providerRequestId] = {
         runId: event.runId,
         providerRequestId: event.payload.providerRequestId,
@@ -1017,6 +1043,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         ...(event.payload.outcome === 'completed'
           ? {
               orderedCallIds: [...event.payload.orderedCallIds],
+              ...(event.payload.providerReplay ? { providerReplay: decodeProviderNativeReplay(event.payload.providerReplay) } : {}),
               ...(event.payload.toolCallInputs ? { toolCallInputs: structuredClone(event.payload.toolCallInputs) } : {}),
               ...(event.payload.reasoningContent !== undefined
                 ? { reasoningContent: event.payload.reasoningContent }
@@ -1039,10 +1066,11 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
                   }
                 : {}),
             }
-          : event.payload.outcome === 'cancelled' ? {} : { error: { ...event.payload.error } }),
+          : event.payload.outcome === 'cancelled' ? {} : { error: { ...event.payload.error },
+            ...(event.payload.toolCallInputs ? { toolCallInputs: structuredClone(event.payload.toolCallInputs) } : {}) }),
         sequence: event.sequence,
       };
-      if (settlement.outcome === 'completed') {
+      if (settlement.outcome !== 'cancelled') {
         for (const call of settlement.toolCallInputs ?? []) {
           if (!call.error) continue;
           if (next.providerCallFacts[call.callId] || next.activities[toolActivityId(call.callId)]) {
@@ -1054,7 +1082,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
             inputRejection: structuredClone(call.error),
           };
         }
-        for (const block of settlement.orderedOutputBlocks ?? []) {
+        for (const block of settlement.outcome === 'completed' ? settlement.orderedOutputBlocks ?? [] : []) {
           if (block.kind === 'toolCallRejected') {
             if (next.providerCallFacts[block.callId] || next.activities[toolActivityId(block.callId)]) {
               throw new Error('provider_turn_rejected_call_identity_duplicate');
@@ -1374,6 +1402,7 @@ export function projectSession(
     revision: state.revision,
     display: { ...state.display },
     modelSettings: state.modelSettings ? { ...state.modelSettings } : null,
+    mode: state.mode,
     workspaceBindings: state.workspaceBindings.map((binding) => ({ ...binding })),
     sessionDirectoryIndexes: state.sessionDirectoryIndexes.map((binding) => ({ ...binding })),
     messages: state.messages.map((message) => ({
@@ -2487,8 +2516,13 @@ function withProviderUsage<T extends SessionProjection['tokenUsage']>(
   reported: Extract<SessionEvent, { type: 'context.updated' }>['payload'],
 ): T {
   const cacheReported = reported.cacheReadInputTokens !== undefined;
+  if (reported.reasoningOutputTokens !== undefined && (!isNaturalSafeInteger(reported.reasoningOutputTokens)
+    || reported.reasoningOutputTokens > reported.outputTokens)) throw new Error('provider_usage_reasoning_invalid');
+  const reasoning = reported.reasoningOutputTokens === undefined ? undefined
+    : { outputTokens: reported.reasoningOutputTokens, reportedCallCount: 1, complete: false };
   return recomputeCacheAggregate({
     ...usage,
+    ...combinedReasoningUsage(usage.reasoningUsage, reasoning),
     reportedCallCount: addTokenCount(usage.reportedCallCount, cacheReported ? 1 : 0),
     inputTokens: addTokenCount(usage.inputTokens, reported.inputTokens),
     outputTokens: addTokenCount(usage.outputTokens, reported.outputTokens),
@@ -2503,12 +2537,23 @@ function withProviderUsage<T extends SessionProjection['tokenUsage']>(
   });
 }
 
+function combinedReasoningUsage(left: SessionProjection['tokenUsage']['reasoningUsage'],
+  right: SessionProjection['tokenUsage']['reasoningUsage']): Pick<SessionProjection['tokenUsage'], 'reasoningUsage'> {
+  if (!left && !right) return {};
+  return { reasoningUsage: {
+    outputTokens: addTokenCount(left?.outputTokens ?? 0, right?.outputTokens ?? 0),
+    reportedCallCount: addTokenCount(left?.reportedCallCount ?? 0, right?.reportedCallCount ?? 0),
+    complete: false,
+  } };
+}
+
 export function combineTokenUsage(
   own: SessionProjection['tokenUsage'],
   descendant: SessionProjection['tokenUsage'],
 ): SessionProjection['tokenUsage'] {
   return recomputeCacheAggregate({
     ...own,
+    ...combinedReasoningUsage(own.reasoningUsage, descendant.reasoningUsage),
     providerCallCount: addTokenCount(own.providerCallCount, descendant.providerCallCount),
     reportedCallCount: addTokenCount(own.reportedCallCount, descendant.reportedCallCount),
     inputTokens: addTokenCount(own.inputTokens, descendant.inputTokens),
@@ -2546,6 +2591,8 @@ function recomputeCacheAggregate<T extends SessionProjection['tokenUsage']>(usag
   const cacheAvailable = usage.reportedCallCount > 0;
   return {
     ...usage,
+    ...(usage.reasoningUsage ? { reasoningUsage: { ...usage.reasoningUsage,
+      complete: usage.providerCallCount > 0 && usage.reasoningUsage.reportedCallCount === usage.providerCallCount } } : {}),
     cacheAvailable,
     cacheComplete: usage.providerCallCount > 0
       && usage.reportedCallCount === usage.providerCallCount,

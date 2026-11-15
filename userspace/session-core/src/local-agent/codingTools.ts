@@ -4,90 +4,98 @@ export const codingToolNames = new Map([
   ['fs.read', 'read'], ['bash', 'bash'], ['powershell', 'powershell'], ['fs.edit', 'edit'], ['fs.write', 'write'],
 ]);
 
-/** Compose only the basic operations the model can call in this stage, using its actual wire names. */
-export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], aliases: ReadonlyMap<string, string>): RunRuntimeSnapshot['instructions'][number] | undefined {
-  const descriptions: string[] = [];
-  const rules: string[] = [];
-  const active = new Set(tools.filter(tool => tool.origin === 'coreBuiltin').map(tool => tool.name));
-  for (const canonical of codingToolNames.keys()) {
-    const name = aliases.get(canonical);
-    if (!name || !active.has(canonical)) continue;
-    switch (canonical) {
-      case 'fs.read':
-        descriptions.push(`- ${name}: Read file or directory contents.`);
-        rules.push(`- Use ${name} to examine files. Use paths observed in listings, tool results or user input; do not guess generated filenames.`,
-          '- Read generated output after its producing command has completed. If a path is missing, inspect the producer result and containing directory before retrying.',
-          '- Follow returned cursors or full-output paths when content is truncated. A summary or excerpt does not establish that the full content was reviewed.');
-        break;
-      case 'bash':
-        descriptions.push(`- ${name}: Execute Bash commands.`);
-        rules.push(`- Use ${name} for file operations like ls, rg and find, and to run project commands.`);
-        break;
-      case 'powershell':
-        descriptions.push(`- ${name}: Execute PowerShell commands.`);
-        rules.push(`- Use ${name} for file operations like Get-ChildItem and Select-String, and to run project commands.`);
-        break;
-      case 'fs.edit':
-        descriptions.push(`- ${name}: Make precise file edits with exact text replacement, including multiple disjoint edits in one call.`);
-        rules.push(`- Use ${name} for targeted changes. Read the relevant content before editing. Batch changes to one file in a single call.`,
-          '- Each edits[].oldText must exactly and uniquely match the original file. Keep matches short and non-overlapping. Merge nearby changes without including large unchanged regions.');
-        break;
-      case 'fs.write':
-        descriptions.push(`- ${name}: Create or overwrite files.`);
-        rules.push(`- Use ${name} only for new files or complete rewrites.`);
-        break;
-    }
+/** Shared tools/rules slices for every context; expanded guidance is inserted, never substituted. */
+export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], aliases: ReadonlyMap<string, string>,
+  expanded = true): RunRuntimeSnapshot['instructions'][number] | undefined {
+  const active = tools.filter(tool => tool.availability === 'callable');
+  const ordered = [...codingToolNames.keys()].flatMap(name => active.filter(tool => tool.origin === 'coreBuiltin' && tool.name === name));
+  const descriptions: string[] = [], rules = new Set<string>();
+  const shell = ordered.find(tool => tool.name === 'bash' || tool.name === 'powershell');
+  if (shell && aliases.has(shell.name)) {
+    for (const rule of codingToolGuidance(shell.name, aliases.get(shell.name)!)!.guidelines) rules.add(rule);
+  }
+  // Optional tools retain their declaration-owned guidance; activation must not rewrite this prefix.
+  for (const tool of ordered) {
+    const name = aliases.get(tool.name);
+    if (!name) continue;
+    const guidance = codingToolGuidance(tool.name, name)!;
+    descriptions.push(`- ${name}: ${guidance.snippet}`);
+    for (const rule of guidance.guidelines) rules.add(rule);
+    if (expanded) for (const rule of guidance.additionalGuidelines ?? []) rules.add(rule);
   }
   if (!descriptions.length) return;
-  rules.push('- Use the current tool declarations for callable names and arguments. Tool availability does not grant additional access.');
-  if (active.has('process') && (active.has('bash') || active.has('powershell'))) rules.push(
-    '- Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.',
-    '- Use dependency waiting when the next step needs a managed result, and status only for a current snapshot. A wait deadline leaves the command running; cancellation targets the returned job handle.',
-  );
-  if (active.has('bash') || active.has('powershell')) rules.push(
-    '- Track commands through completion and check their exit status before using their outputs. Preserve the target exit status through pipelines and later diagnostics. Use bounded validation runs for interactive applications; keep ownership of test processes until they exit or are explicitly stopped. Clean up only resources this task is authorized to manage.',
-  );
+  if (expanded) rules.add('Use declared tool names and arguments; availability grants no additional access.');
+  if (shell && active.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'process')) {
+    rules.add('Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.');
+    rules.add('Use dependency waiting when the next step needs a managed result, and status only for a current snapshot. A wait deadline leaves the command running; cancellation targets the returned job handle.');
+  }
+  if (expanded && shell) rules.add('Track commands through completion; check exit status before using outputs. Preserve the target exit status through pipelines and diagnostics. Bound interactive validation runs; keep ownership of test processes until they exit or are explicitly stopped. Clean up only resources this task is authorized to manage.');
+  rules.add('Be concise in your responses');
+  rules.add('Show file paths clearly when working with files');
   return { id: 'achbit.coding-tools', text: [
-    '<tools>', ...descriptions, '</tools>', '', '<rules>', ...rules, '</rules>',
+    '<tools>', ...descriptions, 'Additional tools may be available.', '</tools>', '',
+    '<rules>', ...[...rules].map(rule => `- ${rule}`), '</rules>',
   ].join('\n') };
+}
+
+/** Coding declarations and prompt contributions share one owner, as in PI's tool definitions. */
+export function codingToolGuidance(canonical: string, name: string): { snippet: string; guidelines: string[]; additionalGuidelines?: string[] } | undefined {
+  switch (canonical) {
+    case 'fs.read': return {
+      snippet: 'Read file or directory contents', guidelines: [`Use ${name} to examine files instead of cat or sed.`],
+      additionalGuidelines: [
+        'Use paths observed in listings, tool results or user input; do not guess generated filenames.',
+        'Read generated output after its producing command has completed. For missing paths, check the producer result and directory before retrying.',
+        'Follow returned cursors or full-output paths for truncated content; excerpts do not establish a full review.',
+      ],
+    };
+    case 'bash': case 'powershell': return {
+      snippet: canonical === 'bash' ? 'Execute bash commands (ls, grep, find, etc.)' : 'Execute PowerShell commands',
+      guidelines: [canonical === 'bash' ? `Use ${name} for file operations like ls, rg, find`
+        : `Use ${name} for file operations like listing, searching, and finding files`],
+      additionalGuidelines: [canonical === 'bash' ? 'Run project commands.'
+        : 'Use Get-ChildItem and Select-String for inspection and the Shell for project commands.'],
+    };
+    case 'fs.edit': return {
+      snippet: 'Make precise file edits with exact text replacement, including multiple disjoint edits in one call',
+      guidelines: [`Use ${name} for targeted changes. Batch changes to one file in a single call.`,
+        'Each edits[].oldText must exactly and uniquely match the original file. Keep matches short and non-overlapping; merge nearby changes without including large unchanged regions.'],
+      additionalGuidelines: ['Read the relevant content before editing.'],
+    };
+    case 'fs.write': return {
+      snippet: 'Create or overwrite files', guidelines: [`Use ${name} only for new files or complete rewrites.`],
+    };
+  }
 }
 
 const readBytes = 50 * 1024;
 const record = (value: unknown): value is JsonObject =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** The coding interface adapts the Kernel bindings. Optional tools keep their own declarations. */
-export function codingToolView(tools: readonly PreparedToolDescriptor[]): readonly PreparedToolDescriptor[] {
+/** A presentation selects fields from one captured Kernel definition; it never copies its operation prose. */
+export function codingToolView(tools: readonly PreparedToolDescriptor[], coding = true): readonly PreparedToolDescriptor[] {
   return tools.map(tool => {
-    if (tool.origin !== 'coreBuiltin' || !codingToolNames.has(tool.name)) return tool;
+    if (!coding || tool.origin !== 'coreBuiltin' || !codingToolNames.has(tool.name)) return tool;
     const schema = tool.inputSchema;
     if (!record(schema.properties)) return tool;
     const fields = schema.properties;
     let properties: JsonObject;
-    let description: string;
+    let description = tool.description;
     switch (tool.name) {
       case 'fs.read':
-        properties = { path: fields.path, offset: { ...fields.startLine as JsonObject, description: 'First line or directory entry to read (1-indexed).' },
-          limit: { ...fields.maxLines as JsonObject, description: 'Maximum number of lines or directory entries.' } };
-        description = tool.description;
+        properties = { path: fields.path,
+          ...(fields.startLine === undefined ? {} : { offset: { ...fields.startLine as JsonObject,
+            description: 'First line or directory entry to read (1-indexed). Defaults to 1.' } }),
+          ...(fields.maxLines === undefined ? {} : { limit: fields.maxLines }) };
+        description += `\nText window: ${readBytes / 1024} KiB. Use offset/limit; continue with the returned offset.`;
         break;
-      case 'fs.edit':
-        properties = { path: fields.path, edits: fields.edits };
-        description = tool.description;
-        break;
-      case 'fs.write':
-        properties = { path: fields.path, content: fields.content };
-        description = 'Write a new file or replace all its contents. Use edit for targeted changes.';
-        break;
+      case 'fs.edit': properties = { path: fields.path, edits: fields.edits }; break;
+      case 'fs.write': properties = { path: fields.path, content: fields.content }; break;
       default:
-        properties = { command: { ...fields.command as JsonObject, description: tool.name === 'bash'
-          ? "Preserve the target command's exit status through pipelines and trailing commands."
-          : 'Preserve $LASTEXITCODE when reporting the result of a native command.' }, timeout: fields.timeout };
-        // Resource and sandbox grants are contributed only when the prepared Shell actually exposes them.
+        properties = { command: fields.command, ...(fields.timeout === undefined ? {} : { timeout: fields.timeout }) };
         for (const key of ['requestFileAccess', 'requestHostPermission', 'requestNetworkPermission']) {
           if (fields[key] !== undefined) properties[key] = fields[key];
         }
-        description = tool.description;
     }
     return { ...tool, description, inputSchema: { ...schema, properties } };
   });

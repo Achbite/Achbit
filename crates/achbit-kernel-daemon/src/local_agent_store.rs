@@ -297,6 +297,30 @@ impl LocalAgentJournal {
         read_agent_context(&*self.lock()?, session_id)
     }
 
+    /// A started run retains its selection after a later Session mode command.
+    pub(crate) fn mode_for_run(&self, session_id: &str, run_id: &str) -> Result<String, LocalAgentStoreError> {
+        let connection = self.lock()?;
+        let started: Option<String> = connection.query_row(
+            "SELECT payload_json FROM session_events WHERE session_id=?1 AND run_id=?2 AND event_type='run.started' ORDER BY sequence DESC LIMIT 1",
+            params![session_id, run_id], |row| row.get(0),
+        ).optional().map_err(sql_error("session_mode_read_failed"))?;
+        if let Some(encoded) = started {
+            let payload = decode_json(&encoded, "session_mode_corrupt")?;
+            return match payload.pointer("/runtimeSnapshot/mode") {
+                Some(mode) => validate_session_mode(mode).map(String::from),
+                None => Ok("full".into()),
+            };
+        }
+        let selected: Option<String> = connection.query_row(
+            "SELECT payload_json FROM session_events WHERE session_id=?1 AND event_type='session.mode.updated' ORDER BY sequence DESC LIMIT 1",
+            [session_id], |row| row.get(0),
+        ).optional().map_err(sql_error("session_mode_read_failed"))?;
+        match selected {
+            Some(encoded) => validate_session_mode(&decode_json(&encoded, "session_mode_corrupt")?["mode"]).map(String::from),
+            None => Ok("full".into()),
+        }
+    }
+
     pub(crate) fn append(&self, event: &Value) -> Result<Value, LocalAgentStoreError> {
         let mut committed = self.append_batch(std::slice::from_ref(event))?;
         Ok(committed.remove(0))
@@ -1713,6 +1737,7 @@ fn validate_new_event(
         "conversation.revised",
         "session.created",
         "session.model-settings.updated",
+        "session.mode.updated",
         "session.permissions.updated",
         "session.workspaces.updated",
         "session.directory-index.attached",
@@ -1788,6 +1813,7 @@ fn validate_new_event(
         "session.created"
             | "conversation.revised"
             | "session.model-settings.updated"
+            | "session.mode.updated"
             | "session.subagent-settings.updated"
             | "session.permissions.updated"
             | "session.workspaces.updated"
@@ -2243,6 +2269,12 @@ fn validate_new_event(
                     "编辑重跑范围无效。",
                 ));
             }
+        }
+        "session.mode.updated" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["commandId", "mode"], &[])?;
+            validate_id("commandId", required_string(payload, "commandId")?)?;
+            validate_session_mode(&payload["mode"])?;
         }
         "session.model-settings.updated" => {
             let payload = event.get("payload").expect("validated payload");
@@ -3034,6 +3066,7 @@ fn validate_new_event(
                         &[
                             "reasoningContent",
                             "reasoningSignature",
+                            "providerReplay",
                             "hostedWebSearchCalls",
                             "orderedOutputBlocks",
                             "toolCallInputs",
@@ -3061,6 +3094,46 @@ fn validate_new_event(
                             return Err(LocalAgentStoreError::new(
                                 "session_event_invalid",
                                 "provider.turn.settled orderedCallIds 不能重复。",
+                            ));
+                        }
+                    }
+                    if let Some(value) = payload.get("providerReplay") {
+                        let native: crate::llm_protocol::ProviderNativeReplay =
+                            serde_json::from_value(value.clone()).map_err(|error| {
+                                LocalAgentStoreError::new(
+                                    "session_event_invalid",
+                                    error.to_string(),
+                                )
+                            })?;
+                        native.validate().map_err(|error| {
+                            LocalAgentStoreError::new("session_event_invalid", error)
+                        })?;
+                        if payload.get("orderedOutputBlocks").is_some()
+                            || payload.get("reasoningSignature").is_some()
+                            || payload.get("hostedWebSearchCalls").is_some()
+                        {
+                            return Err(LocalAgentStoreError::new(
+                                "session_event_invalid",
+                                "providerReplay 不能与其他原生回放形式混用。",
+                            ));
+                        }
+                        let ids: Vec<_> = native
+                            .content
+                            .iter()
+                            .filter(|block| block["type"] == "tool_use")
+                            .map(|block| &block["id"])
+                            .collect();
+                        let calls: Vec<_> = payload
+                            .get("toolCallInputs")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .map(|call| &call["providerCallId"])
+                            .collect();
+                        if ids != calls {
+                            return Err(LocalAgentStoreError::new(
+                                "session_event_invalid",
+                                "providerReplay 与原始调用身份不一致。",
                             ));
                         }
                     }
@@ -3250,9 +3323,12 @@ fn validate_new_event(
                             "outcome",
                             "error",
                         ],
-                        &[],
+                        &["toolCallInputs"],
                     )?;
                     validate_local_agent_error(payload.get("error").expect("validated error"))?;
+                    if payload.get("toolCallInputs").is_some() {
+                        validate_truncated_call_inputs(payload)?;
+                    }
                 }
                 _ => {
                     return Err(LocalAgentStoreError::new(
@@ -3273,7 +3349,11 @@ fn validate_new_event(
                     "outputTokens",
                     "contextWindowTokens",
                 ],
-                &["cacheReadInputTokens", "cacheMissInputTokens"],
+                &[
+                    "cacheReadInputTokens",
+                    "cacheMissInputTokens",
+                    "reasoningOutputTokens",
+                ],
             )?;
             validate_id(
                 "providerRequestId",
@@ -3285,6 +3365,14 @@ fn validate_new_event(
             )?;
             let input_tokens = required_u64(payload, "inputTokens")?;
             let output_tokens = required_u64(payload, "outputTokens")?;
+            if payload.get("reasoningOutputTokens").is_some()
+                && required_u64(payload, "reasoningOutputTokens")? > output_tokens
+            {
+                return Err(LocalAgentStoreError::new(
+                    "session_event_invalid",
+                    "Reasoning tokens 超过总输出 tokens。",
+                ));
+            }
             let context_window_tokens = required_u64(payload, "contextWindowTokens")?;
             if context_window_tokens == 0
                 || input_tokens
@@ -3526,6 +3614,13 @@ pub(crate) fn validate_subagent_settings(value: &Value) -> Result<(), LocalAgent
     Ok(())
 }
 
+fn validate_session_mode(value: &Value) -> Result<&str, LocalAgentStoreError> {
+    match value.as_str() {
+        Some(mode @ ("minimal" | "full")) => Ok(mode),
+        _ => Err(LocalAgentStoreError::new("session_mode_invalid", "Mode must be minimal or full.")),
+    }
+}
+
 fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
     let object = command.as_object().ok_or_else(|| {
         LocalAgentStoreError::new(
@@ -3544,6 +3639,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
     let command_type = required_string(command, "type")?;
     if ![
         "session.model-settings.set",
+        "session.mode.set",
         "session.subagent-settings.set",
         "session.permissions.set",
         "approval.revoke",
@@ -3567,6 +3663,10 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
             "session_command_type_invalid",
             format!("当前 Session 合同不接受命令：{command_type}"),
         ));
+    }
+    if command_type == "session.mode.set" {
+        exact_object(command, &["schemaVersion", "type", "commandId", "sessionId", "mode"], &[])?;
+        validate_session_mode(&command["mode"])?;
     }
     if command_type == "session.workspaces.set" {
         exact_object(
@@ -4438,6 +4538,54 @@ fn validate_context_messages(value: &Value) -> Result<(), LocalAgentStoreError> 
     Ok(())
 }
 
+fn validate_truncated_call_inputs(payload: &Value) -> Result<(), LocalAgentStoreError> {
+    let invalid = || {
+        LocalAgentStoreError::new(
+            "provider_truncated_calls_invalid",
+            "Only rejected raw calls may accompany a truncated Agent failure.",
+        )
+    };
+    if payload["outcome"] != "failed"
+        || payload["purpose"] != "agent"
+        || payload["error"]["code"] != "provider_output_truncated"
+    {
+        return Err(invalid());
+    }
+    let calls = payload["toolCallInputs"]
+        .as_array()
+        .filter(|calls| !calls.is_empty())
+        .ok_or_else(invalid)?;
+    let mut ids = std::collections::HashSet::new();
+    let mut provider_ids = std::collections::HashSet::new();
+    for call in calls {
+        exact_object(
+            call,
+            &["callId", "providerCallId", "toolName", "arguments", "error"],
+            &["thoughtSignature"],
+        )?;
+        let id = required_string(call, "callId")?;
+        let provider_id = required_string(call, "providerCallId")?;
+        validate_id("callId", id)?;
+        validate_runtime_identity("providerCallId", provider_id)?;
+        required_string(call, "toolName")?;
+        if !call["arguments"].is_string()
+            || !ids.insert(id)
+            || !provider_ids.insert(provider_id)
+            || !matches!(
+                call["error"]["code"].as_str(),
+                Some("provider_output_truncated" | "provider_tool_alias_unknown")
+            )
+        {
+            return Err(invalid());
+        }
+        if call.get("thoughtSignature").is_some() {
+            required_string(call, "thoughtSignature")?;
+        }
+        validate_input_rejection_error(&call["error"])?;
+    }
+    Ok(())
+}
+
 fn validate_provider_turn_output_blocks(
     value: &Value,
     ordered_call_ids: &Value,
@@ -5145,8 +5293,10 @@ fn validate_run_runtime_snapshot(
             "planMode",
             "toolSelection",
             "codingTools",
+            "mode",
         ],
     )?;
+    if let Some(mode) = value.get("mode") { validate_session_mode(mode)?; }
     if value
         .get("codingTools")
         .is_some_and(|selected| selected != true)
@@ -6390,6 +6540,77 @@ mod tests {
     }
 
     #[test]
+    fn native_replay_journal_preserves_blocks_and_rejects_mixed_or_mismatched_facts() {
+        let event = json!({"type":"provider.turn.settled", "sessionId":"session:native", "runId":"run:native",
+            "payload":{"providerRequestId":"request:native", "purpose":"agent", "providerRuntimeRef":"runtime:native",
+                "outcome":"completed", "orderedCallIds":["call:one"],
+                "toolCallInputs":[{"callId":"call:one","providerCallId":"native:one","toolName":"fs.read","arguments":"{}"}],
+                "providerReplay":{"apiSurface":"anthropicMessages","content":[
+                    {"type":"thinking","thinking":"first","signature":"opaque-a"},
+                    {"type":"redacted_thinking","data":"opaque-b"},
+                    {"type":"tool_use","id":"native:one","name":"read","input":{}}]}}});
+        validate_new_event(&event, false).unwrap();
+        for (field, value) in [
+            ("reasoningSignature", json!("flat")),
+            ("orderedOutputBlocks", json!([])),
+            ("hostedWebSearchCalls", json!([])),
+        ] {
+            let mut invalid = event.clone();
+            invalid["payload"][field] = value;
+            assert!(validate_new_event(&invalid, false).is_err());
+        }
+        let mut invalid = event.clone();
+        invalid["payload"]["providerReplay"]["content"][2]["id"] = json!("native:other");
+        assert!(validate_new_event(&invalid, false).is_err());
+        invalid = event;
+        invalid["payload"]["providerReplay"]["apiSurface"] = json!("responses");
+        assert!(validate_new_event(&invalid, false).is_err());
+    }
+
+    #[test]
+    fn reasoning_usage_journal_retains_unknown_zero_and_reported_subset() {
+        let event = json!({"type":"context.updated", "sessionId":"session:usage", "runId":"run:usage",
+            "payload":{"providerRequestId":"request:usage", "providerRuntimeRef":"runtime:usage",
+                "inputTokens":10,"outputTokens":6,"contextWindowTokens":1024}});
+        validate_new_event(&event, false).unwrap();
+        for reasoning in [json!(0), json!(4), json!(6)] {
+            let mut reported = event.clone();
+            reported["payload"]["reasoningOutputTokens"] = reasoning;
+            validate_new_event(&reported, false).unwrap();
+        }
+        for reasoning in [json!(7), json!(-1), json!(null), json!(1.5)] {
+            let mut invalid = event.clone();
+            invalid["payload"]["reasoningOutputTokens"] = reasoning;
+            assert!(validate_new_event(&invalid, false).is_err());
+        }
+    }
+
+    #[test]
+    fn truncated_provider_turn_keeps_only_rejected_calls_and_original_failure() {
+        let event = json!({"type":"provider.turn.settled", "sessionId":"session:truncated", "runId":"run:truncated",
+            "payload":{"providerRequestId":"request:truncated", "purpose":"agent", "providerRuntimeRef":"runtime:truncated",
+                "outcome":"failed", "error":{"code":"provider_output_truncated","message":"max_output_tokens"},
+                "toolCallInputs":[{"callId":"call:truncated","providerCallId":"native:truncated","toolName":"fs.write","arguments":"{",
+                    "error":{"code":"provider_output_truncated","message":"Not executed", "issues":[{"path":"$","rule":"outputTruncated","message":"Re-issue"}]}}]}});
+        validate_new_event(&event, false).unwrap();
+        let mut invalid = event.clone();
+        invalid["payload"]["toolCallInputs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("error");
+        assert!(validate_new_event(&invalid, false).is_err());
+        invalid = event.clone();
+        invalid["payload"]["outcome"] = json!("indeterminate");
+        assert!(validate_new_event(&invalid, false).is_err());
+        invalid = event.clone();
+        invalid["payload"]["error"]["code"] = json!("provider_http_failed");
+        assert!(validate_new_event(&invalid, false).is_err());
+        invalid = event;
+        invalid["payload"]["purpose"] = json!("approvalReview");
+        assert!(validate_new_event(&invalid, false).is_err());
+    }
+
+    #[test]
     fn approval_review_input_uses_the_request_budget_and_stays_purpose_scoped() {
         let partitions = [
             "instructions",
@@ -7095,6 +7316,33 @@ mod tests {
         validate_plugin_selection_list(&json!(selections)).unwrap();
         journal.append(&json!({"type":"session.plugins.activated", "sessionId":"session:delivery", "runId":"run:delivery", "callId":"call:plugins",
             "payload":{"providerCallId":"provider:plugins","kernelCatalogSnapshotRef":"catalog:plugins","pluginUris":selections.iter().map(|item|item["uri"].clone()).collect::<Vec<_>>()}})).unwrap();
+    }
+
+    #[test]
+    fn session_mode_round_trips_and_keeps_started_run_selection() {
+        let store = Store::new();
+        {
+            let journal = LocalAgentJournal::open(&store.path()).unwrap();
+            journal.create_session("session:mode", "Mode", &json!([]), None, None).unwrap();
+            assert_eq!(journal.mode_for_run("session:mode", "run:future").unwrap(), "full");
+            let mut runtime = runtime_snapshot();
+            runtime["mode"] = json!("full");
+            journal.append(&json!({"type":"run.started","sessionId":"session:mode","runId":"run:mode",
+                "payload":{"inputMessageId":"message:mode","workspaceBindings":[],"runtimeSnapshot":runtime}})).unwrap();
+            let command = json!({"schemaVersion":COMMAND_VERSION,"type":"session.mode.set","sessionId":"session:mode","commandId":"mode:one","mode":"minimal"});
+            journal.commit_command(&json!({"command":command,"events":[{"type":"session.mode.updated","sessionId":"session:mode",
+                "payload":{"commandId":"mode:one","mode":"minimal"}}],
+                "reply":{"schemaVersion":REPLY_VERSION,"sessionId":"session:mode","commandId":"mode:one","status":"accepted","revision":0}})).unwrap();
+            assert_eq!(journal.mode_for_run("session:mode", "run:mode").unwrap(), "full");
+            let mut invalid = command;
+            invalid["mode"] = json!("fast");
+            assert_eq!(validate_command(&invalid).unwrap_err().code, "session_mode_invalid");
+            runtime["mode"] = json!("fast");
+            assert_eq!(validate_run_runtime_snapshot(&runtime).unwrap_err().code, "session_mode_invalid");
+        }
+        let restored = LocalAgentJournal::open(&store.path()).unwrap();
+        assert_eq!(restored.mode_for_run("session:mode", "run:new").unwrap(), "minimal");
+        assert_eq!(restored.mode_for_run("session:mode", "run:mode").unwrap(), "full");
     }
 
     #[test]

@@ -1,0 +1,23 @@
+{
+  "anthropicAdaptive": [
+    {"prefix": "claude-opus-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "never"},
+    {"prefix": "claude-mythos-preview", "efforts": ["low", "medium", "high", "max"], "disable": "never"},
+    {"prefix": "claude-sonnet-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "never"},
+    {"prefix": "claude-fable", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "never"},
+    {"prefix": "claude-mythos", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "never"},
+    {"prefix": "claude-opus-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "throughHigh"},
+    {"prefix": "claude-sonnet-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "throughHigh"},
+    {"prefix": "claude-haiku-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "throughHigh"},
+    {"prefix": "claude-opus-4-8", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "always"},
+    {"prefix": "claude-opus-4-7", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "always"},
+    {"prefix": "claude-opus-4-6", "efforts": ["low", "medium", "high", "max"], "disable": "always"},
+    {"prefix": "claude-sonnet-4-6", "efforts": ["low", "medium", "high", "max"], "disable": "always"}
+  ],
+  "anthropicManual": [
+    {"prefix": "claude-opus-4-5", "efforts": ["low", "medium", "high"], "disable": "always"},
+    {"prefix": "claude-sonnet-4-5", "efforts": [], "disable": "always"},
+    {"prefix": "claude-haiku-4-5", "efforts": [], "disable": "always"}
+  ],
+  "ollamaEfforts": ["low", "medium", "high"],
+  "ollamaAlwaysThinking": ["gpt-oss"]
+}

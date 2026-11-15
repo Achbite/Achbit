@@ -57,7 +57,7 @@ pub(crate) struct StructuredResponseFormat {
     pub(crate) schema: Value,
 }
 
-// Transport identity is kept out of model messages and provider request bodies.
+// Transport identity is kept out of model messages; supported adapters use Session cache affinity.
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRequestContext {
     pub(crate) session_id: String,
@@ -86,6 +86,7 @@ pub(crate) struct LlmChatOutput {
     pub(crate) content: String,
     pub(crate) reasoning: Option<String>,
     pub(crate) reasoning_signature: Option<String>,
+    pub(crate) provider_replay: Option<crate::llm_protocol::ProviderNativeReplay>,
     pub(crate) tool_calls: Vec<LlmToolCall>,
     pub(crate) hosted_web_search_calls: Vec<Value>,
 }
@@ -330,6 +331,14 @@ pub(crate) fn openai_compatible_request_body(
     body
 }
 
+fn effort_enabled(profile: &ResolvedLlmProfile) -> bool {
+    profile.thinking.as_deref() != Some("disabled")
+        && profile
+            .reasoning_effort
+            .as_deref()
+            .is_some_and(|effort| effort != "none")
+}
+
 fn responses_request_body(
     profile: &ResolvedLlmProfile,
     messages: &[LocalProviderMessage],
@@ -337,6 +346,7 @@ fn responses_request_body(
     hosted_tools: &[LocalProviderHostedTool],
     stream: bool,
 ) -> Result<Value, ProviderTransportError> {
+    let policy = crate::llm_protocol::ResponsesPolicy::resolve(profile);
     let mut provider_tools = tools
         .iter()
         .map(|tool| {
@@ -360,11 +370,7 @@ fn responses_request_body(
         provider_tools.push(json!({ "type": "web_search" }));
     }
     let mut input = responses_input(messages)?;
-    if profile.connection.adapter_id == "deepseek"
-        || provider_thinking_compatibility(profile) == ProviderThinkingCompatibility::DeepSeek
-    {
-        join_leading_system_text(&mut input);
-    }
+    join_leading_system_text(&mut input);
     let mut body = json!({
         "model": profile.model,
         "input": input,
@@ -394,7 +400,7 @@ fn responses_request_body(
         body["tools"] = Value::Array(provider_tools);
     }
     let mut include = Vec::new();
-    if profile.connection.adapter_id == "openai-codex" {
+    if policy.codex {
         let instructions = messages
             .iter()
             .take_while(|m| m.role == "system")
@@ -420,12 +426,30 @@ fn responses_request_body(
                 item["role"] = json!("developer");
             }
         }
-        body["store"] = json!(false);
-        include.push("reasoning.encrypted_content");
         body.as_object_mut().unwrap().remove("max_output_tokens");
         body.as_object_mut().unwrap().remove("temperature");
         body["parallel_tool_calls"] = json!(true);
-        if body.get("reasoning").is_some() {
+    } else {
+        for item in body["input"].as_array_mut().expect("Responses input") {
+            if item["role"] != "system" {
+                continue;
+            }
+            item["role"] = json!(policy.instruction_role);
+            if let Some(text) = item["content"]
+                .as_array()
+                .filter(|parts| parts.len() == 1)
+                .and_then(|parts| parts[0].get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                item["content"] = json!(text);
+            }
+        }
+    }
+    if policy.stateless_metadata {
+        body["store"] = json!(false);
+        include.push("reasoning.encrypted_content");
+        if effort_enabled(profile) {
             body["reasoning"]["summary"] = json!("auto");
         }
     }
@@ -801,6 +825,16 @@ fn prepare_provider_request(
     let kind = ProviderStreamKind::from_profile_kind(&profile.kind)
         .ok_or_else(|| ProviderTransportError::new("provider_kind_unsupported"))?;
     let messages = envelope.messages.as_slice();
+    if kind != ProviderStreamKind::Anthropic
+        && messages
+            .iter()
+            .any(|message| message.provider_replay.is_some())
+    {
+        return Err(ProviderTransportError::message(
+            "provider_native_replay_source_mismatch",
+            "原生 Anthropic 回放不能发送给另一个协议。",
+        ));
+    }
     let tools = envelope.tools.as_slice();
     let hosted_tools = envelope.hosted_tools.as_slice();
     if messages
@@ -847,6 +881,13 @@ fn prepare_provider_request(
         ProviderStreamKind::Anthropic => anthropic_stream_request_body(profile, messages, &tools)?,
         ProviderStreamKind::Ollama => ollama_stream_request_body(profile, messages, &tools)?,
     };
+    if kind == ProviderStreamKind::Responses
+        && crate::llm_protocol::ResponsesPolicy::resolve(profile).stateless_metadata
+    {
+        if let Some(context) = &envelope.request_context {
+            provider_body["prompt_cache_key"] = json!(context.session_id);
+        }
+    }
     if let Some(format) = &envelope.response_format {
         let schema = &format.schema;
         match kind {
@@ -1177,8 +1218,10 @@ pub(crate) async fn generate_conversation_title(
             tool_images: vec![],
             reasoning_content: None,
             reasoning_signature: None,
+            provider_replay: None,
             tool_call_id: None,
             provider_call_id: None,
+            tool_outcome: None,
             tool_calls: None,
             provider_items: None,
             provider_output_blocks: None,
@@ -1342,8 +1385,10 @@ async fn probe_profile(
                 tool_images: vec![],
                 reasoning_content: None,
                 reasoning_signature: None,
+                provider_replay: None,
                 tool_call_id: None,
                 provider_call_id: None,
+                tool_outcome: None,
                 tool_calls: None,
                 provider_items: None,
                 provider_output_blocks: None,
@@ -1799,7 +1844,7 @@ pub(crate) fn local_agent_provider_stream_response(
                     .reasoning
                     .as_deref()
                     .is_some_and(|reasoning| !reasoning.trim().is_empty())
-                || !result.output.tool_calls.is_empty())
+                || result.output.provider_replay.is_some())
         {
             let mut message = json!({
                 "messageId": format!("provider-message:{request_id}"),
@@ -1821,6 +1866,7 @@ pub(crate) fn local_agent_provider_stream_response(
             {
                 message["reasoningSignature"] = json!(signature);
             }
+            if let Some(replay) = &result.output.provider_replay { message["providerReplay"] = json!(replay); }
             let (packet, archive_failed) =
                 archived_provider_event(&mut archive, &request_id, provider_attempt_id.as_deref(), "assistant.message", message);
             yield Ok::<Bytes, Infallible>(Bytes::from(packet));
@@ -1835,6 +1881,7 @@ pub(crate) fn local_agent_provider_stream_response(
                     "outputTokens": usage.output_tokens,
                     "contextWindowTokens": context_window_tokens,
                 });
+                if let Some(reasoning) = usage.reasoning_output_tokens { usage_data["reasoningOutputTokens"] = json!(reasoning); }
                 if let (Some(cache_read), Some(cache_miss)) =
                     (usage.cache_read_input_tokens, usage.cache_miss_input_tokens)
                 {
@@ -2147,6 +2194,9 @@ fn openai_reasoning_enabled(profile: &ResolvedLlmProfile) -> bool {
 }
 
 fn model_requires_thinking(profile: &ResolvedLlmProfile) -> bool {
+    if crate::llm_protocol::thinking_required(profile) {
+        return true;
+    }
     match profile.provider_flavor.as_deref() {
         Some("zhipu") => profile.model == "glm-5.3",
         Some("moonshot") => {
@@ -2653,10 +2703,10 @@ mod tests {
             .get("x-achbit-request-purpose")
             .is_none());
         assert!(public_request.headers().get("x-codex-turn-state").is_none());
-        assert!(serde_json::from_slice::<Value>(&public.body)
-            .unwrap()
-            .get("prompt_cache_key")
-            .is_none());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&public.body).unwrap()["prompt_cache_key"],
+            "session:conversation"
+        );
         drop(usage);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -2834,6 +2884,79 @@ mod tests {
     }
 
     #[test]
+    fn responses_policy_follows_the_captured_provider_route() {
+        let mut profile = test_profile("responses");
+        profile.connection.adapter_id = "deepseek".into();
+        profile.provider_flavor = Some("deepseek".into());
+        profile.reasoning_effort = Some("max".into());
+        let mut input = provider_input(json!({"messages":[
+            {"role":"system","content":"Preamble"}, {"role":"system","content":"<rules>Read first</rules>"},
+            {"role":"user","content":"Inspect"}], "tools":[], "hostedTools":[]}));
+        input.request_context = Some(ProviderRequestContext {
+            session_id: "session:coding".into(),
+            purpose: "agent".into(),
+        });
+        let deepseek: Value =
+            serde_json::from_slice(&prepare_test_request(&profile, &input).unwrap().body).unwrap();
+        assert_eq!(deepseek["input"][0]["role"], "system");
+        assert_eq!(
+            deepseek["input"][0]["content"],
+            "Preamble\n\n<rules>Read first</rules>"
+        );
+        for field in ["store", "prompt_cache_key", "include", "temperature"] {
+            assert!(deepseek.get(field).is_none(), "{field}");
+        }
+        assert_eq!(deepseek["reasoning"], json!({"effort":"max"}));
+        profile.connection.adapter_id = "openai".into();
+        profile.provider_flavor = Some("openai".into());
+        let openai: Value =
+            serde_json::from_slice(&prepare_test_request(&profile, &input).unwrap().body).unwrap();
+        assert_eq!(openai["input"][0]["role"], "developer");
+        assert_eq!(
+            openai["input"][0]["content"],
+            deepseek["input"][0]["content"]
+        );
+        assert_eq!(openai["store"], false);
+        assert_eq!(openai["prompt_cache_key"], "session:coding");
+        assert_eq!(
+            openai["reasoning"],
+            json!({"effort":"max","summary":"auto"})
+        );
+        assert_eq!(openai["include"], json!(["reasoning.encrypted_content"]));
+        assert_eq!(openai["input"][1], deepseek["input"][1]);
+    }
+
+    #[test]
+    fn native_anthropic_content_is_replayed_once_and_cannot_cross_protocols() {
+        let native = json!({"apiSurface":"anthropicMessages","content":[
+            {"type":"thinking","thinking":"first","signature":"opaque-a"},
+            {"type":"text","text":"Inspect."},
+            {"type":"redacted_thinking","data":"opaque-redacted"},
+            {"type":"tool_use","id":"native:one","name":"read","input":{"path":"one"}},
+            {"type":"thinking","thinking":"second","signature":"opaque-b"}
+        ]});
+        let envelope = provider_input(json!({"messages":[
+            {"role":"assistant","content":"Display projection","reasoningContent":"firstsecond","providerReplay":native,
+                "toolCalls":[{"callId":"logical:one","providerCallId":"native:one","name":"read","input":{"path":"one"}}]},
+            {"role":"tool","content":"Original failure.","toolCallId":"logical:one","providerCallId":"native:one","toolOutcome":"failed"}
+        ],"tools":[],"hostedTools":[]}));
+        let original = serde_json::to_value(&envelope.messages).unwrap();
+        let mut profile = test_profile("anthropic");
+        profile.connection.adapter_id = "anthropic".into();
+        let body: Value =
+            serde_json::from_slice(&prepare_test_request(&profile, &envelope).unwrap().body)
+                .unwrap();
+        assert_eq!(body["messages"][0]["content"], native["content"]);
+        assert_eq!(body["messages"][1]["content"][0]["is_error"], true);
+        assert_eq!(serde_json::to_value(&envelope.messages).unwrap(), original);
+        profile.kind = "responses".into();
+        assert_eq!(
+            prepare_test_request(&profile, &envelope).unwrap_err().code,
+            "provider_native_replay_source_mismatch"
+        );
+    }
+
+    #[test]
     fn structured_decision_schema_reaches_each_native_provider_request() {
         let schema = json!({"type":"object","additionalProperties":false,"required":["decision","reason"],
             "properties":{"decision":{"type":"string","enum":["allow","deny","ask"]},"reason":{"type":"string"}}});
@@ -2927,7 +3050,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_responses_joins_only_leading_system_text() {
+    fn responses_policies_join_only_leading_plain_text_and_preserve_later_context() {
         let mut envelope = provider_input(json!({"messages":[
             {"role":"system","content":"Identity."},
             {"role":"system","content":"Active tools."},
@@ -2942,26 +3065,34 @@ mod tests {
         let encode = |profile: &ResolvedLlmProfile, messages: &[LocalProviderMessage]| {
             responses_request_body(profile, messages, &[], &[], true).unwrap()["input"].clone()
         };
-        assert_eq!(encode(&generic, &envelope.messages), json!(plain));
-        let mut deepseek = generic;
+        let mut expected = plain.clone();
+        expected.remove(1);
+        expected[0]["content"] = json!("Identity.\n\nActive tools.");
+        expected[4]["content"] = json!("New workspace.");
+        let mut deepseek = generic.clone();
         deepseek.provider_flavor = Some("deepseek".into());
-        let grouped = encode(&deepseek, &envelope.messages);
-        assert_eq!(
-            grouped[0],
-            json!({"type":"message","role":"system","content":[
-                {"type":"input_text","text":"Identity.\n\nActive tools."}
-            ]})
-        );
-        assert_eq!(&grouped.as_array().unwrap()[1..], &plain[2..]);
+        assert_eq!(encode(&deepseek, &envelope.messages), json!(expected));
+        expected[0]["role"] = json!("developer");
+        expected[4]["role"] = json!("developer");
+        assert_eq!(encode(&generic, &envelope.messages), json!(expected));
         envelope.messages[1]
             .image_data
             .push(crate::local_agent_api::LocalProviderImage {
                 media_type: "image/png".into(),
                 base64: "abc".into(),
             });
+        let mixed = responses_input(&envelope.messages).unwrap();
+        let mut expected = mixed.clone();
+        expected[0]["content"] = json!("Identity.");
+        expected[5]["content"] = json!("New workspace.");
+        assert_eq!(encode(&deepseek, &envelope.messages), json!(expected));
+        for index in [0, 1, 5] {
+            expected[index]["role"] = json!("developer");
+        }
+        assert_eq!(encode(&generic, &envelope.messages), json!(expected));
         assert_eq!(
-            encode(&deepseek, &envelope.messages),
-            encode(&test_profile("responses"), &envelope.messages)
+            expected[1]["content"], mixed[1]["content"],
+            "multimodal content is never flattened or dropped"
         );
     }
 
@@ -3969,7 +4100,13 @@ mod tests {
         ]))
         .unwrap();
         for (adapter, expected) in [
-            ("openai", json!(["web_search_call.action.sources"])),
+            (
+                "openai",
+                json!([
+                    "reasoning.encrypted_content",
+                    "web_search_call.action.sources"
+                ]),
+            ),
             (
                 "openai-codex",
                 json!([
@@ -3985,7 +4122,7 @@ mod tests {
             let without_search = responses_request_body(&profile, &[], &[], &[], true).unwrap();
             assert_eq!(
                 without_search["include"],
-                if adapter == "openai-codex" {
+                if adapter == "openai-codex" || adapter == "openai" {
                     json!(["reasoning.encrypted_content"])
                 } else {
                     Value::Null

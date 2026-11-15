@@ -104,6 +104,8 @@ pub(crate) struct ProviderUsage {
     /// Total input, including cache reads and writes exactly once.
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
+    /// Provider-reported subset of output; absence is unknown, never zero.
+    pub(crate) reasoning_output_tokens: Option<u64>,
     pub(crate) cache_read_input_tokens: Option<u64>,
     pub(crate) cache_miss_input_tokens: Option<u64>,
 }
@@ -121,6 +123,7 @@ struct ToolBuffer {
     arguments: String,
     complete_arguments: Option<Value>,
     emitted_arguments: usize,
+    emitted_identity: bool,
     thought_signature: Option<String>,
 }
 
@@ -133,7 +136,7 @@ fn emit_tool_arguments(
     let (Some(id), Some(name)) = (&buffer.id, &buffer.name) else {
         return;
     };
-    if buffer.emitted_arguments == buffer.arguments.len() {
+    if buffer.emitted_identity && buffer.emitted_arguments == buffer.arguments.len() {
         return;
     }
     let mut event = json!({ "type": "tool_call_delta", "callIndex": index,
@@ -141,6 +144,7 @@ fn emit_tool_arguments(
     if native {
         event["outputIndex"] = json!(index);
     }
+    buffer.emitted_identity = true;
     buffer.emitted_arguments = buffer.arguments.len();
     emissions.push(ProviderEmission { event });
 }
@@ -150,7 +154,8 @@ pub(crate) struct ProviderStreamAccumulator {
     kind: ProviderStreamKind,
     content: String,
     reasoning: String,
-    reasoning_signature: String,
+    anthropic_content: BTreeMap<i64, Value>,
+    anthropic_stopped: BTreeSet<i64>,
     tool_calls: BTreeMap<i64, ToolBuffer>,
     hosted_web_search_calls: Vec<Value>,
     responses_output_items: BTreeMap<i64, Value>,
@@ -160,6 +165,7 @@ pub(crate) struct ProviderStreamAccumulator {
     finish_reason: Option<String>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    reasoning_output_tokens: Option<u64>,
     cache_read_input_tokens: Option<u64>,
     cache_miss_input_tokens: Option<u64>,
     cache_creation_input_tokens: Option<u64>,
@@ -174,7 +180,8 @@ impl ProviderStreamAccumulator {
             kind,
             content: String::new(),
             reasoning: String::new(),
-            reasoning_signature: String::new(),
+            anthropic_content: BTreeMap::new(),
+            anthropic_stopped: BTreeSet::new(),
             tool_calls: BTreeMap::new(),
             hosted_web_search_calls: Vec::new(),
             responses_output_items: BTreeMap::new(),
@@ -184,6 +191,7 @@ impl ProviderStreamAccumulator {
             finish_reason: None,
             input_tokens: None,
             output_tokens: None,
+            reasoning_output_tokens: None,
             cache_read_input_tokens: None,
             cache_miss_input_tokens: None,
             cache_creation_input_tokens: None,
@@ -227,6 +235,15 @@ impl ProviderStreamAccumulator {
         else {
             return Ok(None);
         };
+        if self
+            .reasoning_output_tokens
+            .is_some_and(|tokens| tokens > output_tokens)
+        {
+            return Err(ProviderStreamError::new(
+                "provider_usage_invalid",
+                "Reasoning tokens 超过总输出 tokens。",
+            ));
+        }
         match self.kind {
             ProviderStreamKind::Anthropic => anthropic_usage(
                 input_tokens,
@@ -243,6 +260,7 @@ impl ProviderStreamAccumulator {
                 Ok(Some(ProviderUsage {
                     input_tokens,
                     output_tokens,
+                    reasoning_output_tokens: self.reasoning_output_tokens,
                     cache_read_input_tokens: cache.map(|value| value.0),
                     cache_miss_input_tokens: cache.map(|value| value.1),
                 }))
@@ -250,6 +268,7 @@ impl ProviderStreamAccumulator {
             ProviderStreamKind::Ollama => Ok(Some(ProviderUsage {
                 input_tokens,
                 output_tokens,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: None,
                 cache_miss_input_tokens: None,
             })),
@@ -277,6 +296,21 @@ impl ProviderStreamAccumulator {
         }
         if let Some(tier) = response.get("service_tier").and_then(Value::as_str) {
             self.service_tier = Some(tier.into());
+        }
+        // Optional counters describe reported facts, not estimates from visible reasoning text.
+        let reasoning = response
+            .pointer("/usage/output_tokens_details/reasoning_tokens")
+            .or_else(|| response.pointer("/usage/completion_tokens_details/reasoning_tokens"))
+            .filter(|value| !value.is_null());
+        if matches!(
+            self.kind,
+            ProviderStreamKind::OpenAiCompatible | ProviderStreamKind::Responses
+        ) {
+            set_token_count(
+                &mut self.reasoning_output_tokens,
+                reasoning,
+                "推理输出 token",
+            )?;
         }
         // This optional field is retained only when explicitly reported.
         set_token_count(
@@ -318,12 +352,29 @@ impl ProviderStreamAccumulator {
                 ),
             ));
         }
-        if !self.reasoning_signature.trim().is_empty() && self.reasoning.trim().is_empty() {
-            return Err(ProviderStreamError::new(
-                "provider_reasoning_signature_without_content",
-                "Provider reasoning signature 缺少对应 reasoning content。",
-            ));
-        }
+        let provider_replay =
+            if self.kind == ProviderStreamKind::Anthropic && !self.anthropic_content.is_empty() {
+                if self
+                    .anthropic_content
+                    .keys()
+                    .any(|index| !self.anthropic_stopped.contains(index))
+                {
+                    return Err(ProviderStreamError::new(
+                        "provider_native_block_incomplete",
+                        "Anthropic content block 缺少终态。",
+                    ));
+                }
+                let replay = crate::llm_protocol::ProviderNativeReplay {
+                    api_surface: crate::llm_protocol::NativeReplaySurface::AnthropicMessages,
+                    content: self.anthropic_content.values().cloned().collect(),
+                };
+                replay.validate().map_err(|message| {
+                    ProviderStreamError::new("provider_native_replay_invalid", message)
+                })?;
+                Some(replay)
+            } else {
+                None
+            };
         if self.kind == ProviderStreamKind::Responses {
             for output_index in self.tool_calls.keys() {
                 if self
@@ -390,6 +441,9 @@ impl ProviderStreamAccumulator {
                 )
             })?;
             let arguments = match call.complete_arguments {
+                _ if request_id.is_some() && !call.arguments.is_empty() => {
+                    Value::String(call.arguments)
+                }
                 Some(value) if request_id.is_some() => Value::String(value.to_string()),
                 None if request_id.is_some() => Value::String(call.arguments),
                 Some(value) => value,
@@ -422,8 +476,8 @@ impl ProviderStreamAccumulator {
             output: LlmChatOutput {
                 content: self.content,
                 reasoning: (!self.reasoning.trim().is_empty()).then_some(self.reasoning),
-                reasoning_signature: (!self.reasoning_signature.trim().is_empty())
-                    .then_some(self.reasoning_signature),
+                reasoning_signature: None,
+                provider_replay,
                 tool_calls,
                 hosted_web_search_calls: self.hosted_web_search_calls,
             },
@@ -794,7 +848,11 @@ impl ProviderStreamAccumulator {
                     .and_then(Value::as_str)
                     .unwrap_or(event_type);
                 return Err(ProviderStreamError::reported(
-                    "provider_response_failed",
+                    if event_type == "response.incomplete" && reason == "max_output_tokens" {
+                        "provider_output_truncated"
+                    } else {
+                        "provider_response_failed"
+                    },
                     &json!({
                         "type": event_type, "message": format!("Responses 请求未完成：{reason}"),
                     }),
@@ -823,12 +881,32 @@ impl ProviderStreamAccumulator {
                 let index =
                     required_tool_call_index(value.get("index"), "Anthropic content block start")?;
                 let block = value.get("content_block").unwrap_or(&Value::Null);
+                crate::llm_protocol::ProviderNativeReplay {
+                    api_surface: crate::llm_protocol::NativeReplaySurface::AnthropicMessages,
+                    content: vec![block.clone()],
+                }
+                .validate()
+                .map_err(|message| {
+                    ProviderStreamError::new("provider_native_block_invalid", message)
+                })?;
+                if self
+                    .anthropic_content
+                    .insert(index, block.clone())
+                    .is_some()
+                {
+                    return Err(ProviderStreamError::new(
+                        "provider_native_block_invalid",
+                        "Anthropic block 类型无效或 index 重复。",
+                    ));
+                }
+                if block["type"] == "text" {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        self.push_text(text, &mut emissions);
+                    }
+                }
                 if block.get("type").and_then(Value::as_str) == Some("thinking") {
                     if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
                         self.push_reasoning(thinking, &mut emissions);
-                    }
-                    if let Some(signature) = block.get("signature").and_then(Value::as_str) {
-                        self.reasoning_signature.push_str(signature);
                     }
                 }
                 if block.get("type").and_then(Value::as_str) == Some("tool_use") {
@@ -843,10 +921,7 @@ impl ProviderStreamAccumulator {
                         block.get("name").and_then(Value::as_str),
                         "工具名称",
                     )?;
-                    if let Some(input) = block.get("input").filter(|value| {
-                        !value.is_null()
-                            && value.as_object().is_none_or(|object| !object.is_empty())
-                    }) {
+                    if let Some(input) = block.get("input").filter(|value| value.is_object()) {
                         buffer.complete_arguments = Some(input.clone());
                     }
                 }
@@ -855,6 +930,54 @@ impl ProviderStreamAccumulator {
                 let index =
                     required_tool_call_index(value.get("index"), "Anthropic content block delta")?;
                 let delta = value.get("delta").unwrap_or(&Value::Null);
+                let block = self
+                    .anthropic_content
+                    .get_mut(&index)
+                    .filter(|_| !self.anthropic_stopped.contains(&index))
+                    .ok_or_else(|| {
+                        ProviderStreamError::new(
+                            "provider_native_block_missing",
+                            "Anthropic delta 没有活动 content block。",
+                        )
+                    })?;
+                let expected = match delta["type"].as_str() {
+                    Some("text_delta") => "text",
+                    Some("thinking_delta" | "signature_delta") => "thinking",
+                    Some("input_json_delta") => "tool_use",
+                    _ => {
+                        return Err(ProviderStreamError::new(
+                            "provider_native_delta_unsupported",
+                            "Anthropic content delta 类型不受支持。",
+                        ))
+                    }
+                };
+                if block["type"] != expected {
+                    return Err(ProviderStreamError::new(
+                        "provider_native_delta_invalid",
+                        "Anthropic delta 与 block 类型不一致。",
+                    ));
+                }
+                let field = match delta["type"].as_str() {
+                    Some("text_delta") => Some(("text", "text")),
+                    Some("thinking_delta") => Some(("thinking", "thinking")),
+                    Some("signature_delta") => Some(("signature", "signature")),
+                    _ => None,
+                };
+                if let Some((target, source)) = field {
+                    let text = delta.get(source).and_then(Value::as_str).ok_or_else(|| {
+                        ProviderStreamError::new(
+                            "provider_native_delta_invalid",
+                            "Anthropic delta 不是文本。",
+                        )
+                    })?;
+                    let mut joined = block
+                        .get(target)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    joined.push_str(text);
+                    block[target] = json!(joined);
+                }
                 match delta.get("type").and_then(Value::as_str) {
                     Some("text_delta") => {
                         if let Some(text) = delta.get("text").and_then(Value::as_str) {
@@ -866,11 +989,7 @@ impl ProviderStreamAccumulator {
                             self.push_reasoning(text, &mut emissions);
                         }
                     }
-                    Some("signature_delta") => {
-                        if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
-                            self.reasoning_signature.push_str(signature);
-                        }
-                    }
+                    Some("signature_delta") => {}
                     Some("input_json_delta") => {
                         if let Some(text) = delta.get("partial_json").and_then(Value::as_str) {
                             let buffer = self.tool_calls.entry(index).or_default();
@@ -879,6 +998,54 @@ impl ProviderStreamAccumulator {
                         }
                     }
                     _ => {}
+                }
+            }
+            "content_block_stop" => {
+                let index =
+                    required_tool_call_index(value.get("index"), "Anthropic content block stop")?;
+                let block = self.anthropic_content.get_mut(&index).ok_or_else(|| {
+                    ProviderStreamError::new(
+                        "provider_native_block_missing",
+                        "Anthropic block stop 没有对应 block。",
+                    )
+                })?;
+                if !self.anthropic_stopped.insert(index) {
+                    return Err(ProviderStreamError::new(
+                        "provider_native_block_duplicate",
+                        "Anthropic block 重复终止。",
+                    ));
+                }
+                if block["type"] == "tool_use" {
+                    let call = self
+                        .tool_calls
+                        .get_mut(&index)
+                        .expect("tool_use start created its call");
+                    if !call.arguments.is_empty() {
+                        let input: Value =
+                            serde_json::from_str(&call.arguments).map_err(|error| {
+                                ProviderStreamError::new(
+                                    "provider_tool_arguments_unrepresentable",
+                                    format!("Anthropic tool_use input 无法编码：{error}"),
+                                )
+                            })?;
+                        if !input.is_object() {
+                            return Err(ProviderStreamError::new(
+                                "provider_tool_arguments_unrepresentable",
+                                "Anthropic tool_use input 必须是对象。",
+                            ));
+                        }
+                        if call.complete_arguments.as_ref().is_some_and(|previous| {
+                            previous.as_object().is_some_and(|value| !value.is_empty())
+                                && previous != &input
+                        }) {
+                            return Err(ProviderStreamError::new(
+                                "provider_tool_call_arguments_conflict",
+                                "Anthropic 初始 input 与参数增量冲突。",
+                            ));
+                        }
+                        block["input"] = input.clone();
+                        call.complete_arguments = Some(input);
+                    }
                 }
             }
             "message_delta" => {
@@ -1135,6 +1302,7 @@ fn anthropic_usage(
     Ok(Some(ProviderUsage {
         input_tokens: total_input_tokens,
         output_tokens,
+        reasoning_output_tokens: None,
         cache_read_input_tokens: Some(cache_read_input_tokens),
         cache_miss_input_tokens: Some(cache_miss_input_tokens),
     }))
@@ -1289,6 +1457,110 @@ mod tests {
     use super::*;
 
     #[test]
+    fn anthropic_native_replay_keeps_multiple_signatures_redaction_and_call_order() {
+        let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+        let mut send = |value: Value| parser.ingest_payload(value.to_string().as_bytes()).unwrap();
+        let expected = json!([
+            {"type":"thinking","thinking":"first","signature":"sig-a"},
+            {"type":"text","text":"Inspect files."},
+            {"type":"redacted_thinking","data":"opaque-redacted"},
+            {"type":"tool_use","id":"call-a","name":"read","input":{"path":"a"}},
+            {"type":"thinking","thinking":"second","signature":"sig-b"},
+            {"type":"tool_use","id":"call-b","name":"inspect","input":{}}
+        ]);
+        for (index, block) in expected.as_array().unwrap().iter().enumerate() {
+            let mut initial = block.clone();
+            if block["type"] == "thinking" {
+                initial["signature"] = json!("");
+            }
+            if index == 3 {
+                initial["input"] = json!({});
+            }
+            send(json!({"type":"content_block_start","index":index,"content_block":initial}));
+            if block["type"] == "thinking" {
+                send(
+                    json!({"type":"content_block_delta","index":index,"delta":{"type":"signature_delta","signature":block["signature"]}}),
+                );
+            }
+            if index == 3 {
+                send(
+                    json!({"type":"content_block_delta","index":index,"delta":{"type":"input_json_delta","partial_json":"{ \"path\": \"a\" }"}}),
+                );
+            }
+            send(json!({"type":"content_block_stop","index":index}));
+        }
+        send(json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}));
+        send(json!({"type":"message_stop"}));
+        let result = parser.finalize_for_request("request:native").unwrap();
+        assert_eq!(
+            json!(result.output.provider_replay.unwrap().content),
+            expected
+        );
+        assert!(result.output.reasoning_signature.is_none());
+        assert_eq!(result.output.content, "Inspect files.");
+        assert_eq!(result.output.tool_calls.len(), 2);
+        assert_eq!(result.output.tool_calls[0].arguments, "{ \"path\": \"a\" }");
+        assert_eq!(result.output.tool_calls[1].arguments, "{}");
+    }
+
+    #[test]
+    fn anthropic_native_replay_rejects_unrepresentable_input_instead_of_salvaging_it() {
+        let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+        for value in [
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"edit","input":{}}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{unfinished"}}),
+        ] {
+            parser.ingest_payload(value.to_string().as_bytes()).unwrap();
+        }
+        let error = parser
+            .ingest_payload(br#"{"type":"content_block_stop","index":0}"#)
+            .unwrap_err();
+        assert_eq!(error.code, "provider_tool_arguments_unrepresentable");
+        let mut incomplete = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+        incomplete.ingest_payload(br#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"text","signature":"opaque"}}"#).unwrap();
+        incomplete
+            .ingest_payload(br#"{"type":"message_stop"}"#)
+            .unwrap();
+        assert_eq!(
+            incomplete.finalize().unwrap_err().code,
+            "provider_native_block_incomplete"
+        );
+    }
+
+    #[test]
+    fn reasoning_usage_is_a_reported_output_subset_not_an_extra_token_total() {
+        let mut chat = ProviderStreamAccumulator::new(ProviderStreamKind::OpenAiCompatible);
+        chat.ingest_payload(br#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":6,"completion_tokens_details":{"reasoning_tokens":4}}}"#).unwrap();
+        chat.ingest_payload(b"[DONE]").unwrap();
+        let usage = chat.finalize().unwrap().completion.usage.unwrap();
+        assert_eq!(usage.output_tokens, 6);
+        assert_eq!(usage.reasoning_output_tokens, Some(4));
+        for (value, expected) in [
+            (None, None),
+            (Some(Value::Null), None),
+            (Some(json!(0)), Some(0)),
+            (Some(json!(4)), Some(4)),
+        ] {
+            let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Responses);
+            let mut event = json!({"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":6}}});
+            if let Some(value) = value {
+                event["response"]["usage"]["output_tokens_details"] =
+                    json!({"reasoning_tokens":value});
+            }
+            parser.ingest_payload(event.to_string().as_bytes()).unwrap();
+            let usage = parser.finalize().unwrap().completion.usage.unwrap();
+            assert_eq!(usage.output_tokens, 6);
+            assert_eq!(usage.reasoning_output_tokens, expected);
+        }
+        let mut invalid = ProviderStreamAccumulator::new(ProviderStreamKind::Responses);
+        invalid.ingest_payload(br#"{"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":6,"output_tokens_details":{"reasoning_tokens":7}}}}"#).unwrap();
+        assert_eq!(
+            invalid.finalize().unwrap_err().code,
+            "provider_usage_invalid"
+        );
+    }
+
+    #[test]
     fn provider_input_normalization_is_shared_by_completion_and_usage_observation() {
         let cases = [
             (ProviderStreamKind::OpenAiCompatible, vec![
@@ -1300,7 +1572,9 @@ mod tests {
             ]),
             (ProviderStreamKind::Anthropic, vec![
                 json!({"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":18,"cache_creation_input_tokens":7}}}).to_string(),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}).to_string(),
                 json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}).to_string(),
+                json!({"type":"content_block_stop","index":0}).to_string(),
                 json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}).to_string(),
                 json!({"type":"message_stop"}).to_string(),
             ]),
@@ -1308,6 +1582,7 @@ mod tests {
         let expected = Some(ProviderUsage {
             input_tokens: 30,
             output_tokens: 6,
+            reasoning_output_tokens: None,
             cache_read_input_tokens: Some(18),
             cache_miss_input_tokens: Some(12),
         });
@@ -1351,6 +1626,7 @@ mod tests {
             Some(ProviderUsage {
                 input_tokens: 0,
                 output_tokens: 0,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: Some(0),
                 cache_miss_input_tokens: Some(0),
             })
@@ -1368,6 +1644,7 @@ mod tests {
             Some(ProviderUsage {
                 input_tokens: 30,
                 output_tokens: 1,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: Some(18),
                 cache_miss_input_tokens: Some(12),
             })
@@ -1384,6 +1661,7 @@ mod tests {
             Some(ProviderUsage {
                 input_tokens: 37,
                 output_tokens: 6,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: Some(20),
                 cache_miss_input_tokens: Some(17),
             })
@@ -1407,6 +1685,7 @@ mod tests {
             Some(ProviderUsage {
                 input_tokens: 12,
                 output_tokens: 6,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: Some(0),
                 cache_miss_input_tokens: Some(12),
             })
@@ -1635,6 +1914,7 @@ mod tests {
             Some(ProviderUsage {
                 input_tokens: 30,
                 output_tokens: 6,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: Some(18),
                 cache_miss_input_tokens: Some(12),
             })
@@ -1779,6 +2059,9 @@ mod tests {
         assert_eq!(events[0].event["argumentsDelta"], "{\"title\":\"Plan\"}");
         assert!(!parser.source_done());
         parser
+            .ingest_payload(br#"{"type":"content_block_stop","index":1}"#)
+            .unwrap();
+        parser
             .ingest_payload(br#"{"type":"message_stop"}"#)
             .unwrap();
         assert_eq!(
@@ -1890,6 +2173,7 @@ mod tests {
             Some(ProviderUsage {
                 input_tokens: 30,
                 output_tokens: 6,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: Some(18),
                 cache_miss_input_tokens: Some(12),
             })

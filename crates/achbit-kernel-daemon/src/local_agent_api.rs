@@ -142,10 +142,13 @@ impl LocalAgentRuntime {
             .journal
             .agent_context(&request.session_id)
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+        let mode = self.journal.mode_for_run(&request.session_id, &request.run_id)
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?;
         let recipe = self
             .journal
             .agent_recipe(&request.session_id)
-            .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?
+            .with_mode(&mode);
         let policy_constraints = recipe
             .constraints()
             .map_err(|error| RunPreparationError::new("permission_policy_invalid", error))?;
@@ -816,6 +819,7 @@ impl LocalAgentRuntime {
                 &plugin_selection, &catalog["tools"],
             ),
             "toolSelection": recipe.tools,
+            "mode": mode,
             "pluginConfig": plugin_config,
             "selectedPlugins": selected_plugins,
             "environment": environment,
@@ -1208,11 +1212,27 @@ pub(crate) struct LocalProviderMessage {
     pub(crate) image_data: Vec<LocalProviderImage>,
     pub(crate) reasoning_content: Option<String>,
     pub(crate) reasoning_signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provider_replay: Option<crate::llm_protocol::ProviderNativeReplay>,
     pub(crate) tool_call_id: Option<String>,
     pub(crate) provider_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tool_outcome: Option<ProviderToolOutcome>,
     pub(crate) tool_calls: Option<Vec<LocalProviderToolCall>>,
     pub(crate) provider_items: Option<Vec<Value>>,
     pub(crate) provider_output_blocks: Option<Vec<Value>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ProviderToolOutcome {
+    Completed,
+    Denied,
+    Failed,
+    Cancelled,
+    InputRejected,
+    NotExecuted,
+    Indeterminate,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2218,6 +2238,36 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
         } else if message.tool_call_id.is_some() || message.provider_call_id.is_some() {
             return Err("只有 tool 消息可以携带 toolCallId 与 providerCallId。".to_string());
         }
+        if message.role != "tool" && message.tool_outcome.is_some() {
+            return Err("只有 tool 消息可以携带 toolOutcome。".into());
+        }
+        if let Some(replay) = &message.provider_replay {
+            replay.validate()?;
+            if message.role != "assistant"
+                || message.provider_output_blocks.is_some()
+                || message.reasoning_signature.is_some()
+                || message.provider_items.is_some()
+            {
+                return Err("provider_native_replay_message_invalid".into());
+            }
+            let ids: Vec<_> = replay
+                .content
+                .iter()
+                .filter(|block| block["type"] == "tool_use")
+                .map(|block| block["id"].as_str().unwrap())
+                .collect();
+            if ids
+                != message
+                    .tool_calls
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|call| call.provider_call_id.as_str())
+                    .collect::<Vec<_>>()
+            {
+                return Err("provider_native_replay_calls_mismatch".into());
+            }
+        }
         if message.role != "assistant" && message.reasoning_content.is_some() {
             return Err("只有 assistant 消息可以携带 reasoningContent。".to_string());
         }
@@ -2300,6 +2350,7 @@ fn validate_local_provider_request(body: &LocalProviderRequest) -> Result<(), St
         if message.role == "assistant"
             && message.content.is_empty()
             && message.reasoning_content.is_none()
+            && message.provider_replay.is_none()
             && message.tool_calls.as_ref().is_none_or(Vec::is_empty)
             && provider_items.is_empty()
             && message
@@ -2521,6 +2572,47 @@ mod tests {
         assert!(validate_local_provider_request(&request).is_ok());
         request.workspace_bindings[0].display_name.push('文');
         assert!(validate_local_provider_request(&request).is_err());
+    }
+
+    #[test]
+    fn native_replay_request_rejects_mixed_fields_and_mismatched_calls() {
+        let message = json!({"role":"assistant","content":"","providerReplay":{
+            "apiSurface":"anthropicMessages","content":[{"type":"tool_use","id":"native:one","name":"read","input":{}}]},
+            "toolCalls":[{"callId":"call:one","providerCallId":"native:one","name":"read","input":"{}"}]});
+        let base = json!({"protocolVersion":"achbit.local-agent","requestId":"request:native",
+            "sessionId":"session:native","runId":"run:native","providerRuntimeRef":"runtime:native",
+            "profileId":"profile:native","purpose":"agent","responseConstraint":"normal","maxOutputTokens":512,
+            "workspaceBindings":[],"messages":[message],"tools":[],"hostedTools":[]});
+        let validate =
+            |value: Value| validate_local_provider_request(&serde_json::from_value(value).unwrap());
+        validate(base.clone()).unwrap();
+        for (field, value) in [
+            ("reasoningSignature", json!("flat")),
+            ("providerItems", json!([])),
+            ("providerOutputBlocks", json!([])),
+            ("toolOutcome", json!("failed")),
+        ] {
+            let mut invalid = base.clone();
+            invalid["messages"][0][field] = value;
+            assert!(validate(invalid).is_err());
+        }
+        let mut invalid = base.clone();
+        invalid["messages"][0]["toolCalls"][0]["providerCallId"] = json!("native:other");
+        assert!(validate(invalid).is_err());
+        for outcome in [
+            "completed",
+            "denied",
+            "failed",
+            "cancelled",
+            "inputRejected",
+            "notExecuted",
+            "indeterminate",
+        ] {
+            let mut tool = base.clone();
+            tool["messages"][0] = json!({"role":"tool","content":"Original result", "toolCallId":"call:one",
+                "providerCallId":"native:one","toolOutcome":outcome});
+            validate(tool).unwrap();
+        }
     }
 
     fn permission_policy(network: &str) -> LocalAgentPermissionPolicy {

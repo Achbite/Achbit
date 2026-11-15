@@ -4,8 +4,8 @@ import { LoopFailure } from './local-agent/loopFailure.js';
 import { validLogicalPath } from './local-agent/workspaceBindings.js';
 import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { isShellAuthorizationScope } from '@achbit/protocol';
-import { stableCoreInstructions } from './local-agent/coreInstructions.js';
-import { achbitProductComponents } from './local-agent/productInstructions.js';
+import { corePromptInstructions } from './local-agent/coreInstructions.js';
+import { achbitProductComponents, productDocumentation } from './local-agent/productInstructions.js';
 import { SessionConfigurationRegistry } from './local-agent/sessionConfiguration.js';
 import type { ConversationCommand, CommandJournalPort } from '@achbit/protocol';
 import { responseFrames } from './responseFrames.js';
@@ -89,7 +89,8 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
         composition: {
           provider, kernel,
           runPreparation: new HttpRunPreparationPort({
-            apiBase, serviceToken, stableCoreInstructions, promptContributions, environmentInstructions, codingTools,
+            apiBase, serviceToken, stableCoreInstructions: corePromptInstructions(!codingTools), promptContributions, codingTools,
+            environmentInstructions: environmentInstructions ?? (codingTools ? environment => productDocumentation(environment, false) : undefined),
           }),
           async dispose() {},
         },
@@ -239,6 +240,11 @@ function decodeCommand(value: unknown): ConversationCommand {
     || !validId(value.sessionId)
   ) throw new Error('conversation_command_invalid');
   switch (value.type) {
+    case 'session.mode.set':
+      if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'mode'])
+        || value.mode !== 'minimal' && value.mode !== 'full') throw new Error('conversation_command_invalid');
+      return { schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'session.mode.set',
+        commandId: value.commandId as string, sessionId: value.sessionId as string, mode: value.mode };
     case 'session.permissions.set':
       if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'patches'])) throw new Error('conversation_command_invalid');
       validatePermissionPatches(value.patches);

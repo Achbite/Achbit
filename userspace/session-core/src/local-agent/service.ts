@@ -32,6 +32,8 @@ import { SessionConfigurationRegistry, type ProductEnvironmentInstructions } fro
 import type { InstructionContribution } from './skillPlugins.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
 import { LoopFailure } from './loopFailure.js';
+import { recipeForMode } from './sessionMode.js';
+import type { SessionMode } from '@achbit/protocol';
 
 function isMissingSession(error: unknown): boolean {
   // HTTP Journal errors carry a code separate from their localized message.
@@ -267,7 +269,7 @@ export class SessionService implements ConversationPort {
     return this.withActor(command.sessionId, async actor => {
       this.assertOpen();
       const projection = await actor.agentSnapshot();
-      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'run.host.rebind'].includes(command.type)) {
+      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'session.mode.set', 'run.host.rebind'].includes(command.type)) {
         throw new Error('agent_session_requires_managed_task');
       }
       if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
@@ -565,36 +567,44 @@ export class SessionService implements ConversationPort {
     if (!first) throw new Error('session_not_found');
     if (first.type !== 'session.created') throw new Error('session_creation_event_missing');
     const profileId = first.payload.profileId;
-    const configuration = first.payload.recipe?.configuration ?? first.payload.agentContext?.configuration;
-    const installed = await this.compositions.create({
-      sessionId,
-      workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
-      promptContributions: this.configurations.productInstructions(first.payload.recipe),
-      environmentInstructions: this.configurations.productEnvironmentInstructions(first.payload.recipe),
-      codingTools: configuration?.context.id === 'coding',
-    });
-    try {
-      const productToolGuidance = this.configurations.productToolGuidance(first.payload.recipe);
-      if (productToolGuidance.length) {
-        installed.composition.toolGuidance = [...(installed.composition.toolGuidance ?? []), ...productToolGuidance];
+    const state = recoverSession(sessionId, events);
+    const mode = state.run && !['completed', 'failed', 'cancelled', 'indeterminate'].includes(state.run.status)
+      ? state.runRuntimeSnapshots[state.run.runId]?.mode ?? 'full' : state.mode;
+    const createComposition = async (mode: SessionMode): Promise<AgentComposition> => {
+      const recipe = recipeForMode(first.payload.recipe, mode);
+      const configuration = recipe.configuration ?? first.payload.agentContext?.configuration;
+      const installed = await this.compositions.create({
+        sessionId,
+        workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
+        promptContributions: this.configurations.productInstructions(recipe),
+        environmentInstructions: this.configurations.productEnvironmentInstructions(recipe),
+        codingTools: configuration?.context.id === 'coding',
+      });
+      try {
+        const productToolGuidance = this.configurations.productToolGuidance(recipe);
+        if (productToolGuidance.length) {
+          installed.composition.toolGuidance = [...(installed.composition.toolGuidance ?? []), ...productToolGuidance];
+        }
+        if (configuration) {
+          if (installed.composition.capabilities) throw new Error('session_configuration_owner_conflict');
+          installed.composition.capabilities = await this.configurations.create(configuration);
+        }
+        if (recipe.runner) {
+          if (installed.composition.runner) throw new Error('session_loop_owner_conflict');
+          installed.composition.runner = this.loops.create(recipe.runner);
+        }
+      } catch (error) {
+        const cleanup = await Promise.allSettled([installed.composition.capabilities?.dispose(),
+          installed.composition.runner?.dispose?.(), installed.composition.dispose()]);
+        const failures = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+        if (failures.length) throw new AggregateError([error, ...failures], 'session_configuration_initialization_failed');
+        throw error;
       }
-      if (configuration) {
-        if (installed.composition.capabilities) throw new Error('session_configuration_owner_conflict');
-        installed.composition.capabilities = await this.configurations.create(configuration);
-      }
-      if (first.payload.recipe?.runner) {
-        if (installed.composition.runner) throw new Error('session_loop_owner_conflict');
-        installed.composition.runner = this.loops.create(first.payload.recipe.runner);
-      }
-    } catch (error) {
-      const cleanup = await Promise.allSettled([installed.composition.capabilities?.dispose(),
-        installed.composition.runner?.dispose?.(), installed.composition.dispose()]);
-      const failures = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
-      if (failures.length) throw new AggregateError([error, ...failures], 'session_configuration_initialization_failed');
-      throw error;
-    }
-    const actor = new SessionActor(sessionId, this.journal, installed.composition, {
-      initialEvents: events,
+      return installed.composition;
+    };
+    const composition = await createComposition(mode);
+    const actor = new SessionActor(sessionId, this.journal, composition, {
+      initialEvents: events, mode, createComposition,
       ...(this.observation ? { observation: {
         accept: input => this.observation!.accept({ ...input, parentSessionId: first.payload.agentContext?.parentSessionId ?? null }),
         failed: (id, error) => this.observation!.failed(id, error),

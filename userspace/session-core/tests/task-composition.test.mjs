@@ -109,7 +109,8 @@ test('Host Shell declarations follow effective permissions and retain grants for
   assert.equal(mixed.inputSchema.properties.requestHostPermission, undefined);
   runtime.permissions['agent.permissions.shellAccess'] = 'workspace';
   const sandbox = await declared(input);
-  assert.equal(sandbox.description, tool.description);
+  assert.ok(sandbox.description.startsWith(tool.description));
+  assert.match(sandbox.description,/Command environment: bash on fixture/u);
   assert.ok(sandbox.inputSchema.properties.requestHostPermission);
 });
 

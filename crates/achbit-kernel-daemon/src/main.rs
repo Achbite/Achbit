@@ -24,6 +24,7 @@ mod host_update;
 mod kernel_api;
 mod kernel_tool_worker;
 mod llm_profiles;
+mod llm_protocol;
 mod llm_provider_transport;
 mod llm_stream_parser;
 mod llm_transport;

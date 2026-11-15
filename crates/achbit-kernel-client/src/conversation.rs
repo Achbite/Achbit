@@ -295,6 +295,7 @@ pub struct PluginSelectionInput {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionProjection {
+    pub mode: Option<String>,
     #[serde(default)]
     pub recipe: Option<Value>,
     pub schema_version: String,
@@ -684,6 +685,10 @@ impl SessionProjection {
                 })
         }) {
             return Err("shared Session projection has an invalid run status".to_string());
+        }
+        if self.mode.as_deref().is_some_and(|mode| !matches!(mode, "minimal" | "full"))
+            || self.run.as_ref().and_then(|run| run.mode.as_deref()).is_some_and(|mode| !matches!(mode, "minimal" | "full")) {
+            return Err("shared Session projection has an invalid mode".into());
         }
         if self.model_settings.as_ref().is_some_and(|settings| {
             settings.profile_id.is_empty()
@@ -2268,6 +2273,7 @@ pub struct ContextCompositionTool {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunProjection {
+    pub mode: Option<String>,
     pub run_id: String,
     pub host_binding: Option<HostWindowBinding>,
     pub profile_id: String,

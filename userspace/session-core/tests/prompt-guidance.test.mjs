@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decodeAgentRecipe, inheritAgentRecipe } from '../../protocol/dist/index.js';
-import { achbitProductComponents } from '../dist/local-agent/productInstructions.js';
+import { achbitProductComponents, productDocumentation } from '../dist/local-agent/productInstructions.js';
 import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
 import { requestedPlanToolStage } from '../dist/local-agent/planStage.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
 import { codingToolInstruction, codingToolView } from '../dist/local-agent/codingTools.js';
-import { stableCoreInstructions } from '../dist/local-agent/coreInstructions.js';
+import { corePromptInstructions, stableCoreInstructions } from '../dist/local-agent/coreInstructions.js';
 import { agentOperationDefinitions, sessionControlToolDefinitions } from '../dist/local-agent/sessionControls.js';
 import { buildConversationProviderRequest } from '../dist/local-agent/contextComposer.js';
+import { providerToolView } from '../dist/local-agent/providerToolCodec.js';
 import { runtimeSnapshot, workspaceBinding } from './local-agent-fixtures.mjs';
 
 const names = {
@@ -41,6 +42,80 @@ test('English review guidance distinguishes file links, preparation and output d
   const text = [core, ...registry.productInstructions().map(item => item.text),
     ...sessionControlToolDefinitions(capabilities).map(tool => tool.description)].join('\n');
   assert.doesNotMatch(text, /\bplease\b|\bkindly\b|\bMUST\b|\bIMPORTANT\b|[\u3400-\u9fff]/iu);
+});
+
+test('minimal AC is an ordered subset of full ABC from the same prompt producers', () => {
+  const definitions = ['fs.read', 'bash', 'fs.edit', 'fs.write'].map(name => ({
+    name, description: name, origin: 'coreBuiltin', availability: 'callable', toolBindingRef: `binding:${name}`,
+    possibleEffects: [name === 'bash' ? 'process' : name === 'fs.read' ? 'workspaceRead' : 'workspaceMutation'],
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, command: { type: 'string' },
+      content: { type: 'string' }, edits: { type: 'array' }, startLine: { type: 'integer' }, maxLines: { type: 'integer' } }, required: [] },
+  }));
+  const registry = new SessionConfigurationRegistry(undefined, achbitProductComponents);
+  const compose = (expanded, components = []) => {
+    const runtime = runtimeSnapshot('run:shared-slices', { tools: definitions });
+    if (!expanded) runtime.codingTools = true;
+    runtime.toolSelection = { controls: [], plugins: false };
+    runtime.environment.productDocsPath = '/actual/product/guides';
+    runtime.environment.primaryWorkspaceDirectory = { workspaceId: workspaceBinding.workspaceId, path: '/actual/project' };
+    runtime.instructions = [...corePromptInstructions(expanded), ...productDocumentation(runtime.environment, expanded),
+      environmentInstruction(runtime.environment), ...registry.productInstructions({ productComponents: components }),
+      { id: 'achbit.project-instructions', text: 'Project-scoped content.' }];
+    // Hold aliases fixed to isolate text slicing from the independent wire presentation.
+    runtime.providerToolAliases = definitions.map(tool => ({ canonicalName: tool.name, wireName: `call_${tool.name.replace('.', '_')}` }));
+    const result = buildConversationProviderRequest({ runtime, sessionId: 'session:shared-slices', runId: 'run:shared-slices',
+      events: [], workspaceBindings: [workspaceBinding], purpose: 'agent', responseConstraint: 'normal', providerRequestId: 'request:shared-slices' });
+    return new Map(result.receipt.messages.map((item, index) => [item.contributionId, result.request.messages[index].content]));
+  };
+  const minimal = compose(false), full = compose(true);
+  const inOrder = (base, expanded) => {
+    let cursor = 0;
+    for (const slice of base) {
+      const index = expanded.indexOf(slice, cursor);
+      assert.ok(index >= cursor, `shared slice missing or reordered: ${slice}`);
+      assert.equal(expanded.indexOf(slice, index + slice.length), -1, `shared slice duplicated: ${slice}`);
+      cursor = index + slice.length;
+    }
+  };
+  const preambleId = 'instruction:achbit.coding-agent';
+  inOrder(minimal.get(preambleId).split(/(?<=\.)\s+/u), full.get(preambleId));
+  assert.ok(!full.get(preambleId).includes(minimal.get(preambleId)), 'the extra sentence is inserted between common sentences, not a replacement preamble');
+  for (const id of ['instruction:achbit.coding-tools', 'instruction:achbit.product-docs']) {
+    inOrder(minimal.get(id).split('\n').filter(Boolean), full.get(id));
+    assert.notEqual(minimal.get(id), full.get(id));
+  }
+  for (const id of ['instruction:achbit.coding.project_context', 'instruction:achbit.coding.cwd']) {
+    assert.equal(minimal.get(id), full.get(id));
+  }
+  const body = map => [...map.values()].join('\n\n');
+  assert.doesNotMatch(body(minimal), /<response>|Command environment|Follow returned cursors|computer-use\.md|Mermaid|outputs table/u);
+  assert.match(body(full), /Follow returned cursors[\s\S]*<response>[\s\S]*Command environment/u);
+  for (const map of [minimal, full]) {
+    assert.equal((body(map).match(/<tools>/gu) ?? []).length, 1);
+    assert.equal((body(map).match(/<docs>/gu) ?? []).length, 1);
+    assert.ok(body(map).includes('/actual/product/guides'));
+    assert.doesNotMatch(body(map), /- read:|- fs_read:/u);
+  }
+  const rich = compose(false, ['achbit.rich-replies']);
+  assert.match(rich.get('instruction:achbit.rich-replies'), /Mermaid/u);
+  assert.deepEqual([...rich].filter(([id]) => id !== 'instruction:achbit.rich-replies'), [...minimal],
+    'opting into one component inserts only its slice, without selecting the full prompt');
+});
+
+test('shared tool slices follow actual bindings without duplicating dynamic extension guidance', () => {
+  const tools = ['fs.read', 'bash', 'process'].map(name => ({ name, origin: 'coreBuiltin', availability: 'callable', toolBindingRef: `binding:${name}` }));
+  const aliases = new Map(tools.map(tool => [tool.name, `call_${tool.name}`]));
+  const minimal = codingToolInstruction(tools, aliases, false).text;
+  assert.match(minimal, /automatically managed[\s\S]*wait deadline/u);
+  assert.doesNotMatch(minimal, /Follow returned cursors|Track commands through completion/u);
+  const extension = { name: 'extension.inspect', origin: 'extension', availability: 'callable', toolBindingRef: 'binding:extension' };
+  aliases.set(extension.name, 'inspect_extension');
+  assert.equal(codingToolInstruction([extension], aliases, false), undefined);
+  assert.equal(codingToolInstruction([{ ...extension, availability: 'blocked' }], aliases, false), undefined);
+  assert.equal(codingToolInstruction([...tools, extension], aliases, false).text, minimal,
+    'extension activation leaves the basic-tool system prefix unchanged');
+  assert.deepEqual(corePromptInstructions(false).map(item => item.id), ['achbit.coding-agent']);
+  assert.deepEqual(productDocumentation({}, false), []);
 });
 
 test('delivery and workflow tool descriptions retain their contracts without adding operations', () => {
@@ -309,7 +384,7 @@ test('the tool stage owns Plan guidance and only callable basic operations are n
   assert.equal(compose({}).has('session:tool-stage'), false);
 });
 
-test('coding tool projection retains Kernel-owned operation and scope descriptions', () => {
+test('both tool presentations share one operation description and inherit Kernel schema constraints', () => {
   for (const name of ['fs.read', 'fs.edit', 'bash', 'powershell']) {
     const description = `Observed ${name} operation, file bindings and execution scope.`;
     const tool = { name, origin: 'coreBuiltin', description, inputSchema: {
@@ -317,11 +392,47 @@ test('coding tool projection retains Kernel-owned operation and scope descriptio
         command: {type:'string'}, timeout: {type:'integer'}, requestFileAccess: {type:'object'} },
     } };
     const [projected] = codingToolView([tool]);
-    assert.equal(projected.description, description);
+    assert.equal(projected.description.split(description).length, 2, 'captured operation and scope occur exactly once');
+    assert.equal(codingToolView([tool], false)[0].description, description);
+    if (name !== 'fs.read') assert.equal(projected.description, description, 'no second operation description is appended');
+    else assert.match(projected.description, /50 KiB.*offset\/limit/u);
     if (name === 'bash' || name === 'powershell') {
       assert.deepEqual(projected.inputSchema.properties.requestFileAccess, tool.inputSchema.properties.requestFileAccess);
     }
     assert.deepEqual(codingToolView([{...tool, origin:'extension'}]), [{...tool, origin:'extension'}]);
+  }
+});
+
+test('tool presentation removes forbidden Host requests but retains separately requestable scopes in both contexts', () => {
+  const shell = { name: 'bash', origin: 'coreBuiltin', description: 'Run Bash in the workspace sandbox.', availability: 'callable',
+    inputSchema: {type:'object',additionalProperties:false,required:['command'],properties:{command:{type:'string',maxLength:16384,
+      description:'Use TMPDIR for temporary files; preserve the command exit status.'},timeout:{type:'integer',minimum:1,maximum:4294967295},
+      requestHostPermission:{type:'string'},requestNetworkPermission:{type:'string'},requestFileAccess:{type:'object'},terminal:{type:'object'}}} };
+  for (const codingTools of [false,true]) {
+    const runtime=runtimeSnapshot('run:tool-view',{tools:[shell]});
+    runtime.codingTools=codingTools;
+    runtime.permissions['agent.permissions.shellAccess']='full';
+    runtime.environment.os='macos'; runtime.environment.arch='arm64';
+    runtime.environment.agentComposition={permissionPolicy:{id:'workspace-only'},policyConstraints:{allowHostExecution:false,allowExternalTools:false},
+      workspaceSandbox:{backendId:'sandbox-exec',requireIsolatedProcesses:true},sandboxCoverage:'workspaceShell'};
+    const original=structuredClone(shell);
+    const [restricted]=providerToolView([shell],runtime,[workspaceBinding],[workspaceBinding]);
+    assert.equal(restricted.inputSchema.properties.requestHostPermission,undefined);
+    assert.deepEqual(restricted.inputSchema.properties.requestNetworkPermission,shell.inputSchema.properties.requestNetworkPermission);
+    assert.deepEqual(restricted.inputSchema.properties.requestFileAccess,shell.inputSchema.properties.requestFileAccess);
+    assert.deepEqual(restricted.inputSchema.properties.timeout,shell.inputSchema.properties.timeout);
+    assert.deepEqual(restricted.inputSchema.required,['command']);
+    assert.equal(restricted.inputSchema.additionalProperties,false);
+    assert.match(restricted.description,/workspace sandbox[\s\S]*bash on macos \(arm64\)/u);
+    assert.match(restricted.inputSchema.properties.command.description,/TMPDIR/u);
+    assert.doesNotMatch(restricted.description,/as the host user/u);
+    assert.deepEqual(shell,original,'presentation does not change the captured executor binding');
+    delete runtime.environment.agentComposition;
+    runtime.permissions['agent.permissions.shellAccess']='workspace';
+    assert.ok(providerToolView([shell],runtime,[workspaceBinding],[workspaceBinding])[0].inputSchema.properties.requestHostPermission,
+      'an ungranted but requestable Host scope remains available');
+    const extension={...shell,origin:'extension'};
+    assert.deepEqual(providerToolView([extension],runtime,[workspaceBinding],[workspaceBinding]),[extension]);
   }
 });
 

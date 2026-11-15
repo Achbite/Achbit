@@ -153,6 +153,20 @@ class SharedResourcesTests(unittest.TestCase):
             self.assertEqual((root / 'debug/index.html').read_text().replace(
                 '<script src="./debug/ui.js"></script>\n</head>', '</head>'), entry.decode())
 
+    def test_runtime_json_modules_are_copied_and_importable(self):
+        with tempfile.TemporaryDirectory(prefix='achbit-runtime-json-') as directory:
+            root = Path(directory)
+            write(root, 'package.json', json.dumps({'name': 'example', 'version': '1', 'license': 'MIT', 'type': 'module', 'main': 'dist/index.js'}).encode())
+            write(root, 'dist/index.js', b'import policy from "./policy.json" with {type:"json"}; console.log(policy.level);')
+            write(root, 'dist/policy.json', b'{"level":"high"}')
+            write(root, 'dist/index.d.ts', b'export {};')
+            write(root, 'dist/index.js.map', b'{}')
+            package.copy_js_package(root, root / 'runtime')
+            self.assertEqual(set(files(root / 'runtime/dist')), {'index.js', 'policy.json'})
+            result = subprocess.run(['node', str(root / 'runtime/dist/index.js')], text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'high')
+
     def test_debug_js_is_only_published_when_explicitly_selected(self):
         with tempfile.TemporaryDirectory(prefix='achbit-debug-modules-') as directory:
             root = Path(directory)

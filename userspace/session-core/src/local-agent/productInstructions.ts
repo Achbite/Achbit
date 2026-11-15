@@ -1,5 +1,5 @@
-import type { SessionEvent } from '@achbit/protocol';
-import type { ProductEnvironmentInstructions, SessionProductComponent } from './sessionConfiguration.js';
+import type { JsonObject, SessionEvent } from '@achbit/protocol';
+import type { SessionProductComponent } from './sessionConfiguration.js';
 
 import { decodeSessionEnvironment } from './sessionEnvironment.js';
 import type { ToolGuidanceContributor } from './toolPromptContributions.js';
@@ -8,23 +8,30 @@ import type { ToolGuidanceContributor } from './toolPromptContributions.js';
 const operationsSkills = new Set(['achbit-product', 'achbit-iteration']);
 const operationsPlugins = new Set([...operationsSkills].map(name => `plugin://${name}@builtin`));
 
-const productDocumentation: ProductEnvironmentInstructions = environment => {
+/** The documentation index is shared; product operations adds detail at the relevant entries. */
+export function productDocumentation(environment: JsonObject, expanded = true) {
   const directory = environment.productDocsPath;
   if (typeof directory !== 'string' || !directory) return [];
-  return [{ id: 'achbit.product-docs', text: `<docs>
-Achbit documentation for product features, configuration, tools and extension interfaces. Read the relevant guide on demand.
-- Bundled guide directory: ${JSON.stringify(directory)}. Resolve these paths under that directory, not the current project.
-- operations.md: tools, permissions, Plans, collaboration, file references and output delivery.
-- execution-environments.md: Shell, sandbox, Host, containers and remote execution.
-- managed-processes.md: background commands, dependency waiting, cancellation and results.
-- model-services.md: model profiles, authentication, context, images and usage.
-- computer-use.md: browser and desktop operation.
-- debug-control.md: isolated Debug control and observation.
-- ../plugins/README.md: CLI tools, hosted services, Skills, MCP and plugin interfaces.
-- ui-plugins.md: display plugin interfaces.
-Before changing an Achbit interface, read its guide and directly related references. Use current tool declarations and runtime results to establish available behavior.
-</docs>` }];
-};
+  return [{ id: 'achbit.product-docs', text: [
+    '<docs>',
+    'Achbit documentation for the harness itself, its tools, configuration and extensions. Read the relevant guide on demand.',
+    `- Product guides: ${JSON.stringify(directory)}`,
+    '- operations.md: tools, permissions, Plans, collaboration and outputs',
+    ...(expanded ? ['  Includes file references and output delivery.'] : []),
+    '- model-services.md: models, context and usage',
+    ...(expanded ? ['  Includes profiles, authentication and image input.'] : []),
+    '- execution-environments.md, managed-processes.md: Shell and command lifecycle',
+    ...(expanded ? ['  Covers sandbox, Host, containers, remote execution, background commands, dependency waiting, cancellation and results.',
+      '- computer-use.md: browser and desktop operation.'] : []),
+    '- debug-control.md: isolated Debug control',
+    '- ../plugins/README.md: plugin and Skill interfaces',
+    ...(expanded ? ['  Includes CLI tools, hosted services and MCP.', '- ui-plugins.md: display plugin interfaces.'] : []),
+    '- Resolve these paths under Product guides, not the current working directory',
+    '- Before implementing harness changes, read the relevant guides and their related references.',
+    ...(expanded ? ['Use current tool declarations and runtime results to establish available behavior.'] : []),
+    '</docs>',
+  ].join('\n') }];
+}
 
 const productShellGuidance: ToolGuidanceContributor = ({ runtime, events, runId, tools }) => {
   const shells = tools.filter(tool => tool.origin === 'coreBuiltin' && (tool.name === 'bash' || tool.name === 'powershell'));

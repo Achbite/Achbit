@@ -13,7 +13,7 @@ import type {
 import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
 import type { SessionReadScope } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
-import { codingToolNames, decodeCodingRead, encodeCodingRead } from './codingTools.js';
+import { codingToolNames, codingToolView, decodeCodingRead, encodeCodingRead } from './codingTools.js';
 
 const PROVIDER_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const CANONICAL_TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/u;
@@ -135,7 +135,13 @@ export function providerWireName(
   return alias.wireName;
 }
 
-/** Render the implicit Host route using the current run's permissions and directory bindings. */
+/** One binding-to-model projection for all contexts; optional plugins retain their own definitions. */
+export function providerToolView(tools: readonly PreparedToolDescriptor[], runtime: RunRuntimeSnapshot,
+  bindings: readonly WorkspaceBindingDisplay[], directories?: readonly WorkspaceBindingDisplay[]): readonly PreparedToolDescriptor[] {
+  return codingToolView(hostShellToolView(tools, runtime, bindings, directories), runtime.codingTools === true);
+}
+
+/** Render the actual Shell route and only the permission requests its policy can admit. */
 export function hostShellToolView(
   tools: readonly PreparedToolDescriptor[],
   runtime: RunRuntimeSnapshot,
@@ -143,22 +149,22 @@ export function hostShellToolView(
   directories: readonly WorkspaceBindingDisplay[] | undefined,
 ): readonly PreparedToolDescriptor[] {
   const composition = runtime.environment.agentComposition;
-  if (!directories?.length || runtime.permissions['agent.permissions.shellAccess'] !== 'full'
-    || (isRecord(composition) && isRecord(composition.policyConstraints) && composition.policyConstraints.allowHostExecution === false)) return tools;
-
-  const directoryIds = new Set(directories.map(binding => binding.workspaceId));
+  const hostForbidden = isRecord(composition) && isRecord(composition.policyConstraints)
+    && composition.policyConstraints.allowHostExecution === false;
+  const host = Boolean(directories?.length) && runtime.permissions['agent.permissions.shellAccess'] === 'full' && !hostForbidden;
+  const directoryIds = new Set((directories ?? []).map(binding => binding.workspaceId));
   const resourceHandles = bindings.flatMap((binding, index) => directoryIds.has(binding.workspaceId) ? [] : [workspaceHandle(index)]);
   return tools.map(tool => {
     if (tool.origin !== 'coreBuiltin' || (tool.name !== 'bash' && tool.name !== 'powershell')) return tool;
     const inputSchema = structuredClone(tool.inputSchema);
     const properties = inputSchema.properties;
     if (!isRecord(properties)) throw new LoopFailure('provider_workspace_schema_invalid', `Invalid Shell schema for ${tool.name}.`);
-    delete properties.requestHostPermission;
-    if (!resourceHandles.length) {
+    if (host || hostForbidden) delete properties.requestHostPermission;
+    if (host && !resourceHandles.length) {
       delete properties.requestFileAccess;
       delete properties.requestNetworkPermission;
     }
-    if (tool.name === 'bash' && isRecord(properties.command)) {
+    if (host && tool.name === 'bash' && isRecord(properties.command)) {
       properties.command.description = 'Bash script in the selected workspace. Preserve the target command\'s exit status through pipelines and trailing diagnostics.';
     }
     const shell = tool.name === 'bash' ? 'Bash' : 'PowerShell';
@@ -166,7 +172,11 @@ export function hostShellToolView(
     const access = resourceHandles.length
       ? `Project and session directories use host-user filesystem permissions. File references (${resourceHandles.join(', ')}) retain their own access permissions.`
       : "Commands run as the host user and can write files writable by that user.";
-    return { ...tool, inputSchema, description: `Run ${shell} from the selected workspace. ${access}${discovery}` };
+    const target = runtime.environment.shell;
+    const environment = isRecord(target) && target.tool === tool.name
+      ? `\nCommand environment: ${target.dialect} on ${runtime.environment.os} (${runtime.environment.arch}).` : '';
+    const description = host ? `Run ${shell} from the selected workspace. ${access}${discovery}` : tool.description;
+    return { ...tool, inputSchema, description: description + environment };
   });
 }
 
@@ -422,7 +432,7 @@ export function providerMessageCodecsByCallId(
     }
     // Session grants can outlive edited-away calls; tool.requested owns their codec.
     if (event.type === 'approval.requested' || event.type === 'approval.resolved') continue;
-    const completion = event.type === 'provider.turn.settled' && event.payload.outcome === 'completed' ? event.payload : undefined;
+    const completion = event.type === 'provider.turn.settled' && event.payload.outcome !== 'cancelled' ? event.payload : undefined;
     const inputs = completion?.toolCallInputs ?? [];
     const callIds = completion ? inputs.map((call) => call.callId)
       : 'callId' in event && event.callId ? [event.callId] : [];

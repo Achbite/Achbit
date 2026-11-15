@@ -1,4 +1,6 @@
 import { RunTiming } from './runTiming.js';
+import { recipeForMode } from './sessionMode.js';
+import type { SessionMode } from '@achbit/protocol';
 import { sameModelContext } from './modelContext.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
 import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
@@ -35,7 +37,7 @@ import {
   SESSION_EVENT_VERSION,
 } from '@achbit/protocol';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
-import { SessionCapabilityManager } from './sessionCapabilities.js';
+import { SessionCapabilityManager, createSessionCapabilities } from './sessionCapabilities.js';
 import {
   loopSnapshot,
   runAgentLoop,
@@ -48,6 +50,8 @@ import {
 import { projectSession, reduceSession } from './reducer.js';
 
 export interface SessionActorOptions {
+  mode?: SessionMode;
+  createComposition?(mode: SessionMode): Promise<AgentComposition>;
   observation?: SessionObservationSink;
   agents?: AgentSessionRuntime;
   profileId?: string;
@@ -67,7 +71,10 @@ export class SessionActor {
   readonly #timing: RunTiming;
   readonly #observation?: SessionObservationSink;
   readonly #journal: CommandJournalPort;
-  readonly #composition: AgentComposition;
+  #composition: AgentComposition;
+  #mode: SessionMode;
+  readonly #createComposition?: SessionActorOptions['createComposition'];
+  readonly #compositionCleanupErrors: unknown[] = [];
   readonly #capabilities: SessionCapabilityManager;
   readonly #profileId?: string;
   readonly #agents?: AgentSessionRuntime;
@@ -102,6 +109,8 @@ export class SessionActor {
     this.#observation = options.observation;
     this.#journal = journal;
     this.#composition = composition;
+    this.#mode = options.mode ?? 'full';
+    this.#createComposition = options.createComposition;
     this.#capabilities = new SessionCapabilityManager(composition.capabilities);
     this.#profileId = options.profileId;
     this.#agents = options.agents;
@@ -155,7 +164,7 @@ export class SessionActor {
     const snapshot = await this.loadSnapshot();
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
-    const configuration = structuredClone(snapshot.state.recipe?.configuration ?? DEFAULT_AGENT_CONFIGURATION);
+    const configuration = recipeForMode(snapshot.state.recipe, runtime.mode ?? 'full').configuration ?? structuredClone(DEFAULT_AGENT_CONFIGURATION);
     const lease = this.#capabilities.acquire();
     try {
       if (configuration.context.id === 'journal') configuration.context.parameters = {
@@ -418,7 +427,7 @@ export class SessionActor {
     // Commands already admitted to the mailbox may still be preparing a run.
     // Drain them, then also stop any Loop they started before releasing ports.
     await this.#mailbox;
-    const errors: unknown[] = [];
+    const errors: unknown[] = [...this.#compositionCleanupErrors];
     if (cancelActiveRun) {
       try {
         const snapshot = await this.loadSnapshot();
@@ -477,6 +486,38 @@ export class SessionActor {
     });
   }
 
+  /** Replace implementations only after the previous run and its cleanup have finished. */
+  private async configureMode(mode: SessionMode): Promise<void> {
+    if (mode === this.#mode) return;
+    if (!this.#createComposition) throw new Error('session_mode_unavailable');
+    const next = await this.#createComposition(mode);
+    const previous = this.#composition;
+    this.#composition = next;
+    this.#mode = mode;
+    const results = await Promise.allSettled([
+      this.#capabilities.replace(next.capabilities ?? createSessionCapabilities()),
+      previous.runner?.dispose?.(), previous.dispose(),
+    ]);
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+    if (errors.length) {
+      this.#compositionCleanupErrors.push(...errors);
+      this.#loopFailure = new AggregateError(errors, 'session_mode_cleanup_failed');
+      throw this.#loopFailure;
+    }
+  }
+
+  private async handleMode(command: Extract<ConversationCommand, { type: 'session.mode.set' }>): Promise<CommandReply> {
+    if (command.mode !== 'minimal' && command.mode !== 'full') {
+      return this.recordRejection(command, 'session_mode_invalid', '会话模式必须为 minimal 或 full。');
+    }
+    if (!this.#createComposition) return this.recordRejection(command, 'session_mode_unavailable', '当前 Session 实现不支持模式切换。');
+    const snapshot = await this.loadSnapshot();
+    if (snapshot.state.agentContext) return this.recordRejection(command, 'agent_session_requires_managed_task', '子代理配置由所属任务管理。');
+    return this.commitCommand(command, snapshot.state.mode === command.mode ? [] : [{
+      type: 'session.mode.updated', sessionId: this.sessionId, payload: { commandId: command.commandId, mode: command.mode },
+    }], acceptedReply(command));
+  }
+
   private async handleCommand(command: ConversationCommand, beforeRunStart?: (runId: string) => Promise<void>): Promise<CommandReply> {
     if (this.#disposed || this.#disposeTask) throw new Error('session_actor_disposed');
     if (command.sessionId !== this.sessionId) {
@@ -498,6 +539,8 @@ export class SessionActor {
     }
 
     switch (command.type) {
+      case 'session.mode.set':
+        return await this.handleMode(command);
       case 'run.host.rebind':
         return await this.handleHostRebind(command);
       case 'session.permissions.set':
@@ -915,11 +958,13 @@ export class SessionActor {
     if (before.state.run && !isTerminal(before.state.run.status)) {
       return await this.recordRejection(command, 'run_release_pending', '当前运行尚未完成资源释放。');
     }
-    const controls = before.state.recipe?.tools?.controls;
+    const recipe = recipeForMode(before.state.recipe, before.state.mode);
+    const controls = recipe.tools?.controls;
     if (manualPlan && ((controls && !controls.includes('plan.publish'))
-      || (before.state.recipe?.configuration ?? before.state.agentContext?.configuration)?.controls.id === 'none')) {
+      || (recipe.configuration ?? before.state.agentContext?.configuration)?.controls.id === 'none')) {
       return await this.recordRejection(journalCommand, 'plan_tool_unavailable', '当前 Agent 的工具范围不包含提交计划。');
     }
+    await this.configureMode(before.state.mode);
     const messageId = this.#nextId('message');
     const runId = this.#nextId('run');
     const profileId = command.profileId ?? before.state.modelSettings?.profileId ?? this.#profileId;
@@ -931,13 +976,17 @@ export class SessionActor {
     const runWorkspaceBindings = appendResourceBindings(before.state.workspaceBindings, directoryReferences);
     const previousRun = before.state.run?.runId;
     const previousView = previousRun ? before.state.runToolViews[previousRun] ?? before.state.runRuntimeSnapshots[previousRun] : undefined;
+    const pluginRun = before.events.findLast(event => event.type === 'run.started'
+      && event.payload.runtimeSnapshot.toolSelection?.plugins !== false);
+    const pluginView = pluginRun?.type === 'run.started'
+      ? before.state.runToolViews[pluginRun.runId] ?? pluginRun.payload.runtimeSnapshot : undefined;
     const prepared = await this.prepareRun({
       sessionId: this.sessionId,
       runId,
       workspaceBindingIds: runWorkspaceBindings.map(binding => binding.workspaceId),
       previousProviderToolAliases: previousView?.providerToolAliases,
-      ...(previousView?.selectedPlugins.plugins.length ? {
-        inheritedPluginSelections: previousView.selectedPlugins.plugins.map(plugin => ({
+      ...(recipe.tools?.plugins !== false && pluginView?.selectedPlugins.plugins.length ? {
+        inheritedPluginSelections: pluginView.selectedPlugins.plugins.map(plugin => ({
           selectionId: this.#nextId('plugin-selection'), uri: plugin.uri, label: plugin.uri.slice(0, 160),
         })),
       } : {}),
@@ -949,7 +998,12 @@ export class SessionActor {
         ? { pluginSelections: command.pluginSelections.map((selection) => ({ ...selection })) }
         : {}),
     });
-    const runtimeSnapshot = { ...prepared.runtimeSnapshot,
+    if (prepared.runtimeSnapshot.mode !== undefined && prepared.runtimeSnapshot.mode !== before.state.mode) {
+      await this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
+        kernelCatalogSnapshotRef: prepared.runtimeSnapshot.kernelCatalogSnapshotRef });
+      return this.recordRejection(journalCommand, 'session_mode_preparation_mismatch', '运行模式与已保存的会话选择不一致。');
+    }
+    const runtimeSnapshot = { ...prepared.runtimeSnapshot, mode: before.state.mode,
       ...(manualPlan ? { planMode: 'manual' as const } : {}),
       ...(!this.#agents && prepared.runtimeSnapshot.agentToolsEnabled ? { agentToolsEnabled: false } : {}),
     };
