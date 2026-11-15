@@ -48,17 +48,13 @@ window.fetch = async (input, init) => {
       const { patches } = JSON.parse(String(init.body)); writes.push({ kind: 'settings', patches });
       if (failSettings) return Response.json({ ok: false, message: 'fixture settings write failed' });
       settings = { ...settings, ...patches };
-      return result({ settings, changedKeys: Object.keys(patches), activation: 'immediate' });
+      return result({ settings, changedKeys: Object.keys(patches), activation: 'nextRun' });
     }
     return result({ settings, runtimeSettings: settings, storePath: '/fixture/settings.json' });
   }
   if (path.endsWith('/commands')) {
     const command = JSON.parse(String(init?.body)); writes.push(command);
-    if (command.type === 'session.subagent-settings.set') {
-      if (failSettings) return Response.json({ ok: false, message: 'fixture subagent write failed' });
-      projection = { ...projection, subagentSettings: command.settings, revision: projection.revision + 1 };
-      settings = { ...settings, ...Object.fromEntries(Object.entries(command.settings as AgentSettings).map(([key, value]) => [`agent.subagents.${key}`, value])) };
-    } else if (command.type === 'session.model-settings.set') projection = { ...projection, modelSettings: command.settings, revision: projection.revision + 1 };
+    if (command.type === 'session.model-settings.set') projection = { ...projection, modelSettings: command.settings, revision: projection.revision + 1 };
     else throw new Error(`Unexpected fixture command: ${command.type}`);
     return result({ schemaVersion: COMMAND_REPLY_VERSION, status: 'accepted', commandId: command.commandId, sessionId: projection.sessionId, revision: projection.revision });
   }

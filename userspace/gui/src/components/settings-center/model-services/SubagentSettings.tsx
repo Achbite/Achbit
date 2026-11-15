@@ -17,7 +17,7 @@ export default function SubagentSettings({ profiles, connections }: {
   connections: ModelConnection[];
 }) {
   const { language } = useModelLanguage();
-  const defaultsHelp = useSettingsHelp(t(language, 'settings.subagents.defaultsHelp'));
+  const globalHelp = useSettingsHelp(t(language, 'settings.subagents.activation'));
   const settings = useSettingsStore(state => state.effectiveSettings);
   const loading = useSettingsStore(state => state.loading);
   const [saving, setSaving] = useState(false);
@@ -60,8 +60,8 @@ export default function SubagentSettings({ profiles, connections }: {
     finally { setSaving(false); }
   };
   return <details className="model-editor model-divider">
-    <summary aria-describedby={defaultsHelp.helpId} {...defaultsHelp.helpEvents}>
-      {defaultsHelp.help}<strong>{t(language, 'settings.subagents.defaults')}</strong>
+    <summary aria-describedby={globalHelp.helpId} {...globalHelp.helpEvents}>
+      {globalHelp.help}<strong>{t(language, 'settings.subagents.title')}</strong>
       <span>{enabled ? (!selected ? t(language, 'settings.subagents.followMain')
         : available.find(value => value.id === selected)?.name ?? t(language, 'settings.subagents.unavailable'))
         : t(language, 'settings.common.disabled')}</span>

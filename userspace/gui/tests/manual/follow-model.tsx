@@ -74,10 +74,7 @@ window.fetch = async (input, init) => {
   }
   if (url.pathname.endsWith('/commands')) {
     const command = JSON.parse(String(init?.body));
-    if (command.type === 'session.subagent-settings.set') {
-      subagentDefaults = command.settings;
-      currentProjection = { ...currentProjection, subagentSettings: command.settings };
-    } else if (command.type === 'session.model-settings.set') currentProjection = { ...currentProjection, modelSettings: command.settings };
+    if (command.type === 'session.model-settings.set') currentProjection = { ...currentProjection, modelSettings: command.settings };
     else throw new Error(`Unexpected fixture command: ${command.type}`);
     currentProjection = { ...currentProjection, revision: currentProjection.revision + 1 };
     return Response.json({ ok: true, data: reply(command.commandId) });
@@ -164,11 +161,10 @@ function Preview() {
       },
       sendMessage: async text => {
         const state = useLocalAgentStore.getState();
-        if (state.draftSubagentSettings) subagentDefaults = state.draftSubagentSettings;
         currentProjection = { ...emptyProjection(), modelSettings: {
           profileId: state.selectedProfileId!, reasoningEffortOverride: state.reasoningEffortOverride,
         } };
-        useLocalAgentStore.setState({ sessionId, projection: currentProjection, defaultProfileId: state.selectedProfileId, draftSubagentSettings: null });
+        useLocalAgentStore.setState({ sessionId, projection: currentProjection, defaultProfileId: state.selectedProfileId });
         setText(`已接收：${text}`);
         setNotice(`已使用 ${state.profiles.find(item => item.id === state.selectedProfileId)?.name}；可新建对话检查继承`);
         return reply('command:preview:message');

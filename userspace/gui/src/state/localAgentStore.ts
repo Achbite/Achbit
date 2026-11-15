@@ -11,7 +11,6 @@ import type {
   ModelConnection,
   LlmReasoningEffort,
   SessionModelSettings,
-  AgentSettings,
   MessageFeedback,
   PluginCatalogProjection,
   PluginSelectionInput,
@@ -19,7 +18,7 @@ import type {
   SessionProjection,
   HostWindowBinding,
 } from '@achbit/protocol';
-import { CONVERSATION_COMMAND_VERSION, decodeAgentSettings, modelReasoningEfforts } from '@achbit/protocol';
+import { CONVERSATION_COMMAND_VERSION, modelReasoningEfforts } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
@@ -84,8 +83,6 @@ export interface LocalAgentState {
   selectedProfileId: string | null;
   reasoningEffortOverride: LlmReasoningEffort | null;
   modelSettingsBusy: boolean;
-  draftSubagentSettings: AgentSettings | null;
-  subagentSettingsBusy: boolean;
   profiles: LlmProviderProfile[];
   connections: ModelConnection[];
   defaultProfileId: string | null;
@@ -113,7 +110,6 @@ export interface LocalAgentState {
   activateSession(sessionId: string): Promise<void>;
   selectModel(profileId: string, effort: LlmReasoningEffort | null): Promise<boolean>;
   setMode(mode: 'minimal' | 'full'): Promise<CommandReply>;
-  setSubagentSettings(settings: AgentSettings): Promise<boolean>;
   refresh(): Promise<void>;
   sendMessage(
     text: string,
@@ -270,8 +266,6 @@ const store = create<LocalAgentState>((set, get) => ({
   selectedProfileId: null,
   reasoningEffortOverride: null,
   modelSettingsBusy: false,
-  draftSubagentSettings: null,
-  subagentSettingsBusy: false,
   profiles: [],
   connections: [],
   defaultProfileId: null,
@@ -440,8 +434,6 @@ const store = create<LocalAgentState>((set, get) => ({
       projection: null,
       draftProjectId: projectId,
       modelSettingsBusy: false,
-      draftSubagentSettings: null,
-      subagentSettingsBusy: false,
       selectedProfileId: get().defaultProfileId,
       reasoningEffortOverride: get().profiles.find(profile => profile.id === get().defaultProfileId)?.reasoningEffort ?? null,
       loading: false, loadingPurpose: null,
@@ -485,8 +477,6 @@ const store = create<LocalAgentState>((set, get) => ({
     set({
       submitting: false,
       modelSettingsBusy: false,
-      draftSubagentSettings: null,
-      subagentSettingsBusy: false,
       loading: !visibleCached,
       loadingPurpose: visibleCached ? null : 'session',
       error: null,
@@ -540,42 +530,6 @@ const store = create<LocalAgentState>((set, get) => ({
     if (!profile || (profile.thinking !== 'disabled' && modelReasoningEfforts(profile).length > 0
       && !(reasoningEffortOverride ?? profile.reasoningEffort))) return false;
     return saveModelSettings(set, get, { profileId, reasoningEffortOverride });
-  },
-
-  setSubagentSettings: async (input) => {
-    if (get().subagentSettingsBusy || get().submitting) return false;
-    const { sessionId } = get();
-    const settingsGeneration = generation;
-    set({ subagentSettingsBusy: true });
-    try {
-      const settings = decodeAgentSettings(input);
-      if (sessionId) {
-        await submitCommandAndReconcile(set, get, {
-          schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'session.subagent-settings.set',
-          sessionId, commandId: nextId('command'), settings,
-        });
-        await useSettingsStore.getState().loadUserSettings();
-      } else {
-        const activation = await useSettingsStore.getState().patchUserSettingsBatch(Object.fromEntries(
-          Object.entries(settings).map(([key, value]) => [`agent.subagents.${key}`, value]),
-        ));
-        if (!activation) throw new Error(useSettingsStore.getState().errorMessage ?? 'subagent_defaults_save_failed');
-        if (generation === settingsGeneration) set({ draftSubagentSettings: settings, error: null, errorSource: null });
-      }
-      return generation === settingsGeneration;
-    } catch (error) {
-      let message = errorMessage(error);
-      // The Session write can succeed before saving defaults fails. Read its
-      // canonical fact once and retain the original failure for the user.
-      if (sessionId) {
-        try { await reconcileProjectionAfterReply(set, get, sessionId, 0, settingsGeneration); }
-        catch (reconciliation) { message += `;conversation_projection_reconcile_failed:${errorMessage(reconciliation)}`; }
-      }
-      if (generation === settingsGeneration) set({ error: message, errorSource: 'command' });
-      return false;
-    } finally {
-      if (generation === settingsGeneration) set({ subagentSettingsBusy: false });
-    }
   },
 
   refresh: async () => {
@@ -1017,15 +971,14 @@ async function submitNewRun(
     }
     let { sessionId } = get();
     if (!sessionId) {
-      const { draftProjectId, draftSubagentSettings } = get();
+      const { draftProjectId } = get();
       const created = await createLocalAgentSession({
         ...(draftProjectId ? { projectId: draftProjectId } : {}),
-        ...(draftSubagentSettings ? { subagentSettings: draftSubagentSettings } : {}),
       });
       if (generation !== submissionGeneration) throw new Error('conversation_session_changed');
       sessionId = created.sessionId;
       onSessionCreated?.(sessionId);
-      set({ sessionId, projection: created, draftProjectId: null, draftSubagentSettings: null });
+      set({ sessionId, projection: created, draftProjectId: null });
       await get().refreshCatalog();
     }
     const filesystemReferences = [...(retained.filesystemReferences ?? []), ...(filesystemPaths.length

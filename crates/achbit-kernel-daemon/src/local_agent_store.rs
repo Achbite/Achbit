@@ -298,7 +298,11 @@ impl LocalAgentJournal {
     }
 
     /// A started run retains its selection after a later Session mode command.
-    pub(crate) fn mode_for_run(&self, session_id: &str, run_id: &str) -> Result<String, LocalAgentStoreError> {
+    pub(crate) fn mode_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<String, LocalAgentStoreError> {
         let connection = self.lock()?;
         let started: Option<String> = connection.query_row(
             "SELECT payload_json FROM session_events WHERE session_id=?1 AND run_id=?2 AND event_type='run.started' ORDER BY sequence DESC LIMIT 1",
@@ -316,7 +320,10 @@ impl LocalAgentJournal {
             [session_id], |row| row.get(0),
         ).optional().map_err(sql_error("session_mode_read_failed"))?;
         match selected {
-            Some(encoded) => validate_session_mode(&decode_json(&encoded, "session_mode_corrupt")?["mode"]).map(String::from),
+            Some(encoded) => {
+                validate_session_mode(&decode_json(&encoded, "session_mode_corrupt")?["mode"])
+                    .map(String::from)
+            }
             None => Ok("full".into()),
         }
     }
@@ -3617,7 +3624,10 @@ pub(crate) fn validate_subagent_settings(value: &Value) -> Result<(), LocalAgent
 fn validate_session_mode(value: &Value) -> Result<&str, LocalAgentStoreError> {
     match value.as_str() {
         Some(mode @ ("minimal" | "full")) => Ok(mode),
-        _ => Err(LocalAgentStoreError::new("session_mode_invalid", "Mode must be minimal or full.")),
+        _ => Err(LocalAgentStoreError::new(
+            "session_mode_invalid",
+            "Mode must be minimal or full.",
+        )),
     }
 }
 
@@ -3665,7 +3675,11 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
         ));
     }
     if command_type == "session.mode.set" {
-        exact_object(command, &["schemaVersion", "type", "commandId", "sessionId", "mode"], &[])?;
+        exact_object(
+            command,
+            &["schemaVersion", "type", "commandId", "sessionId", "mode"],
+            &[],
+        )?;
         validate_session_mode(&command["mode"])?;
     }
     if command_type == "session.workspaces.set" {
@@ -5294,9 +5308,15 @@ fn validate_run_runtime_snapshot(
             "toolSelection",
             "codingTools",
             "mode",
+            "subagentSettings",
         ],
     )?;
-    if let Some(mode) = value.get("mode") { validate_session_mode(mode)?; }
+    if let Some(mode) = value.get("mode") {
+        validate_session_mode(mode)?;
+    }
+    if let Some(settings) = value.get("subagentSettings") {
+        validate_subagent_settings(settings)?;
+    }
     if value
         .get("codingTools")
         .is_some_and(|selected| selected != true)
@@ -7323,8 +7343,13 @@ mod tests {
         let store = Store::new();
         {
             let journal = LocalAgentJournal::open(&store.path()).unwrap();
-            journal.create_session("session:mode", "Mode", &json!([]), None, None).unwrap();
-            assert_eq!(journal.mode_for_run("session:mode", "run:future").unwrap(), "full");
+            journal
+                .create_session("session:mode", "Mode", &json!([]), None, None)
+                .unwrap();
+            assert_eq!(
+                journal.mode_for_run("session:mode", "run:future").unwrap(),
+                "full"
+            );
             let mut runtime = runtime_snapshot();
             runtime["mode"] = json!("full");
             journal.append(&json!({"type":"run.started","sessionId":"session:mode","runId":"run:mode",
@@ -7333,16 +7358,31 @@ mod tests {
             journal.commit_command(&json!({"command":command,"events":[{"type":"session.mode.updated","sessionId":"session:mode",
                 "payload":{"commandId":"mode:one","mode":"minimal"}}],
                 "reply":{"schemaVersion":REPLY_VERSION,"sessionId":"session:mode","commandId":"mode:one","status":"accepted","revision":0}})).unwrap();
-            assert_eq!(journal.mode_for_run("session:mode", "run:mode").unwrap(), "full");
+            assert_eq!(
+                journal.mode_for_run("session:mode", "run:mode").unwrap(),
+                "full"
+            );
             let mut invalid = command;
             invalid["mode"] = json!("fast");
-            assert_eq!(validate_command(&invalid).unwrap_err().code, "session_mode_invalid");
+            assert_eq!(
+                validate_command(&invalid).unwrap_err().code,
+                "session_mode_invalid"
+            );
             runtime["mode"] = json!("fast");
-            assert_eq!(validate_run_runtime_snapshot(&runtime).unwrap_err().code, "session_mode_invalid");
+            assert_eq!(
+                validate_run_runtime_snapshot(&runtime).unwrap_err().code,
+                "session_mode_invalid"
+            );
         }
         let restored = LocalAgentJournal::open(&store.path()).unwrap();
-        assert_eq!(restored.mode_for_run("session:mode", "run:new").unwrap(), "minimal");
-        assert_eq!(restored.mode_for_run("session:mode", "run:mode").unwrap(), "full");
+        assert_eq!(
+            restored.mode_for_run("session:mode", "run:new").unwrap(),
+            "minimal"
+        );
+        assert_eq!(
+            restored.mode_for_run("session:mode", "run:mode").unwrap(),
+            "full"
+        );
     }
 
     #[test]

@@ -142,7 +142,9 @@ impl LocalAgentRuntime {
             .journal
             .agent_context(&request.session_id)
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
-        let mode = self.journal.mode_for_run(&request.session_id, &request.run_id)
+        let mode = self
+            .journal
+            .mode_for_run(&request.session_id, &request.run_id)
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
         let recipe = self
             .journal
@@ -232,6 +234,7 @@ impl LocalAgentRuntime {
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
         merge_object(&mut settings, &permissions);
         let settings = &settings;
+        let subagent_settings = capture_subagent_settings(settings)?;
         if request.restore_environment {
             return prepared_runs
                 .get(&key)
@@ -824,6 +827,7 @@ impl LocalAgentRuntime {
             "selectedPlugins": selected_plugins,
             "environment": environment,
             "agentCapabilities": agent_capabilities,
+            "subagentSettings": subagent_settings,
             "contextManagement": {
                 "enabled": settings.get("agent.contextManagement.enabled").and_then(Value::as_bool).unwrap_or(false),
                 "thresholdTokens": settings.get("agent.contextManagement.thresholdTokens").and_then(Value::as_u64).unwrap_or(500_000),
@@ -832,7 +836,7 @@ impl LocalAgentRuntime {
         if let Some(instructions) = project_instructions {
             response["projectInstructions"] = instructions;
         }
-        // Handler availability is stable; delegation settings belong to Session.
+        // Session consumes the captured configuration; tool refresh keeps this run's settings.
         response["agentToolsEnabled"] = json!(true);
         match &approval_reviewer_binding {
             Ok(binding) => response["approvalReviewer"] = json!(binding.snapshot()),
@@ -1095,7 +1099,6 @@ pub(crate) struct CreateLocalSessionRequest {
     profile_id: Option<String>,
     agent_context: Option<Value>,
     recipe: Option<Value>,
-    subagent_settings: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1316,22 +1319,14 @@ pub(crate) async fn local_agent_session_create(
         body.profile_id.as_deref(),
         body.agent_context.as_ref(),
         body.recipe.as_ref(),
-        body.subagent_settings.as_ref(),
+        None,
     ) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
     }
 }
 
-pub(crate) async fn local_agent_settings_get(
-    ReadyState(state): ReadyState,
-    headers: HeaderMap,
-) -> Json<ApiResponse> {
-    if let Err(response) = require_session_service(&state, &headers) {
-        return response;
-    }
-    // Session reads these defaults only when creating a new conversation.
-    let gui = state.gui.lock().expect("gui state lock");
+fn capture_subagent_settings(settings: &Value) -> Result<Value, RunPreparationError> {
     let mut result = serde_json::Map::new();
     for field in [
         "enabled",
@@ -1345,37 +1340,18 @@ pub(crate) async fn local_agent_settings_get(
         "presets",
     ] {
         let key = format!("agent.subagents.{field}");
-        let Some(value) = gui.user_settings.get(&key) else {
-            return ApiResponse::error(
+        let value = settings.get(&key).ok_or_else(|| {
+            RunPreparationError::new(
                 "agent_settings_missing",
                 format!("缺少子 Agent 设置：{key}"),
-            );
-        };
+            )
+        })?;
         result.insert(field.into(), value.clone());
     }
-    ApiResponse::ok(Value::Object(result))
-}
-
-pub(crate) async fn local_agent_settings_set(
-    ReadyState(state): ReadyState,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Json<ApiResponse> {
-    if let Err(response) = require_session_service(&state, &headers) {
-        return response;
-    }
-    if let Err(error) = crate::local_agent_store::validate_subagent_settings(&body) {
-        return ApiResponse::error(error.code, error.message);
-    }
-    let patches = body
-        .as_object()
-        .expect("validated settings object")
-        .iter()
-        .map(|(field, value)| (format!("agent.subagents.{field}"), value.clone()))
-        .collect::<serde_json::Map<_, _>>();
-    // Session owns when defaults are updated; Host uses the existing atomic settings writer.
-    crate::settings_api::user_settings_patch(ReadyState(state), Json(json!({"patches": patches})))
-        .await
+    let captured = Value::Object(result);
+    crate::local_agent_store::validate_subagent_settings(&captured)
+        .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+    Ok(captured)
 }
 
 pub(crate) async fn local_agent_models_get(
@@ -2544,6 +2520,29 @@ fn random_service_token() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subagent_settings_capture_validates_and_owns_the_run_copy() {
+        let mut settings = crate::settings_api::default_user_settings();
+        let captured = capture_subagent_settings(&settings).unwrap();
+        assert_eq!(captured["enabled"], false);
+        settings["agent.subagents.enabled"] = json!(true);
+        assert_eq!(captured["enabled"], false);
+        assert_eq!(
+            capture_subagent_settings(&settings).unwrap()["enabled"],
+            true
+        );
+        settings["agent.subagents.maxConcurrent"] = json!(0);
+        assert!(capture_subagent_settings(&settings).is_err());
+        settings
+            .as_object_mut()
+            .unwrap()
+            .remove("agent.subagents.enabled");
+        assert_eq!(
+            capture_subagent_settings(&settings).unwrap_err().code,
+            "agent_settings_missing"
+        );
+    }
 
     #[test]
     fn provider_workspace_names_follow_catalog_character_limit() {

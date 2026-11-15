@@ -193,7 +193,7 @@ test('automatic updates follow loaded settings; manual installation confirms act
   b.window.dispatchEvent(new Event('pointerdown'));
   assert.notEqual(await prepare(true), null, 'the install click itself must not force a 15-second wait');
   b.handlers.get('achbit:update-resume')({});
-  for (const key of ['submitting', 'loading', 'catalogBusy', 'modelSettingsBusy', 'subagentSettingsBusy']) {
+  for (const key of ['submitting', 'loading', 'catalogBusy', 'modelSettingsBusy']) {
     useLocalAgentStore.setState({ [key]: true });
     assert.notEqual(await prepare(true), null, `${key} alone must not silently block explicit installation`);
     b.handlers.get('achbit:update-resume')({});

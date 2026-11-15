@@ -7,13 +7,12 @@ import { UiRegion } from '../../ui-plugins/UiRegion';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { UiIcon as AchbitShellIcon, IconButton } from '../../ui-components';
-import { subagentDefaults } from './SubagentQuickSettings';
+import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import ReasoningEffortSlider from './ReasoningEffortSlider';
 import { REASONING_CONTROL_SETTING, reasoningControlStyle, type ReasoningControlStyle } from './reasoningControlStyle';
 import { useOpenModelSettings } from '../settings-center/modelSettingsNavigation';
 import { useSettingsHelp } from '../settings-center/SettingsHelp';
 import { useSettingsStore } from '../../state/settingsStore';
-import { useLocalAgentStore } from '../../state/localAgentStore';
 import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useViewportBounds } from '../shared/useViewportBounds';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
@@ -50,12 +49,10 @@ export default function SessionModelSelector({ language, profiles, connections =
     setOpen(requestedPanel.kind === 'model');
     setChoosingModel(requestedPanel.kind === 'model');
   }, [requestedPanel]);
-  const sessionId = useLocalAgentStore(state => state.sessionId);
-  const sessionSubagents = useLocalAgentStore(state => state.projection?.subagentSettings);
-  const draftSubagents = useLocalAgentStore(state => state.draftSubagentSettings);
   const defaults = useSettingsStore(state => state.effectiveSettings);
   const defaultsLoading = useSettingsStore(state => state.loading);
-  const subagentBusy = useLocalAgentStore(state => state.loading || state.submitting || state.subagentSettingsBusy);
+  const [subagentBusy, setSubagentBusy] = useState(false);
+  useInterfaceReloadGuard(false, t(language, 'settings.subagents.title'), subagentBusy);
   let controlStyle: ReasoningControlStyle | null = null, styleError: string | null = null;
   try { controlStyle = reasoningControlStyle(defaults[REASONING_CONTROL_SETTING]); } catch (cause) { styleError = String(cause); }
   const rootRef = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null), triggerRef = useRef<HTMLButtonElement>(null);
@@ -66,18 +63,20 @@ export default function SessionModelSelector({ language, profiles, connections =
   const candidate = profiles.find(profile => profile.id === (candidateId ?? selectedProfileId));
   const candidateEffort = candidate?.thinking === 'disabled' ? null
     : candidate?.id === selectedProfileId ? effectiveEffort : candidate?.reasoningEffort ?? null;
-  const subagentsEnabled = (sessionId ? sessionSubagents?.enabled : draftSubagents?.enabled ?? defaults['agent.subagents.enabled']) === true;
+  const subagentsEnabled = defaults['agent.subagents.enabled'] === true;
   const subagentLabel = t(language, subagentsEnabled ? 'settings.subagents.disable' : 'settings.subagents.enable');
-  const subagentHelp = useSettingsHelp(open && !choosingModel ? subagentLabel : undefined, { compact: true });
+  const subagentHelp = useSettingsHelp(open && !choosingModel
+    ? `${subagentLabel} · ${t(language, 'settings.subagents.activation')}` : undefined, { compact: true });
   const efforts = modelReasoningEfforts(candidate);
   const toggleSubagents = async () => {
     if (subagentBusy || defaultsLoading) return;
-    setActionError(null);
+    setActionError(null); setSubagentBusy(true);
     try {
-      const current = (sessionId ? sessionSubagents : draftSubagents) ?? subagentDefaults(defaults);
-      const saved = await useLocalAgentStore.getState().setSubagentSettings({ ...current, enabled: !subagentsEnabled });
-      if (!saved) throw new Error(useLocalAgentStore.getState().error ?? t(language, 'settings.common.saveFailed'));
+      const store = useSettingsStore.getState();
+      const saved = await store.patchUserSettingsBatch({ 'agent.subagents.enabled': !store.effectiveSettings['agent.subagents.enabled'] });
+      if (!saved) throw new Error(useSettingsStore.getState().errorMessage ?? t(language, 'settings.common.saveFailed'));
     } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setSubagentBusy(false); }
   };
   const title = (selected?.name ?? selectedProfileId ?? (chinese ? '选择模型' : 'Choose model')) + (selectedProfileId && !selected?.enabled ? ` · ${t(language, selected ? 'agent.profile.disabled' : 'agent.profile.missing')}` : '');
   const effortLabel = selected?.thinking === 'disabled'

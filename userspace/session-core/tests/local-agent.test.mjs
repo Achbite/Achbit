@@ -361,7 +361,7 @@ test('cancellation during delegation admission is observed without starting a ch
   const reason = new Error('parent_cancelled_during_admission');
   let hostCalls = 0;
   const manager = new TestAgentManager({
-    async settings() { hostCalls += 1; throw new Error('cancelled_admission_reached_host'); },
+    async models() { hostCalls += 1; throw new Error('cancelled_admission_reached_host'); },
     async createSession() { hostCalls += 1; throw new Error('cancelled_admission_created_child'); },
   }, async sessionId => ({
     async agentCapabilities() { return ALL_AGENT_CAPS; },
@@ -444,7 +444,9 @@ test('subagent model defaults and per-call overrides use the owner Run binding',
         parentRunId: 'run:owner-bound', parentCallId: 'call:member' },
       runRuntimeSnapshots: { 'run:member-bound': memberRuntime },
       run: { runId: 'run:member-bound', status: 'running', workspaceBindings: [], profileId: 'profile:member-bound', reasoningEffort: 'low' } });
-    for (const state of states.values()) state.subagentSettings = { ...AGENT_SETTINGS, allowFullConfiguration: Boolean(item.operation), ...item.settings };
+    for (const state of states.values()) for (const runtime of Object.values(state.runRuntimeSnapshots)) {
+      runtime.subagentSettings = { ...AGENT_SETTINGS, allowFullConfiguration: Boolean(item.operation), ...item.settings };
+    }
     const actors = new Map([...states.keys()].map(sessionId => [sessionId, { sessionId,
       async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
       async snapshot() { return projectSession(states.get(sessionId)); },
@@ -457,9 +459,6 @@ test('subagent model defaults and per-call overrides use the owner Run binding',
       } }]));
     const created = [], submitted = [];
     const manager = new TestAgentManager({
-      async settings() { return { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
-        maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true,
-        allowFullConfiguration: Boolean(item.operation), ...item.settings }; },
       async models() { return ['profile:owner-bound', 'profile:default', 'profile:override'].map(profileId => ({
         profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       })); },
@@ -593,8 +592,6 @@ test('an idle member preparation failure cannot reuse its previous successful ru
         finalMessageId: `message:${requestedRunId}` };
     } };
   const manager = new TestAgentManager({
-    async settings() { return { enabled: true, profileId: 'profile:member', reasoningEffort: '',
-      maxConcurrent: 4, maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true }; },
     async createSession() { throw new Error('existing_member_must_be_reused'); },
   }, async id => { assert.ok(id === sessionId || id === childId); return id === sessionId ? parent : child; });
   t.after(() => manager.dispose());
@@ -622,9 +619,13 @@ test('an idle member preparation failure cannot reuse its previous successful ru
 test('unified agents preserve nested ownership, custom capabilities, continuation and cancellation', async (t) => {
   const ownerId = 'session:unified-owner';
   const states = new Map(), actors = new Map(), facts = [], submissions = [], results = new Map();
-  let sequence = 0, allowChildDelegation = true, configuredProfile = '';
-  const initialize = (sessionId, agentContext, subagentSettings = { ...AGENT_SETTINGS, allowFullConfiguration: true }) => {
-    states.set(sessionId, { ...emptySessionState(sessionId), subagentSettings: structuredClone(subagentSettings), ...(agentContext ? { agentContext } : {}) });
+  let sequence = 0;
+  const mixedCaps = { messaging: false, continuation: true, delegation: false };
+  const globalSettings = { ...AGENT_SETTINGS, allowFullConfiguration: true, presets: JSON.stringify([
+    { id: 'nested-reader', name: 'Nested reader', capabilities: mixedCaps, profileId: 'profile:selected-child', reasoningEffort: 'max' },
+  ]) };
+  const initialize = (sessionId, agentContext) => {
+    states.set(sessionId, { ...emptySessionState(sessionId), ...(agentContext ? { agentContext } : {}) });
     const actor = { sessionId,
       async agentCapabilities(runId) { return states.get(sessionId).runRuntimeSnapshots[runId].agentCapabilities; },
       async snapshot() { return projectSession(states.get(sessionId)); },
@@ -654,7 +655,7 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   const startRun = (sessionId, profileId = 'profile:owner', reasoningEffortOverride = null) => {
     const state = states.get(sessionId), runId = `run:unified:${++sequence}`;
     const runtime = runtimeSnapshot(runId, { profileId, reasoningEffort: reasoningEffortOverride,
-      agentCapabilities: state.agentContext?.capabilities ?? ALL_AGENT_CAPS });
+      subagentSettings: globalSettings, agentCapabilities: state.agentContext?.capabilities ?? ALL_AGENT_CAPS });
     states.set(sessionId, { ...state, run: { runId, status: 'running', workspaceBindings: [], profileId },
       modelSettings: { profileId, reasoningEffortOverride },
       runRuntimeSnapshots: { ...state.runRuntimeSnapshots, [runId]: runtime } });
@@ -668,14 +669,12 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
     results.get(state.run.runId).resolve(result);
   };
   initialize(ownerId);
-  const ownerRunId = startRun(ownerId);
+  let ownerRunId = startRun(ownerId);
   const manager = new TestAgentManager({
-    async settings() { return { enabled: true, profileId: configuredProfile, reasoningEffort: '', maxConcurrent: 4,
-      maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: allowChildDelegation, allowFullConfiguration: true }; },
     async models() { return ['profile:owner', 'profile:selected-child', 'profile:new-global-default'].map(profileId => ({
       profileId, name: profileId, model: `model:${profileId}`, parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     })); },
-    async createSession(input) { return await initialize(input.sessionId, input.agentContext, input.subagentSettings).snapshot(); },
+    async createSession(input) { return await initialize(input.sessionId, input.agentContext).snapshot(); },
   }, async id => { assert.ok(actors.has(id), `Unknown actor ${id}`); return actors.get(id); });
   t.after(() => manager.dispose());
   const signal = new AbortController().signal;
@@ -683,9 +682,6 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
     `call:${++sequence}`, operation, signal);
   const spawn = (sessionId, extra = {}) => execute(sessionId,
     { action: 'spawn', name: 'Researcher', task: 'Inspect the evidence.', delivery: 'async', ...extra });
-  const mixedCaps = { messaging: false, continuation: true, delegation: false };
-  states.get(ownerId).subagentSettings.presets = JSON.stringify([{ id: 'nested-reader', name: 'Nested reader',
-    capabilities: mixedCaps, profileId: 'profile:selected-child', reasoningEffort: 'max' }]);
   const first = await spawn(ownerId, { preset: 'collaboration', capabilities: { delegation: true } });
   const firstId = first.agentId;
   const firstRunId = states.get(firstId).run.runId;
@@ -709,10 +705,12 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   finish(firstId);
   await manager.forSession(ownerId).wait(ownerRunId, signal);
 
-  configuredProfile = 'profile:new-global-default';
-  states.get(ownerId).subagentSettings.enabled = false;
+  globalSettings.profileId = 'profile:new-global-default';
+  globalSettings.enabled = false;
+  finish(ownerId); ownerRunId = startRun(ownerId);
   await assert.rejects(execute(ownerId, { action: 'assign', agentId: nestedId, task: 'Disabled assignment.' }), /agent_disabled/);
-  states.get(ownerId).subagentSettings.enabled = true;
+  globalSettings.enabled = true;
+  finish(ownerId); ownerRunId = startRun(ownerId);
   const continued = await execute(ownerId, { action: 'assign', agentId: nestedId, task: 'Continue the shared task.' });
   assert.equal(submissions.at(-1).profileId, undefined);
   assert.equal(submissions.at(-1).reasoningEffortOverride, undefined);
@@ -729,15 +727,15 @@ test('unified agents preserve nested ownership, custom capabilities, continuatio
   assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === oneShot.agentId).closed, true);
   assert.equal(states.get(firstId).agentChildren.find(child => child.agentSessionId === nestedId).closed, true);
   assert.equal(facts.some(event => event.type === 'agent.closed' && event.sessionId === ownerId && event.payload.agentSessionId === nestedId), false);
-  allowChildDelegation = false;
-  states.get(ownerId).subagentSettings.allowMemberAnalysis = false;
+  globalSettings.allowMemberAnalysis = false;
+  finish(ownerId); ownerRunId = startRun(ownerId);
   await assert.rejects(spawn(ownerId, { capabilities: { delegation: true } }), /agent_capability_not_grantable/);
   const limited = await spawn(ownerId, { preset: 'collaboration' });
   assert.deepEqual(states.get(limited.agentId).agentContext.capabilities, { ...ALL_AGENT_CAPS, delegation: false });
   finish(limited.agentId);
   await manager.forSession(ownerId).wait(ownerRunId, signal);
-  allowChildDelegation = true;
-  states.get(ownerId).subagentSettings.allowMemberAnalysis = true;
+  globalSettings.allowMemberAnalysis = true;
+  finish(ownerId); ownerRunId = startRun(ownerId);
   const restricted = await spawn(ownerId, { capabilities: { messaging: false, continuation: true, delegation: true } });
   await assert.rejects(execute(restricted.agentId, { action: 'send', agentId: limited.agentId, text: 'Peer message is unavailable.' }), /agent_messaging_disabled/);
   await assert.rejects(spawn(restricted.agentId, { capabilities: { messaging: true } }), /agent_coordinator_configuration_required/);
@@ -1500,7 +1498,10 @@ test('message uses one prepared runtime through composition, completion, cache p
   const settlement = singleEvent(events, 'run.settled');
 
   assert.ok(assistant, 'assistant message must be durable');
-  assert.deepEqual(runStarted.payload.runtimeSnapshot, preparation.snapshots[0]);
+  assert.deepEqual(runStarted.payload.runtimeSnapshot, {
+    ...preparation.snapshots[0],
+    mode: 'full',
+  });
   assert.equal(composition.payload.providerRequestId, completion.payload.providerRequestId);
   assert.equal(completion.payload.providerRuntimeRef, runStarted.payload.runtimeSnapshot.provider.providerRuntimeRef);
   assert.deepEqual(completion.payload.orderedCallIds, []);

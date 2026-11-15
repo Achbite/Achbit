@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { PERMISSION_DEFAULTS } from '../../protocol/dist/index.js';
+import { PERMISSION_DEFAULTS, DEFAULT_USER_SETTINGS, decodeAgentSettings } from '../../protocol/dist/index.js';
 import { SessionActor, sessionControlToolDefinitions } from '../dist/index.js';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
 
@@ -40,6 +40,7 @@ export function fakeRunPreparation(options = {}) {
   const retired = [];
   const released = [];
   const snapshots = [];
+  const capturedSubagents = new Map();
   return {
     prepared,
     retired,
@@ -51,7 +52,12 @@ export function fakeRunPreparation(options = {}) {
       },
       async prepare(request) {
         prepared.push(structuredClone(request));
+        if (!capturedSubagents.has(request.runId) && options.subagentSettings !== undefined) {
+          capturedSubagents.set(request.runId, structuredClone(typeof options.subagentSettings === 'function'
+            ? options.subagentSettings() : options.subagentSettings));
+        }
         const snapshot = runtimeSnapshot(request.runId, {
+          subagentSettings: capturedSubagents.get(request.runId),
           environment: options.environment,
           permissions: options.permissions,
           profileId: request.profileId ?? options.profileId ?? 'profile:default',
@@ -116,6 +122,10 @@ export function runtimeSnapshot(runId, options = {}) {
     }));
   return {
     agentCapabilities: structuredClone(options.agentCapabilities ?? { messaging: true, continuation: true, delegation: true }),
+    subagentSettings: structuredClone(options.subagentSettings ?? { ...decodeAgentSettings(Object.fromEntries(
+      Object.entries(DEFAULT_USER_SETTINGS).filter(([key]) => key.startsWith('agent.subagents.'))
+        .map(([key, value]) => [key.slice('agent.subagents.'.length), value]),
+    )), enabled: true }),
     contextManagement: structuredClone(options.contextManagement ?? { enabled: false, thresholdTokens: 500_000 }),
     runRuntimeSnapshotRef: `runtime-snapshot:${runId}`,
     permissions: { ...PERMISSION_DEFAULTS, ...options.permissions },

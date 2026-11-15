@@ -52,10 +52,8 @@ export function activeSessionControls(
 }
 
 function agentControlAccess(runtime: RunRuntimeSnapshot, events: readonly SessionEvent[]) {
-  const setting = events.findLast(event => event.type === 'session.subagent-settings.updated'
-    || event.type === 'session.created' && event.payload.subagentSettings !== undefined);
-  const settings = setting?.type === 'session.subagent-settings.updated' ? setting.payload.settings
-    : setting?.type === 'session.created' ? setting.payload.subagentSettings : undefined;
+  const settings = runtime.subagentSettings;
+  if (!settings) throw new Error('agent_settings_missing');
   let isChild = false;
   const children = new Set<string>();
   for (const event of events) {

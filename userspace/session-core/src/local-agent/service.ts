@@ -1,13 +1,11 @@
 import type { SessionObservationSink } from './observation.js';
-import { decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
-import { agentPresets } from './agentConfiguration.js';
+import { decodeAgentRecipe } from '@achbit/protocol';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
 import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
 import { loopSnapshot } from './loop.js';
 import type {
   AgentHostPort,
-  AgentSettings,
   SessionCreationInput,
   CommandJournalPort,
   CommandReply,
@@ -98,7 +96,6 @@ export class SessionService implements ConversationPort {
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
   readonly #lifetime = new AbortController();
   #disposeTask?: Promise<void>;
-  #defaultWrites: Promise<void> = Promise.resolve();
   readonly #agents?: AgentManager;
 
   constructor(
@@ -117,13 +114,7 @@ export class SessionService implements ConversationPort {
 
   async createSession(input: SessionCreationInput): Promise<SessionProjection> {
     this.assertOpen();
-    if (input.agentContext && !input.subagentSettings) throw new Error('agent_settings_missing');
-    const selectedSettings = input.subagentSettings ?? (this.agentHost ? await this.agentHost.settings() : undefined);
-    if (selectedSettings !== undefined) {
-      const subagentSettings = decodeAgentSettings(selectedSettings);
-      agentPresets(subagentSettings);
-      input = { ...input, subagentSettings };
-    }
+    if ('subagentSettings' in input) throw new Error('session_subagent_settings_unsupported');
     if (input.recipe) {
       const recipe = decodeAgentRecipe(input.recipe);
       if (input.profileId && recipe.profileId && input.profileId !== recipe.profileId) throw new Error('agent_recipe_model_conflict');
@@ -137,7 +128,6 @@ export class SessionService implements ConversationPort {
     admitSessionEvents(loopSnapshot(input.sessionId, []), [{
       type: 'session.created', sessionId: input.sessionId,
       payload: { displayTitle: input.displayTitle, workspaceBindings: input.workspaceBindings,
-        ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
         ...(input.recipe ? { recipe: input.recipe } : {}),
         ...(input.agentContext ? { agentContext: input.agentContext } : {}),
         ...(input.profileId ? { profileId: input.profileId } : {}) },
@@ -145,7 +135,6 @@ export class SessionService implements ConversationPort {
     await this.journal.createSession({
       sessionId: input.sessionId,
       displayTitle: input.displayTitle,
-      ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
       ...(input.recipe ? { recipe: input.recipe } : {}),
       workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
       ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
@@ -162,14 +151,6 @@ export class SessionService implements ConversationPort {
       }
       throw error;
     }
-  }
-
-  private publishSubagentDefaults(settings: AgentSettings): Promise<void> {
-    const task = this.#defaultWrites.then(() => this.agentHost!.saveDefaults(structuredClone(settings)));
-    this.#defaultWrites = task.catch(() => undefined);
-    return task.catch(error => {
-      throw new Error(`subagent_defaults_update_failed: Session settings were saved; new-session defaults were not updated. Submit a new explicit settings command to try again. ${error instanceof Error ? error.message : String(error)}`, { cause: error });
-    });
   }
 
   async deleteSession(sessionId: string, options?: { unstartedOnly?: boolean }): Promise<{ deletedSessionIds: string[] }> {
@@ -264,7 +245,6 @@ export class SessionService implements ConversationPort {
   }
 
   async submit(command: ConversationCommand): Promise<CommandReply> {
-    if (command.type === 'session.subagent-settings.set' && !this.agentHost) throw new Error('agent_settings_host_unavailable');
     if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
     return this.withActor(command.sessionId, async actor => {
       this.assertOpen();
@@ -281,11 +261,7 @@ export class SessionService implements ConversationPort {
       }
       submissions.add(pending);
       try {
-        const reply = await pending;
-        if (command.type === 'session.subagent-settings.set' && reply.status === 'accepted') {
-          await this.publishSubagentDefaults(command.settings);
-        }
-        return reply;
+        return await pending;
       }
       finally {
         submissions.delete(pending);
@@ -480,7 +456,6 @@ export class SessionService implements ConversationPort {
       await actor.dispose(cancelActiveRuns);
     }));
     if (cancelActiveRuns) try { await this.#agents?.dispose(); } catch (error) { agentError = error; }
-    await this.#defaultWrites;
     this.#actors.clear();
     this.#statusStates.clear();
     const errors = results.flatMap((result) => (

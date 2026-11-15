@@ -245,9 +245,6 @@ export interface AgentModel {
 
 /** Host assembly only. All delegation policy and task facts belong to Session. */
 export interface AgentHostPort {
-  /** Defaults are read only while creating a new root Session. */
-  settings(): Promise<AgentSettings>;
-  saveDefaults(settings: AgentSettings): Promise<void>;
   models(): Promise<readonly AgentModel[]>;
   createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection>;
 }
@@ -1808,6 +1805,7 @@ export interface SessionProjection {
   /** Saved selection for the next run. */
   mode?: SessionMode;
   contextHandoff?: { runId: string; historyThroughSequence: number; previousProfileId: string; profileId: string; status: 'reading' | 'ready' };
+  /** Captured configuration of the current/last run, not editable Session preferences. */
   subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
   agentContext?: AgentContext;
@@ -2111,6 +2109,8 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
+  /** Global delegation settings captured for this task; later saves affect only new runs. */
+  subagentSettings?: AgentSettings;
   /** Captured at run preparation, independent of later Session selections. */
   mode?: SessionMode;
   /** Model-facing coding interface selected by the Session context contribution. */
@@ -2571,7 +2571,6 @@ export interface StoredCommand {
 }
 
 export interface SessionCreationInput {
-  subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
   agentContext?: AgentContext;
   sessionId: string;

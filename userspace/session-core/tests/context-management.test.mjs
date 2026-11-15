@@ -348,13 +348,12 @@ async function agentService(t, ownerId, stream) {
     return { composition: { kernel: emptyKernel(), runPreparation: { ...preparation.port, async prepare(input) {
       const prepared = await preparation.port.prepare(input);
       prepared.runtimeSnapshot.agentToolsEnabled = true;
+      prepared.runtimeSnapshot.subagentSettings.allowFullConfiguration = true;
       const child = (await readEvents(journal, sessionId))[0].payload.agentContext;
       if (child) prepared.runtimeSnapshot.agentCapabilities = child.capabilities;
       return prepared;
     } }, provider: { async *stream(request) { yield* stream({ sessionId, request, service, journal }); } }, async dispose() {} } };
   } }, {
-    async settings() { return { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4, maxCallsPerRun: 16,
-      maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: true, presets: '[]' }; },
     async models() { return [{ profileId: 'profile:default', name: 'Default', model: 'fixture', reasoningEfforts: ['low'],
       parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100_000,
         maxOutputTokens: 512, imageInput: false, temperature: null, hostedWebSearch: null } }]; },

@@ -8,7 +8,6 @@ import { isLocalAgentErrorValue } from '@achbit/protocol';
 import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
 import type {
   AssistantDraftBlockProjection,
-  AgentSettings,
   CommandReply,
   ConversationCatalog,
   ConversationCatalogManagement,
@@ -71,7 +70,6 @@ export async function createLocalAgentSession(
     workspacePaths?: string[];
     projectId?: string;
     profileId?: string;
-    subagentSettings?: AgentSettings;
   },
   signal?: AbortSignal,
 ): Promise<SessionProjection> {

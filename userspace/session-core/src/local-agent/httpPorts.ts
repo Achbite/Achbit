@@ -251,14 +251,6 @@ export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPo
     });
   }
 
-  async settings(): Promise<AgentSettings> {
-    return decodeAgentSettings(await this.json('/api/local-agent/agents/settings'));
-  }
-
-  async saveDefaults(settings: AgentSettings): Promise<void> {
-    await this.json('/api/local-agent/agents/settings', { method: 'POST', body: JSON.stringify(settings) });
-  }
-
   async createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection> {
     const value = await this.json<SessionProjection>('/api/local-agent/agents/sessions', { method: 'POST', body: JSON.stringify(input) });
     if (value.sessionId !== input.sessionId || value.agentContext?.parentCallId !== input.agentContext.parentCallId) throw new Error('agent_session_identity_mismatch');
@@ -504,7 +496,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'environment',
       'agentCapabilities',
       'contextManagement',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions', 'mode'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions', 'mode', 'subagentSettings'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -521,6 +513,8 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
     try {
       if (value.mode !== undefined && value.mode !== 'minimal' && value.mode !== 'full') throw new Error('session_mode_invalid');
       const agentCapabilities = decodeAgentCapabilities(value.agentCapabilities);
+      const subagentSettings = value.subagentSettings === undefined ? undefined : decodeAgentSettings(value.subagentSettings);
+      if (value.agentToolsEnabled === true && !subagentSettings) throw new Error('agent_settings_missing');
       const toolSelection = value.toolSelection === undefined ? undefined : decodeAgentToolSelection(value.toolSelection);
       if (value.agentToolsEnabled !== undefined && typeof value.agentToolsEnabled !== 'boolean') throw new Error('agent_runtime_capabilities_invalid');
       const provider = decodeProviderRuntime(value.provider);
@@ -565,6 +559,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           ...(value.mode ? { mode: value.mode as 'minimal' | 'full' } : {}),
           ...(this.#codingTools ? { codingTools: true as const } : {}),
           contextManagement: decodeContextManagementSettings(value.contextManagement),
+          ...(subagentSettings ? { subagentSettings } : {}),
           agentCapabilities,
           ...(toolSelection ? { toolSelection } : {}),
           ...(value.agentToolsEnabled === true ? { agentToolsEnabled: true } : {}),

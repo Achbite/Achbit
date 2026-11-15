@@ -163,11 +163,11 @@ async function dispatch(
     case 'health':
       return { state: 'ready' };
     case 'createSession':
+      if ('subagentSettings' in request.data) throw new Error('session_subagent_settings_unsupported');
       return await service.createSession({
         sessionId: requiredString(request.data, 'sessionId'),
         displayTitle: requiredString(request.data, 'displayTitle'),
         workspaceBindings: decodeWorkspaceBindings(request.data.workspaceBindings),
-        ...(request.data.subagentSettings !== undefined ? { subagentSettings: decodeAgentSettings(request.data.subagentSettings) } : {}),
         ...(request.data.recipe !== undefined ? { recipe: decodeAgentRecipe(request.data.recipe) } : {}),
         ...(request.data.agentContext ? { agentContext: decodeAgentContext(request.data.agentContext) } : {}),
         ...(optionalString(request.data, 'profileId')

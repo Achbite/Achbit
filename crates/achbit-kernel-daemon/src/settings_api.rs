@@ -38,11 +38,8 @@ pub(crate) async fn workspace_sandbox_setup(ReadyState(state): ReadyState) -> Js
 }
 
 fn setting_activates_at_next_run(key: &str) -> bool {
-    // These are defaults read once when Session creates a new conversation.
-    if key == "plugins.services"
-        || key.starts_with("agent.subagents.")
-        || crate::local_agent_plugins::REGISTRATION_KEYS.contains(&key)
-    {
+    // Service and extension registration changes retain their request-time lifecycle.
+    if key == "plugins.services" || crate::local_agent_plugins::REGISTRATION_KEYS.contains(&key) {
         return false;
     }
     key.starts_with("skills.")
@@ -53,6 +50,7 @@ fn setting_activates_at_next_run(key: &str) -> bool {
         || key == "agent.systemPrompt"
         || key.starts_with("agent.approvalReview.")
         || key.starts_with("agent.contextManagement.")
+        || key.starts_with("agent.subagents.")
         || key.starts_with("agent.permissions.")
         || key.starts_with("agent.windows.")
         || key == "agent.environmentRevision"
@@ -577,6 +575,8 @@ mod context_management_tests {
         for key in [
             "agent.contextManagement.enabled",
             "agent.contextManagement.thresholdTokens",
+            "agent.subagents.enabled",
+            "agent.subagents.allowFullConfiguration",
         ] {
             assert!(setting_activates_at_next_run(key));
         }

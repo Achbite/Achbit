@@ -808,6 +808,7 @@
         "approvalReviewerError": {"$ref": "#/$defs/LocalAgentError"},
         "agentCapabilities": {"$ref": "#/$defs/AgentCapabilities"},
         "agentToolsEnabled": {"type": "boolean"},
+        "subagentSettings": {"$ref": "#/$defs/AgentSettings"},
         "contextManagement": {"$ref": "#/$defs/ContextManagementSettings"},
         "instructions": {
           "type": "array",

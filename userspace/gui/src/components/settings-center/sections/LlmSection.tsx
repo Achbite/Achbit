@@ -16,7 +16,6 @@ import ModelEditor from '../model-services/ModelEditor';
 import SubscriptionAuth from '../model-services/SubscriptionAuth';
 import UsageView from '../model-services/UsageView';
 import SubagentSettings from '../model-services/SubagentSettings';
-import SubagentQuickSettings from '../../local-agent/SubagentQuickSettings';
 import type { ModelSettingsTarget } from '../modelSettingsNavigation';
 import { Cost, data, Hint, message, periodQuery, useModelLanguage } from '../model-services/shared';
 import { UiSettingsContributions, useDisplayTheme } from '../../../ui-plugins/UiPlugins';
@@ -166,8 +165,6 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
   const theme = useDisplayTheme();
   const [page, setPage] = useState<Page>(() => initialModelTarget
     ? { kind: 'connection', id: initialModelTarget.connectionId, profileId: initialModelTarget.profileId } : { kind: 'list' });
-  const sessionId = useLocalAgentStore(state => state.sessionId);
-  const mainProfileId = useLocalAgentStore(state => state.selectedProfileId);
   const [catalog, setCatalog] = useState<ConnectionsResult | null>(null);
   const [profiles, setProfiles] = useState<LlmProfilesResult | null>(null);
   const [usage, setUsage] = useState<UsageReport | null>(null);
@@ -226,13 +223,7 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
       <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-connection-entry"><button ref={addButton} onClick={() => setPage({ kind: 'new', mode: 'metered' })}>+ {text('API 连接', 'API connection')}</button><button onClick={() => setPage({ kind: 'new', mode: 'subscription' })}>+ Coding Plan</button></div></div>
       <div className="model-actions model-subheading"><span>{text('最近使用', 'Last used')} · {profiles?.profiles.find(p => p.id === profiles.defaultProfileId)?.name ?? '—'}</span><button className="model-push" onClick={() => setPage({ kind: 'usage' })}>{text('用量统计', 'Usage')} ↗</button></div>
       {profiles && <ApprovalReviewerModel profiles={profiles.profiles} connections={profiles.connections} />}
-      {profiles && <>
-        {sessionId && <details className="model-editor model-divider">
-          <summary><strong>{t(language, 'settings.subagents.currentSession')}</strong></summary>
-          <SubagentQuickSettings profiles={profiles.profiles} connections={profiles.connections} mainProfileId={mainProfileId} language={language} />
-        </details>}
-        <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />
-      </>}
+      {profiles && <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />}
       {catalog && (['metered', 'subscription'] as const).map(mode => {
         const list = catalog.connections.filter(c => c.billingMode === mode);
         return <section className="model-connection-group" key={mode}><div className="model-heading"><h3>{mode === 'metered' ? text('API 连接', 'API connections') : 'Coding Plan'}</h3><span>{text('近 30 天', 'Last 30 days')}{mode === 'metered' && <Hint>{text('显示已记录请求的 API 费用估算，非服务方账单。', 'Estimated cost of recorded requests; not a provider invoice.')}</Hint>}</span></div>

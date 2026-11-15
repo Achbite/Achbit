@@ -101,6 +101,9 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
         }
       }
       decodeAgentCapabilities(event.payload.runtimeSnapshot.agentCapabilities);
+      if (event.payload.runtimeSnapshot.subagentSettings !== undefined || event.payload.runtimeSnapshot.agentToolsEnabled === true) {
+        decodeAgentSettings(event.payload.runtimeSnapshot.subagentSettings);
+      }
       decodeContextManagementSettings(event.payload.runtimeSnapshot.contextManagement);
       if (state.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(state.run.status)) {
         throw new Error('session_run_already_active');

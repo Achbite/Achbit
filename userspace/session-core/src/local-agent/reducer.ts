@@ -1384,8 +1384,9 @@ export function projectSession(
   for (const block of draft?.blocks ?? []) {
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
+  const capturedSubagents = state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined;
   return {
-    ...(state.subagentSettings ? { subagentSettings: structuredClone(state.subagentSettings) } : {}),
+    ...(capturedSubagents ? { subagentSettings: structuredClone(capturedSubagents) } : {}),
     ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
     ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
     ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),

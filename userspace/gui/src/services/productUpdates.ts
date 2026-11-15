@@ -102,7 +102,7 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
       } else {
         ready = ready && !composing && !settings.loading && automatic && Date.now() - lastInput >= 15_000
           && !guards.length && agent.runtimeReady && !agent.loading
-          && !agent.submitting && !agent.catalogBusy && !agent.modelSettingsBusy && !agent.subagentSettingsBusy;
+          && !agent.submitting && !agent.catalogBusy && !agent.modelSettingsBusy;
       }
       if (ready && !disposed) {
         // Freeze only after confirmation. Session cancellation remains owned by the Host.

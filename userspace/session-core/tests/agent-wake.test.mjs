@@ -27,7 +27,7 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
   const settings = { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
     maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]', ...options.settings };
   service = new SessionService(journal, { async create({ sessionId }) {
-    const preparation = fakeRunPreparation({ contextWindowTokens: 100_000, ...options.preparation });
+    const preparation = fakeRunPreparation({ contextWindowTokens: 100_000, subagentSettings: () => settings, ...options.preparation });
     return { composition: {
       kernel: options.kernel?.({ sessionId, journal }) ?? emptyKernel(),
       ...(options.capabilities ? { capabilities: options.capabilities } : {}),
@@ -56,11 +56,6 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
       async dispose() { disposed.set(sessionId, (disposed.get(sessionId) ?? 0) + 1); },
     } };
   } }, {
-    async settings() { return { ...settings }; },
-    async saveDefaults(value) {
-      await options.saveDefaults?.(value);
-      Object.assign(settings, value);
-    },
     async models() { return options.models ? options.models() : [
       { profileId: 'profile:default', name: 'Default', model: 'fixture-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] },
       { profileId: 'profile:chosen', name: 'Chosen model', model: 'chosen-model', parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100000, maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['high'] },
@@ -417,7 +412,7 @@ test('a retained child continues across parent runs with its original Session, m
     }
     yield done(request);
   });
-  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:retained:configure', { ...fixture.settings, allowFullConfiguration: true }));
+  fixture.settings.allowFullConfiguration = true;
   await fixture.service.submit(messageCommand(ownerId, 'command:retained:first', 'Review the frontend.'));
   const first = await completed(fixture.service, ownerId);
   const firstChild = await fixture.service.snapshot(childId);
@@ -1476,7 +1471,7 @@ test('unknown drivers and child policy escalation are rejected before child crea
   assert.deepEqual((await completed(fixture.service, ownerId)).agentTasks ?? [], []);
 });
 
-test('Session delegation settings change declared tools without injecting state or accepting disabled tasks', async t => {
+test('global delegation changes do not rewrite a running task declaration or inject settings into messages', async t => {
   const ownerId = 'session:delegation-toggle';
   let fixture;
   fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
@@ -1484,7 +1479,7 @@ test('Session delegation settings change declared tools without injecting state 
     assert.equal(request.tools.some(tool => tool.name === 'agent'), false, 'unstarted delegation has no model tool');
     if (turn === 1) {
       for (const enabled of [true, false, true, true, false]) {
-        await service.submit(subagentSettingsCommand(ownerId, `command:toggle:${(await service.snapshot(ownerId)).revision}`, { ...fixture.settings, enabled }));
+        fixture.settings.enabled = enabled;
       }
       yield call(request, 'toggle:discover', 'agent', { action: 'models' });
     } else if (turn === 2) {
@@ -1505,9 +1500,9 @@ test('Session delegation settings change declared tools without injecting state 
   const state = await completed(fixture.service, ownerId);
   assert.deepEqual(state.agentTasks ?? [], []);
   const events = await readEvents(fixture.journal, ownerId);
-  assert.equal(events[0].payload.subagentSettings.enabled, false);
-  assert.deepEqual(events.filter(event => event.type === 'session.subagent-settings.updated').map(event => event.payload.settings.enabled),
-    [true, false, true, true, false]);
+  assert.equal(events[0].payload.subagentSettings, undefined);
+  assert.equal(events.find(event => event.type === 'run.started').payload.runtimeSnapshot.subagentSettings.enabled, false);
+  assert.deepEqual(events.filter(event => event.type === 'session.subagent-settings.updated'), []);
   const last = events.at(-1);
   const compacted = [...events, { ...last, eventId: 'event:toggle-compacted', sequence: last.sequence + 1,
     type: 'context.compacted', payload: { compactionId: 'compact:toggle', coveredThroughSequence: last.sequence,
@@ -1516,7 +1511,7 @@ test('Session delegation settings change declared tools without injecting state 
   const policies = retained.filter(item => item.contributionId.startsWith('agent-delegation:'));
   assert.equal(policies.length, 0, 'settings remain journal facts and do not become model text');
   const before = fixture.requests.get(ownerId).length;
-  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:toggle:after', { ...fixture.settings, enabled: true }));
+  fixture.settings.enabled = true;
   assert.equal(fixture.requests.get(ownerId).length, before, 'a setting change does not start a model request');
 });
 
@@ -1542,16 +1537,14 @@ test('delegation changes during execution preserve the provider call and result 
     }
     yield done(request);
   }, { preparation: { tools: [tool] }, kernel: () => emptyKernel({ async execute(request) {
-    for (const enabled of [false, true]) {
-      await fixture.service.submit(subagentSettingsCommand(ownerId, `command:in-flight:${enabled}`, { ...fixture.settings, enabled }));
-    }
+    fixture.settings.enabled = false;
     return completedExecutionReply(request, { content: 'Read evidence.' });
   } }) });
   await fixture.service.submit(messageCommand(ownerId, 'command:in-flight-toggle', 'Read example.txt.'));
   await completed(fixture.service, ownerId);
 });
 
-test('Session settings isolate peers, update future defaults, survive reopen and preserve child configuration', async t => {
+test('global settings reach new tasks in existing and new Sessions while prior run snapshots and child models remain intact', async t => {
   const ownerId = 'session:settings-b';
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn }) {
     if (sessionId === ownerId && turn === 1) {
@@ -1564,12 +1557,15 @@ test('Session settings isolate peers, update future defaults, survive reopen and
   const original = structuredClone(fixture.settings);
   await fixture.service.createSession({ sessionId: 'session:settings-a', displayTitle: 'A', workspaceBindings: [workspaceBinding] });
   const changed = { ...original, enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 1, allowFullConfiguration: false };
-  const command = subagentSettingsCommand('session:settings-a', 'command:settings-a', changed);
-  assert.equal((await fixture.service.submit(command)).status, 'accepted');
-  assert.deepEqual((await fixture.service.snapshot(ownerId)).subagentSettings, original);
-  assert.deepEqual(fixture.settings, changed);
+  Object.assign(fixture.settings, changed);
+  assert.equal((await fixture.service.snapshot(ownerId)).subagentSettings, undefined, 'creation does not freeze defaults');
   await fixture.service.createSession({ sessionId: 'session:settings-c', displayTitle: 'C', workspaceBindings: [] });
-  assert.deepEqual((await fixture.service.snapshot('session:settings-c')).subagentSettings, changed);
+  for (const id of ['session:settings-a', 'session:settings-c']) {
+    assert.equal((await fixture.service.snapshot(id)).subagentSettings, undefined);
+    await fixture.service.submit(messageCommand(id, `command:${id}`, 'Read the global task settings.'));
+    assert.deepEqual((await completed(fixture.service, id)).subagentSettings, changed);
+  }
+  Object.assign(fixture.settings, original);
   await fixture.service.submit(messageCommand(ownerId, 'command:settings-run', 'Inspect the evidence.'));
   const finished = await completed(fixture.service, ownerId);
   const child = await fixture.service.snapshot(finished.agentChildren[0].agentSessionId);
@@ -1577,63 +1573,83 @@ test('Session settings isolate peers, update future defaults, survive reopen and
   assert.equal(child.agentContext.capabilities.delegation, false, 'inherited configuration cannot elevate analysis capability');
   assert.equal(child.run.profileId, 'profile:chosen');
   assert.equal(child.run.reasoningEffort, 'high');
-  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:settings-b', original));
-  assert.equal((await fixture.service.submit(command)).status, 'replayed');
-  assert.deepEqual(fixture.settings, original, 'replayed A must not overwrite the later B default');
+  assert.deepEqual((await fixture.service.snapshot('session:settings-a')).subagentSettings, changed);
   await fixture.service.dispose();
-  const reopened = await serviceFixture(t, ownerId, async function* () { throw new Error('reopen_must_not_start_provider'); },
-    { journal: fixture.journal, reopen: true, settings: changed });
+  const reopened = await serviceFixture(t, ownerId, async function* ({ request, turn }) {
+    if (turn === 1) yield call(request, 'disabled:discover', 'agent', { action: 'models' });
+    else {
+      const discovery = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+      assert.ok(discovery.operations.every(operation => !['spawn', 'assign'].includes(operation.action)));
+      yield answer(request, 'Next task captured the current global settings.');
+    }
+    yield done(request);
+  }, { journal: fixture.journal, reopen: true, settings: changed });
   assert.deepEqual((await reopened.service.snapshot(ownerId)).subagentSettings, original);
   assert.deepEqual((await reopened.service.snapshot('session:settings-a')).subagentSettings, changed);
   assert.deepEqual((await reopened.service.snapshot(child.sessionId)).subagentSettings, original);
+  assert.equal(reopened.requests.size, 0, 'opening history starts no Provider');
+  await reopened.service.submit(messageCommand(ownerId, 'command:settings-after-reopen', 'Use the latest global settings.'));
+  assert.deepEqual((await completed(reopened.service, ownerId)).subagentSettings, changed);
 });
 
-test('disabling a parent prevents new delegation while its running child completes with its own settings', async t => {
+test('disabling globally preserves an active parent and subsequent delegation until its next task', async t => {
   const ownerId = 'session:settings-running';
+  let firstChild;
   const started = Promise.withResolvers(), release = Promise.withResolvers();
   t.after(() => release.resolve());
   const fixture = await serviceFixture(t, ownerId, async function* ({ sessionId, request, turn, service }) {
     if (sessionId !== ownerId) {
+      firstChild ??= sessionId;
       started.resolve(sessionId);
       await release.promise;
-      assert.equal((await service.snapshot(sessionId)).subagentSettings.enabled, true);
-      yield answer(request, 'Child finished after parent was disabled.');
+      const captured = (await service.snapshot(sessionId)).subagentSettings;
+      assert.equal(captured.enabled, sessionId === firstChild);
+      yield answer(request, 'Child finished after global settings changed.');
     } else if (turn === 1) yield call(request, 'running:first', 'agent', { action: 'spawn', name: 'Running', task: 'Finish the inspection.', delivery: 'wait' });
-    else if (turn === 2) yield call(request, 'running:denied', 'agent', { action: 'spawn', name: 'New', task: 'Must be rejected.', delivery: 'async' });
-    else {
-      assert.match(textOf(request), /agent_disabled/u);
+    else if (turn === 2) yield call(request, 'running:second', 'agent', { action: 'spawn', name: 'New', task: 'Use the parent task snapshot.', delivery: 'wait' });
+    else if (turn === 4) yield call(request, 'disabled:models', 'agent', { action: 'models' });
+    else if (turn === 5) {
+      const discovery = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+      assert.ok(discovery.operations.every(operation => !['spawn', 'assign'].includes(operation.action)));
+      yield call(request, 'disabled:spawn', 'agent', { action: 'spawn', name: 'Forbidden', task: 'Must not start.', delivery: 'async' });
+    } else {
+      if (turn === 6) assert.match(textOf(request), /agent_disabled/u);
       yield answer(request, 'Existing child evidence retained.');
     }
     yield done(request);
   });
   await fixture.service.submit(messageCommand(ownerId, 'command:settings-running', 'Delegate an inspection.'));
   const childId = await started.promise;
-  await fixture.service.submit(subagentSettingsCommand(ownerId, 'command:disable-running', { ...fixture.settings, enabled: false }));
+  fixture.settings.enabled = false;
   assert.equal((await fixture.service.snapshot(childId)).run.status, 'running');
   release.resolve();
   const finished = await completed(fixture.service, ownerId);
-  assert.equal(finished.agentTasks.length, 1);
-  assert.equal(finished.agentTasks[0].status, 'completed');
+  assert.equal(finished.agentTasks.length, 2);
+  assert.ok(finished.agentTasks.every(task => task.status === 'completed'));
   assert.equal(finished.agentChildren[0].closed, false);
+  await fixture.service.submit(messageCommand(ownerId, 'command:disabled-next-task', 'Start after the global change.'));
+  const next = await completed(fixture.service, ownerId);
+  assert.equal(next.subagentSettings.enabled, false);
+  assert.equal(next.agentTasks.length, 2);
 });
 
-test('default publication failure preserves accepted Session settings and replay has no publication side effect', async t => {
-  let attempts = 0, fail = true;
-  const fixture = await serviceFixture(t, 'session:default-write', async function* () { throw new Error('settings_must_not_start_provider'); },
-    { saveDefaults: async () => { attempts += 1; if (fail) throw new Error('fixture_defaults_write_failed'); } });
+test('obsolete Session settings commands are rejected without a global write or configuration event', async t => {
+  const fixture = await serviceFixture(t, 'session:default-write', async function* () { throw new Error('settings_must_not_start_provider'); });
   const original = structuredClone(fixture.settings);
-  const settings = { ...original, enabled: false };
-  const command = subagentSettingsCommand('session:default-write', 'command:default-write', settings);
-  await assert.rejects(fixture.service.submit(command), error => /subagent_defaults_update_failed/u.test(error.message)
-    && error.cause.message === 'fixture_defaults_write_failed');
-  assert.deepEqual((await fixture.service.snapshot('session:default-write')).subagentSettings, settings);
+  const command = subagentSettingsCommand('session:default-write', 'command:default-write', { ...original, enabled: false });
+  const reply = await fixture.service.submit(command);
+  assert.equal(reply.status, 'rejected');
+  assert.equal(reply.error.code, 'session_subagent_settings_unsupported');
+  const replay = await fixture.service.submit(command);
+  assert.equal(replay.status, 'replayed');
+  assert.deepEqual(replay.error, reply.error);
   assert.deepEqual(fixture.settings, original);
-  assert.equal((await fixture.service.submit(command)).status, 'replayed');
-  assert.equal(attempts, 1);
-  fail = false;
-  assert.equal((await fixture.service.submit({ ...command, commandId: 'command:default-write-again' })).status, 'accepted');
-  assert.deepEqual(fixture.settings, settings);
-  assert.equal(attempts, 2);
+  assert.equal((await fixture.service.snapshot('session:default-write')).subagentSettings, undefined);
+  assert.equal(fixture.requests.size, 0);
+  assert.deepEqual((await readEvents(fixture.journal, 'session:default-write')).filter(event => event.type === 'session.subagent-settings.updated'), []);
+  await assert.rejects(fixture.service.createSession({ sessionId: 'session:invalid-settings-copy', displayTitle: 'Invalid copy',
+    workspaceBindings: [], subagentSettings: original }), /session_subagent_settings_unsupported/);
+  await assert.rejects(readEvents(fixture.journal, 'session:invalid-settings-copy'), /session_not_found/);
 });
 
 test('total usage includes nested and closed Agents once and updates without a parent journal event', async t => {

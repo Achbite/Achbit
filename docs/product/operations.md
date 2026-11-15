@@ -70,7 +70,7 @@ Use `spawn` with `delivery: async` to overlap independent work after child start
 
 Await final results and verify them. Completed tasks release execution automatically; the coordinator uses `assign` to give an idle retained member another task with its original Session, model and configuration. `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message to an active task, not authorization or a new assignment.
 
-Disabling delegation prevents new spawns/assignments while existing tasks may continue, communicate or be cancelled. Conversation settings saves also update future-conversation defaults, not other existing conversations. Child Plan/approval decisions belong to that child's Session.
+Subagent settings are global within the configuration root. Settings and the model-panel shortcut write the same `agent.subagents.*` values. Each new task captures them; changing them does not alter declarations, quotas or subsequent delegation in an already running task. Disabling takes effect for newly started tasks, without cancelling existing tasks or removing history. Child Plan/approval decisions belong to that child's Session.
 
 Reader's Subagents view inspects recorded work without resuming it. Closing that view does not cancel the task. Review a child's actual pending decision rather than treating its report as approval.
 
