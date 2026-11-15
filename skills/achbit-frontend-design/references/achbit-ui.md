@@ -2,6 +2,17 @@
 
 Use this reference for Achbit GUI work and display plugins. Source paths are relative to the selected checkout. For plugin authoring from an installed product, use the documentation path supplied by that runtime.
 
+## Product design direction
+
+Start from the current Achbit interface and the user's applied appearance settings. Inherit its design language for ordinary changes; use the current request and applicable user Skills to identify intentional departures. The general Skill supplies design methods, while this reference connects them to Achbit's existing owners and agreed interactions.
+
+- **Task-centered workspace:** organize conversation, reading, editing and settings around their actual content and actions. Keep supporting controls near their context, and use disclosure when details are useful on demand.
+- **Typography and density:** use the existing interface, reading and code typography roles and respect user font/size settings. Adjust grouping and layout to the information load while retaining readable text and usable controls.
+- **Shared appearance:** compose the existing control variants, icons and geometry. Compare related controls in their actual surroundings, including hit targets, borders and focus states; use the source owners below for concrete values.
+- **Semantic color:** inherit the applied palette and existing surface, text, action and state roles. Review the actual color combinations affected by a change, including selected, disabled and error states where relevant.
+- **Useful content:** use concise localized labels and layout to explain routine actions. Add helper text for unresolved questions or meaningful consequences, while keeping real status, errors and permission scope at the point of action. Put design/implementation commentary in development material and longer guidance in on-demand help; apply the same content discipline to previews.
+- **Continuity:** preserve drafts, selection, reading position and ongoing operations as panels, menus and Sessions change. Use the interaction lessons below to choose relevant observations.
+
 ## Existing owners
 
 | Concern | Source owner | Preferred approach |
@@ -24,13 +35,12 @@ The existing path is:
 
 Read `docs/product/ui-plugins.md` and `docs/plugins/README.md` for the interface details.
 
+- Keep shared component implementations, extension slots, live plugin instances and diagnostic identities distinct, with business state at its existing feature owner. Derive types and consumer lists from the published declarations where supported.
 - Export the supported standalone module with `apply(context)` and register its declared non-theme slots during activation. Let the runtime own registration lifetime.
 - Give renderers `update(input)` and `dispose()`. Use the supplied `signal`, `onDispose`, `addStyle` and `reportError` for owned effects and their cleanup.
 - Compose through public data and actions. Await asynchronous actions and surface their results. Use `scope.regions.mount` for published child regions so their Host-owned drafts, routing, scroll and native pages remain continuous.
 - Match each slot's declared replacement or composition behavior. Surface duplicate IDs, conflicting owners and cleanup failures through the existing error path.
-- Update the managed installation through the existing plugin operation. Keep saved registration, module activation and rendered behavior distinguishable in feedback.
-
-This approach applies the useful DeepSeek harness ideas of declared composition, scoped registration and unified plugin management through Achbit's existing components and runtime.
+- Update the managed installation through the existing plugin operation. Distinguish installed, enabled, active and rendered states in feedback. Release owned styles, listeners, subscriptions, timers and asynchronous work with the owning view or module.
 
 ## Reusable interaction lessons
 
@@ -45,6 +55,6 @@ Use the [interaction-type review format](../SKILL.md#boundary-review-by-interact
 
 ## Maintaining the design direction
 
-When these ownership, interaction or plugin-management choices change, flag the relevant Skill update and align the new direction with the user. Update this reference with the resulting reusable lesson and source entrypoint.
+When the product's design direction, ownership, interactions or plugin-management choices change, flag the relevant Skill update and align the new direction with the user. Keep Achbit-specific choices and source entrypoints here, transferable design methods in the general Skill, and concrete token/component definitions at their existing owners.
 
 Maintain the Skill in `skills/achbit-frontend-design/`; the product packaging process carries it and its references into the application. Keep build, test and runtime-update procedures in the project's development guides, and keep task-specific outcomes in the task record.
