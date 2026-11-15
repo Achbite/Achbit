@@ -959,9 +959,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       }
       const currentTurnCallIds = currentTurnCallFacts.map(([callId]) => callId);
       const settlement = event.payload;
+      const native = settlement.outcome === 'completed' && settlement.providerReplay !== undefined
+        ? decodeProviderNativeReplay(settlement.providerReplay) : undefined;
       if (settlement.outcome === 'completed') {
-        if (settlement.providerReplay !== undefined) {
-          const native = decodeProviderNativeReplay(settlement.providerReplay);
+        if (native) {
           if (providerRuntimeForPurpose(runtime, settlement.purpose).apiSurface !== native.apiSurface
             || settlement.orderedOutputBlocks !== undefined || settlement.hostedWebSearchCalls !== undefined
             || settlement.reasoningSignature !== undefined) throw new Error('provider_native_replay_source_mismatch');
@@ -1043,7 +1044,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         ...(event.payload.outcome === 'completed'
           ? {
               orderedCallIds: [...event.payload.orderedCallIds],
-              ...(event.payload.providerReplay ? { providerReplay: decodeProviderNativeReplay(event.payload.providerReplay) } : {}),
+              ...(native ? { providerReplay: native } : {}),
               ...(event.payload.toolCallInputs ? { toolCallInputs: structuredClone(event.payload.toolCallInputs) } : {}),
               ...(event.payload.reasoningContent !== undefined
                 ? { reasoningContent: event.payload.reasoningContent }
@@ -1700,12 +1701,12 @@ function projectTimeline(state: SessionState): SessionProjection['timeline'] {
       timelineId: activity.activityId, sequence: activity.sequence, activityIds: [activity.activityId] }] });
   }
   for (const turn of Object.values(state.providerTurns)) {
-    if (turn.outcome !== 'completed' || turn.purpose === 'contextCompaction') continue;
+    if (turn.purpose === 'contextCompaction' || turn.outcome !== 'completed' && !turn.toolCallInputs?.length) continue;
     const composition = index.compositions.get(index.requestKey(turn));
     if (!composition) throw new Error('provider_turn_composition_missing');
-    if (turn.purpose === 'approvalReview') {
-      // Evidence calls are ordinary Kernel facts owned by this review turn.
-      // Its reasoning and decision JSON are not Agent messages or narratives.
+    if (turn.purpose === 'approvalReview' || turn.outcome !== 'completed') {
+      // Reviews expose evidence calls, not their reasoning or decision JSON.
+      // Truncated turns expose rejected calls, never partial assistant output.
       const callIds = turn.orderedOutputBlocks
         ? turn.orderedOutputBlocks.flatMap(block => block.kind === 'toolCall' || block.kind === 'toolCallRejected' ? [block.callId] : [])
         : turn.toolCallInputs?.map(call => call.callId) ?? turn.orderedCallIds ?? [];

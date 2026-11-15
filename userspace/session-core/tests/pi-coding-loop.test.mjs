@@ -6,6 +6,7 @@ import { AgentLoopRegistry } from '../dist/local-agent/loopRegistry.js';
 import { corePromptInstructions } from '../dist/local-agent/coreInstructions.js';
 import { productDocumentation } from '../dist/local-agent/productInstructions.js';
 import { buildAgentProviderRequest } from '../dist/local-agent/contextComposer.js';
+import { readConversation } from '../dist/local-agent/conversationRead.js';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
@@ -140,6 +141,22 @@ test('truncated raw calls are rejected without effects, preserve a failed attemp
   assert.equal(failure.payload.error.code, 'provider_output_truncated');
   assert.equal(failure.payload.toolCallInputs.length, 2);
   assert.ok(failure.payload.toolCallInputs.every(call => call.error));
+  assertRuntimeContract('ProviderTurnSettledPayload', failure.payload);
+  const rejectedGroup = projection.timeline.find(item => item.kind === 'toolGroup'
+    && item.providerRequestId === failure.payload.providerRequestId);
+  assert.deepEqual(rejectedGroup?.activityIds, failure.payload.toolCallInputs.map(call => `tool:${call.callId}`),
+    'failed truncated turns retain their rejected calls in the shared timeline');
+  for (const view of ['summary', 'tools']) {
+    const history = await readConversation(journal, { sessionId, view });
+    const rejected = history.items.find(item => item.providerRequestId === failure.payload.providerRequestId);
+    assert.ok(rejected, `${view} retains failed truncated-call evidence`);
+    assert.equal(rejected.providerOutcome, 'failed');
+    assert.equal(rejected.rejectedCallCount, 2);
+    assert.equal(rejected.rejectedCalls.truncated, false);
+    assert.deepEqual(JSON.parse(rejected.rejectedCalls.content), failure.payload.toolCallInputs.map(call => ({
+      ...call, outcome: 'rejected', executed: false,
+    })), 'history retains raw arguments and original rejection errors without inventing execution records');
+  }
   assert.equal(events.filter(event => event.type === 'tool.requested').length, 1);
   assert.equal(projection.providerAttempts.filter(attempt => attempt.phase === 'failed').length, 1);
   assert.equal(projection.activities.filter(activity => activity.status === 'rejected').length, 2);

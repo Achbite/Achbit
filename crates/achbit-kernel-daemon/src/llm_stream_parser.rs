@@ -940,10 +940,11 @@ impl ProviderStreamAccumulator {
                             "Anthropic delta 没有活动 content block。",
                         )
                     })?;
-                let expected = match delta["type"].as_str() {
-                    Some("text_delta") => "text",
-                    Some("thinking_delta" | "signature_delta") => "thinking",
-                    Some("input_json_delta") => "tool_use",
+                let (expected, field) = match delta["type"].as_str() {
+                    Some("text_delta") => ("text", "text"),
+                    Some("thinking_delta") => ("thinking", "thinking"),
+                    Some("signature_delta") => ("thinking", "signature"),
+                    Some("input_json_delta") => ("tool_use", "partial_json"),
                     _ => {
                         return Err(ProviderStreamError::new(
                             "provider_native_delta_unsupported",
@@ -957,45 +958,28 @@ impl ProviderStreamAccumulator {
                         "Anthropic delta 与 block 类型不一致。",
                     ));
                 }
-                let field = match delta["type"].as_str() {
-                    Some("text_delta") => Some(("text", "text")),
-                    Some("thinking_delta") => Some(("thinking", "thinking")),
-                    Some("signature_delta") => Some(("signature", "signature")),
-                    _ => None,
-                };
-                if let Some((target, source)) = field {
-                    let text = delta.get(source).and_then(Value::as_str).ok_or_else(|| {
-                        ProviderStreamError::new(
-                            "provider_native_delta_invalid",
-                            "Anthropic delta 不是文本。",
-                        )
-                    })?;
+                let text = delta.get(field).and_then(Value::as_str).ok_or_else(|| {
+                    ProviderStreamError::new(
+                        "provider_native_delta_invalid",
+                        "Anthropic delta 不是文本。",
+                    )
+                })?;
+                if field != "partial_json" {
                     let mut joined = block
-                        .get(target)
+                        .get(field)
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
                     joined.push_str(text);
-                    block[target] = json!(joined);
+                    block[field] = json!(joined);
                 }
-                match delta.get("type").and_then(Value::as_str) {
-                    Some("text_delta") => {
-                        if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                            self.push_text(text, &mut emissions);
-                        }
-                    }
-                    Some("thinking_delta") => {
-                        if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
-                            self.push_reasoning(text, &mut emissions);
-                        }
-                    }
-                    Some("signature_delta") => {}
-                    Some("input_json_delta") => {
-                        if let Some(text) = delta.get("partial_json").and_then(Value::as_str) {
-                            let buffer = self.tool_calls.entry(index).or_default();
-                            buffer.arguments.push_str(text);
-                            emit_tool_arguments(index, buffer, false, &mut emissions);
-                        }
+                match field {
+                    "text" => self.push_text(text, &mut emissions),
+                    "thinking" => self.push_reasoning(text, &mut emissions),
+                    "partial_json" => {
+                        let buffer = self.tool_calls.entry(index).or_default();
+                        buffer.arguments.push_str(text);
+                        emit_tool_arguments(index, buffer, false, &mut emissions);
                     }
                     _ => {}
                 }
@@ -1524,6 +1508,51 @@ mod tests {
         assert_eq!(
             incomplete.finalize().unwrap_err().code,
             "provider_native_block_incomplete"
+        );
+    }
+
+    #[test]
+    fn anthropic_tool_input_deltas_reject_missing_or_non_text_fragments() {
+        for delta in [
+            json!({"type":"input_json_delta"}),
+            json!({"type":"input_json_delta","partial_json":null}),
+            json!({"type":"input_json_delta","partial_json":42}),
+        ] {
+            let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+            parser.ingest_payload(br#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call:bad","name":"read","input":{}}}"#).unwrap();
+            let event = json!({"type":"content_block_delta","index":0,"delta":delta});
+            let error = parser
+                .ingest_payload(event.to_string().as_bytes())
+                .unwrap_err();
+            assert_eq!(error.code, "provider_native_delta_invalid");
+        }
+    }
+
+    #[test]
+    fn anthropic_text_and_thinking_deltas_preserve_block_content() {
+        let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Anthropic);
+        for event in [
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"first"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" second"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"reason"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":" more"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"opaque"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"-signature"}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_stop"}),
+        ] {
+            parser.ingest_payload(event.to_string().as_bytes()).unwrap();
+        }
+        let output = parser.finalize().unwrap().output;
+        assert_eq!(output.content, "first second");
+        assert_eq!(output.reasoning.as_deref(), Some("reason more"));
+        assert_eq!(
+            json!(output.provider_replay.unwrap().content),
+            json!([
+                {"type":"text","text":"first second"},
+                {"type":"thinking","thinking":"reason more","signature":"opaque-signature"}
+            ])
         );
     }
 
