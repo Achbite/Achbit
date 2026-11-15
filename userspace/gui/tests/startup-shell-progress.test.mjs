@@ -105,7 +105,12 @@ test('a running Shell stays folded until explicit disclosure, retaining live out
   let release, publish, calls = 0;
   const held = new Promise(resolve => { release = resolve; });
   const actor = actorWith(journal, sessionId, { async *stream(request) {
-    if (calls++ === 0) yield providerEvent(request.requestId, 'tool.call', {callId:'provider:shell',name:request.tools.find(item => item.description === tool.description).name,input:{workspace:'primary',command:'printf started; sleep 120; printf done'}});
+    if (calls++ === 0) {
+      const declared = request.tools.find(item => item.name === tool.name);
+      assert.ok(declared, 'the captured Shell binding remains declared');
+      assert.ok(declared.description.startsWith(tool.description), 'scope additions retain the binding description');
+      yield providerEvent(request.requestId, 'tool.call', {callId:'provider:shell',name:declared.name,input:{workspace:'primary',command:'printf started; sleep 120; printf done'}});
+    }
     else yield providerEvent(request.requestId, 'assistant.message', {messageId:'message:done',content:'Done.'});
     yield providerEvent(request.requestId, 'completed', {});
   } }, emptyKernel({async execute(request, onProgress) {

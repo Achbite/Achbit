@@ -4,7 +4,8 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModules } from './gui-projection-contract.mjs';
 
-test('foreground questions retain their full history card and both answer entrances use the original question', async t => {
+// TCR: .task-artifacts/ui-small-fixes-20261115/TCR.md.
+test('only the foreground question collapses its history answer controls; historical and answered cards remain intact', async t => {
   const previousSelf = globalThis.self;
   globalThis.self = {};
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
@@ -21,12 +22,17 @@ test('foreground questions retain their full history card and both answer entran
   assert.match(deferred, /Which scope should we inspect\?/);
   assert.match(deferred, /This window/);
   assert.equal((deferred.match(/<textarea/g) ?? []).length, 1);
-  const answered = render(InteractionCard, { interaction: { ...interaction, status: 'answered', response: 'narrow' } });
+  const compact = render(InteractionCard, { interaction, answerInComposer: true });
+  assert.match(compact, /aria-expanded="false"/);
+  assert.match(compact, /Answer below/);
+  assert.doesNotMatch(compact, /<textarea|<form|class="local-agent__question-choice"/);
+  assert.match(compact, /hidden=""/);
+  const answered = render(InteractionCard, { interaction: { ...interaction, status: 'answered', response: 'narrow' }, answerInComposer: true });
   assert.match(answered, /This window/);
   assert.doesNotMatch(answered, /<textarea/);
 });
 
-test('current unanswered questions stay in the shared composer during work and waits, until answered or the run ends', async t => {
+test('non-blocking questions stay in history during independent work and return to the composer when the Session awaits answers', async t => {
   const previousStorage = globalThis.sessionStorage;
   globalThis.sessionStorage = { getItem: () => null, setItem() {}, removeItem() {} };
   t.after(() => { if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage; });
@@ -57,9 +63,10 @@ test('current unanswered questions stay in the shared composer during work and w
     { runId: 'run:current', status: 'waiting', waitingReason: 'approval' },
     { runId: 'run:current', status: 'waiting', waitingReason: 'plan' },
   ]) {
-    assert.equal(render(run).pendingInteraction.interactionId, questions[0].interactionId);
-    assert.equal(composer.interactionNavigation.count, 5);
-    assert.equal(composer.textDecision, true, 'independent work and session.wait must not hide the answer entrance');
+    assert.equal(render(run).pendingInteraction, null);
+    assert.equal(composer.interactionNavigation, null);
+    assert.equal(composer.textDecision, false, 'non-blocking questions must not take over ordinary input during independent work');
+    assert.equal(composer.foregroundInteractionId, null);
     assert.equal(composer.showStopAction, true, 'pending questions cannot remove cancellation while the run is active');
   }
   const waiting = { runId: 'run:current', status: 'waiting', waitingReason: 'userInput' };
@@ -69,7 +76,14 @@ test('current unanswered questions stay in the shared composer during work and w
   const updated = interactions.map(item => item.interactionId === questions[0].interactionId ? { ...item, status: 'answered' } : item);
   assert.equal(render(waiting, updated).pendingInteraction.interactionId, questions[1].interactionId);
   assert.equal(composer.interactionNavigation.count, 4);
-  assert.equal(render({ runId: 'run:current', status: 'running' }, updated).pendingInteraction.interactionId, questions[1].interactionId);
+  assert.equal(render({ runId: 'run:current', status: 'running' }, updated).pendingInteraction, null);
+  assert.equal(render(waiting, updated).foregroundInteractionId, questions[1].interactionId, 'remaining questions return on the next user-input wait');
+  const immediate = { ...questions[0], interactionId: 'question:blocking', mode: 'wait' };
+  for (const request of [immediate, { ...immediate, mode: undefined }, { ...immediate, kind: 'confirmation' }]) {
+    assert.equal(render({ runId: 'run:current', status: 'running' }, [...questions, request]).pendingInteraction.interactionId, request.interactionId);
+    assert.equal(composer.interactionNavigation.count, 1, 'deferred questions cannot displace an immediate question');
+  }
+  assert.equal(render(waiting, questions.slice(0, 3)).interactionNavigation.count, 3, 'three groups are not a fixed UI limit');
   for (const status of ['completed', 'failed', 'cancelled', 'indeterminate', 'releasing', 'releaseFailed']) {
     assert.equal(render({ runId: 'run:current', status }, updated).pendingInteraction, null);
     assert.equal(composer.interactionNavigation, null);
@@ -99,7 +113,7 @@ test('question header shows the dynamic page count and navigation never submits 
   assert.deepEqual(answers, []);
 });
 
-test('answering during independent work uses the original question and leaves the ordinary draft intact', async t => {
+test('a promoted non-blocking question uses the original question and leaves the ordinary draft intact', async t => {
   const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
   const draft = value => JSON.stringify({ draft: value, pastedTexts: [], pastedImages: [], filesystemPaths: [], pluginSelections: [] });
   const ordinaryKey = 'achbit:composer:session:questions';
@@ -116,7 +130,7 @@ test('answering during independent work uses the original question and leaves th
   globalThis.document = { activeElement: null };
   const question = { interactionId: 'question:scope', runId: 'run:current', status: 'pending', mode: 'continue',
     kind: 'question', prompt: 'Which window?', allowFreeform: true };
-  const projection = { sessionId: 'session:questions', run: { runId: 'run:current', status: 'running' },
+  const projection = { sessionId: 'session:questions', run: { runId: 'run:current', status: 'waiting', waitingReason: 'userInput' },
     interactions: [question], plans: [] };
   const before = structuredClone(projection), answers = [];
   store.setState({ sessionId: projection.sessionId, projection, loading: false, submitting: false, runtimeReady: true,
@@ -272,4 +286,46 @@ test('a foreground plan accepts revision text while a choice-only question remai
   assert.equal(composer.showStopAction, false, 'plan cancellation retains its existing cancel-and-stop control');
   await composer.submitDraft();
   assert.deepEqual(plans, [{ kind: 'requestRevision', text: 'Retain the current configuration' }]);
+});
+
+test('only the actually visible composer question is folded when approvals and plans coexist', async t => {
+  const [{ composerDecisionView }] = await loadGuiModules(t, ['/src/components/local-agent/composerDecisions.ts']);
+  const question = { interactionId: 'question:active' };
+  const composer = { conversationKey: 'session:one', pendingApproval: null, pendingPlan: null, pendingInteraction: question };
+  assert.equal(composerDecisionView(composer).foregroundInteractionId, question.interactionId);
+  const approval = { ...composer, pendingApproval: { approvalId: 'approval:one' } };
+  const view = composerDecisionView(approval);
+  assert.equal(view.showApproval, true);
+  assert.equal(view.foregroundInteractionId, null, 'the history card is the available question entrance while approval is visible');
+  assert.equal(composerDecisionView(approval, view.concurrentDecisionKey).foregroundInteractionId, question.interactionId);
+  assert.equal(composerDecisionView({ ...approval, conversationKey: 'session:two' }, view.concurrentDecisionKey).foregroundInteractionId, null);
+  const plan = { ...approval, pendingPlan: { planId: 'plan:one', revision: 1 } };
+  const planView = composerDecisionView(plan);
+  assert.equal(composerDecisionView(plan, planView.concurrentDecisionKey).foregroundInteractionId, null,
+    'selecting the text decision shows the plan, not the pending question');
+  assert.equal(composerDecisionView({ ...composer, pendingInteraction: null }).foregroundInteractionId, null);
+});
+
+test('historical non-blocking answers still submit the original option and question, while compact navigation submits nothing', async t => {
+  const previousSelf = globalThis.self;
+  globalThis.self = {};
+  t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
+  const [{ InteractionCard }] = await loadGuiModules(t, ['/src/components/local-agent/InteractionCard.tsx']);
+  const answers = [], focus = [];
+  const interaction = { interactionId: 'question:history', kind: 'question', mode: 'continue', status: 'pending',
+    prompt: 'Choose a scope', allowFreeform: true, options: [{ id: 'local', label: 'This window' }] };
+  const capture = props => {
+    let tree;
+    function Probe() { tree = InteractionCard({ interaction, language: 'en-US', onRespond: async (...args) => { answers.push(args); }, ...props }); return tree; }
+    renderToStaticMarkup(createElement(Probe));
+    return tree;
+  };
+  const compact = capture({ answerInComposer: true, onFocusComposer: () => focus.push('composer') });
+  findReactElement(compact, node => node.props.children === 'Answer below').props.onClick();
+  assert.deepEqual(focus, ['composer']);
+  assert.deepEqual(answers, [], 'focusing the existing answer area is not an answer or a skip');
+  const history = capture({});
+  findReactElement(history, node => node.props.surface === 'card').props.onAnswer('local');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(answers, [['local', interaction.interactionId]]);
 });

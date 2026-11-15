@@ -3590,6 +3590,19 @@ test('picker navigation skips unavailable tools and supports wrapping and tab en
   assert.equal(nextEnabledIndex([false], 0, 'Home'), -1);
   assert.equal(nextEnabledIndex([true, true], 1, 'Home'), 0);
   assert.equal(nextEnabledIndex([true, true], 0, 'End'), 1);
+  // Model and sidebar menus filter disabled buttons before sharing this navigation.
+  for (const key of ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End']) {
+    assert.equal(nextEnabledIndex([], -1, key), -1, `empty menu: ${key}`);
+    assert.equal(nextEnabledIndex([true], -1, key), 0, `single button: ${key}`);
+  }
+  for (const key of ['ArrowDown', 'ArrowRight']) {
+    assert.equal(nextEnabledIndex([true, true, true], -1, key), 0, `neutral focus forward: ${key}`);
+    assert.equal(nextEnabledIndex([true, true, true], 2, key), 0, `forward wrap: ${key}`);
+  }
+  for (const key of ['ArrowUp', 'ArrowLeft']) {
+    assert.equal(nextEnabledIndex([true, true, true], -1, key), 2, `neutral focus backward: ${key}`);
+    assert.equal(nextEnabledIndex([true, true, true], 0, key), 2, `backward wrap: ${key}`);
+  }
 });
 
 test('UI update detection compares entry resources and retains the original load failure', async (t) => {
@@ -5091,92 +5104,76 @@ test('continuous actions include permissions and Agent events, separated only by
 
 const subagentFixture = () => ({ enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
   maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: false, presets: '[]' });
-const userSettingsWithSubagents = settings => ({ ...DEFAULT_USER_SETTINGS,
+const userSettingsWithSubagents = settings => ({ ...DEFAULT_USER_SETTINGS, 'workbench.language': 'en-US',
   ...Object.fromEntries(Object.entries(settings).map(([key, value]) => [`agent.subagents.${key}`, value])) });
 
-test('subagent quick settings save the active Session, retain other Sessions and reconcile partial failures', async t => {
-  const journal = new InMemoryCommandJournal(), actors = new Map();
-  const initial = subagentFixture();
+test('subagent settings use one global write, survive conversation switches and preserve write/readback failures', async t => {
+  const journal = new InMemoryCommandJournal(), actors = new Map(), initial = subagentFixture();
   for (const sessionId of ['session:settings-a', 'session:settings-b']) {
     await createSession(journal, sessionId);
-    const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('settings must not call Provider'); } }, emptyKernel(), fakeRunPreparation().port, sessionId);
-    actors.set(sessionId, actor);
-    await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.subagent-settings.set', sessionId,
-      commandId: `${sessionId}:initial-settings`, settings: initial });
+    actors.set(sessionId, actorWith(journal, sessionId, { async *stream() { throw new Error('settings must not call Provider'); } },
+      emptyKernel(), fakeRunPreparation().port, sessionId));
   }
   t.after(() => Promise.all([...actors.values()].map(actor => actor.dispose())));
-  let defaults = initial, failure = null;
-  const commands = [];
+  let global = userSettingsWithSubagents(initial), failure = null;
+  const writes = [];
   installGuiFetch(t, async (url, init) => {
-    if (url.pathname === '/api/user-settings') {
-      assert.equal(init.method ?? 'GET', 'GET', 'the GUI must not independently patch global defaults');
-      const settings = userSettingsWithSubagents(defaults);
-      return Response.json({ ok: true, data: { settings, runtimeSettings: settings, storePath: 'fixture' } });
+    assert.equal(url.pathname, '/api/user-settings', 'settings never write a Session command');
+    if (init.method === 'PATCH') {
+      const { patches } = JSON.parse(init.body); writes.push(patches);
+      if (failure === 'before') return Response.json({ ok: false, message: 'fixture_global_write_failed' }, { status: 500 });
+      global = { ...global, ...patches };
+      return Response.json({ ok: true, data: { settings: global, changedKeys: Object.keys(patches), activation: 'nextRun' } });
     }
-    const sessionId = decodeURIComponent(url.pathname.split('/')[4]);
-    const actor = actors.get(sessionId);
-    assert.ok(actor, `unexpected request ${url.pathname}`);
-    if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: await actor.snapshot() });
-    assert.ok(url.pathname.endsWith('/commands'));
-    const command = JSON.parse(init.body);
-    commands.push(command);
-    if (failure === 'before') return Response.json({ ok: false, error: 'fixture_session_write_failed' }, { status: 500 });
-    const reply = await actor.submit(command);
-    if (failure === 'after') return Response.json({ ok: false, error: 'fixture_defaults_write_failed', message: 'Session saved; defaults write failed' }, { status: 500 });
-    defaults = command.settings; // The Host owns the default update after accepting this command.
-    return Response.json({ ok: true, data: reply });
+    if (failure === 'after') return Response.json({ ok: false, message: 'fixture_readback_failed' }, { status: 500 });
+    return Response.json({ ok: true, data: { settings: global, runtimeSettings: userSettingsWithSubagents(initial), storePath: 'fixture' } });
   });
-  const [{ useLocalAgentStore: store }, { useSettingsStore }, { default: Quick }] = await loadGuiModules(t, [
-    '/src/state/localAgentStore.ts', '/src/state/settingsStore.ts', '/src/components/local-agent/SubagentQuickSettings.tsx',
+  const [{ useLocalAgentStore: store }, { useSettingsStore }, { default: Subagents }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/state/settingsStore.ts', '/src/components/settings-center/model-services/SubagentSettings.tsx',
   ]);
+  await useSettingsStore.getState().loadUserSettings();
   const React = await import('react'), { renderToStaticMarkup } = await import('react-dom/server');
   const render = () => {
     Object.assign(store.getInitialState(), store.getState());
     Object.assign(useSettingsStore.getInitialState(), useSettingsStore.getState());
     let tree;
-    function Probe() { tree = Quick({ language: 'en-US', profiles: [], connections: [], mainProfileId: null }); return tree; }
-    const html = renderToStaticMarkup(React.createElement(Probe));
-    return { tree, html };
+    function Probe() { tree = Subagents({ profiles: [], connections: [] }); return tree; }
+    return { html: renderToStaticMarkup(React.createElement(Probe)), get tree() { return tree; } };
   };
   store.setState({ sessionId: 'session:settings-a', projection: await actors.get('session:settings-a').snapshot() });
-  const enabledLabel = findReactElement(render().tree, node => node.type === 'label' && node.props.children[0].props.children === 'Enable subagents');
+  const enabledLabel = findReactElement(render().tree, node => node.type === 'label' && node.props.className === 'model-toggle-row' && node.props.children[0].props.children === 'Enable subagents');
   findReactElement(enabledLabel, node => node.props.checked === true).props.onChange({ target: { checked: false } });
-  await waitUntil(() => !store.getState().subagentSettingsBusy);
-  assert.equal(store.getState().projection.subagentSettings.enabled, false);
-  assert.equal((await actors.get('session:settings-b').snapshot()).subagentSettings.enabled, true);
-  assert.equal(defaults.enabled, false, 'future Sessions receive the newly saved default');
-  assert.equal(commands[0].type, 'session.subagent-settings.set');
-  assert.equal(commands[0].sessionId, 'session:settings-a');
-  assert.deepEqual(commands[0].settings, { ...initial, enabled: false });
+  await waitUntil(() => useSettingsStore.getState().effectiveSettings['agent.subagents.enabled'] === false);
+  assert.deepEqual(writes[0], { 'agent.subagents.enabled': false });
   findReactElement(render().tree, node => node.props.profileId !== undefined && node.props.mainProfileId !== undefined)
     .props.onChange({ profileId: 'profile:chosen', reasoningEffort: 'low' });
-  await waitUntil(() => !store.getState().subagentSettingsBusy);
-  const fullLabel = findReactElement(render().tree, node => node.type === 'label' && node.props.children[0].props.children === 'Allow agents to fully configure subagents');
+  await waitUntil(() => useSettingsStore.getState().effectiveSettings['agent.subagents.profileId'] === 'profile:chosen');
+  const fullLabel = findReactElement(render().tree, node => node.type === 'label' && node.props.className === 'model-toggle-row' && node.props.children[0].props.children === 'Allow agents to fully configure subagents');
   findReactElement(fullLabel, node => node.props.checked === false).props.onChange({ target: { checked: true } });
-  await waitUntil(() => !store.getState().subagentSettingsBusy);
+  await waitUntil(() => useSettingsStore.getState().effectiveSettings['agent.subagents.allowFullConfiguration'] === true);
   const saved = { ...initial, enabled: false, profileId: 'profile:chosen', reasoningEffort: 'low', allowFullConfiguration: true };
-  assert.deepEqual(store.getState().projection.subagentSettings, saved);
-  assert.deepEqual((await actors.get('session:settings-b').snapshot()).subagentSettings, initial);
+  assert.deepEqual(useSettingsStore.getState().effectiveSettings, userSettingsWithSubagents(saved));
+  store.setState({ sessionId: 'session:settings-b', projection: await actors.get('session:settings-b').snapshot() });
+  assert.equal(findReactElement(render().tree, node => node.props.profileId !== undefined).props.profileId, 'profile:chosen');
+  assert.doesNotMatch(render().html, /for this conversation|defaults for new conversations/);
   failure = 'before';
-  assert.equal(await store.getState().setSubagentSettings({ ...saved, enabled: true }), false);
-  assert.deepEqual(store.getState().projection.subagentSettings, saved);
-  assert.match(store.getState().error, /fixture_session_write_failed/);
+  assert.equal(await useSettingsStore.getState().patchUserSettingsBatch({ 'agent.subagents.enabled': true }), null);
+  assert.deepEqual(useSettingsStore.getState().effectiveSettings, userSettingsWithSubagents(saved));
+  assert.match(useSettingsStore.getState().errorMessage, /fixture_global_write_failed/);
   failure = 'after';
-  assert.equal(await store.getState().setSubagentSettings({ ...saved, enabled: true }), false);
-  assert.equal(store.getState().projection.subagentSettings.enabled, true, 'a successful Session write remains visible when saving defaults fails');
-  assert.match(store.getState().error, /Session saved; defaults write failed/);
-  const projection = await actors.get('session:settings-a').snapshot();
-  assert.deepEqual((await decodeGuiProjection(projection)).subagentSettings, projection.subagentSettings);
+  assert.equal(await useSettingsStore.getState().patchUserSettingsBatch({ 'agent.subagents.enabled': true }), 'nextRun');
+  assert.equal(useSettingsStore.getState().effectiveSettings['agent.subagents.enabled'], true);
+  assert.match(useSettingsStore.getState().errorMessage, /fixture_readback_failed/);
+  for (const [id, actor] of actors) {
+    assert.equal((await actor.snapshot()).subagentSettings, undefined);
+    assert.equal((await readEvents(journal, id)).some(event => event.type === 'session.subagent-settings.updated'), false);
+  }
+  const projection = { ...await actors.get('session:settings-a').snapshot(), subagentSettings: saved };
+  assert.deepEqual((await decodeGuiProjection(projection)).subagentSettings, saved);
   await assert.rejects(decodeGuiProjection({ ...projection, subagentSettings: { ...saved, maxConcurrent: 0 } }), /conversation_projection_invalid/);
-  const { subagentSettings: _settings, ...unconfigured } = projection;
-  assert.equal((await decodeGuiProjection(unconfigured)).subagentSettings, undefined);
-  store.setState({ projection: unconfigured });
-  const missing = render();
-  assert.match(missing.html, /Subagents have not been configured/);
-  assert.doesNotMatch(missing.html, /role="switch"/, 'defaults must not appear as saved Session facts');
 });
 
-test('subagent draft edits update future defaults without starting a Session and travel with later Session creation', async t => {
+test('global subagent edits start no Session and new conversation creation carries no settings copy', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:subagent-draft';
   const actor = actorWith(journal, sessionId, { async *stream() { throw new Error('fixture stops before Provider'); } }, emptyKernel(), fakeRunPreparation().port, 'draft');
   t.after(() => actor.dispose());
@@ -5187,7 +5184,7 @@ test('subagent draft edits update future defaults without starting a Session and
     calls.push(url.pathname);
     if (url.pathname === '/api/conversation/sessions') {
       creation = JSON.parse(init.body);
-      await journal.createSession({ sessionId, displayTitle: 'Draft', workspaceBindings: [], subagentSettings: creation.subagentSettings });
+      await journal.createSession({ sessionId, displayTitle: 'Draft', workspaceBindings: [] });
       return Response.json({ ok: true, data: await actor.snapshot() });
     }
     if (url.pathname === '/api/user-settings') {
@@ -5205,19 +5202,20 @@ test('subagent draft edits update future defaults without starting a Session and
     if (url.pathname.endsWith('/commands')) return Response.json({ ok: false, error: 'fixture_message_not_submitted' }, { status: 500 });
     throw new Error(`unexpected request ${url.pathname}`);
   });
-  const store = await loadGuiModelStore(t);
+  const [{ useLocalAgentStore: store }, { useSettingsStore }] = await loadGuiModules(t, ['/src/state/localAgentStore.ts', '/src/state/settingsStore.ts']);
   const profile = { id: 'profile:main', name: 'Main', enabled: true, thinking: 'disabled' };
   store.setState({ profiles: [profile], selectedProfileId: profile.id, draftProjectId: 'project:chosen' });
-  assert.equal(await store.getState().setSubagentSettings(draft), true);
+  assert.equal(await useSettingsStore.getState().patchUserSettingsBatch(Object.fromEntries(
+    Object.entries(draft).map(([key, value]) => [`agent.subagents.${key}`, value]),
+  )), 'nextRun');
   assert.equal(store.getState().sessionId, null);
   assert.deepEqual(calls, ['/api/user-settings', '/api/user-settings'], 'editing saves and refreshes defaults without creating a Session or Loop');
   assert.deepEqual(defaults, draft);
   await assert.rejects(store.getState().sendMessage('Start after configuring.'), /fixture_message_not_submitted/);
-  assert.deepEqual(creation, { projectId: 'project:chosen', subagentSettings: draft });
-  assert.deepEqual(store.getState().projection.subagentSettings, draft);
-  assert.equal(store.getState().draftSubagentSettings, null);
+  assert.deepEqual(creation, { projectId: 'project:chosen' });
+  assert.equal(store.getState().projection.subagentSettings, undefined);
   store.getState().startNewSession();
-  assert.equal(store.getState().draftSubagentSettings, null, 'a new draft does not reuse an earlier explicit override');
+  assert.deepEqual(useSettingsStore.getState().effectiveSettings, userSettingsWithSubagents(draft));
 });
 
 test('shell search and read summaries distinguish intent from exact fs.read evidence', async t => {

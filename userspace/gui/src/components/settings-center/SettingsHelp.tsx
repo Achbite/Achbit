@@ -1,15 +1,19 @@
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { useInteractionFocus } from '../shared/interactionFocus';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
+import './settingsHelp.css';
 
 type HelpAnchor = { kind: 'pointer'; x: number; y: number } | { kind: 'focus'; rect: DOMRect };
 
 /** Pointer help keeps its opening position; keyboard help stays anchored to its control. */
-export function useSettingsHelp(description: string | undefined) {
+export function useSettingsHelp(description: string | undefined, { compact = false }: { compact?: boolean } = {}) {
   const interaction = useInteractionFocus();
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLElement>(null);
   const anchor = useRef<HelpAnchor | null>(null);
   const [open, setOpen] = useState(false);
+  useDismissibleLayer({ open: open && !!description, roots: [trigger, ref], escapeCapture: true, onDismiss: () => setOpen(false) });
   const position = () => {
     const tooltip = ref.current;
     const target = anchor.current;
@@ -34,11 +38,13 @@ export function useSettingsHelp(description: string | undefined) {
   };
   const showPointer = (event: React.MouseEvent<HTMLElement>) => {
     if (!description) return;
+    trigger.current = event.currentTarget;
     anchor.current = { kind: 'pointer', x: event.clientX, y: event.clientY };
     if (open) position();
     else setOpen(true);
   };
   useLayoutEffect(() => {
+    if (!description) { setOpen(false); return; }
     const tooltip = ref.current;
     if (!tooltip || !open) return;
     tooltip.showPopover();
@@ -57,14 +63,14 @@ export function useSettingsHelp(description: string | undefined) {
       onPointerDown: () => setOpen(false),
       onFocus: (event: React.FocusEvent<HTMLElement>) => {
         if (description && interaction?.keyboard !== false) {
+          trigger.current = event.currentTarget;
           anchor.current = { kind: 'focus', rect: event.target.getBoundingClientRect() };
           if (open) position();
           else setOpen(true);
         }
       },
       onBlur: (event: React.FocusEvent<HTMLElement>) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); },
-      onKeyDownCapture: (event: React.KeyboardEvent) => { if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); } },
     },
-    help: description ? <div id={id} ref={ref} role="tooltip" popover="manual" className="settings-help-tooltip">{description}</div> : null,
+    help: description ? <div id={id} ref={ref} role="tooltip" popover="manual" className={`settings-help-tooltip${compact ? ' settings-help-tooltip--compact' : ''}`}>{description}</div> : null,
   };
 }

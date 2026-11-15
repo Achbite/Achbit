@@ -7,6 +7,8 @@ export const composerCommands = [
   { id: 'plan', icon: 'compose' },
   { id: 'new', icon: 'compose' },
   { id: 'model', icon: 'server' },
+  { id: 'simloop', icon: 'activity' },
+  { id: 'fullloop', icon: 'activity' },
   { id: 'context', icon: 'info' },
   { id: 'permissions', icon: 'shield' },
   { id: 'attach', icon: 'paperclip' },
@@ -19,16 +21,16 @@ export const composerCommands = [
 export type ComposerCommand = typeof composerCommands[number]['id'];
 
 export function suggestComposerCommands(draft: string) {
-  if (!/^\/[a-z]*$/u.test(draft)) return [];
-  return composerCommands.filter(command => `/${command.id}`.startsWith(draft));
+  if (!/^\/[a-z]*$/iu.test(draft)) return [];
+  return composerCommands.filter(command => `/${command.id}`.startsWith(draft.toLowerCase()));
 }
 
 export function parseComposerCommand(draft: string): { name: ComposerCommand; argument: string } | null {
   // Leading whitespace explicitly sends ordinary text, before any normalization.
-  const match = draft.trimEnd().match(/^\/([a-z-]+)(?:\s+([\s\S]*))?$/u);
+  const match = draft.trimEnd().match(/^\/([a-z-]+)(?:\s+([\s\S]*))?$/iu);
   if (!match) return null;
-  const command = composerCommands.find(item => item.id === match[1]);
+  const command = composerCommands.find(item => item.id === match[1].toLowerCase());
   const argument = match[2]?.trim() ?? '';
-  if (!command || (argument && command.id !== 'focus' && command.id !== 'plan')) return null;
+  if (!command || (argument && !['focus', 'plan', 'simloop', 'fullloop'].includes(command.id))) return null;
   return { name: command.id, argument };
 }

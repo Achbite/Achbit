@@ -134,8 +134,7 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-changes--compact { width: fit-content; max-width: 100%; border: 0; border-radius: 6px; margin: 8px 0; background: transparent; }
 .conversation-changes--compact .conversation-changes-heading { padding: 5px 8px; gap: 8px; border-radius: 6px; color: var(--ac-muted); font-size: calc(12px * var(--ac-ui-font-scale, 1)); }
 .conversation-changes--compact .conversation-changes-heading > svg { width: 15px; height: 15px; }
-.conversation-changes--compact .conversation-change-list { display: none; position: absolute; left: 0; top: 100%; z-index: 12; width: min(440px, 65vw); max-height: 240px; overflow: auto; padding: 6px; background: var(--ac-surface); border: 1px solid var(--ac-border); border-radius: 10px; box-shadow: 0 6px 20px color-mix(in srgb, var(--ac-shadow-color) 13.33%, transparent); }
-.conversation-changes--compact:hover .conversation-change-list, .conversation-changes--compact:focus-within .conversation-change-list, .conversation-changes--compact.is-expanded .conversation-change-list { display: block; }
+.conversation-changes--compact .conversation-change-list { position: absolute; left: 0; top: 100%; z-index: 12; width: min(440px, 65vw); max-height: 240px; overflow: auto; padding: 6px; background: var(--ac-surface); border: 1px solid var(--ac-border); border-radius: 10px; box-shadow: 0 6px 20px color-mix(in srgb, var(--ac-shadow-color) 13.33%, transparent); }
 .conversation-changes--inline { margin: 4px 0 8px; }
 .local-agent__tool-entry-details.local-agent__tool-entry-details--file { max-height: none; overflow: visible; }
 .conversation-changes--inline .conversation-change-list { padding: 0; }

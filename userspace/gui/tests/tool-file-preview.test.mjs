@@ -38,6 +38,10 @@ test('file links show basenames while titles and Reader navigation retain exact 
   const activities = paths.map((path, index) => activity(path, index, index === 2 ? 'delete' : 'modify'));
   for (const compact of [false, true]) {
     const list = capture(FileChanges, { activities, compact }).tree;
+    const heading = findReactElement(list, node => node.props.className === 'conversation-changes-heading');
+    const panel = findReactElement(list, node => node.props.className === 'conversation-change-list');
+    assert.equal(heading.props['aria-expanded'], !compact);
+    assert.equal(panel.props.hidden, compact, 'visibility and aria-expanded share state, not retained CSS focus');
     paths.forEach((path, index) => {
       const link = findReactElement(list, node => node.type === 'button' && node.props.title === path);
       assert.equal(Children.toArray(link.props.children)[0].props.children, names[index]);

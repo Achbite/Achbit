@@ -26,7 +26,9 @@ def copy_js_package(source, target, debug=False):
     runtime = {key: package[key] for key in ('name', 'version', 'license', 'type', 'main')}
     runtime['exports'] = {'.': './dist/index.js'}
     (target / 'package.json').write_text(json.dumps(runtime, indent=2) + '\n')
-    for file in (source / 'dist').rglob('*.js'):
+    for file in (source / 'dist').rglob('*'):
+        if not file.is_file() or file.suffix not in ('.js', '.json'):
+            continue
         if not debug and 'debug' in file.relative_to(source / 'dist').parts:
             continue
         destination = target / file.relative_to(source)

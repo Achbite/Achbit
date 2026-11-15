@@ -7,7 +7,7 @@ import { settingText, t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
-import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
+import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { currentPermissionPreset, PERMISSION_PRESETS } from './permissionPresets';
 
@@ -69,9 +69,10 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
   useLayoutEffect(() => {
     if (!permissionMenuOpen) return;
     const menu = permissionMenuRef.current;
-    const selected = menu?.querySelector<HTMLElement>(page === 'details' ? 'select' : '[aria-checked="true"]');
-    (selected ?? menu?.querySelector<HTMLElement>('[role="radio"], button'))?.focus({ preventScroll: true });
-  }, [permissionMenuOpen, page, permissionMenuRef]);
+    if (!menu) return;
+    const selected = menu.querySelector<HTMLElement>(page === 'details' ? 'select' : '[aria-checked="true"]');
+    focusOpenedPanel(menu, selected ?? menu.querySelector<HTMLElement>('[role="radio"], button'), interaction);
+  }, [permissionMenuOpen, page, permissionMenuRef, interaction]);
   const close = () => { setPermissionMenuOpen(false); returnFocusTo(permissionControlRef.current?.querySelector('button'), interaction, permissionMenuRef.current); };
   const change = async (patches: Record<string, string>) => {
     setBusy(true); setActionError(null);
@@ -95,13 +96,18 @@ export function ComposerPermissionControl({ language, composer }: { language: Ui
       <AchbitShellIcon name="shield" /><span>{summary}</span>
     </button>
     {permissionMenuOpen && createPortal(<div ref={permissionMenuRef} className="local-agent__permission-menu" style={position}
-      data-native-overlay role="dialog" aria-label={t(language, heading)} aria-busy={busy}
+      data-native-overlay role="dialog" tabIndex={-1} aria-label={t(language, heading)} aria-busy={busy}
       onKeyDown={event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (page) back(); else close(); }
         if (!(event.target instanceof HTMLSelectElement) && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
           const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]:not(:disabled), button.local-agent__permission-row:not(:disabled)')];
           const index = options.indexOf(document.activeElement as HTMLButtonElement);
-          if (options.length) { event.preventDefault(); options[(index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length].focus(); }
+          if (options.length) {
+            event.preventDefault();
+            const next = index < 0 ? (event.key === 'ArrowDown' ? 0 : options.length - 1)
+              : (index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length;
+            options[next].focus();
+          }
         }
       }}>
       <PanelHeader className="local-agent__permission-heading">

@@ -87,8 +87,8 @@ try {
   await record('pasted-text-identity', pasted, pasted.sameNode && pasted.oldConnected && pasted.focusRetained && pasted.edited && pasted.inputId !== draftId && pasted.viewId === draftId);
   await click('[data-ui-action="composer.controls.attachments"]');
   await key('Escape');
-  const menu = await evaluate(`(()=>{const trigger=document.querySelector('[data-ui-action="composer.controls.attachments"]');return {expanded:trigger.getAttribute('aria-expanded'),focusReturned:document.activeElement===trigger}})()`);
-  await record('attachment-menu-escape', menu, menu.expanded === 'false' && menu.focusReturned);
+  const menu = await evaluate(`(()=>{const trigger=document.querySelector('[data-ui-action="composer.controls.attachments"]');return {expanded:trigger.getAttribute('aria-expanded'),focusReturned:document.activeElement===trigger,focusVisible:trigger.matches(':focus-visible')}})()`);
+  await record('attachment-menu-escape', menu, menu.expanded === 'false' && !menu.focusVisible);
   await navigate('approval-model');
   await until('document.querySelector(".model-connection-open")'); await click('.model-connection-open');
   await until('document.querySelector(".model-editor > summary")'); await click('.model-editor > summary');

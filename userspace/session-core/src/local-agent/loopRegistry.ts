@@ -49,7 +49,16 @@ export class AgentLoopRegistry {
 
 export function builtinAgentLoops(): AgentLoopContribution[] {
   return [{ id: 'standard', description: 'Provider/tool loop with durable events, waiting, cancellation and recovery.',
-    parametersSchema: { type: 'object', additionalProperties: false, properties: {} },
-    validate(parameters) { if (Object.keys(parameters).length) throw new Error('agent_loop_parameters_invalid'); },
-    create: () => ({ run: runAgentLoop }) }];
+    parametersSchema: { type: 'object', additionalProperties: false, properties: {
+      toolExecution: { type: 'string', enum: ['ordered', 'parallel'],
+        description: 'ordered retains bounded file-phase barriers; parallel runs the batch concurrently with same-file mutation ordering.' },
+    } },
+    validate(parameters) {
+      if (Object.keys(parameters).some(key => key !== 'toolExecution')
+        || parameters.toolExecution !== undefined && !['ordered', 'parallel'].includes(String(parameters.toolExecution))) {
+        throw new Error('agent_loop_parameters_invalid');
+      }
+    },
+    create: parameters => ({ run: (initial, command, deps, signal) => runAgentLoop(initial, command,
+      { ...deps, toolExecution: parameters.toolExecution === 'parallel' ? 'parallel' : 'ordered' }, signal) }) }];
 }

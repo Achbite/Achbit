@@ -75,8 +75,7 @@ If Windows Setup cannot replace program files, it retains the previous applicati
 | Selected Skill or CLI plugin content | Prepared again before the next model request. In-flight requests, pending approvals, and executing calls retain their original content and bindings. |
 | CLI plugin registration, Skill mounts, MCP configuration, and tool plugin enablement | Refreshed before the next model request in the current run. Already-issued calls retain their bindings. |
 | Model defaults, permission defaults, and execution environment settings | The next run. |
-| Subagent defaults in Settings | New conversations only; existing Sessions keep their saved configuration. |
-| Conversation subagent settings | Subsequent delegation uses that Session's updated settings; saving also updates future-conversation defaults, not other existing Sessions. Disabling blocks new spawns/assignments without cancelling active or waiting tasks or removing history. |
+| Global subagent settings | All conversations share one saved configuration. Each new task captures it; an active task retains its declaration, delegation and quota snapshot through later requests. Saving does not cancel tasks or alter historical facts. |
 | Updated GUI resources | Reload with Cmd+Shift+R on macOS or Ctrl+Shift+R elsewhere. |
 | TUI binary, bundled terminal fonts, or native launcher scripts | Update the platform package and reopen the TUI. Reloading the GUI does not replace a running TUI. |
 | Session, Kernel, native programs, or built-in product guides | Install the corresponding build and restart the affected processes. Source edits do not change the running application. |

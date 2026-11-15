@@ -33,6 +33,8 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/sessions", "tui.command.sessions", false),
     ("/resume", "tui.command.resume", false),
     ("/model", "tui.command.model", false),
+    ("/simloop", "tui.command.simloop", false),
+    ("/fullloop", "tui.command.fullloop", false),
     ("/connection", "tui.command.model", false),
     ("/context", "tui.command.context", false),
     ("/font", "tui.command.font", false),
@@ -868,12 +870,6 @@ impl TuiApp {
         projection: &SessionProjection,
         text: &str,
     ) -> Result<serde_json::Value, String> {
-        // TUI selections apply to the next message and remain selected during a reply.
-        let is_reply = match crate::conversation_input::slash_command(text) {
-            Some(("reply", _)) => true,
-            Some(("permissions" | "revoke", argument)) => !argument.is_empty(),
-            _ => false,
-        };
         crate::conversation_input::contextual_input_command(
             self.host.language,
             projection,
@@ -881,10 +877,10 @@ impl TuiApp {
             &new_id("command"),
             self.next_message_profile_id.as_deref(),
             &[],
-            if is_reply {
-                &[]
-            } else {
+            if crate::conversation_input::consumes_plugin_selections(text) {
                 &self.selected_plugins
+            } else {
+                &[]
             },
         )
     }
@@ -1700,7 +1696,7 @@ impl TuiApp {
         let mut matches: Vec<_> = COMMANDS
             .iter()
             .copied()
-            .filter(|(command, _, _)| command.starts_with(query))
+            .filter(|(command, _, _)| command.starts_with(&query.to_ascii_lowercase()))
             .collect();
         // A bounded local history combines frequency with recency; stable ties retain
         // the discoverable default order. Arguments and message contents are never stored.

@@ -181,26 +181,34 @@ impl Default for WorkspaceSandboxSelection {
 }
 
 impl AgentRecipe {
+    /// Narrow the creation recipe for one run. Full removes only this narrowing.
+    /// Permission policy, sandbox, model and creation permissions are untouched.
+    pub fn with_mode(mut self, mode: &str) -> Self {
+        if mode == "minimal" {
+            // The Kernel advertises only the Shell selected for the execution environment.
+            let coding = ["fs.read", "bash", "powershell", "fs.edit", "fs.write"];
+            self.tools.kernel = Some(
+                coding
+                    .into_iter()
+                    .filter(|name| self.tools.allows_kernel(name))
+                    .map(String::from)
+                    .collect(),
+            );
+            self.tools.controls = Some(vec![]);
+            self.tools.plugins = false;
+            self.product_components = Some(vec![]);
+            self.configuration = Some(
+                json!({"context":{"id":"coding"},"controls":{"id":"none"},"compaction":{"id":"none"}}),
+            );
+            self.runner = Some(json!({"id":"standard","parameters":{"toolExecution":"parallel"}}));
+        }
+        self
+    }
+
     /// An opt-in creation preset. Unspecified permission settings (including command rules)
     /// continue to come from the ordinary Kernel permission policy.
     pub fn minimal_coding() -> Self {
         Self {
-            tools: ToolSelection {
-                // The Kernel advertises only the Shell selected for the execution environment.
-                kernel: Some(
-                    ["fs.read", "bash", "powershell", "fs.edit", "fs.write"]
-                        .map(String::from)
-                        .into(),
-                ),
-                controls: Some(vec!["plan.publish".into()]),
-                plugins: false,
-            },
-            product_components: Some(vec!["achbit.rich-replies".into()]),
-            configuration: Some(json!({
-                "context": { "id": "coding" },
-                "compaction": { "id": "none" },
-                "controls": { "id": "standard", "parameters": { "optionalTools": [] } }
-            })),
             permissions: Some(json!({
                 "agent.permissions.workspaceMutation": "allow",
                 "agent.permissions.engineeringDecisions": "delegate",
@@ -209,6 +217,7 @@ impl AgentRecipe {
             })),
             ..Self::default()
         }
+        .with_mode("minimal")
     }
 
     pub fn decode(value: &Value) -> Result<Self, String> {
@@ -434,21 +443,65 @@ mod tests {
     }
 
     #[test]
-    fn minimal_preset_admits_only_the_plan_control_under_the_normal_stage_policy() {
-        let recipe = AgentRecipe::minimal_coding();
-        assert_eq!(recipe.tools.controls, Some(vec!["plan.publish".into()]));
-        assert!(!recipe.tools.plugins);
+    fn session_mode_narrows_tools_without_replacing_permissions() {
+        let base = AgentRecipe::decode(&json!({"tools":{"kernel":["fs.read","web.search"],"plugins":false},
+            "permissions":{"agent.permissions.workspaceMutation":"plan","agent.permissions.shell":"review"},
+            "permissionPolicy":{"id":"workspace-only"}})).unwrap();
+        let expected = serde_json::to_value(&base).unwrap();
+        let minimal = base.clone().with_mode("minimal");
+        assert_eq!(minimal.tools.kernel, Some(vec!["fs.read".into()]));
+        assert_eq!(minimal.tools.controls, Some(vec![]));
+        assert!(!minimal.tools.plugins);
+        assert_eq!(minimal.permissions, base.permissions);
+        assert_eq!(minimal.permission_policy.id, base.permission_policy.id);
         assert_eq!(
-            recipe.product_components,
-            Some(vec!["achbit.rich-replies".into()])
+            minimal.workspace_sandbox.backend_id,
+            base.workspace_sandbox.backend_id
+        );
+        assert_eq!(
+            serde_json::to_value(base.with_mode("full")).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn minimal_preset_selects_bare_parallel_coding_without_product_controls() {
+        let recipe = AgentRecipe::minimal_coding();
+        assert_eq!(recipe.tools.controls, Some(vec![]));
+        assert!(!recipe.tools.plugins);
+        assert_eq!(recipe.product_components, Some(vec![]));
+        assert_eq!(
+            recipe.runner.unwrap(),
+            json!({"id":"standard", "parameters":{"toolExecution":"parallel"}})
         );
         assert_eq!(
             recipe.configuration.unwrap()["controls"],
-            json!({"id":"standard","parameters":{"optionalTools":[]}})
+            json!({"id":"none"})
         );
         assert_eq!(
             recipe.permissions.unwrap()["agent.permissions.workspaceMutation"],
             "allow"
+        );
+    }
+
+    #[test]
+    fn minimal_preset_keeps_its_complete_creation_contract() {
+        assert_eq!(
+            serde_json::to_value(AgentRecipe::minimal_coding()).unwrap(),
+            json!({
+                "tools": {"kernel":["fs.read","bash","powershell","fs.edit","fs.write"],"controls":[],"plugins":false},
+                "productComponents": [],
+                "configuration": {"context":{"id":"coding"},"controls":{"id":"none"},"compaction":{"id":"none"}},
+                "runner": {"id":"standard","parameters":{"toolExecution":"parallel"}},
+                "permissions": {
+                    "agent.permissions.workspaceMutation":"allow",
+                    "agent.permissions.engineeringDecisions":"delegate",
+                    "agent.permissions.shell":"allow",
+                    "agent.permissions.shellAccess":"full"
+                },
+                "permissionPolicy": {"id":"local-standard","parameters":{"allowHostExecution":true,"allowExternalTools":true}},
+                "workspaceSandbox": {"backendId":"platform-default","requireIsolatedProcesses":false}
+            })
         );
     }
 

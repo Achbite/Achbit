@@ -8,11 +8,13 @@ import { useAgentComposer } from '../../src/components/local-agent/useAgentCompo
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
 import { installTextSelectionBoundary } from '../../src/components/shared/textSelection';
+import { InteractionPreview } from './InteractionPreview';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/theme/builtinFonts.css';
 import '../../src/components/local-agent/localAgentPanel.css';
 import '../../src/components/shared/focus.css';
+import '../../src/ui-components/controls.css';
 
 installPaletteDefaults();
 const plan = { planId: 'plan:preview', revision: 1, title: '内置浏览器交互渲染测试页', steps: [], mutationManifest: [] };
@@ -60,15 +62,17 @@ function Preview() {
   const initialized = useRef(false);
   const setDecision = (next: string) => {
     setMode(next); setResult('');
-    const interactions = next === 'questions' ? Array.from({ length: 5 }, (_, index) => numberedQuestion(index))
-      : next === 'interaction' ? [questionFact(question, 0)] : next === 'concurrent' ? [questionFact(scopeQuestion, 0)] : [];
+    const interactions = next === 'questions' || next === 'questions-three'
+      ? Array.from({ length: next === 'questions-three' ? 3 : 5 }, (_, index) => numberedQuestion(index))
+      : next === 'interaction' ? [questionFact(question, 0)]
+      : next === 'concurrent' || next === 'blocking' ? [questionFact({ ...scopeQuestion, mode: 'wait' }, 0)] : [];
     const pendingPlan = next === 'plan' ? plan : next === 'plan-reviewed' ? reviewedPlan
       : next === 'plan-workspace' ? workspacePlan
       : next === 'plan-review' ? { ...plan, review: { status: 'reviewing' } } : null;
     useLocalAgentStore.setState({ projection: { ...useLocalAgentStore.getState().projection,
       run: next === 'review' || next === 'questions' || next === 'plan-review' ? { runId: 'run:preview', status: 'running' }
         : pendingPlan ? { runId: 'run:preview', status: 'waiting', waitingReason: 'plan' }
-        : next === 'interaction' ? { runId: 'run:preview', status: 'waiting', waitingReason: 'userInput' }
+        : ['interaction', 'blocking', 'questions-three'].includes(next) ? { runId: 'run:preview', status: 'waiting', waitingReason: 'userInput' }
         : next === 'concurrent' ? { runId: 'run:preview', status: 'waiting', waitingReason: 'approval' } : null,
       pendingApproval: next === 'review' ? review : next === 'approval' ? approval : next === 'concurrent' ? buildApproval : null,
       pendingPlan,
@@ -142,7 +146,7 @@ function Preview() {
     <nav className="fixture-toolbar"><span>输入区检查</span><select aria-label="检查模式" value={mode} onChange={(e) => setDecision(e.target.value)}>
       <option value="message">普通输入</option><option value="approval">权限确认</option><option value="review">工具自动审核</option><option value="plan">Plan 确认</option>
       <option value="plan-reviewed">审核后人工确认</option><option value="plan-workspace">工作区授权确认</option><option value="plan-review">计划自动审核</option>
-      <option value="interaction">方案选择</option><option value="concurrent">问题与权限并存</option><option value="questions">执行中多个问题</option>
+      <option value="interaction">方案选择</option><option value="blocking">阻塞问题</option><option value="concurrent">问题与权限并存</option><option value="questions">执行中多个问题</option><option value="questions-three">三组待答问题</option>
     </select><select aria-label="配色模式" defaultValue="light" onChange={(e) => { document.documentElement.dataset.theme = e.target.value; }}><option value="light">浅色</option><option value="dark">深色</option></select>
       <button onClick={() => setCompact(value => !value)}>{compact ? '恢复宽度' : '窄面板'}</button>
     </nav>
@@ -155,7 +159,8 @@ function Preview() {
       <span>{projection.run?.status === 'running' ? '运行中' : projection.run?.waitingReason === 'approval' ? '等待授权' : '等待用户回答'}</span>
     </nav>}
     <main className="local-agent fixture-main" style={{ maxWidth: compact ? 420 : 960 }}><div className="fixture-context" role="region" aria-label="对话历史"><strong>内置浏览器交互渲染测试</strong>创建页面并核对按钮、开关和文本输入。
-      {projection.interactions.map(item => <InteractionCard key={item.interactionId} interaction={item} language="zh-CN" />)}
+      {projection.interactions.map(item => <InteractionCard key={item.interactionId} interaction={item} language="zh-CN"
+        answerInComposer={item.interactionId === composer.foregroundInteractionId} onFocusComposer={composer.focusInteraction} />)}
       {projection.interactions.length > 0 && <p>已继续完成与这些答案无关的检查。</p>}
     </div>
       <ConversationComposer language="zh-CN" composer={composer} uiActionError={null}
@@ -163,4 +168,4 @@ function Preview() {
     </main><p className="fixture-result" role="status">{result}</p>
   </>;
 }
-createRoot(document.getElementById('root')!).render(<Preview />);
+createRoot(document.getElementById('root')!).render(<InteractionPreview><Preview /></InteractionPreview>);

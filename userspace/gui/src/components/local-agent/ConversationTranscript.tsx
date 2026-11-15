@@ -11,6 +11,8 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { PresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
+import { focusOpenedPanel, useInteractionFocus } from '../shared/interactionFocus';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ReasoningHistory } from './ReasoningDetails';
 import { PlanPreviewCard } from './PlanPreviewCard';
@@ -43,6 +45,8 @@ interface ConversationTranscriptProps {
   loading: boolean;
   showReasoning?: boolean;
   automaticReview?: React.ReactNode;
+  foregroundInteractionId?: string | null;
+  onFocusInteraction?: () => void;
   displaySettledRunIds: Set<string>;
   onDisplayed(identity: string, text: string): void;
   projection: SessionProjection | null;
@@ -64,6 +68,8 @@ export function ConversationTranscript({
   language,
   showReasoning = false,
   automaticReview,
+  foregroundInteractionId,
+  onFocusInteraction,
   displaySettledRunIds,
   onDisplayed,
   loading,
@@ -81,6 +87,7 @@ export function ConversationTranscript({
   onEditMessage,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
+  const interaction = useInteractionFocus();
   const referencesIdentity = useUiOwner('conversation.references', undefined, { sessionId: projection?.sessionId });
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
   const onPlanToggle = (card: HTMLElement, expanded: boolean) => {
@@ -101,6 +108,8 @@ export function ConversationTranscript({
   const copiedMessageId = copyFeedback?.messageId ?? null;
   useAutoDismiss(copyFeedback, () => setCopyFeedback(null), 1500);
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const pathMenuRef = useRef<HTMLDivElement>(null);
+  const pathTriggerRef = useRef<HTMLAnchorElement>(null);
   const linkRequest = useRef(0);
   const [linkChoices, setLinkChoices] = useState<{ sessionId: string; request: number; targets: ResolvedLocalTarget[] } | null>(null);
   const currentSessionRef = useRef({ sessionId: projection?.sessionId });
@@ -113,13 +122,13 @@ export function ConversationTranscript({
   }, [projection?.sessionId]);
   useEffect(() => {
     if (!pathMenu) return;
+    const menu = pathMenuRef.current;
+    if (menu) focusOpenedPanel(menu, menu.querySelector<HTMLButtonElement>('[role="menuitem"]'), interaction);
     const dismiss = () => setPathMenu(null);
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss(); };
-    document.addEventListener('click', dismiss);
-    document.addEventListener('keydown', onKey);
     window.addEventListener('resize', dismiss);
-    return () => { document.removeEventListener('click', dismiss); document.removeEventListener('keydown', onKey); window.removeEventListener('resize', dismiss); };
-  }, [pathMenu]);
+    return () => window.removeEventListener('resize', dismiss);
+  }, [pathMenu, interaction]);
+  useDismissibleLayer({ open: !!pathMenu, roots: [pathMenuRef], trigger: pathTriggerRef, onDismiss: () => setPathMenu(null) });
   const committedProviderContent = (identity: string | undefined, content: string, committed: React.ReactNode): React.ReactNode => {
     if (!identity) throw new Error('conversation_timeline_stream_missing');
     // Custom presentation renderers retain their output; the builtin Markdown keeps its stream node.
@@ -293,7 +302,9 @@ export function ConversationTranscript({
           onToggle={onPlanToggle}
         />
       ) : item.type === 'interaction' ? (
-        <InteractionCard interaction={item.value} language={language} />
+        <InteractionCard interaction={item.value} language={language}
+          answerInComposer={item.value.interactionId === foregroundInteractionId}
+          onFocusComposer={onFocusInteraction} onToggle={onPlanToggle} />
       ) : (
         <ToolActivityGroup
           activities={item.values}
@@ -389,13 +400,15 @@ export function ConversationTranscript({
         const target = anchor && parseLocalTarget(anchor.getAttribute('href') ?? '');
         if (!target) return;
         event.preventDefault();
+        pathTriggerRef.current = anchor;
         setPathMenu({ path: target.path, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 180)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 50)) });
       }}
     >
-      {pathMenu && <div className="local-agent__path-menu" role="menu" style={{ left: pathMenu.x, top: pathMenu.y }}>
-        <button type="button" role="menuitem" autoFocus onClick={() => {
+      {pathMenu && <div ref={pathMenuRef} className="local-agent__path-menu" role="menu" tabIndex={-1} style={{ left: pathMenu.x, top: pathMenu.y }}>
+        <button type="button" role="menuitem" onClick={() => {
           const requestedView = currentSessionRef.current;
           void host.copyText(pathMenu.path).catch((reason) => { if (currentSessionRef.current === requestedView) setUiActionError(String(reason)); });
+          setPathMenu(null);
         }}>{language === 'zh-CN' ? '复制路径' : 'Copy path'}</button>
       </div>}
       {loading && !projection && (

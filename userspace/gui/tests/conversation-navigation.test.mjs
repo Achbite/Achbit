@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadGuiModule } from './gui-projection-contract.mjs';
+import React, { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
 test('long conversation reading and navigation measure logarithmically and share the anchor catalogue', async t => {
   const { ConversationAnchors, firstReadingAnchor } = await loadGuiModule(t, '/src/components/local-agent/conversationAnchors.ts');
@@ -47,6 +49,101 @@ test('bottom selects the latest message without forcing its title to the top', a
   assert.equal(active(anchors, 40, { ...view, scrollTop: 380 }), 'old', 'reading history still uses the reading line');
   assert.equal(active(anchors, 40, { ...view, scrollHeight: 1100 }), 'old', 'new content below is not treated as already read');
   assert.equal(active(anchors, 40, { ...view, scrollTop: 500, scrollHeight: 1100 }), 'latest');
+});
+
+test('zero or one message hides navigation while both ends of a short conversation remain actionable', async t => {
+  const { ConversationNavigation } = await loadGuiModule(t, '/src/components/local-agent/ConversationNavigation.tsx');
+  const entries = Array.from({ length: 3 }, (_, i) => ({ key: `row:${i}`, rowIndex: i, label: `Message ${i + 1}` }));
+  const navigated = [];
+  const props = { sessionId: 'session:short-navigation', viewport: { bodyRef: { current: null } },
+    language: 'zh-CN', onNavigate: entry => navigated.push(entry.key) };
+  for (const count of [0, 1]) {
+    assert.equal(renderToStaticMarkup(createElement(ConversationNavigation, { ...props, entries: entries.slice(0, count) })), '');
+  }
+  for (const count of [2, 3]) {
+    let tree;
+    function Probe() { tree = ConversationNavigation({ ...props, entries: entries.slice(0, count) }); return tree; }
+    const html = renderToStaticMarkup(createElement(Probe));
+    assert.equal((html.match(/<button\b/g) ?? []).length, count, 'no synthetic neighbors are added at either edge');
+    for (const index of [0, count - 1]) {
+      const button = findReactElement(tree, node => node.type === 'button'
+        && node.props['aria-label'] === `跳至消息 ${index + 1}: Message ${index + 1}`);
+      button.props.onClick();
+      assert.equal(navigated.at(-1), entries[index].key);
+    }
+  }
+});
+
+test('the navigation reveals its current tick without moving the transcript or keyboard focus', async t => {
+  const { ConversationNavigation } = await loadGuiModule(t, '/src/components/local-agent/ConversationNavigation.tsx');
+  const saved = { window: globalThis.window, ResizeObserver: globalThis.ResizeObserver };
+  const observers = [];
+  globalThis.window = {};
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe(node) { this.node = node; }
+    disconnect() { this.disconnected = true; }
+  };
+  t.after(() => Object.assign(globalThis, saved));
+  const entries = Array.from({ length: 40 }, (_, i) => ({ key: `row:${i}`, rowIndex: i, label: `Message ${i}` }));
+  const body = { scrollTop: 777 };
+  const effects = [];
+  let tree;
+  function Probe() {
+    const internals = React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+    const original = internals.H;
+    internals.H = { ...original, useLayoutEffect: effect => { effects.push(effect); } };
+    try {
+      tree = ConversationNavigation({ sessionId: 'session:navigation', entries,
+        viewport: { bodyRef: { current: body } }, onNavigate() {}, language: 'zh-CN' });
+      return tree;
+    } finally { internals.H = original; }
+  }
+  renderToStaticMarkup(createElement(Probe));
+  const ticks = findReactElement(tree, node => node.props.className === 'conversation-navigation__ticks');
+  assert.ok(ticks.props.ref, 'the overflowing rail must keep its current tick visible');
+  let offset = 39 * 14, selected = true, writes = 0, scrollTop = 0;
+  const marker = {
+    getBoundingClientRect: () => ({ top: 100 + offset - scrollTop, bottom: 114 + offset - scrollTop }),
+    focus() { assert.fail('revealing a position must not move keyboard focus'); },
+    scrollIntoView() { assert.fail('do not scroll ancestor containers'); },
+  };
+  const rail = {
+    clientHeight: 280, clientTop: 0,
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) { scrollTop = value; writes++; },
+    getBoundingClientRect: () => ({ top: 100 }),
+    querySelector(selector) { assert.equal(selector, '[aria-current="location"]'); return selected ? marker : null; },
+  };
+  ticks.props.ref.current = rail;
+  const cleanups = effects.map(effect => effect());
+  t.after(() => cleanups.forEach(cleanup => cleanup?.()));
+  assert.equal(scrollTop, 280, 'the last of 40 ticks is revealed at the lower edge');
+  assert.equal(observers.length, 1);
+  assert.equal(observers[0].node, rail);
+  const resize = () => observers[0].callback();
+  resize();
+  assert.equal(writes, 1, 'an already visible tick does not cause another scroll');
+  rail.clientHeight = 140;
+  resize();
+  assert.equal(scrollTop, 420, 'a shorter viewport still shows the current tick');
+  offset = 2 * 14;
+  // A new active message runs the same production layout effect after commit.
+  cleanups.forEach(cleanup => cleanup?.());
+  assert.ok(observers.every(observer => observer.disconnected), 'old subscriptions are released');
+  cleanups.splice(0, cleanups.length, ...effects.map(effect => effect()));
+  assert.equal(scrollTop, 28, 'returning to an earlier message reveals its tick at the upper edge');
+  const currentResize = () => observers.at(-1).callback();
+  offset = 5 * 14;
+  const before = writes;
+  currentResize();
+  assert.equal(writes, before, 'a visible middle tick keeps the rail position');
+  selected = false;
+  currentResize();
+  selected = true; rail.clientHeight = 0; offset = 39 * 14;
+  currentResize();
+  assert.equal(writes, before, 'missing ticks and hidden rails do not scroll');
+  assert.equal(body.scrollTop, 777, 'only the navigation rail owns this scroll');
 });
 
 test('short layouts and virtualized latest rows use the catalog end; hidden viewports do not', async t => {

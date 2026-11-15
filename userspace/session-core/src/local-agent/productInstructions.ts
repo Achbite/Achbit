@@ -1,5 +1,5 @@
-import type { SessionEvent } from '@achbit/protocol';
-import type { ProductEnvironmentInstructions, SessionProductComponent } from './sessionConfiguration.js';
+import type { JsonObject, SessionEvent } from '@achbit/protocol';
+import type { SessionProductComponent } from './sessionConfiguration.js';
 
 import { decodeSessionEnvironment } from './sessionEnvironment.js';
 import type { ToolGuidanceContributor } from './toolPromptContributions.js';
@@ -8,19 +8,30 @@ import type { ToolGuidanceContributor } from './toolPromptContributions.js';
 const operationsSkills = new Set(['achbit-product', 'achbit-iteration']);
 const operationsPlugins = new Set([...operationsSkills].map(name => `plugin://${name}@builtin`));
 
-const productDocumentation: ProductEnvironmentInstructions = environment => {
+/** The documentation index is shared; product operations adds detail at the relevant entries. */
+export function productDocumentation(environment: JsonObject, expanded = true) {
   const directory = environment.productDocsPath;
   if (typeof directory !== 'string' || !directory) return [];
-  return [{ id: 'achbit.product-docs', text: `<docs>
-Achbit reference for questions about the product, its tools or its extension interfaces. Read the relevant guide on demand.
-- Bundled guide directory: ${JSON.stringify(directory)}. Resolve these document paths relative to that directory.
-- operations.md: tools, permissions, Plans, delegation, and how to discover and activate plugins.
-- execution-environments.md, managed-processes.md: shell, sandbox, containers, and managed commands.
-- model-services.md, computer-use.md, debug-control.md: model providers, Computer Use, and Debug controls.
-- ../plugins/README.md: plugin contracts for CLI tools, hosted services, display modules, and Skills. ui-plugins.md covers the display plugin interface.
-- Before changing an Achbit interface, read the relevant guide and follow its references.
-</docs>` }];
-};
+  return [{ id: 'achbit.product-docs', text: [
+    '<docs>',
+    'Achbit documentation for the harness itself, its tools, configuration and extensions. Read the relevant guide on demand.',
+    `- Product guides: ${JSON.stringify(directory)}`,
+    '- operations.md: tools, permissions, Plans, collaboration and outputs',
+    ...(expanded ? ['  Includes file references and output delivery.'] : []),
+    '- model-services.md: models, context and usage',
+    ...(expanded ? ['  Includes profiles, authentication and image input.'] : []),
+    '- execution-environments.md, managed-processes.md: Shell and command lifecycle',
+    ...(expanded ? ['  Covers sandbox, Host, containers, remote execution, background commands, dependency waiting, cancellation and results.',
+      '- computer-use.md: browser and desktop operation.'] : []),
+    '- debug-control.md: isolated Debug control',
+    '- ../plugins/README.md: plugin and Skill interfaces',
+    ...(expanded ? ['  Includes CLI tools, hosted services and MCP.', '- ui-plugins.md: display plugin interfaces.'] : []),
+    '- Resolve these paths under Product guides, not the current working directory',
+    '- Before implementing harness changes, read the relevant guides and their related references.',
+    ...(expanded ? ['Use current tool declarations and runtime results to establish available behavior.'] : []),
+    '</docs>',
+  ].join('\n') }];
+}
 
 const productShellGuidance: ToolGuidanceContributor = ({ runtime, events, runId, tools }) => {
   const shells = tools.filter(tool => tool.origin === 'coreBuiltin' && (tool.name === 'bash' || tool.name === 'powershell'));
@@ -68,16 +79,22 @@ const productShellGuidance: ToolGuidanceContributor = ({ runtime, events, runId,
 
 /** Installed by the Achbit product. The standalone Session registry has no product defaults. */
 export const achbitProductComponents: readonly SessionProductComponent[] = [
-  { id: 'achbit.collaboration', enabledByDefault: true, text: `For work that needs investigation or action, briefly tell the user what you will establish, then proceed. Update them at meaningful discoveries, changes of approach, blockers or substantial waits. One update can cover related operations.
+  { id: 'achbit.collaboration', enabledByDefault: true, text: `For work that needs investigation or action, briefly tell the user what you will establish, then proceed. Update them at meaningful discoveries, changes of approach, blockers or substantial waits. One update can cover related operations; avoid narrating every tool call.
 
-Use the response language for opening explanations, updates and conclusions. Preserve code, commands, identifiers and quotations where their original form matters. Choose a natural structure and enough detail for the user to understand the work and its result.` },
+Use the response language for opening explanations, updates and conclusions. Keep progress separate from the final result, and include the detail needed to understand the work.` },
   { id: 'achbit.work-method', enabledByDefault: true, text: `Match your approach to the requested task and stage: provide analysis, review or planning when requested, and implement changes when authorized.
 
-Start with the user's target and existing evidence. Think through decisions that affect the approach. Once a useful check or reversible change is clear, carry it out and use the result to decide what comes next. Group independent work. Revisit a decision when new evidence changes it.
+Start with the user's target, existing evidence and relevant files. Once a useful check or reversible change is clear, carry it out and use the result to decide what comes next. Group independent work; wait for a result before starting an operation that depends on it. Revisit a decision when new evidence changes it.
 
 Work within the agreed scope, preserve existing work and make focused changes. Resolve routine details from the project. Clarify a missing requirement when it changes the requested outcome.` },
-  { id: 'achbit.verification', enabledByDefault: true, text: `Use the project's declared environment and verify the entrypoint the user will actually use. Interpret each result in its execution scope. Distinguish an input rejection, a running operation and its final outcome. Use concrete failures to guide the next change.` },
-  { id: 'achbit.delivery', enabledByDefault: true, text: `Conclude when the evidence resolves the request, reporting the outcome, key evidence and material limitations. A finding that no change is needed is a valid result. Distinguish completed, failed and unverified work. If blocked, explain what remains and the fact or decision needed to continue.` },
+  { id: 'achbit.verification', enabledByDefault: true, text: `Use the project's declared environment and verify the entrypoint the user will actually use. Interpret each result in its execution scope: rejected input was not executed, approval is not execution, and a running operation is not a completed result. Preserve concrete errors and partial effects when deciding the next step.
+
+Describe what each check establishes. Builds, automated tests, interface observations and real use provide different evidence; report unavailable checks as unverified.` },
+  { id: 'achbit.delivery', enabledByDefault: true, text: `Conclude when the evidence resolves the request, reporting the outcome, key evidence and material limitations. A finding that no change is needed is a valid result. Distinguish completed, failed and unverified work. If blocked, explain what remains and the fact or decision needed to continue.
+
+Present materials that need user review as clickable links and register them in the outputs table using the available delivery capability. Writing a file, archiving it and delivering it are separate steps; listing a path alone does not register an output. Link the returned delivery references in the final reply.
+
+Keep simple explanations inline. Routine source references can be file links without a separate document. Keep temporary scripts, raw logs and observation images intermediate unless selected for review; summarize relevant evidence in the delivered report.` },
   { id: 'achbit.rich-replies', enabledByDefault: true, text: `Prefer a fenced Mermaid diagram labeled mermaid when it makes a flow, interaction sequence, or state transition easier to follow.
 Prefer a Markdown table when comparing items across the same fields. Use prose or a short list when clearer.` },
   { id: 'achbit.product-operations', enabledByDefault: true, environmentInstructions: productDocumentation, toolGuidance: productShellGuidance },

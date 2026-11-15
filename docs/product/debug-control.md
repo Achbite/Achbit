@@ -144,6 +144,8 @@ Use published AX/UIA actions when available; the original `nativeDialogs.lastRes
 
 Receipts retain before/after observations, errors, operation identity and timings. The default `--observation full` also captures `screenshot.contentRef` and native dialog state; missing capture or truncated observation returns `partial` and a nonzero CLI exit. The explicit `--observation state` mode omits those two captures and reports `not-requested`, while retaining DOM/component observations, frame timing and wait conditions. It proves no visual or native-dialog result and does not silently replace a failed full capture. Inspect the receipt; do not replay an action just to obtain a screenshot. Load the original capture through an available image reader when visual evidence is needed; a path, archive or presentation alone does not load pixels.
 
+`frame-not-observed` means the WebView did not deliver the two animation-frame callbacks within the observation deadline; it does not undo the dispatched action. A hidden window can retain readable DOM state without delivering those frames. For a window hidden by Debug control, restore it with `window.show` and `window.focus`, then use `wait` or inspection to check the already changed state instead of replaying the click. State-only observation still requires frames and must remain partial when they are unavailable. A later successful observation does not retroactively change the original receipt or identify an unrecorded historical cause.
+
 ## Session tasks and results
 
 ```sh
@@ -168,7 +170,7 @@ To select plugins, read `components list` and supply `pluginSelections` in `task
 | Original tool record | `result read --record-id ID` |
 | Original Session event | `result read --session-id ID --event-sequence N` |
 
-Forwarded child decisions retain `sourceSessionId` and `agentRoute`; respond using the child's identity. To change delegation, inspect `subagentSettings`, retain the complete object, then respond with `{"type":"session.subagent-settings.set","settings":{...}}`. Disabling blocks new tasks, not existing ones. Settings commands do not start model requests.
+Forwarded child decisions retain `sourceSessionId` and `agentRoute`; respond using the child's identity. Delegation settings use the shared `agent.subagents.*` Settings values, captured when a new task starts. Changing them does not alter an active task or start a model request; the old `session.subagent-settings.set` command is unsupported. A task projection's `subagentSettings` reports its captured values, not the current global editor state. Session work mode uses `task respond --session-id ID --command '{"type":"session.mode.set","mode":"minimal"}'` (or `"full"`). `task inspect` reports the saved `projection.mode` and the current `projection.run.mode` separately. The selection applies to the next run; it does not cancel the current task or change model, permissions, sandbox or history. GUI/CLI/TUI `/SimLoop` and `/FullLoop` shortcuts ignore command-name case and submit this same command.
 
 ## Measurements
 

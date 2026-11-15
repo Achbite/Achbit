@@ -351,6 +351,7 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
 export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: AbortSignal): Promise<LoopResult | undefined> {
   let snapshot = await deps.readSnapshot();
   const pending = pendingToolRequests(snapshot.events, runId);
+  const parallel = deps.toolExecution === 'parallel';
   const isRead = (event: ToolRequestEvent) => event.payload.toolName === 'fs.read';
   const isFile = (event: ToolRequestEvent) => event.payload.toolName === 'fs.write' || event.payload.toolName === 'fs.edit';
   const isCommand = (event: ToolRequestEvent) => ['bash', 'powershell'].includes(event.payload.toolName)
@@ -360,7 +361,7 @@ export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, s
   try {
     for (let offset = 0; offset < pending.length;) {
       signal.throwIfAborted();
-      let end = offset;
+      let end = parallel ? pending.length : offset;
       let filePhase: 'read' | 'mutation' | undefined;
       // Commands may overlap the neighboring file phase. Their foreground
       // receipt (including an automatically managed job) is not a dependency
@@ -441,7 +442,8 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
         if (active.has(event.callId)) continue;
         if (controller.signal.aborted) { await markNotExecuted(event); approvals.delete(event.callId); continue; }
         const predecessors = dependencies.get(event.callId) ?? [];
-        const failed = predecessors.find(id => !pending.has(id) && snapshot.state.activities[`tool:${id}`]?.status !== 'completed');
+        const failed = deps.toolExecution !== 'parallel'
+          && predecessors.find(id => !pending.has(id) && snapshot.state.activities[`tool:${id}`]?.status !== 'completed');
         if (failed) { await markNotExecuted(event, failed); continue; }
         if (predecessors.some(id => pending.has(id))) continue;
         const waiting = approvals.get(event.callId);
@@ -450,7 +452,7 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
           if (!approval.resolved && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === waiting.permissions) continue;
           approvals.delete(event.callId);
         }
-        if (active.size >= 4) continue;
+        if (deps.toolExecution !== 'parallel' && active.size >= 4) continue;
         const request = executionRequest(snapshot, event, deps);
         const permissions = JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides);
         const grantedFiles = fileGrants(snapshot);

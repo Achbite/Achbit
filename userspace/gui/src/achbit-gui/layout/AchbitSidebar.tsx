@@ -7,7 +7,7 @@ import type {
 } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import AchbitBrand from './AchbitBrand';
-import AchbitShellIcon from '../../components/shared/AchbitShellIcon';
+import { UiIcon as AchbitShellIcon, IconButton } from '../../ui-components';
 import { ProductUpdateNotice } from '../../components/shared/ProductUpdateNotice';
 import { SessionRunStatus } from '../../components/local-agent/SessionRunStatus';
 import { runReadMarker } from './useReadRunMarkers';
@@ -44,6 +44,7 @@ interface AchbitSidebarProps {
     session: ConversationSessionSummary,
   ) => void;
   onOpenSettings: () => void;
+  onCollapse?: () => void;
 }
 
 const PROJECT_SESSION_PREVIEW_LIMIT = 6;
@@ -73,6 +74,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
   onOpenProjectContextMenu,
   onOpenSessionContextMenu,
   onOpenSettings,
+  onCollapse,
 }) => {
   const identity = useUiOwner('navigation.sidebar');
   const listRef = useRef<HTMLElement>(null);
@@ -174,48 +176,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
     return <SessionRunStatus run={run} language={language} compact />;
   };
   const standalone = sessions.filter((session) => !session.projectId);
-  const [commandPressed, setCommandPressed] = useState(false);
-  const shortcutSessions = useMemo(() => [
-    ...projectGroups.flatMap(({ project, visibleSessions }) => (
-      collapsedProjectIds.has(project.id)
-        ? []
-        : visibleSessions
-    )),
-    ...sessions.filter((session) => !session.projectId),
-  ].slice(0, 9), [collapsedProjectIds, projectGroups, sessions]);
-  const shortcutBySessionId = useMemo(
-    () => new Map(shortcutSessions.map((session, index) => [session.id, index + 1])),
-    [shortcutSessions],
-  );
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
-      if (event.key === 'Meta' || event.metaKey) setCommandPressed(true);
-      if (!event.metaKey || event.altKey || event.ctrlKey || event.shiftKey || activationBusy) return;
-      const match = /^Digit([1-9])$/u.exec(event.code);
-      if (!match) return;
-      const session = shortcutSessions[Number(match[1]) - 1];
-      if (!session) return;
-      event.preventDefault();
-      onActivateSession(session);
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key === 'Meta' || !event.metaKey) setCommandPressed(false);
-    };
-    const reset = () => setCommandPressed(false);
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', reset);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', reset);
-    };
-  }, [activationBusy, onActivateSession, shortcutSessions]);
-
   const renderSession = (session: ConversationSessionSummary) => {
-    const shortcut = shortcutBySessionId.get(session.id);
     return (
       <div
         className={`achbit-gui-session-row${session.id === activeSessionId ? ' achbit-gui-session-row--active' : ''}`}
@@ -230,11 +191,9 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
           onContextMenu={(event) => onOpenSessionContextMenu(event, session)}
           disabled={activationBusy}
           title={session.title || session.id}
-          aria-keyshortcuts={shortcut ? `Meta+${shortcut}` : undefined}
         >
           <span className="achbit-gui-session-row__title">{sessionTitle(session, language)}</span>
           {renderStatus(session.id)}
-          {commandPressed && shortcut && <kbd>⌘{shortcut}</kbd>}
         </button>
         <button
           type="button"
@@ -266,6 +225,9 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
     >
       <div className="achbit-gui-sidebar-brand">
         <AchbitBrand />
+        {onCollapse && <IconButton {...identity.action('collapse', 'click')} icon="sidebar"
+          aria-label={t(language, 'achbitGui.navigation.collapse')} aria-expanded={true} aria-controls="achbit-navigation-content"
+          onClick={onCollapse} />}
       </div>
       <div className="achbit-gui-sidebar-actions">
         <button

@@ -27,9 +27,9 @@ import {
 import { sessionReadScope, sessionReadTool } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
 import { managedJobFromRecord, processResult, rejectionContent, toolResultContent } from './modelToolResult.js';
-import { environmentInstruction, primaryWorkingDirectory } from './sessionEnvironment.js';
+import { primaryWorkingDirectory } from './sessionEnvironment.js';
 import { stableCoreInstructions } from './coreInstructions.js';
-import { codingToolInstruction, codingToolView } from './codingTools.js';
+import { codingPromptInstructions } from './codingPrompt.js';
 import { mountedSkillEntries } from './skillPlugins.js';
 import { cancelledPlanResult, confirmedPlanResult } from './planStage.js';
 import { workspacePermissionInstruction } from './workspaceInstructions.js';
@@ -40,7 +40,7 @@ import type {
 } from './plugins.js';
 import {
   createProviderToolCodec,
-  hostShellToolView,
+  providerToolView,
   encodeProviderMessage,
   providerMessageCodecsByCallId,
   providerFilesystemReferences,
@@ -129,9 +129,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     : [];
   const controlTools = activeSessionControls(input.runtime, input.events, input.toolStage, input.optionalControlTools, hasWorkspaceBindings, hasPluginDiscovery);
   const productUsage = input.toolGuidance?.flatMap(contribute => contribute({ runtime: input.runtime, runId: input.runId, events: input.events, tools: runtimeTools })) ?? [];
-  const shellView = hostShellToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings);
+  const toolView = providerToolView(runtimeTools, input.runtime, input.workspaceBindings, input.directoryBindings);
   const toolCodec = createProviderToolCodec(
-    applyToolGuidance(input.runtime.codingTools ? codingToolView(shellView) : shellView,
+    applyToolGuidance(toolView,
       input.runtime.toolPromptContributions, surface.tools, productUsage.filter(usage => !usage.contributionId)),
     controlTools,
     input.runtime.providerToolAliases,
@@ -172,15 +172,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     cwd: toolCodec.workspaceToolNames.size ? primaryWorkingDirectory(input.runtime, primaryId) : undefined,
   } : undefined;
   // Older snapshots contain policy text from preparation. Its only live owner is the current stage.
-  const activeInstructions = input.runtime.instructions.filter(instruction => instruction.id !== 'achbit.workspace-autonomy')
-    .map(instruction => instruction.id === 'achbit.session-environment'
-      ? environmentInstruction(input.runtime.environment, [...runtimeTools, ...controlTools].map(tool => tool.name), coding) : instruction);
-  const codingGuide = codingToolInstruction(runtimeTools, toolCodec.wireByCanonical);
-  if (codingGuide) activeInstructions.push(codingGuide);
+  const activeInstructions = codingPromptInstructions(input.runtime, runtimeTools, toolCodec.wireByCanonical, primaryId);
   if (policy) activeInstructions.push(policy);
-  const instructions = activeInstructions
-    .sort((left, right) => left.id.localeCompare(right.id, 'en'))
-    .map<ContextMessageContribution>((instruction) => ({
+  const instructions = activeInstructions.map<ContextMessageContribution>((instruction) => ({
       contributionId: `instruction:${instruction.id}`,
       contributionKind: 'instructions',
       label: instruction.id,
@@ -374,6 +368,8 @@ export function messagesFromJournal(
     event.type === 'approval.resolved' ? [[event.callId, event.payload] as const] : []
   )));
   const completedTurns = new Map(events.filter(isCompletedProviderTurn).map((event) => [event.payload.providerRequestId, event]));
+  const nativeReplayTurns = new Set([...completedTurns.values()].filter(event => event.payload.providerReplay)
+    .map(event => event.payload.providerRequestId));
   const orderedProviderTurns = new Map(events.flatMap((event) => (
     event.type === 'provider.turn.settled'
     && event.payload.outcome === 'completed'
@@ -486,7 +482,7 @@ export function messagesFromJournal(
     if (event.type === 'message.committed') {
       if (
         event.payload.role === 'assistant'
-        && orderedProviderTurns.has(event.payload.providerRequestId)
+        && (orderedProviderTurns.has(event.payload.providerRequestId) || nativeReplayTurns.has(event.payload.providerRequestId))
       ) continue;
       const reasoning = event.payload.role === 'assistant'
         ? providerReasoning(completedTurns.get(event.payload.providerRequestId), event.payload.providerRequestId)
@@ -518,7 +514,7 @@ export function messagesFromJournal(
         },
       });
     } else if (event.type === 'narrative.committed') {
-      if (orderedProviderTurns.has(event.payload.providerRequestId)) continue;
+      if (orderedProviderTurns.has(event.payload.providerRequestId) || nativeReplayTurns.has(event.payload.providerRequestId)) continue;
       if (!mergeNarrativeIntoProviderCall(messages, completedTurns.get(event.payload.providerRequestId), event)) {
         messages.push({
           contributionId: `narrative:${event.payload.narrativeId}`,
@@ -724,6 +720,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: event.payload.providerCallId,
+          toolOutcome: 'inputRejected',
           content: rejectionContent(event.payload.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'control'),
         },
       });
@@ -744,13 +741,14 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
+          toolOutcome: 'inputRejected',
           content: rejectionContent(event.payload.rejection.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'input'),
         },
       });
     } else if (event.type === 'tool.not-executed') {
       messages.push({
         contributionId: `tool-result:${event.callId}`, contributionKind: 'journalMessages', label: 'Tool not executed',
-        message: { role: 'tool', toolCallId: event.callId,
+        message: { role: 'tool', toolOutcome: 'notExecuted', toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
           content: JSON.stringify({ status: 'notExecuted', executed: false, reason: event.payload.reason }) },
       });
@@ -763,6 +761,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
+          toolOutcome: 'indeterminate',
           content: rejectionContent(event.payload.error, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools, 'indeterminate'),
         },
       });
@@ -776,6 +775,7 @@ export function messagesFromJournal(
           role: 'tool',
           toolCallId: event.callId,
           providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
+          toolOutcome: event.payload.record.outcome,
           content: toolResultContent(event.payload.record, approval, resultHandles(event.callId), callCodecs?.get(event.callId)?.codingTools,
             resourceGuidance.get(`tool-result:${event.callId}`)),
         },
@@ -801,7 +801,7 @@ export function messagesFromJournal(
       flushProcessUpdates();
       messages.push(...pendingHostRebinds.splice(0));
       flushRunEvidence();
-    } else if (event.type === 'provider.turn.settled' && event.payload.outcome === 'completed') {
+    } else if (event.type === 'provider.turn.settled' && event.payload.outcome !== 'cancelled') {
       if (event.payload.toolCallInputs) {
         messages.push({
           contributionId: `provider-inputs:${event.payload.providerRequestId}`,
@@ -810,7 +810,8 @@ export function messagesFromJournal(
           message: {
             role: 'assistant',
             content: '',
-            ...providerReasoning(completedTurns.get(event.payload.providerRequestId), event.payload.providerRequestId),
+            ...(event.payload.outcome === 'completed'
+              ? providerReasoning(completedTurns.get(event.payload.providerRequestId), event.payload.providerRequestId) : {}),
             toolCalls: event.payload.toolCallInputs.map((call) => ({
               callId: call.callId,
               providerCallId: call.providerCallId,
@@ -830,13 +831,20 @@ export function messagesFromJournal(
               role: 'tool',
               toolCallId: call.callId,
               providerCallId: call.providerCallId,
+              toolOutcome: 'inputRejected',
               content: rejectionContent(call.error, resultHandles(call.callId), callCodecs?.get(call.callId)?.codingTools, 'input'),
             },
           });
         }
       }
 
-      if (event.payload.orderedOutputBlocks !== undefined) {
+      if (event.payload.outcome === 'completed' && event.payload.providerReplay
+        && event.payload.purpose !== 'contextCompaction' && !event.payload.toolCallInputs?.length) {
+        messages.push({ contributionId: `provider-native:${event.payload.providerRequestId}`,
+          contributionKind: 'journalMessages', label: 'Provider native output',
+          message: { role: 'assistant', content: '', providerReplay: structuredClone(event.payload.providerReplay) } });
+      }
+      if (event.payload.outcome === 'completed' && event.payload.orderedOutputBlocks !== undefined) {
         messages.push({
           contributionId: `provider-output:${event.payload.providerRequestId}`,
           contributionKind: 'journalMessages',
@@ -860,12 +868,13 @@ export function messagesFromJournal(
               role: 'tool',
               toolCallId: block.callId,
               providerCallId: block.providerCallId,
+              toolOutcome: 'inputRejected',
               content: rejectionContent(block.error, resultHandles(block.callId), callCodecs?.get(block.callId)?.codingTools, 'input'),
             },
           });
         }
       }
-      for (const callId of event.payload.orderedCallIds) {
+      for (const callId of event.payload.outcome === 'completed' ? event.payload.orderedCallIds : []) {
         const result = completionResults.get(callId);
         if (!result) continue;
         messages.push(result);
@@ -886,6 +895,19 @@ export function messagesFromJournal(
     );
   }
   applyProviderTurnCompletions(messages, events);
+  // Execution facts keep completion order; the coding model sees PI's original batch order.
+  for (const event of events) {
+    if (event.type !== 'provider.turn.settled' || event.payload.outcome !== 'completed') continue;
+    const ids = event.payload.toolCallInputs?.map(call => call.callId)
+      ?? event.payload.orderedOutputBlocks?.flatMap(block => 'callId' in block ? [block.callId] : [])
+      ?? event.payload.orderedCallIds;
+    if (!ids.some(id => callCodecs?.get(id)?.codingTools)) continue;
+    const order = new Map(ids.map((id, index) => [id, index]));
+    const positions = messages.flatMap((item, index) => item.message.role === 'tool'
+      && order.has(item.message.toolCallId ?? '') ? [index] : []);
+    const sorted = positions.map(index => messages[index]!).sort((a, b) => order.get(a.message.toolCallId!)! - order.get(b.message.toolCallId!)!);
+    positions.forEach((position, index) => { messages[position] = sorted[index]!; });
+  }
   return [...retained, ...messages];
 }
 
@@ -1016,6 +1038,7 @@ export function cloneModelMessage(message: ModelMessage): ModelMessage {
   return {
     ...message,
     ...(message.files ? { files: message.files.map(file => ({ ...file })) } : {}),
+    ...(message.providerReplay ? { providerReplay: structuredClone(message.providerReplay) } : {}),
     ...(message.toolCalls
       ? {
           toolCalls: message.toolCalls.map((call) => ({
@@ -1099,7 +1122,7 @@ export function runInputMessageEvent(
 function providerReasoning(
   completion: CompletedProviderTurnEvent | undefined,
   providerRequestId: string,
-): Pick<ModelMessage, 'reasoningContent' | 'reasoningSignature' | 'providerItems'> {
+): Pick<ModelMessage, 'reasoningContent' | 'reasoningSignature' | 'providerItems' | 'providerReplay'> {
   if (!completion) {
     throw new LoopFailure(
       'provider_message_completion_missing',
@@ -1107,6 +1130,7 @@ function providerReasoning(
     );
   }
   return {
+    ...(completion.payload.providerReplay ? { providerReplay: structuredClone(completion.payload.providerReplay) } : {}),
     ...(completion.payload.reasoningContent !== undefined
       ? { reasoningContent: completion.payload.reasoningContent }
       : {}),
@@ -1304,6 +1328,18 @@ function contextCompositionBlocks(message: ModelMessage): ContextCompositionMess
   };
   if (message.role === 'tool' && message.toolCallId) {
     append({ kind: 'toolResult', resultForCallId: message.toolCallId });
+    return blocks;
+  }
+  if (message.providerReplay) {
+    for (const block of message.providerReplay.content) {
+      if (block.type === 'text') append({ kind: 'text' });
+      else if (block.type === 'thinking' || block.type === 'redacted_thinking') append({ kind: 'reasoning' });
+      else if (block.type === 'tool_use') {
+        const call = message.toolCalls?.find(call => call.providerCallId === block.id);
+        if (!call) throw new LoopFailure('provider_native_replay_calls_mismatch', '原生工具块缺少对应调用事实。');
+        append({ kind: 'toolCall', callId: call.callId, toolName: call.name });
+      }
+    }
     return blocks;
   }
   if (message.providerOutputBlocks) {

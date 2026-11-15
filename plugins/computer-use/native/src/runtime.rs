@@ -1,13 +1,11 @@
+use crate::protocol;
 use objc2::{class, msg_send, runtime::AnyObject};
 use serde_json::{json, Value};
 use std::{
     ffi::c_void,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
-    sync::atomic::{AtomicU64, Ordering},
 };
-
-static RESOURCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct MainThread {
@@ -42,30 +40,16 @@ impl MainThread {
     }
 
     pub fn resource_id(&self) -> String {
-        format!(
-            "computer-{}-{}",
-            self.instance,
-            RESOURCE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        )
+        protocol::resource_id(&self.instance)
     }
 }
 
 pub fn run() -> Result<(), String> {
     let arguments: Vec<_> = std::env::args().collect();
-    if arguments.len() != 7
-        || arguments[1] != "--connect"
-        || arguments[3] != "--token"
-        || arguments[5] != "--host"
-    {
-        return Err("Launch this component through the Achbit Host.".into());
-    }
-    let endpoint: std::net::SocketAddr =
-        arguments[2].parse().map_err(|_| "Invalid Host endpoint")?;
-    if !endpoint.ip().is_loopback() {
-        return Err("Host endpoint must be local".into());
-    }
-    let mut stream = TcpStream::connect_timeout(&endpoint, std::time::Duration::from_secs(5))
-        .map_err(|e| e.to_string())?;
+    let launch = protocol::launch_arguments(&arguments)?;
+    let mut stream =
+        TcpStream::connect_timeout(&launch.endpoint, std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
     let preview_listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
     let preview_endpoint = preview_listener
         .local_addr()
@@ -76,22 +60,15 @@ pub fn run() -> Result<(), String> {
     writeln!(
         stream,
         "{}",
-        json!({"token":arguments[4],"pid":std::process::id(),"previewEndpoint":preview_endpoint.to_string()})
+        json!({"token":launch.token,"pid":std::process::id(),"previewEndpoint":preview_endpoint.to_string()})
     )
     .map_err(|e| e.to_string())?;
-    let host = arguments[6].clone();
+    let host = launch.host;
     let preview_host = host.clone();
-    let preview_token = arguments[4].clone();
+    let preview_token = launch.token;
     std::thread::spawn(move || serve_previews(preview_listener, &preview_host, &preview_token));
     let gui = MainThread {
-        instance: format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_nanos()
-        ),
+        instance: protocol::instance_name()?,
     };
     unsafe {
         let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];

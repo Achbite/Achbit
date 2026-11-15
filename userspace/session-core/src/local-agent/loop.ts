@@ -20,6 +20,7 @@ import { LoopFailure, ProviderReportedFailure, ProviderCompletedFailure } from '
 import { modelContextEvents } from './modelContext.js';
 import { stageForRequest } from './sessionCapabilities.js';
 import { consumeProvider } from './loopProvider.js';
+import { TruncatedToolOutput } from './truncatedOutput.js';
 export type { LoopSnapshot } from './loopTypes.js';
 export type { LoopCommand } from './loopTypes.js';
 export type { LoopResult } from './loopTypes.js';
@@ -194,14 +195,18 @@ export async function runAgentLoop(
           runId,
           payload: preparedProviderRequest.receipt,
         });
-        const turn = await consumeProvider(
-          preparedProviderRequest.request,
-          preparedProviderRequest.toolCodec,
-          runId,
-          deps,
-          signal,
-          capabilities.controls,
-        );
+        let turn;
+        try {
+          turn = await consumeProvider(preparedProviderRequest.request, preparedProviderRequest.toolCodec,
+            runId, deps, signal, capabilities.controls);
+        } catch (error) {
+          if (!(error instanceof TruncatedToolOutput) || signal.aborted) throw error;
+          await commit({ type: 'provider.turn.settled', sessionId: snapshot.state.sessionId, runId,
+            payload: { providerRequestId: preparedProviderRequest.request.requestId, purpose: 'agent',
+              providerRuntimeRef: runtime.provider.providerRuntimeRef, outcome: 'failed',
+              error: error.failure, toolCallInputs: error.calls } });
+          continue;
+        }
         const result = await settleProviderTurn(snapshot, turn, preparedProviderRequest.receipt, runtime,
           capabilities, lease, agentEvidenceRevision, runId, deps, signal);
         if (result) return result;

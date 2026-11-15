@@ -1,5 +1,5 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ConversationNavigationEntry } from './conversationWindow';
 import type { ConversationViewport } from './useConversationViewport';
 import type { UiLanguage } from '../../i18n';
@@ -13,6 +13,7 @@ export function ConversationNavigation({ sessionId, entries, viewport, onNavigat
   language: UiLanguage;
 }) {
   const identity = useUiOwner('conversation.navigation', undefined, { sessionId });
+  const ticksRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState<string>();
   const [preview, setPreview] = useState<ConversationNavigationEntry | null>(null);
   useEffect(() => {
@@ -51,10 +52,27 @@ export function ConversationNavigation({ sessionId, entries, viewport, onNavigat
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [entries, viewport.anchors, viewport.bodyRef, viewport.transcriptRef]);
+  useLayoutEffect(() => {
+    const ticks = ticksRef.current;
+    if (!ticks) return;
+    const reveal = () => {
+      const marker = ticks.querySelector<HTMLElement>('[aria-current="location"]');
+      if (!marker || ticks.clientHeight <= 0) return;
+      const top = ticks.getBoundingClientRect().top + ticks.clientTop;
+      const rect = marker.getBoundingClientRect();
+      const delta = rect.top < top ? rect.top - top : Math.max(0, rect.bottom - top - ticks.clientHeight);
+      // Scroll only this rail, never the transcript or another scroll ancestor.
+      if (delta) ticks.scrollTop += delta;
+    };
+    reveal();
+    const resize = new ResizeObserver(reveal);
+    resize.observe(ticks);
+    return () => resize.disconnect();
+  }, [active, entries.length]);
   if (entries.length < 2) return null;
   const zh = language === 'zh-CN';
   return <nav className="conversation-navigation" aria-label={zh ? '对话导航' : 'Conversation navigation'}>
-    <div className="conversation-navigation__ticks">
+    <div ref={ticksRef} className="conversation-navigation__ticks">
       {entries.map((entry, index) => <button
         {...identity.action('jump', 'click', { rowKey: entry.key })} type="button" key={entry.key}
         aria-current={active === entry.key ? 'location' : undefined}

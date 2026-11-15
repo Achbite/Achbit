@@ -2,7 +2,7 @@ import { UiRegion } from '../../ui-plugins/UiRegion';
 import { Button, IconButton } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { BrowserAnnotationDraft } from './browserReview';
-import React, { useId, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useId, useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import SessionModelSelector from './SessionModelSelector';
@@ -16,9 +16,12 @@ import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
 import { ComposerImageAttachment } from './ComposerImageAttachment';
 import { QueuedInputPreview } from './QueuedInputPreview';
+import { observeConversationComposerBoundary } from './conversationComposerBoundary';
+import { composerDecisionView } from './composerDecisions';
 
 interface ConversationComposerProps {
   changeBar?: React.ReactNode;
+  conversationBodyRef?: React.RefObject<HTMLDivElement | null>;
   readerExpanded?: boolean;
   language: UiLanguage;
   composer: AgentComposer;
@@ -29,6 +32,7 @@ interface ConversationComposerProps {
 
 export function ConversationComposer({
   changeBar,
+  conversationBodyRef,
   readerExpanded = false,
   language,
   composer,
@@ -37,14 +41,16 @@ export function ConversationComposer({
   onEditBrowserReview,
 }: ConversationComposerProps) {
   const identity = useUiOwner('composer.controls', undefined, { conversationKey: composer.conversationKey });
+  const boundaryCleanup = useRef<(() => void) | undefined>(undefined);
+  const setComposerShell = useCallback((shell: HTMLElement | null) => {
+    boundaryCleanup.current?.();
+    boundaryCleanup.current = shell
+      ? observeConversationComposerBoundary(shell, conversationBodyRef?.current?.parentElement ?? null)
+      : undefined;
+  }, [conversationBodyRef]);
   const connections = useLocalAgentStore(state => state.connections);
-  const concurrentDecisionKey = composer.pendingApproval && (composer.pendingPlan || composer.pendingInteraction)
-    ? JSON.stringify([composer.conversationKey, composer.pendingApproval.approvalId,
-      composer.pendingPlan?.planId, composer.pendingPlan?.revision])
-    : null;
-  const [selectedTextDecision, setSelectedTextDecision] = useState<string | null>(null);
-  const showApproval = Boolean(composer.pendingApproval
-    && (!concurrentDecisionKey || selectedTextDecision !== concurrentDecisionKey));
+  const { concurrentDecisionKey, showApproval } = composerDecisionView(composer, composer.selectedTextDecision);
+  const { setSelectedTextDecision } = composer;
   // Select a view only. Both decisions and the answer draft stay in their existing owners.
   const visibleComposer = showApproval
     ? { ...composer, pendingPlan: null, pendingScopeAddition: null, pendingInteraction: null }
@@ -188,7 +194,7 @@ export function ConversationComposer({
   }, [inputMode, textareaRef]);
 
   return (
-    <UiRegion slot="composer.layout" data={regionData} actions={regionActions} debugActions={debugActions}><footer className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
+    <UiRegion slot="composer.layout" data={regionData} actions={regionActions} debugActions={debugActions}><footer ref={setComposerShell} className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
       ? ' local-agent__composer-shell--decision'
       : ''}${canCollapseInput ? ' local-agent__composer-shell--reader' : ''}${readerInputCollapsed ? ' local-agent__composer-shell--collapsed' : ''}`} onKeyDown={(event) => {
           if (composer.editingMessage && event.key === 'Escape' && !event.repeat
@@ -272,7 +278,7 @@ export function ConversationComposer({
             playPressFeedback();
             return;
           }
-          if (target.closest('button, input, select, textarea, label, a, [role="button"], .local-agent__interaction-panel, .local-agent__decision')) return;
+          if (target.closest('button, input, select, textarea, label, a, [role="button"], [contenteditable]:not([contenteditable="false"]), [data-native-overlay], [role="dialog"], [role="menu"], [role="listbox"], .local-agent__interaction-panel, .local-agent__decision')) return;
           event.preventDefault();
           textarea.focus();
           playPressFeedback();
@@ -519,13 +525,14 @@ export function ConversationComposer({
                 <AchbitShellIcon name="plus" />
               </button>
               {attachmentMenuOpen && (
-                <div className="local-agent__attachment-menu" role="menu" onKeyDown={event => {
+                <div className="local-agent__attachment-menu" role="menu" tabIndex={-1} onKeyDown={event => {
                   if (event.nativeEvent.isComposing || event.defaultPrevented || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
                   const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
                   if (!items.length) return;
                   event.preventDefault(); event.stopPropagation();
                   const index = items.indexOf(document.activeElement as HTMLButtonElement);
                   const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+                    : index < 0 ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
                     : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
                   items[next]?.focus();
                 }}>

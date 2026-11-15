@@ -1,10 +1,10 @@
 import {
   SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_SESSION, SESSION_CONTROL_AGENT,
-  SESSION_CONTROL_TODO_UPDATE,
+  SESSION_CONTROL_TODO_UPDATE, decodeProviderNativeReplay,
 } from '@achbit/protocol';
 import type {
-  ProviderRequest, ProviderEvent, ProviderTokenUsage, JsonObject, ProviderOutputBlock, ProviderToolCallInput,
+  ProviderRequest, ProviderEvent, ProviderTokenUsage, ProviderNativeReplay, JsonObject, ProviderOutputBlock, ProviderToolCallInput,
   AssistantDraftProjection, ProviderActivityProjection, AssistantDraftBlockProjection,
 } from '@achbit/protocol';
 import type {
@@ -13,6 +13,7 @@ import type {
 } from './loopTypes.js';
 import { withProviderAttempts } from './providerAttempts.js';
 import { LoopFailure, ProviderReportedFailure } from './loopFailure.js';
+import { TruncatedCallCollector } from './truncatedOutput.js';
 import { throwIfAborted, isRecord, positiveOrZeroInteger, positiveInteger } from './loopFacts.js';
 import { decodeProviderToolInput } from './providerToolCodec.js';
 import type { ProviderToolCodec } from './providerToolCodec.js';
@@ -164,6 +165,7 @@ async function consumeTextAttempt(
       purpose: request.purpose,
       providerRuntimeRef: request.providerRuntimeRef,
       orderedCallIds: [],
+      ...(completeMessage?.providerReplay ? { providerReplay: decodeProviderNativeReplay(completeMessage.providerReplay) } : {}),
       ...(completeMessage?.reasoningContent !== undefined
         ? { reasoningContent: completeMessage.reasoningContent }
         : {}),
@@ -207,6 +209,7 @@ async function consumeProviderOutput(
   onEvent: (event: ProviderEvent) => void,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
+  const truncatedCalls = new TruncatedCallCollector();
   deps = { ...deps, updateAssistantDraft: activity.updateDraft,
     recordVisibleResponse: request.purpose === 'agent' ? deps.recordVisibleResponse : undefined };
   let deltas = '';
@@ -214,6 +217,7 @@ async function consumeProviderOutput(
   let completeMessage: {
     messageId: string;
     content: string;
+    providerReplay?: ProviderNativeReplay;
     reasoningContent?: string;
     reasoningSignature?: string;
   } | undefined;
@@ -240,6 +244,7 @@ async function consumeProviderOutput(
     }
     onEvent(event);
     activity.observe(event);
+    truncatedCalls.observe(event);
     switch (event.type) {
       case 'tool.call.delta': {
         if (event.data.outputIndex !== undefined && orderedOutputItems.some((item) => item.outputIndex === event.data.outputIndex)) {
@@ -333,8 +338,11 @@ async function consumeProviderOutput(
         onCompleted();
         contextUsage = decodeContextUsage(event.data);
         break;
-      case 'failed':
-        throw new ProviderReportedFailure(event.data.code, event.data.message, event.data.diagnostics);
+      case 'failed': {
+        const truncated = toolCodec.codingTools && request.purpose === 'agent'
+          && truncatedCalls.failure(event.data, toolCodec, deps.nextId);
+        throw truncated || new ProviderReportedFailure(event.data.code, event.data.message, event.data.diagnostics);
+      }
     }
   }
   throwIfAborted(signal);
@@ -670,6 +678,7 @@ async function consumeProviderOutput(
     purpose: request.purpose,
     providerRuntimeRef: request.providerRuntimeRef,
     orderedCallIds: calls.map((call) => call.callId),
+    ...(completeMessage?.providerReplay ? { providerReplay: decodeProviderNativeReplay(completeMessage.providerReplay) } : {}),
     ...(aggregateBlocks.length > 0 ? {
       toolCallInputs: aggregateBlocks.map((block): ProviderToolCallInput => {
         if (block.kind !== 'toolCall' && block.kind !== 'toolCallRejected') {
@@ -1126,6 +1135,8 @@ function decodeContextUsage(data: Record<string, unknown>): ProviderTokenUsage |
   }
   const inputTokens = positiveOrZeroInteger(value.inputTokens);
   const outputTokens = positiveOrZeroInteger(value.outputTokens);
+  const reasoningPresent = Object.hasOwn(value, 'reasoningOutputTokens');
+  const reasoningOutputTokens = reasoningPresent ? positiveOrZeroInteger(value.reasoningOutputTokens) : undefined;
   const contextWindowTokens = positiveInteger(value.contextWindowTokens);
   const cacheReadPresent = Object.hasOwn(value, 'cacheReadInputTokens');
   const cacheMissPresent = Object.hasOwn(value, 'cacheMissInputTokens');
@@ -1138,6 +1149,7 @@ function decodeContextUsage(data: Record<string, unknown>): ProviderTokenUsage |
   if (
     inputTokens === undefined
     || outputTokens === undefined
+    || reasoningPresent && (reasoningOutputTokens === undefined || reasoningOutputTokens > outputTokens)
     || contextWindowTokens === undefined
     || inputTokens + outputTokens > contextWindowTokens
     || cacheReadPresent !== cacheMissPresent
@@ -1150,6 +1162,7 @@ function decodeContextUsage(data: Record<string, unknown>): ProviderTokenUsage |
   return {
     inputTokens,
     outputTokens,
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
     contextWindowTokens,
     ...(cacheReadInputTokens === undefined
       ? {}

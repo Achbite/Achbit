@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom';
 import type { UiLanguage } from '../../i18n';
 import type { ResourceEntry } from '../../services/conversationResources';
 import { useConversationHost, type ConversationHost } from './ConversationHost';
+import { focusOpenedPanel, useInteractionFocus } from '../shared/interactionFocus';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 
 export type AttachTreeResource = (selections: { path: string; kind: 'file' | 'directory' }[]) => Promise<void>;
 export type TreeResourceAction = 'preview' | 'name' | 'relativePath' | 'absolutePath' | 'folder' | 'editor' | 'attach';
@@ -33,6 +35,7 @@ export function ResourceTreeMenu({ entry, sessionId, language, x, y, onOpen, onA
   onOpen(): void; onAttach?: AttachTreeResource; onClose(closing: HTMLElement | null): void; onError(message: string): void;
 }) {
   const host = useConversationHost();
+  const interaction = useInteractionFocus();
   const menu = useRef<HTMLDivElement>(null);
   const close = () => onClose(menu.current);
   const [busy, setBusy] = useState(false);
@@ -52,15 +55,14 @@ export function ResourceTreeMenu({ entry, sessionId, language, x, y, onOpen, onA
     const bounds = element.getBoundingClientRect();
     element.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
     element.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
-    element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-  }, [x, y]);
+    focusOpenedPanel(element, element.querySelector<HTMLButtonElement>('button:not(:disabled)'), interaction);
+  }, [x, y, interaction]);
+  useDismissibleLayer({ open: true, roots: [menu], onDismiss: reason => onClose(reason === 'escape' ? menu.current : null) });
   useEffect(() => {
-    const dismiss = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node)) close(); };
-    document.addEventListener('pointerdown', dismiss);
     window.addEventListener('resize', close);
-    return () => { document.removeEventListener('pointerdown', dismiss); window.removeEventListener('resize', close); };
+    return () => window.removeEventListener('resize', close);
   }, [onClose]);
-  return createPortal(<div ref={menu} className="resource-tree-menu" role="menu" data-native-overlay
+  return createPortal(<div ref={menu} className="resource-tree-menu" role="menu" tabIndex={-1} data-native-overlay
     aria-label={zh ? '文件操作' : 'File actions'} aria-busy={busy} style={{ left: x, top: y }}
     onContextMenu={event => event.preventDefault()}
     onKeyDown={event => {
@@ -70,6 +72,7 @@ export function ResourceTreeMenu({ entry, sessionId, language, x, y, onOpen, onA
       const buttons = [...menu.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
       const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+        : current < 0 ? (event.key === 'ArrowDown' ? 0 : buttons.length - 1)
         : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
       buttons[next]?.focus();
     }}>

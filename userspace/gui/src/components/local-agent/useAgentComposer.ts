@@ -3,6 +3,8 @@ import type { QueuedInputProjection } from '@achbit/protocol';
 import { formatBrowserAnnotation, type BrowserAnnotation } from './browserReview';
 import { localizePlugin } from '../../pluginLocalization';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
+import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import type React from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { modelReasoningEfforts, type PlanResponse, type PluginSelectionInput, type ProjectionMessage } from '@achbit/protocol';
@@ -12,7 +14,7 @@ import { shouldSubmitComposerKey } from './composerKeyboard';
 import { composerCommands, parseComposerCommand, suggestComposerCommands, type ComposerCommand } from './composerCommands';
 import { requestAgentOverview } from './agentNavigation';
 import { planScopeAddition } from './planReview';
-import { foregroundApproval, foregroundPlan } from './composerDecisions';
+import { composerDecisionView, foregroundApproval, foregroundInteractions, foregroundPlan } from './composerDecisions';
 import { clipboardImages, readPastedImage } from '../../services/pastedImage';
 import { isLongPastedText } from '../../services/pastedText';
 import { supportsNativeFileInput } from '../../services/modelFileInput';
@@ -44,6 +46,7 @@ export function useAgentComposer(
   language: UiLanguage,
   setLatestFollowMode: (following: boolean) => void,
 ) {
+  const interaction = useInteractionFocus();
   const sessionId = useLocalAgentStore((state) => state.sessionId);
   const draftProjectId = useLocalAgentStore((state) => state.draftProjectId);
   const pluginCatalog = useLocalAgentStore((state) => state.pluginCatalog);
@@ -51,16 +54,13 @@ export function useAgentComposer(
   const selectedProfileId = useLocalAgentStore((state) => state.selectedProfileId);
   const projection = useLocalAgentStore((state) => state.projection);
   const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
-  // Keep unanswered questions reachable in the shared composer, including
-  // independent work and session.wait. The Session still owns the run status.
-  const pendingInteractions = useMemo(() => projection?.run
-    && ['running', 'waiting'].includes(projection.run.status)
-    ? projection.interactions.filter(item => item.runId === projection.run?.runId && item.status === 'pending')
-    : [], [projection]);
+  const pendingInteractions = useMemo(() => foregroundInteractions(projection), [projection]);
   const [interactionSelection, setInteractionSelection] = useState<{ conversationKey: string; interactionId: string } | null>(null);
-  const interactionIndex = Math.max(0, pendingInteractions.findIndex(item => (
+  const selectedInteractionIndex = pendingInteractions.findIndex(item => (
     interactionSelection?.conversationKey === conversationKey && item.interactionId === interactionSelection.interactionId
-  )));
+  ));
+  const interactionIndex = selectedInteractionIndex >= 0 ? selectedInteractionIndex : Math.max(0,
+    pendingInteractions.findIndex(item => item.interactionId === projection?.pendingInteraction?.interactionId));
   const pendingInteraction = pendingInteractions.at(interactionIndex) ?? null;
   const pendingApproval = foregroundApproval(projection?.pendingApproval ?? null, projection?.run);
   const pendingPlan = foregroundPlan(projection?.pendingPlan ?? null, projection?.effectivePermissions);
@@ -68,6 +68,8 @@ export function useAgentComposer(
     plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1
   )), pendingPlan) : null;
   const textDecision = Boolean(pendingPlan || pendingInteraction);
+  const [selectedTextDecision, setSelectedTextDecision] = useState<string | null>(null);
+  const { foregroundInteractionId } = composerDecisionView({ conversationKey, pendingApproval, pendingPlan, pendingInteraction }, selectedTextDecision);
   const [messageEdit, setMessageEdit] = useState<{ sessionId: string; message: ProjectionMessage; revision: number } | null>(null);
   const editingMessage = messageEdit?.sessionId === sessionId ? messageEdit : null;
   const composerStateKey = pendingPlan
@@ -259,48 +261,32 @@ export function useAgentComposer(
     }
   }, []);
 
-  useEffect(() => {
-    if (!permissionMenuOpen && !attachmentMenuOpen && !pluginPickerOpen) return undefined;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (permissionMenuOpen && !permissionControlRef.current?.contains(target) && !permissionMenuRef.current?.contains(target)) {
-        setPermissionMenuOpen(false);
-      }
-      if (attachmentMenuOpen && !attachmentControlRef.current?.contains(target)) {
-        setAttachmentMenuOpen(false);
-      }
-      if (
-        pluginPickerOpen
-        && !pluginPickerRef.current?.contains(target)
-        && target !== textareaRef.current
-      ) {
-        setPluginPickerOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
-  }, [attachmentMenuOpen, permissionMenuOpen, pluginPickerOpen]);
+  useDismissibleLayer({ open: permissionMenuOpen, roots: [permissionControlRef, permissionMenuRef], onDismiss: reason => {
+    setPermissionMenuOpen(false);
+    if (reason === 'escape') returnFocusTo(permissionControlRef.current?.querySelector('button'), interaction, permissionMenuRef.current);
+  } });
+  useDismissibleLayer({ open: attachmentMenuOpen, roots: [attachmentControlRef], onDismiss: reason => {
+    setAttachmentMenuOpen(false);
+    if (reason === 'escape') returnFocusTo(attachmentControlRef.current?.querySelector('button[aria-haspopup="menu"]'), interaction,
+      attachmentControlRef.current?.querySelector('[role="menu"]'));
+  } });
+  useDismissibleLayer({ open: pluginPickerOpen, roots: [pluginPickerRef, textareaRef], onDismiss: () => setPluginPickerOpen(false) });
 
   useEffect(() => {
     if (!attachmentMenuOpen) return;
-    attachmentControlRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.repeat || event.isComposing
-        || document.querySelector('dialog[open]')) return;
-      event.preventDefault(); event.stopPropagation();
-      setAttachmentMenuOpen(false);
-      attachmentControlRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.focus({ preventScroll: true });
-    };
-    document.addEventListener('keydown', closeOnEscape);
-    return () => document.removeEventListener('keydown', closeOnEscape);
-  }, [attachmentMenuOpen]);
+    const menu = attachmentControlRef.current?.querySelector<HTMLElement>('[role="menu"]');
+    if (menu) focusOpenedPanel(menu, menu.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'), interaction);
+  }, [attachmentMenuOpen, interaction]);
 
   const submitDraft = async () => {
     const submittedText = draft;
     if (compositionActiveRef.current || compositionCommitPendingRef.current) return;
     if (!textDecision && !editingMessage && !pendingApproval) {
       const command = parseComposerCommand(submittedText);
+      if (command && ['simloop', 'fullloop'].includes(command.name) && command.argument) {
+        setAttachmentError(t(language, 'agent.commands.modeUsage'));
+        return;
+      }
       if (command && !((command.name === 'focus' || command.name === 'plan') && command.argument)) {
         await selectCommand(command.name);
         return;
@@ -542,6 +528,10 @@ export function useAgentComposer(
           store.startNewSession(projectId);
           break;
         }
+        case 'simloop': case 'fullloop':
+          if (!sessionId) throw new Error(t(language, 'agent.commands.modeSessionRequired'));
+          await useLocalAgentStore.getState().setMode(id === 'simloop' ? 'minimal' : 'full');
+          break;
         case 'model': case 'context':
           setModelPanelRequest(current => ({ kind: id, sequence: (current?.sequence ?? 0) + 1 })); break;
         case 'permissions': setPermissionMenuOpen(true); break;
@@ -812,6 +802,14 @@ export function useAgentComposer(
     beginMessageEdit,
     cancelMessageEdit,
     textDecision,
+    selectedTextDecision,
+    setSelectedTextDecision,
+    foregroundInteractionId,
+    focusInteraction: () => {
+      const textarea = textareaRef.current;
+      if (textarea && !textarea.disabled) textarea.focus({ preventScroll: true });
+      else document.getElementById('conversation-interaction')?.focus({ preventScroll: true });
+    },
     pendingPlan,
     pendingScopeAddition,
     pendingInteraction,

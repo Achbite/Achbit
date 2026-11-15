@@ -60,6 +60,8 @@ struct CallRecord {
     service_tier: Option<String>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_output_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
     cache_write_tokens: Option<u64>,
     estimated_cost: Option<f64>,
@@ -186,6 +188,7 @@ impl UsageStore {
             service_tier: None,
             input_tokens: None,
             output_tokens: None,
+            reasoning_output_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
             estimated_cost: None,
@@ -317,6 +320,7 @@ impl UsageCall {
         if let Some(usage) = observed.usage {
             self.record.input_tokens = Some(usage.input_tokens);
             self.record.output_tokens = Some(usage.output_tokens);
+            self.record.reasoning_output_tokens = usage.reasoning_output_tokens;
             self.record.cache_read_tokens = usage.cache_read_input_tokens;
             self.record.cache_write_tokens = observed.cache_write_tokens;
             if self.record.billing_mode == "metered" && self.official_endpoint {
@@ -549,6 +553,7 @@ mod tests {
             usage: Some(ProviderUsage {
                 input_tokens: 1_280_000,
                 output_tokens: 176_000,
+                reasoning_output_tokens: None,
                 cache_read_input_tokens: Some(896_000),
                 cache_miss_input_tokens: Some(384_000),
             }),

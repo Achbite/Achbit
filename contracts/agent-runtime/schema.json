@@ -484,6 +484,18 @@
         "truncated": { "type": "boolean" }
       }
     },
+    "ProviderNativeReplay": {
+      "type": "object", "additionalProperties": false, "required": ["apiSurface", "content"],
+      "properties": {
+        "apiSurface": {"const": "anthropicMessages"},
+        "content": {"type": "array", "minItems": 1, "items": {"oneOf": [
+          {"type": "object", "required": ["type", "text"], "properties": {"type": {"const": "text"}, "text": {"type": "string"}}},
+          {"type": "object", "required": ["type", "thinking"], "properties": {"type": {"const": "thinking"}, "thinking": {"type": "string"}, "signature": {"type": "string"}}},
+          {"type": "object", "required": ["type", "data"], "properties": {"type": {"const": "redacted_thinking"}, "data": {"type": "string", "minLength": 1}}},
+          {"type": "object", "required": ["type", "id", "name", "input"], "properties": {"type": {"const": "tool_use"}, "id": {"$ref": "#/$defs/Id"}, "name": {"$ref": "#/$defs/Id"}, "input": {"$ref": "#/$defs/JsonObject"}}}
+        ]}}
+      }
+    },
     "ModelMessage": {
       "oneOf": [
         {
@@ -548,6 +560,7 @@
           "properties": {
             "role": {"const": "assistant"},
             "content": {"type": "string"},
+            "providerReplay": {"$ref": "#/$defs/ProviderNativeReplay"},
             "reasoningContent": {"type": "string", "minLength": 1},
             "reasoningSignature": {"type": "string", "minLength": 1},
             "toolCalls": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ModelToolCall"}},
@@ -557,8 +570,10 @@
             {"properties": {"content": {"type": "string", "minLength": 1}}},
             {"required": ["reasoningContent"]},
             {"required": ["toolCalls"]},
-            {"required": ["providerItems"]}
+            {"required": ["providerItems"]},
+            {"required": ["providerReplay"]}
           ],
+          "dependentSchemas": {"providerReplay": {"not": {"anyOf": [{"required": ["reasoningSignature"]}, {"required": ["providerItems"]}]}}},
           "dependentRequired": {"reasoningSignature": ["reasoningContent"]}
         },
         {
@@ -578,6 +593,7 @@
           "properties": {
             "role": {"const": "tool"},
             "content": {"type": "string"},
+            "toolOutcome": {"enum": ["completed", "denied", "failed", "cancelled", "inputRejected", "notExecuted", "indeterminate"]},
             "toolCallId": {"$ref": "#/$defs/Id"},
             "providerCallId": {"$ref": "#/$defs/Id"}
           }
@@ -780,6 +796,8 @@
         "contextManagement"
       ],
       "properties": {
+        "mode": {"enum": ["minimal", "full"]},
+        "codingTools": {"const": true},
         "toolSelection": {"$ref": "#/$defs/AgentToolSelection"},
         "planMode": {"const": "manual"},
         "runRuntimeSnapshotRef": {"$ref": "#/$defs/Id"},
@@ -790,6 +808,7 @@
         "approvalReviewerError": {"$ref": "#/$defs/LocalAgentError"},
         "agentCapabilities": {"$ref": "#/$defs/AgentCapabilities"},
         "agentToolsEnabled": {"type": "boolean"},
+        "subagentSettings": {"$ref": "#/$defs/AgentSettings"},
         "contextManagement": {"$ref": "#/$defs/ContextManagementSettings"},
         "instructions": {
           "type": "array",
@@ -986,10 +1005,12 @@
               "properties": {
                 "messageId": {"$ref": "#/$defs/Id"},
                 "content": {"type": "string"},
+                "providerReplay": {"$ref": "#/$defs/ProviderNativeReplay"},
                 "reasoningContent": {"type": "string", "minLength": 1},
                 "reasoningSignature": {"type": "string", "minLength": 1}
               },
-              "anyOf": [{"properties": {"content": {"type": "string", "minLength": 1}}}, {"required": ["reasoningContent"]}],
+              "anyOf": [{"properties": {"content": {"type": "string", "minLength": 1}}}, {"required": ["reasoningContent"]}, {"required": ["providerReplay"]}],
+              "dependentSchemas": {"providerReplay": {"not": {"required": ["reasoningSignature"]}}},
               "dependentRequired": {"reasoningSignature": ["reasoningContent"]}
             },
             "providerAttemptId": {"$ref": "#/$defs/Id"}
@@ -1170,6 +1191,7 @@
         "runId": { "$ref": "#/$defs/Id" },
         "sequence": { "type": "integer", "minimum": 1 },
         "updatedAt": { "$ref": "#/$defs/Timestamp" },
+        "reasoningOutputTokens": { "type": "integer", "minimum": 0 },
         "inputTokens": { "type": "integer", "minimum": 0 },
         "outputTokens": { "type": "integer", "minimum": 0 },
         "contextWindowTokens": { "type": "integer", "minimum": 1 },
@@ -1181,6 +1203,15 @@
         "cacheMissInputTokens": ["cacheReadInputTokens"]
       }
     },
+    "ReasoningUsage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["outputTokens", "reportedCallCount", "complete"],
+      "properties": {
+        "outputTokens": {"type": "integer", "minimum": 0},
+        "reportedCallCount": {"type": "integer", "minimum": 1},
+        "complete": {"type": "boolean"}
+      }
+    },
     "TokenUsage": {
       "type": "object",
       "additionalProperties": false,
@@ -1190,6 +1221,7 @@
         "cacheHitRatio"
       ],
       "properties": {
+        "reasoningUsage": { "$ref": "#/$defs/ReasoningUsage" },
         "providerCallCount": { "type": "integer", "minimum": 0 },
         "reportedCallCount": { "type": "integer", "minimum": 0 },
         "inputTokens": { "type": "integer", "minimum": 0 },
@@ -1223,6 +1255,7 @@
         "startedAt": { "$ref": "#/$defs/Timestamp" },
         "completedAt": { "$ref": "#/$defs/Timestamp" },
         "outcome": { "enum": ["completed", "failed", "cancelled", "indeterminate"] },
+        "reasoningUsage": { "$ref": "#/$defs/ReasoningUsage" },
         "providerCallCount": { "type": "integer", "minimum": 0 },
         "reportedCallCount": { "type": "integer", "minimum": 0 },
         "inputTokens": { "type": "integer", "minimum": 0 },
@@ -1851,12 +1884,14 @@
             "providerRuntimeRef": {"$ref": "#/$defs/Id"},
             "outcome": {"const": "completed"},
             "orderedCallIds": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/Id"}},
+            "providerReplay": {"$ref": "#/$defs/ProviderNativeReplay"},
             "reasoningContent": {"type": "string", "minLength": 1},
             "reasoningSignature": {"type": "string", "minLength": 1},
             "hostedWebSearchCalls": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/JsonObject"}},
             "orderedOutputBlocks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ProviderOutputBlock"}},
             "toolCallInputs": {"type": "array", "items": {"$ref": "#/$defs/ProviderToolCallInput"}}
           },
+          "dependentSchemas": {"providerReplay": {"not": {"anyOf": [{"required": ["reasoningSignature"]}, {"required": ["orderedOutputBlocks"]}, {"required": ["hostedWebSearchCalls"]}]}}},
           "dependentRequired": {"reasoningSignature": ["reasoningContent"]}
         },
         {
@@ -1868,8 +1903,15 @@
             "purpose": {"enum": ["agent", "contextCompaction", "approvalReview"]},
             "providerRuntimeRef": {"$ref": "#/$defs/Id"},
             "outcome": {"enum": ["failed", "indeterminate"]},
-            "error": {"$ref": "#/$defs/LocalAgentError"}
-          }
+            "error": {"$ref": "#/$defs/LocalAgentError"},
+            "toolCallInputs": {"type": "array", "minItems": 1, "items": {
+              "allOf": [{"$ref": "#/$defs/ProviderToolCallInput"}, {"required": ["error"]}]
+            }}
+          },
+          "allOf": [{"if": {"required": ["toolCallInputs"]}, "then": {"properties": {
+            "outcome": {"const": "failed"}, "purpose": {"const": "agent"},
+            "error": {"properties": {"code": {"const": "provider_output_truncated"}}}
+          }}}]
         }
       ]
     },
@@ -1883,6 +1925,7 @@
       "properties": {
         "providerRequestId": { "$ref": "#/$defs/Id" },
         "providerRuntimeRef": { "$ref": "#/$defs/Id" },
+        "reasoningOutputTokens": { "type": "integer", "minimum": 0 },
         "inputTokens": { "type": "integer", "minimum": 0 },
         "outputTokens": { "type": "integer", "minimum": 0 },
         "contextWindowTokens": { "type": "integer", "minimum": 1 },
@@ -1963,6 +2006,7 @@
     },
     "ConversationCommand": {
       "oneOf": [
+        {"$ref": "#/$defs/SessionModeCommand"},
         {"type": "object", "additionalProperties": false,
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId", "expectedHostBinding", "hostBinding"],
           "properties": {
@@ -2249,6 +2293,15 @@
         }
       ]
     },
+    "SessionModeCommand": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "type", "commandId", "sessionId", "mode"],
+      "properties": {
+        "schemaVersion": {"const": "achbit.command.v3"}, "type": {"const": "session.mode.set"},
+        "commandId": {"$ref": "#/$defs/Id"}, "sessionId": {"$ref": "#/$defs/Id"},
+        "mode": {"enum": ["minimal", "full"]}
+      }
+    },
     "SessionEvent": {
       "type": "object",
       "additionalProperties": false,
@@ -2269,6 +2322,7 @@
             "session.directory-index.detached",
             "session.permissions.updated",
             "session.model-settings.updated",
+            "session.mode.updated",
             "conversation.revised",
             "input.accepted",
             "input.queued",
@@ -2659,6 +2713,16 @@
                 "properties": {"commandId": {"$ref": "#/$defs/Id"}, "patches": {"$ref": "#/$defs/PermissionSettings"}}
               }
             },
+            "not": {"anyOf": [{"required": ["runId"]}, {"required": ["callId"]}]}
+          }
+        },
+        {
+          "if": {"properties": {"type": {"const": "session.mode.updated"}}},
+          "then": {
+            "properties": {"payload": {
+              "type": "object", "additionalProperties": false, "required": ["commandId", "mode"],
+              "properties": {"commandId": {"$ref": "#/$defs/Id"}, "mode": {"enum": ["minimal", "full"]}}
+            }},
             "not": {"anyOf": [{"required": ["runId"]}, {"required": ["callId"]}]}
           }
         },
@@ -3570,6 +3634,7 @@
           }
         },
         "queuedInputs": {"type": "array", "items": {"$ref": "#/$defs/QueuedInputProjection"}},
+        "mode": {"enum": ["minimal", "full"]},
         "modelSettings": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/SessionModelSettings"}]},
         "providerAttempts": {"type": "array", "items": {"$ref": "#/$defs/ProviderAttemptProjection"}},
         "failureSnapshot": {"$ref": "#/$defs/RunFailureSnapshot"},
@@ -3594,6 +3659,7 @@
       "additionalProperties": false,
       "required": ["runId", "profileId", "status", "workspaceBindings"],
       "properties": {
+        "mode": {"enum": ["minimal", "full"]},
         "hostBinding": {"$ref": "#/$defs/HostWindowBinding"},
         "runId": {"$ref": "#/$defs/Id"},
         "profileId": {"$ref": "#/$defs/Id"},
@@ -4190,6 +4256,7 @@
       "properties": {
         "inputTokens": {"type": "integer", "minimum": 0},
         "outputTokens": {"type": "integer", "minimum": 0},
+        "reasoningOutputTokens": {"type": "integer", "minimum": 0},
         "contextWindowTokens": {"type": "integer", "minimum": 1},
         "cacheReadInputTokens": {"type": "integer", "minimum": 0},
         "cacheMissInputTokens": {"type": "integer", "minimum": 0}

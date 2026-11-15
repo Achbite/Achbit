@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { QueuedInputProjection } from '@achbit/protocol';
-import { Button, IconButton, UiIcon } from '../../ui-components';
+import { Button, CloseButton, IconButton, UiIcon } from '../../ui-components';
+import { dismissUnappliedInputs, readDismissedUnappliedInputs, subscribeUnappliedInputReminders } from '../../state/unappliedInputReminders';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { UiLanguage } from '../../i18n';
 
@@ -25,9 +26,13 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
 }) {
   const identity = useUiOwner('conversation.unapplied-inputs', undefined, { sessionId });
   const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
+  const [dismissedIds, setDismissedIds] = useState(() => readDismissedUnappliedInputs(sessionId));
+  useEffect(() => subscribeUnappliedInputReminders(sessionId, setDismissedIds), [sessionId]);
   const [confirmation, setConfirmation] = useState<QueuedInputProjection[] | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const history = inputs.filter(input => input.status === 'notApplied'
+    && !dismissedIds.includes(input.commandId)
     && !recovery?.resubmittedIds?.includes(input.commandId)
     && !recovery?.restoredIds.includes(input.commandId));
   if (!history.length) return null;
@@ -45,16 +50,31 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
         : message === 'composer_restore_resource_conflict' ? (zh ? '附件的历史版本冲突；请逐条恢复，未追加任何内容。' : 'Attachment versions conflict. Restore messages separately; nothing was appended.') : message);
     }
   };
-  return <details className="local-agent__unapplied-inputs" onToggle={event => setExpanded(event.currentTarget.open)}>
-    <summary aria-label={zh ? '未加入任务的消息' : 'Messages not applied'}>
+  const dismiss = () => {
+    try {
+      setDismissedIds(dismissUnappliedInputs(sessionId, history.map(input => input.commandId)));
+      setConfirmation(null);
+      setFeedback(null);
+    } catch (cause) {
+      setFeedback(`${zh ? '无法保存关闭状态' : 'Could not save reminder dismissal'}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  };
+  return <section className="local-agent__unapplied-inputs" aria-label={zh ? '未加入任务的消息' : 'Messages not applied'}>
     <div className="local-agent__continuity-line">
-      <UiIcon name="session" size={15} />
-      <span>{zh ? `${history.length} 条消息未处理` : `${history.length} unapplied messages`}</span>
-      {recovery && <Button size="compact" {...identity.action('restore-all', 'click')}
-        onClick={event => { event.preventDefault(); restore(history); }}>{zh ? '恢复到草稿' : 'Restore to draft'}</Button>}
-      <Button size="compact" {...identity.action('toggle', 'click')} aria-expanded={expanded}>
-        {zh ? '详情' : 'Details'}<span style={{ display: 'inline-flex', transform: expanded ? 'rotate(180deg)' : undefined }}><UiIcon name="chevronDown" size={14} /></span>
-      </Button>
+      <span className="local-agent__unapplied-label"><UiIcon name="session" size={15} />
+        <span>{zh ? `${history.length} 条消息未处理` : `${history.length} unapplied messages`}</span></span>
+      <div className="local-agent__continuity-actions">
+        {recovery && <Button size="compact" {...identity.action('restore-all', 'click')}
+          onClick={event => { event.preventDefault(); restore(history); }}>{zh ? '恢复到草稿' : 'Restore to draft'}</Button>}
+        <Button size="compact" {...identity.action('toggle', 'click')} aria-expanded={expanded} aria-controls={detailsId}
+          onClick={event => { event.preventDefault(); setExpanded(value => !value); }}>
+          {zh ? '详情' : 'Details'}<span style={{ display: 'inline-flex', transform: expanded ? 'rotate(180deg)' : undefined }}><UiIcon name="chevronDown" size={14} /></span>
+        </Button>
+        <CloseButton size="compact" {...identity.action('dismiss', 'click')}
+          aria-label={zh ? '关闭未处理消息提醒' : 'Dismiss unapplied message reminder'}
+          title={zh ? '关闭提醒，不删除消息' : 'Dismiss reminder without deleting messages'}
+          onClick={event => { event.preventDefault(); dismiss(); }} />
+      </div>
     </div>
     {confirmation && <div className="local-agent__continuity-line" role="status">
       <span>{zh ? '草稿已有内容，要追加吗？' : 'The draft has content. Append these messages?'}</span>
@@ -62,8 +82,7 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
       <Button size="compact" onClick={event => { event.preventDefault(); setConfirmation(null); }}>{zh ? '取消' : 'Cancel'}</Button>
     </div>}
     {feedback && <div className="local-agent__continuity-line" role="status"><span>{feedback}</span></div>}
-    </summary>
-    <div>
+    <div id={detailsId} hidden={!expanded}>
       <p>{zh ? '原任务已结束。恢复保留文字和附件，不会自动发送。' : 'The original runs ended. Recovery keeps text and attachments without sending.'}</p>
       {history.map(input => <article key={input.commandId} className="local-agent__unapplied-input" data-queued-command={input.commandId}>
         <div className="local-agent__unapplied-input-text">
@@ -83,5 +102,5 @@ export function UnappliedInputs({ sessionId, inputs, language, copiedId, onCopy,
         </div>
       </article>)}
     </div>
-  </details>;
+  </section>;
 }

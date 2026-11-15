@@ -62,6 +62,7 @@ run_required() {
   printf '[test] 构建编排与程序发布\n'
   python3 -I -S ./scripts/tests/version.py
   python3 -I -S ./scripts/tests/build-platforms.py
+  python3 -I -S ./scripts/tests/release.py
   printf '[test] GUI 资源发布\n'
   python3 -I -S ./scripts/tests/ui-update.py
   printf '[test] Userspace 共享依赖\n'

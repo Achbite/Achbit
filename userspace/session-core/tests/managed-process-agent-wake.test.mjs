@@ -64,7 +64,7 @@ for (const ending of ['completed', 'failed', 'cancelled']) test(`managed ${endin
     },
   });
   service = new SessionService(journal, { async create({ sessionId }) {
-    const preparation = fakeRunPreparation({ tools: sessionId === ownerId ? tools : [], contextWindowTokens: 40000 });
+    const preparation = fakeRunPreparation({ tools: sessionId === ownerId ? tools : [], contextWindowTokens: 40000, subagentSettings: settings });
     return { composition: {
       kernel: sessionId === ownerId ? kernel : emptyKernel(),
       runPreparation: { ...preparation.port,
@@ -107,7 +107,7 @@ for (const ending of ['completed', 'failed', 'cancelled']) test(`managed ${endin
       } },
       async dispose() {},
     } };
-  } }, { async settings() { return settings; }, async models() { return [model]; },
+  } }, { async models() { return [model]; },
     async createSession(input) { return service.createSession(input); } });
   t.after(async () => { childGate.resolve(); if (job?.status === 'active') update('cancelled'); wake(); await service.dispose(); });
   await service.createSession({ sessionId: ownerId, displayTitle: 'Mixed resource wake', workspaceBindings: [workspaceBinding] });

@@ -7,11 +7,13 @@ import { useUiLanguage } from '../../useUiLanguage';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { useConversationHost } from './ConversationHost';
 import { ImageReview } from './ImageReview';
 import { renderMermaidImage } from './mermaidImage';
 import { CodeContent } from './RichContent';
 import { RichContentScope } from './RichContentIdentity';
+import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import './mermaidContent.css';
 
 type DiagramImage = Awaited<ReturnType<typeof renderMermaidImage>> & { url: string };
@@ -21,6 +23,7 @@ export function MermaidContent({ source }: { source: string }) {
   const language = useUiLanguage();
   const theme = useDisplayTheme();
   const host = useConversationHost();
+  const interaction = useInteractionFocus();
   const id = 'diagram-' + useId().replace(/[^a-zA-Z0-9]/g, '');
   const target = useContext(RichContentScope);
   const identity = useUiOwner('conversation.diagram', undefined, { ...target });
@@ -29,6 +32,7 @@ export function MermaidContent({ source }: { source: string }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const more = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [result, setResult] = useState<DiagramResult | null>(null);
   const [showSource, setShowSource] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -49,16 +53,16 @@ export function MermaidContent({ source }: { source: string }) {
   }, [id, source, theme]);
   useEffect(() => {
     if (!menu) return;
-    const dismiss = (event: PointerEvent) => { if (!popup.current?.contains(event.target as Node)) setMenu(false); };
-    document.addEventListener('pointerdown', dismiss);
-    return () => document.removeEventListener('pointerdown', dismiss);
-  }, [menu]);
+    const panel = menuRef.current;
+    if (panel) focusOpenedPanel(panel, panel.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'), interaction);
+  }, [menu, interaction]);
+  useDismissibleLayer({ open: menu, roots: [popup], trigger: more, onDismiss: () => setMenu(false) });
   const current = result?.source === source && result.theme === theme ? result : null;
   const image = current && 'image' in current ? current.image : null;
   const preceding = figure.current?.previousElementSibling;
   const title = image?.title || (preceding?.matches('h1,h2,h3,h4,h5,h6') ? preceding.textContent : '') || t(language, 'content.diagram.title');
   const label = t(language, showSource ? 'content.diagram.view' : 'content.diagram.source');
-  const closeMenu = () => { setMenu(false); more.current?.focus({ preventScroll: true }); };
+  const closeMenu = () => { setMenu(false); returnFocusTo(more.current, interaction, menuRef.current); };
   return <figure ref={figure} className="conversation-diagram" aria-label={title} style={image?.size ? {
     '--diagram-width': image.size.width + 'px', '--diagram-min-width': Math.min(550, image.size.width * .75) + 'px',
   } as CSSProperties : undefined}>
@@ -74,14 +78,16 @@ export function MermaidContent({ source }: { source: string }) {
         event.preventDefault();
         if (!menu) { setMenu(true); return; }
         const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:enabled')];
-        const next = items.findIndex(item => item === document.activeElement) + (event.key === 'ArrowDown' ? 1 : -1);
-        items[(next + items.length) % items.length]?.focus();
+        const index = items.findIndex(item => item === document.activeElement);
+        const next = index < 0 ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[next]?.focus();
       }}>
         <button {...control('more')} ref={more} type="button" className="reader-icon-button" aria-haspopup="menu" aria-expanded={menu} aria-controls={id + '-menu'}
           aria-label={t(language, 'content.diagram.more')} title={t(language, copied ? 'content.code.copied' : 'content.diagram.more')}
           onClick={() => setMenu(!menu)}><AchbitShellIcon name={copied ? 'check' : 'more'} /></button>
-        {menu && <div id={id + '-menu'} className="conversation-diagram__menu" role="menu" aria-label={t(language, 'content.diagram.more')}>
-          <button {...control('copy')} type="button" role="menuitem" autoFocus onClick={() => {
+        {menu && <div ref={menuRef} id={id + '-menu'} className="conversation-diagram__menu" role="menu" tabIndex={-1} aria-label={t(language, 'content.diagram.more')}>
+          <button {...control('copy')} type="button" role="menuitem" onClick={() => {
             closeMenu(); setActionError(''); setCopyFeedback(null);
             void host.copyText(source).then(() => setCopyFeedback({ source })).catch(reason => setActionError(String(reason)));
           }}><AchbitShellIcon name="code" />{t(language, 'content.diagram.copy')}</button>

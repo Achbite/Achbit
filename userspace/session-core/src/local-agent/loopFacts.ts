@@ -77,6 +77,7 @@ export function providerTurnSettledEvent(
       providerRuntimeRef: completion.providerRuntimeRef,
       outcome: 'completed',
       orderedCallIds: [...completion.orderedCallIds],
+      ...(completion.providerReplay ? { providerReplay: structuredClone(completion.providerReplay) } : {}),
       ...(completion.reasoningContent !== undefined
         ? { reasoningContent: completion.reasoningContent }
         : {}),

@@ -150,10 +150,10 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
 }
 
 function rejectedProviderCalls(event: SessionEvent) {
-  if (event.type !== 'provider.turn.settled' || event.payload.outcome !== 'completed') return [];
+  if (event.type !== 'provider.turn.settled' || event.payload.outcome === 'cancelled') return [];
   return [
     ...(event.payload.toolCallInputs ?? []).filter(call => call.error),
-    ...(event.payload.orderedOutputBlocks ?? []).flatMap(block => block.kind === 'toolCallRejected'
+    ...(event.payload.outcome === 'completed' ? event.payload.orderedOutputBlocks ?? [] : []).flatMap(block => block.kind === 'toolCallRejected'
       ? [{ callId: block.callId, providerCallId: block.providerCallId, toolName: block.toolName,
         arguments: typeof block.item.arguments === 'string' ? block.item.arguments : JSON.stringify(block.item), error: block.error }] : []),
   ];

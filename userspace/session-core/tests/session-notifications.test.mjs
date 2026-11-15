@@ -20,7 +20,7 @@ test('Session production observations retain canonical lineage, idle child updat
   const settings = { enabled: true, profileId: '', reasoningEffort: '', maxConcurrent: 4,
     maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: true, presets: '[]' };
   service = new SessionService(journal, { async create({ sessionId }) {
-    const preparation = fakeRunPreparation({ contextWindowTokens: 100_000 });
+    const preparation = fakeRunPreparation({ contextWindowTokens: 100_000, subagentSettings: settings });
     return { composition: {
       provider: { async *stream(request) {
         const turn = (turns.get(sessionId) ?? 0) + 1;
@@ -53,7 +53,6 @@ test('Session production observations retain canonical lineage, idle child updat
       } }, async dispose() {},
     } };
   } }, {
-    async settings() { return settings; }, async saveDefaults() {},
     async models() { return [{ profileId: 'profile:default', name: 'Fixture', model: 'fixture-model',
       parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100_000,
         maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] }]; },

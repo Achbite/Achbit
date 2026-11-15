@@ -33,17 +33,93 @@ Replace `<next-version>` with the intended semantic version, without a `v` prefi
 
 Build and package producers read the canonical version. `package-updates.py manifest` also defaults to it; an explicit `--version` remains available when preparing a feed for an isolated Debug build or an existing release. `ACHBIT_BUILD_VERSION` applies only to isolated Debug builds and leaves source metadata unchanged.
 
-Follow the authorized delivery scope:
+A version edit changes source metadata; Git operations, builds and publication remain separate authorized actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
 
-1. Review the version diff and run the applicable checks. Group complete changes by responsibility, with release metadata in its own commit when it forms a separate change.
-2. When code synchronization is requested, inspect the current local and remote branches, stage the intended changes, commit with a description of their behavior, and push the agreed branch. Handle PRs and merges according to the current repository settings and agreed target. Preserve the requested local development branch after synchronization.
-3. When local products are requested, use the [build entrypoints](#build-and-update). `bash ./build.sh` updates runnable products; `bash ./build.sh --stage package` additionally produces distribution archives and installers. Select explicit platform stages when the delivery calls for particular targets, and record any requested platform that is unavailable.
-4. For an authorized release, derive the tag and asset names from `release_version=$(python3 scripts/version.py show)` at the intended release source. Create that tag on the agreed commit, build the requested platforms from that source, then follow [automatic application updates](#automatic-application-updates) to sign updater assets, generate the feed and upload the distribution files. Reuse applicable completed standard-package acceptance; additional acceptance follows the explicit task scope below.
-5. Confirm the pushed branch/tag and the published assets/feed from the remote service. Report source synchronization, local package updates and publication separately.
+### Daily source saves and pushes
 
-An explicit version-update or release instruction reuses applicable completed validation. It does not start a full packaging test run, repeat the full suite, or add an all-platform acceptance matrix. Perform version consistency checks, the builds/signing needed for the intended release assets, and remote delivery checks. Additional focused verification follows a concrete new change/failure or a separately requested capability check. Preserve the user's auto-update preference and existing running installations; use isolated output directories when necessary. Artifact/cache cleanup is not a release prerequisite.
+Release means publishing product artifacts, not an ordinary code save. A request to commit, push or change the version does not implicitly request tests, compilation, a PR, merge, tag or Release.
 
-A version edit changes source metadata; Git operations, builds and publication are separate requested actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
+For daily saves, use normal Git operations on the authorized development branch. Review all intended changes, group complete source changes by responsibility, stage explicit paths or reviewed hunks, inspect the staged diff, and write clear commit messages. Keep packages, logs, credentials and task-local inputs out of source commits. Synchronize a requested version with `scripts/version.py` in the development container and review its owned mirrors; a separate version commit keeps source changes reviewable.
+
+Push only with explicit authorization, to the verified remote and branch, without force. Preserve existing work and hooks. Remote divergence requires an integration decision rather than an automatic rebase or merge. Report the commit/push range, final status and version separately from package or publication results.
+
+If the user explicitly excludes tests or builds for a source save, honor that scope. Git scope checks and version consistency do not imply a test/build suite. Do not change test profiles or assertions, and do not present unexecuted validation as passed. Existing development validation and its failures retain their own evidence; a source save alone does not repeat them or rebuild a running installation.
+
+### Automated submission and release
+
+For an explicitly requested validated automation or artifact-publication workflow, use the host entrypoint `bash scripts/release.sh`. The agent fills in UTF-8 JSON text; `scripts/release.py` owns staging, grouped commits, version synchronization, tests, compilation and the selected remote operations within that activation. Do not manually duplicate those activated stages. This entrypoint is optional for daily source saves, and its `local` mode is not a no-test, no-build commit route.
+
+| `mode` | Effects after `--confirm` |
+| --- | --- |
+| `local` | Grouped local commits, optional version commit, `test.sh required`, `build.sh --stage code`; no remote access |
+| `pr` | Local flow, push to `origin`, create/update the matching open PR; no merge |
+| `merge` | PR flow, merge commit, fast-forward the selected local source branch; no tag or Release |
+| `release` | Merge flow, package explicit platforms from the merged commit, sign/feed, tag, draft/upload, publish and verify |
+
+Prepare the development container with the existing `make shell` entrypoint. The script reads `container` and `workdir` from `make docker-info` (including `.achbit-worktree.mk`), then verifies the running container's exact source mount. Tests and general builds run inside that container with the installed Cargo/pnpm PATH; macOS packaging uses its existing host bridge. Remote modes require an authenticated `gh` and access to `origin`. The script does not install dependencies on the host, start replacement containers or restart applications.
+
+A minimal local input is:
+
+```json
+{
+  "mode": "local",
+  "branch": "fix/my-change",
+  "commits": [
+    {
+      "message": "docs: clarify the development workflow",
+      "paths": ["docs/development.md"]
+    }
+  ]
+}
+```
+
+`branch` must be the current non-protected branch. Each `paths` item is an exact repository-relative file, not a directory, glob or hunk. Groups must cover all current non-ignored changes exactly once; an existing staged index or unlisted change is rejected rather than silently included. Renames are represented by old and new paths. Use `"commits": []` for already committed, clean source. Optional `version` and `version_message` delegate synchronization to `version.py` and produce a separate version commit only if its owned files change.
+
+For `pr`, `merge` or `release`, also fill in `base` and `pr`:
+
+```json
+{
+  "base": "main",
+  "pr": {
+    "title": "Release <version>: <user-visible changes>",
+    "body": "## 变更\n<changes>\n\n## 验证\n<completed checks and planned automated checks>\n\n## 发布\n<intended scope>"
+  }
+}
+```
+
+This fragment is merged into the same input object; replace placeholders with the authorized version and actual changes. `release` mode additionally requires:
+
+```json
+{
+  "release": {
+    "title": "Release <version>",
+    "notes": "<solved problems and user-visible changes>",
+    "platforms": ["macos", "windows", "linux"],
+    "prerelease": false
+  }
+}
+```
+
+Select only requested platforms; every selected platform must build successfully. PR and Release text are passed as actual UTF-8 files to `gh`, then read back and compared. Do not describe the workflow's future checks as already passed. The supplied PR title/body also provide the merge commit text. Public notes exclude test counts, TCRs and build receipts.
+
+```bash
+# Read-only plan: no version writes, commits, container work or remote requests.
+bash scripts/release.sh --input .task-artifacts/submission.json
+
+# Execute only the scope authorized in that input.
+bash scripts/release.sh --input .task-artifacts/submission.json --confirm
+# Optional: --output .task-artifacts/my-submission (must not already exist)
+```
+
+`--confirm` activates local effects too; it does not grant authority beyond the user's request. There are no `--skip-tests`, `--from` or `--resume` flags. One activation owns one `required` run and one code build; do not duplicate them manually. Reuse separately completed package acceptance without expanding it into a new full suite, real-model conversation or all-platform acceptance matrix. For ordinary source saves that exclude validation/builds, use the daily Git route above instead of activating this workflow. If the user explicitly requests this automated workflow while forbidding one of its mandatory stages, explain that capability conflict rather than inventing a skip flag or interrupting the run to simulate one.
+
+The program uses merge commits, never force-pushes or bypasses repository checks. The remote base must already be an ancestor of the source. The pushed head is pinned for merging; if GitHub queues the merge rather than completing it, the workflow stops before packaging/tagging. If the actual merge tree differs from the validated source tree, it also stops. Packages are built after the merge from that exact merge commit, not relabeled pre-merge binaries. Only the selected local source branch is advanced; unrelated local branches/worktrees are untouched.
+
+By default, source branches are retained. If repository policy deletes the remote source branch on merge, the program requires explicit authorization via `"allow_remote_branch_deletion": true`; it never deletes the local source branch. Temporary test-branch cleanup is a separate, explicitly authorized action.
+
+Each activation writes `input.json`, per-stage logs and `receipt.json` under a new `.task-artifacts/submission-<timestamp>/` directory. Release output is isolated in its `bin/`, not the running application's `bin/`. A failure preserves local commits, remote effects and the original exit status; it does not roll back or blindly replay. An existing output directory is rejected. Inspect the receipt and resolve the failed operation before defining another authorized invocation; this initial entrypoint does not resume partial remote releases. Interrupts stop owned host/container processes; an unconfirmed container cleanup retains its PID evidence and release lock for diagnosis.
+
+Publication first uploads the complete requested asset set to a draft, compares names/sizes and stored notes, then publishes and downloads the feed for comparison. Stable releases are checked against the remote latest-release record; prereleases are not marked latest. A passed fixture test or successful build does not establish live GitHub delivery, signing, native GUI startup or real-provider acceptance. Report those evidence levels separately. Preserve existing installations, auto-update preferences and unrelated sessions; cache cleanup is not a release requirement.
 
 ## Build and update
 
@@ -117,6 +193,8 @@ python3 scripts/package-updates.py manifest \
   --output bin/latest.json
 ```
 
+For Linux AppImage creation, `package-updates.py` first uses `ACHBIT_APPIMAGE_RUNTIME` when explicitly set, otherwise an architecture-matching `.build-cache/*/runtime-<arch>` file if present. With neither, appimagetool retains its normal download behavior. An invalid explicit path fails instead of silently selecting another runtime. For host activation of the submission script, the explicit runtime must be inside the mounted checkout; the script maps it to its container path.
+
 Keep the private signing key outside the checkout. The local signing command reads `TAURI_SIGNING_PRIVATE_KEY` or `TAURI_SIGNING_PRIVATE_KEY_PATH`; its macOS default is `~/Library/Application Support/Achbit-build/updater.key`. CI can supply the same key and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` through secrets. Back up the existing key: changing the compiled public key does not make already-installed clients trust a new private key.
 
 Prepare a draft Release, upload every initial installer/archive plus updater asset, its `.sig`, and `latest.json`, then publish and mark it as the latest stable Release. The feed must name only available platform assets. Its version and URLs identify the new product; publishing an empty or partially uploaded feed is not a completed release. Signing and manifest creation do not themselves push or publish anything.
@@ -164,7 +242,7 @@ A minimal read-only `AgentRecipe` is:
 
 ```json
 {
-  "runner": { "id": "standard" },
+  "runner": { "id": "standard", "parameters": { "toolExecution": "parallel" } },
   "configuration": {
     "context": { "id": "coding" },
     "compaction": { "id": "none" },
@@ -175,7 +253,13 @@ A minimal read-only `AgentRecipe` is:
 }
 ```
 
-Add the available shell, `fs.edit` and `fs.write` to the selected Kernel tools when the task needs them; the existing permissions still apply. The coding context exposes their actual read/shell/edit/write wire names and generates guidance only for the declared tools, following [PI's tool-aware prompt assembly](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts). Add `controls: {"id":"standard","parameters":{"optionalTools":["todo.update"]}}` and select `todo.update` in `tools.controls` for progress. Select `compaction: {"id":"summary"}` for context summaries. The default product assembly also includes the existing Plan, interaction, Session, artifact and agent components according to the recipe and permissions. Context admission, cancellation and durable recovery remain active in the minimal assembly.
+Add the available shell, `fs.edit` and `fs.write` to the selected Kernel tools when the task needs them; the existing permissions still apply. The coding context exposes their actual read/shell/edit/write wire names and generates guidance only for the declared tools, following [PI's tool-aware prompt assembly](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts). Add `controls: {"id":"standard","parameters":{"optionalTools":["todo.update"]}}` and select `todo.update` in `tools.controls` for progress. Select `compaction: {"id":"summary"}` for context summaries. The default product assembly also includes the existing Plan, interaction, Session, artifact and agent components according to the recipe and permissions. Context admission, cancellation and durable recovery remain active in the minimal assembly. The minimal preset uses `controls=none`, `compaction=none` and `productComponents=[]`; manual Plan requires explicitly installing its controls. The standard driver's `toolExecution=parallel` policy follows PI's batch scheduling: ordinary calls may overlap, only same-file mutations queue, and a failed predecessor does not skip its successor. Omitted `toolExecution` retains the full product's bounded, ordered file phases.
+
+All contexts use one ordered system-prompt composer: preamble, tools/rules, docs, selected response/product/environment additions, project_context and cwd. The core factory, tool guidance and documentation index each own shared base sentences; full-context details are inserted between those sentences or sections rather than replacing a minimal prompt with another copy. Coding context selects the base, while individual product and callable-tool capabilities can still insert their own contributions independently. Each selected product retains its contribution identity. Extension tool guidance stays in its tool declaration, and Skill locations stay with their originating selection/activation messages; dynamic activation does not rewrite the system prefix. Project contents use the same wrapper, with scope guidance inserted for the full context. Achbit identity, actual paths, captured Kernel scope descriptions and parameter limits remain authoritative. Both contexts project tools through the same binding-to-model path: captured Kernel operation text and schema, actual Shell scope/platform facts, then coding field aliases or full optional fields. Disabled Host execution removes its request field; an ungranted but requestable scope remains available. Third-party descriptions and dynamic guidance retain their existing owners.
+
+Provider wire policy is resolved from the captured protocol/provider/model, never the context strategy. Responses routes use their supported instruction role, stateless and cache metadata; DeepSeek retains system-role authority and omits its documented ignored metadata. Session's coding codec, not a Provider wire flag, selects coding-only truncation feedback. Native Anthropic content keeps individual thinking/signature, redacted and tool-use blocks in the existing Provider turn and journal. Tool outcome is separate from text and maps to the protocol's error indicator where available. Actual reasoning output counts are optional subsets of total output, with aggregate coverage; missing counts remain unknown. Shared thinking rules in `userspace/protocol/src/modelThinkingPolicies.json` drive the existing model selectors and Kernel controls, including manual/adaptive Anthropic modes and Ollama levels. Unknown/unsupported choices retain errors rather than being silently clamped.
+
+A coding Agent response truncated with identifiable tool calls records a failed attempt and failed turn with rejected raw inputs; none execute. Their error results feed a fresh request. Text-only truncation and other failures retain ordinary termination. This is a new logical request, not a transport retry or a claim that the truncated response completed.
 
 For focused configuration debugging, `context-management.test.mjs` exercises bare read → result → answer, then adds controls and summaries through the same registry. `provider-stages.test.mjs` checks narrowed tool stages; `subagent-configuration.test.mjs` checks recipe propagation. Inspect `context.composed`, `provider.attempt`, tool results and `run.finishing`/`run.settled` in that order. A live managed process continues to belong to its owner; an assistant answer does not transfer process ownership or prove that the run has finished.
 

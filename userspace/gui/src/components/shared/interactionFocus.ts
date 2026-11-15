@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 
 const controls = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex="0"]';
+const actions = 'button, summary, a[href], [role="button"], [role="tab"]';
 
 export interface FocusReturn {
   target: HTMLElement | null;
@@ -77,13 +78,22 @@ export function installInteractionFocus(owner: Document, interaction: ReturnType
   const pointerDown = (event: PointerEvent) => {
     cancelPointerCleanup();
     interaction.pointerDown(event.target);
+    const active = owner.activeElement;
+    if (!(active instanceof HTMLElement) || !active.matches(actions)
+      || !(event.target instanceof Element) || active.contains(event.target)) return;
+    // Let native focus transfer run first. Blank-space selection protection can cancel it.
+    // Only release the old action if it still owns focus; editors and newer focus are untouched.
+    frame = owner.defaultView?.requestAnimationFrame(() => {
+      frame = null;
+      if (!interaction.keyboard) finishPointerFocus(active, true);
+    }) ?? null;
   };
   const keyDown = (event: KeyboardEvent) => {
     cancelPointerCleanup();
     interaction.keyDown(event.key);
     const active = owner.activeElement;
     if (event.key !== 'Escape' || interaction.keyboard || !(active instanceof HTMLElement)
-      || !active.matches('button, summary, a[href], [role="button"], [role="tab"]')) return;
+      || !active.matches(actions)) return;
     // Let the layer handle Escape before releasing a surviving pointer trigger.
     // Editing controls and genuine keyboard focus keep their normal lifetime.
     frame = owner.defaultView?.requestAnimationFrame(() => {
@@ -106,6 +116,12 @@ export function returnFocusTo(target: HTMLElement | null | undefined, interactio
   if (!target) return;
   const active = document.activeElement;
   returnInteractionFocus({ target, previous: active && closing?.contains(active) ? active : null }, interaction?.keyboard ?? true);
+}
+
+/** Pointer-opened panels own neutral focus; only keyboard intent selects a control. */
+export function focusOpenedPanel(panel: HTMLElement, preferred: HTMLElement | null, interaction: ReturnType<typeof createInteractionFocus> | null) {
+  const target = interaction?.keyboard && preferred && !preferred.matches(':disabled') ? preferred : panel;
+  target.focus({ preventScroll: true });
 }
 
 export const InteractionFocusContext = createContext<ReturnType<typeof createInteractionFocus> | null>(null);

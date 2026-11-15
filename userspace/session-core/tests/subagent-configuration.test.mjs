@@ -27,7 +27,7 @@ async function fixture(t, handler, full = false, recipe, settingsOverrides = {})
     availability:'callable', possibleEffects:[], inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']} };
   let service;
   service = new SessionService(journal, { async create({sessionId,promptContributions}) {
-    const preparation = fakeRunPreparation({ contextWindowTokens:100_000, tools:[read] });
+    const preparation = fakeRunPreparation({ contextWindowTokens:100_000, tools:[read], subagentSettings: () => settings });
     return { composition:{ async dispose(){}, kernel:emptyKernel(), runPreparation:{...preparation.port, async prepare(input) {
       const prepared = await preparation.port.prepare(input);
       const creation = (await readEvents(journal, sessionId))[0].payload;
@@ -41,11 +41,10 @@ async function fixture(t, handler, full = false, recipe, settingsOverrides = {})
     }}, provider:{async *stream(request, signal) {
       const history = requests.get(sessionId) ?? [];
       history.push(structuredClone(request)); requests.set(sessionId, history);
-      yield* handler({owner,sessionId,request,signal,turn:history.length,service,journal});
+      yield* handler({owner,sessionId,request,signal,turn:history.length,service,journal,settings});
       yield providerEvent(request.requestId,'completed',{});
     }}} };
-  }}, { async settings(){return settings;}, async saveDefaults(value){Object.assign(settings,value);},
-    async models(){return ['profile:default','profile:chosen'].map(profileId => ({
+  }}, { async models(){return ['profile:default','profile:chosen'].map(profileId => ({
     profileId, name:profileId, model:profileId, parameters:{adapterId:'openai',kind:'responses',providerFlavor:null,
       contextWindowTokens:100_000,maxOutputTokens:4096,imageInput:false,temperature:null,hostedWebSearch:null},reasoningEfforts:['low','high'] }));},
     async createSession(input){return service.createSession(input);}
@@ -185,8 +184,8 @@ test('template discovery and admission share all allowed model profiles', async 
   assert.equal((await readEvents(f.journal,f.owner)).filter(event=>event.type==='session.control.rejected').length,0);
 });
 
-test('child delegation setting updates discovery, guidance and admission at the next request', async t => {
-  const f=await fixture(t,async function*({owner,sessionId,request,turn,service}){
+test('child delegation discovery, guidance and admission retain the task snapshot after a global change', async t => {
+  const f=await fixture(t,async function*({owner,sessionId,request,turn,service,settings}){
     if(sessionId===owner){
       if(turn===1)yield call(request,'delegation:spawn',{action:'spawn',preset:'analysis',name:'Research owner',
         task:'Update your delegation setting, report evidence, then finish.',delivery:'wait',capabilities:{delegation:true}});
@@ -195,21 +194,24 @@ test('child delegation setting updates discovery, guidance and admission at the 
       else yield call(request,`delegation:wait:${turn}`,{action:'wait'});
       return;
     }
+    const current=await service.snapshot(sessionId);
+    if(current.agentContext.parentSessionId!==owner){
+      assert.equal(current.subagentSettings.allowMemberAnalysis,false);
+      yield answer(request,'Nested task captured the new global value.');return;
+    }
     if(turn===1){
-      const settings=(await service.snapshot(sessionId)).subagentSettings;
-      const reply=await service.submit({schemaVersion:'achbit.command.v3',type:'session.subagent-settings.set',sessionId,
-        commandId:'command:disable-child-delegation',settings:{...settings,allowMemberAnalysis:false}});
-      assert.equal(reply.status,'accepted');
+      settings.allowMemberAnalysis=false;
+      assert.equal(current.subagentSettings.allowMemberAnalysis,true);
       yield call(request,'child:models',{action:'models'});
     }else if(turn===2){
       const choices=JSON.parse(request.messages.findLast(message=>message.role==='tool').content);
       assert.ok(choices.operations.some(operation=>operation.action==='send'));
-      assert.ok(!choices.operations.some(operation=>operation.action==='spawn'));
-      assert.doesNotMatch(request.tools.find(tool=>tool.name==='agent').description,/delegat/iu);
-      yield call(request,'child:blocked-spawn',{action:'spawn',name:'Unavailable child',task:'Read the evidence.',delivery:'async'});
+      assert.ok(choices.operations.some(operation=>operation.action==='spawn'));
+      assert.match(request.tools.find(tool=>tool.name==='agent').description,/delegat/iu);
+      yield call(request,'child:allowed-spawn',{action:'spawn',name:'Nested child',task:'Read the evidence.',delivery:'wait'});
     }else if(turn===3){
-      assert.match(textOf(request),/agent_delegation_disabled/u);
-      assert.equal(((await service.snapshot(sessionId)).agentTasks??[]).length,0);
+      assert.match(textOf(request),/Nested task captured the new global value/u);
+      assert.equal(((await service.snapshot(sessionId)).agentTasks??[]).length,1);
       yield call(request,'child:send',{action:'send',agentId:owner,text:'CHILD_SETTING_FINDING'});
     }else yield answer(request,'Delegation check complete.');
   },true);

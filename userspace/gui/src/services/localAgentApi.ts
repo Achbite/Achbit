@@ -8,7 +8,6 @@ import { isLocalAgentErrorValue } from '@achbit/protocol';
 import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
 import type {
   AssistantDraftBlockProjection,
-  AgentSettings,
   CommandReply,
   ConversationCatalog,
   ConversationCatalogManagement,
@@ -19,6 +18,7 @@ import type {
   FilesystemReference,
   PluginCatalogProjection,
   SessionProjection,
+  SessionMode,
 } from '@achbit/protocol';
 import {
   COMMAND_REPLY_VERSION,
@@ -70,7 +70,6 @@ export async function createLocalAgentSession(
     workspacePaths?: string[];
     projectId?: string;
     profileId?: string;
-    subagentSettings?: AgentSettings;
   },
   signal?: AbortSignal,
 ): Promise<SessionProjection> {
@@ -409,7 +408,8 @@ function decodeProjection(value: unknown): SessionProjection {
       'artifacts',
       'deliverables',
       'terminalError',
-    ], ['contextHandoff', 'fileChangeRounds', 'providerAttempts', 'runTimings', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
+    ], ['mode', 'contextHandoff', 'fileChangeRounds', 'providerAttempts', 'runTimings', 'failureSnapshot', 'recipe', 'agentContext', 'agentTasks', 'agentChildren', 'pendingAgentDecisions', 'pendingApprovals', 'subagentSettings'])
+    || (value.mode !== undefined && !isSessionMode(value.mode))
     || (value.contextHandoff !== undefined && !(isExactRecord(value.contextHandoff,
       ['runId', 'historyThroughSequence', 'previousProfileId', 'profileId', 'status'])
       && isIdentifier(value.contextHandoff.runId) && isPositiveNaturalNumber(value.contextHandoff.historyThroughSequence)
@@ -1134,7 +1134,7 @@ function isContextUsage(value: unknown): boolean {
       'outputTokens',
       'contextWindowTokens',
     ],
-    ['cacheReadInputTokens', 'cacheMissInputTokens'],
+    ['cacheReadInputTokens', 'cacheMissInputTokens', 'reasoningOutputTokens'],
   )) return false;
   if (
     !isIdentifier(value.providerRequestId)
@@ -1144,6 +1144,8 @@ function isContextUsage(value: unknown): boolean {
     || !isNonEmptyText(value.updatedAt)
     || !isNaturalNumber(value.inputTokens)
     || !isNaturalNumber(value.outputTokens)
+    || (value.reasoningOutputTokens !== undefined && (!isNaturalNumber(value.reasoningOutputTokens)
+      || value.reasoningOutputTokens > value.outputTokens))
     || !isPositiveNaturalNumber(value.contextWindowTokens)
     || value.inputTokens + value.outputTokens > value.contextWindowTokens
   ) return false;
@@ -1301,18 +1303,21 @@ function isContextTool(value: unknown): boolean {
           .test(value.pluginUri));
 }
 
+const TOKEN_USAGE_REQUIRED_FIELDS = [
+  'providerCallCount',
+  'reportedCallCount',
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheMissInputTokens',
+  'cacheAvailable',
+  'cacheComplete',
+  'cacheHitRatio',
+] as const;
+const TOKEN_USAGE_OPTIONAL_FIELDS = ['reasoningUsage'] as const;
+
 function isTokenUsage(value: unknown): boolean {
-  return isExactRecord(value, [
-    'providerCallCount',
-    'reportedCallCount',
-    'inputTokens',
-    'outputTokens',
-    'cacheReadInputTokens',
-    'cacheMissInputTokens',
-    'cacheAvailable',
-    'cacheComplete',
-    'cacheHitRatio',
-  ])
+  return isExactRecord(value, TOKEN_USAGE_REQUIRED_FIELDS, TOKEN_USAGE_OPTIONAL_FIELDS)
     && isTokenUsageFields(value);
 }
 
@@ -1328,16 +1333,8 @@ function isTokenUsageRound(value: unknown): value is Record<string, unknown> & {
     'title',
     'sequence',
     'startedAt',
-    'providerCallCount',
-    'reportedCallCount',
-    'inputTokens',
-    'outputTokens',
-    'cacheReadInputTokens',
-    'cacheMissInputTokens',
-    'cacheAvailable',
-    'cacheComplete',
-    'cacheHitRatio',
-  ], ['completedAt', 'outcome'])
+    ...TOKEN_USAGE_REQUIRED_FIELDS,
+  ], ['completedAt', 'outcome', ...TOKEN_USAGE_OPTIONAL_FIELDS])
     && isIdentifier(value.runId)
     && isIdentifier(value.inputMessageId)
     && isNonEmptyText(value.title)
@@ -1365,6 +1362,13 @@ function isTokenUsageFields(value: Record<string, unknown>): boolean {
     && value.cacheReadInputTokens + value.cacheMissInputTokens <= value.inputTokens)) {
     return false;
   }
+  if (value.reasoningUsage !== undefined) {
+    const reasoning = value.reasoningUsage;
+    if (!(isExactRecord(reasoning, ['outputTokens', 'reportedCallCount', 'complete'])
+      && isNaturalNumber(reasoning.outputTokens) && reasoning.outputTokens <= value.outputTokens
+      && isPositiveNaturalNumber(reasoning.reportedCallCount) && reasoning.reportedCallCount <= value.providerCallCount
+      && reasoning.complete === (reasoning.reportedCallCount === value.providerCallCount))) return false;
+  }
   const expectedRatio = value.reportedCallCount > 0 && value.inputTokens > 0
     ? value.cacheReadInputTokens / value.inputTokens
     : null;
@@ -1388,9 +1392,10 @@ function isRun(value: unknown): boolean {
   return isExactRecord(
     value,
     ['runId', 'profileId', 'workspaceBindings', 'status'],
-    ['waitingReason', 'reasoningEffort', 'thinking', 'hostBinding', 'fileInputMediaTypes'],
+    ['mode', 'waitingReason', 'reasoningEffort', 'thinking', 'hostBinding', 'fileInputMediaTypes'],
   )
     && isIdentifier(value.runId)
+    && (value.mode === undefined || isSessionMode(value.mode))
     && isIdentifier(value.profileId)
     && (value.fileInputMediaTypes === undefined || (isArrayOf(value.fileInputMediaTypes, item => item === 'application/pdf')
       && new Set(value.fileInputMediaTypes).size === value.fileInputMediaTypes.length))
@@ -1404,6 +1409,10 @@ function isRun(value: unknown): boolean {
     )
     && (value.waitingReason === undefined
       || ['approval', 'userInput', 'plan'].includes(String(value.waitingReason)));
+}
+
+function isSessionMode(value: unknown): value is SessionMode {
+  return value === 'minimal' || value === 'full';
 }
 
 function isReasoningEffort(value: unknown): boolean {

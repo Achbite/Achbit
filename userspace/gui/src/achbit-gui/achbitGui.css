@@ -240,33 +240,35 @@ textarea {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
   overflow: hidden;
   white-space: nowrap;
 }
 
 .achbit-gui-brand {
   color: var(--ac-foreground-strong);
-  font-size: var(--ac-font-body);
+  font-size: calc(25px * var(--ac-ui-font-scale, 1));
+  line-height: 1.2;
+  letter-spacing: -.7px;
   font-weight: var(--ac-weight-semibold);
 }
 
 .achbit-gui-brand__mark {
   display: grid;
-  width: 21px;
-  height: 21px;
-  flex: 0 0 21px;
+  width: 33px;
+  height: 33px;
+  flex: 0 0 33px;
   place-items: center;
-  border: 1px solid var(--ac-border-strong);
-  border-radius: 6px;
-  background: var(--ac-surface-raised);
-  font-size: var(--ac-font-caption);
-  font-weight: var(--ac-weight-bold);
+  color: var(--ac-foreground-strong);
 }
 
-.achbit-gui-brand__mark svg { width: 17px; height: 17px; display: block; }
+.achbit-gui-brand__mark svg { width: 33px; height: 33px; display: block; }
 
 .achbit-gui-sidebar-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex: 0 0 auto;
-  padding: 2px 10px 0;
+  padding: 0 4px 10px;
 }

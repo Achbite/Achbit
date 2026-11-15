@@ -36,7 +36,7 @@ async function httpPreparation(t, promptContributions) {
           toolSelection: { kernel: [], controls: [], plugins: seed.selectedPlugins.plugins.length > 0 },
           pluginConfig: { extensionGenerationRef: seed.extensionGenerationRef, permissions: seed.permissions, selectedPlugins: [] },
           selectedPlugins: seed.selectedPlugins, environment: seed.environment,
-          agentCapabilities: seed.agentCapabilities, agentToolsEnabled: true, contextManagement: seed.contextManagement };
+          agentCapabilities: seed.agentCapabilities, agentToolsEnabled: true, subagentSettings: seed.subagentSettings, contextManagement: seed.contextManagement };
       } else if (request.url === '/api/local-agent/runtime/release-run') {
         releases.push(input);
         data = { schemaVersion: KERNEL_REPLY_VERSION, type: 'tool.catalog.released', ...input,

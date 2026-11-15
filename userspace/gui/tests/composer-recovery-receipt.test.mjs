@@ -63,7 +63,7 @@ test('recovery consumes the successful Session receipt, retaining failed drafts 
   let composer;
   function Probe() { composer = useAgentComposer('zh-CN', () => {}); return null; }
   function render() { Object.assign(store.getInitialState(), store.getState()); renderToStaticMarkup(createElement(Probe)); return composer; }
-  const html = recovery => renderToStaticMarkup(createElement(UnappliedInputs, { sessionId, inputs: history,
+  const html = (recovery, targetSessionId = sessionId) => renderToStaticMarkup(createElement(UnappliedInputs, { sessionId: targetSessionId, inputs: history,
     language: 'zh-CN', copiedId: null, onCopy() {}, onOpenReference() {}, recovery }));
   render().unappliedRecovery.restore(history);
   assert.deepEqual(readResubmittedInputs(sessionId), [], 'draft restoration has no success receipt');
@@ -105,7 +105,8 @@ test('recovery consumes the successful Session receipt, retaining failed drafts 
   assert.equal(store.getState().sessionId, otherSessionId);
   assert.deepEqual(readResubmittedInputs(sessionId), ['command:old']);
   assert.deepEqual(readResubmittedInputs(otherSessionId), []);
-  assert.match(html(render().unappliedRecovery), /条消息未处理/, 'another session does not consume this receipt');
+  assert.equal(html(render().unappliedRecovery), '', 'accepted input closes the original session reminder independently of draft recovery');
+  assert.match(html(render().unappliedRecovery, otherSessionId), /条消息未处理/, 'another session does not consume this receipt');
   const completed = await waitForProjection(actor, value => value.run?.status === 'completed');
   assert.deepEqual(completed.queuedInputs, history, 'resubmission leaves original notApplied facts unchanged');
   store.setState({ sessionId, projection: completed });

@@ -215,7 +215,7 @@ try {
       assert.deepEqual(error.diagnostics.providerError, { code: '503', status: 'UNAVAILABLE', httpStatus: 503 });
       assert.match(error.message, /Fixture high demand/);
     } else {
-      assert.equal(error.code, 'provider_response_failed');
+      assert.equal(error.code, 'provider_output_truncated');
       assert.equal(error.diagnostics.providerError.type, 'response.incomplete');
       assert.match(error.message, /max_output_tokens/);
     }

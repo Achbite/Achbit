@@ -4,11 +4,16 @@ Write for the reader's next action, not the history of the implementation.
 
 | Surface | Keep |
 | --- | --- |
-| Built-in `docs/product/` and Skills | Short purpose, exact interface/example, required conditions, meaningful limits |
+| Built-in `docs/product/` and operational Skills | Short purpose, exact interface/example, required conditions, meaningful limits |
+| Design and development Skills | Reusable lessons, general approaches, agreed product direction and relevant source entrypoints |
 | README / installation guide | First use, capabilities, install/update entrypoints and links |
 | Public plugin reference | Manifest, slots, signatures, lifecycle and a working example |
 | Development material | Build/test procedures and architecture needed for implementation |
 | Task receipt | Changes, test results, failures and unfinished work |
+
+## Design Skill maintenance
+
+Use concise, positive guidance that explains a useful approach and when it applies. Prefer context and tradeoffs to blanket assertions. When a design change affects the recorded product direction, point out the relevant Skill update, resolve the new decision with the user, and align the guidance. Keep dates, revision IDs, one-off measurements and acceptance results in task records or Git history.
 
 ## LLM quick-reference style
 
@@ -17,7 +22,7 @@ Write for the reader's next action, not the history of the implementation.
 - Explain a limitation only where it changes the next action. Keep essential permissions and result semantics; remove repeated warnings, historical fixes and internal class tours.
 - Separate evidence limits from required checks. A fixture not proving real-model behavior does not make real-model testing mandatory. Debug packaging is not standard-package acceptance.
 - Keep detailed contracts where needed for actual extension use. Do not replace a usable interface reference with vague advice or links requiring repository-wide discovery.
-- Avoid plans, development logs, test counts, speculative features and automatic release checklists. Read only relevant references; do not chain every Skill.
+- Keep plans, development logs and test results in task records. Read the references relevant to the current decision.
 
 ## Synchronize and check
 

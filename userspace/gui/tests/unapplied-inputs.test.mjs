@@ -60,7 +60,10 @@ test('unapplied history remains collapsed and preserves text, attachments, tools
   function Probe() { view = UnappliedInputs({ sessionId: 'session:queue', inputs: [history, waiting], language: 'zh-CN', copiedId: null,
     onCopy: (id, text) => calls.push(['copy', id, text]), onOpenReference: value => calls.push(['open', value]) }); return view; }
   const html = renderToStaticMarkup(createElement(Probe));
-  assert.equal(view.type, 'details'); assert.equal(view.props.open, undefined);
+  assert.equal(view.type, 'section');
+  const toggle = findReactElement(view, node => node.props['data-ui-action'] === 'conversation.unapplied-inputs.toggle');
+  assert.equal(toggle.props['aria-expanded'], false);
+  assert.equal(findReactElement(view, node => node.props.id === toggle.props['aria-controls']).props.hidden, true);
   assert.match(html, /未加入任务的消息/); assert.match(html, /Keep this unapplied text\nwith its original line break\./);
   assert.match(html, /notes.txt/); assert.match(html, /Retained tool/);
   assert.doesNotMatch(html, /This input is still waiting/);

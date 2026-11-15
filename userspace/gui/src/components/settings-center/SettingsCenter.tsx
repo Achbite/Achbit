@@ -12,6 +12,7 @@ import {
   GuiSettingsSection,
 } from './sections/CategorizedSettingsSections';
 import LlmSection from './sections/LlmSection';
+import type { ModelSettingsTarget } from './modelSettingsNavigation';
 import PluginsSection from './sections/PluginsSection';
 import AchbitShellIcon, { type AchbitShellIconName } from '../shared/AchbitShellIcon';
 import './settingsCenter.css';
@@ -23,19 +24,21 @@ interface SettingsCenterProps {
   apiStatus: string;
   serverVersion?: string;
   navigationTarget?: HTMLElement | null;
+  initialModelTarget?: ModelSettingsTarget | null;
 }
 
 const SettingsCenter: React.FC<SettingsCenterProps> = ({
   apiStatus,
   serverVersion,
   navigationTarget,
+  initialModelTarget,
 }) => {
   const inheritedInteraction = useInteractionFocus();
   const [localInteraction] = useState(createInteractionFocus);
   const interaction = inheritedInteraction ?? localInteraction;
   useEffect(() => () => interaction.clearReveal(), [interaction]);
   const [activeKey, setActiveKey] = useState<SettingsKey>(
-    () => takeRestoredInterfaceView<SettingsKey>('settingsPage', 'general'),
+    () => initialModelTarget ? 'llm' : takeRestoredInterfaceView<SettingsKey>('settingsPage', 'general'),
   );
   const [searchEntries, setSearchEntries] = useState<Record<string, SettingsSearchEntry[]>>({});
   const register = useCallback((owner: string, entries: SettingsSearchEntry[]) => setSearchEntries((current) => ({ ...current, [owner]: entries })), []);
@@ -105,7 +108,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
       case 'permissions':
         return <AgentSettingsSection category={key} />;
       case 'llm':
-        return <LlmSection active={!searching && activeKey === 'llm'} />;
+        return <LlmSection active={!searching && activeKey === 'llm'} initialModelTarget={initialModelTarget} />;
       case 'plugins':
         return <PluginsSection />;
     }

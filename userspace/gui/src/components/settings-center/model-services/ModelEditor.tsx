@@ -18,11 +18,18 @@ export function selectNewModelPreset(profile: LlmProviderProfile, adapter: Provi
   return { ...preset, id: profile.id, connectionId: profile.connectionId, name };
 }
 
-export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRemove }: {
+export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRemove, reveal = false }: {
   profile: LlmProviderProfile; adapter: ProviderAdapterDescriptor; defaultId?: string;
-  onSaved(): Promise<void>; onRemove?(): void;
+  onSaved(): Promise<void>; onRemove?(): void; reveal?: boolean;
 }) {
   const { text, language } = useModelLanguage();
+  const details = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!reveal || !details.current) return;
+    details.current.open = true;
+    const frame = requestAnimationFrame(() => details.current?.scrollIntoView({ block: 'start' }));
+    return () => cancelAnimationFrame(frame);
+  }, [reveal]);
   const [draft, setDraft] = useState(profile);
   const [confirmed, setConfirmed] = useState(profile);
   const baseline = useRef(profile);
@@ -73,7 +80,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
     <ConfirmedNumberInput {...constraints} value={selected[key]} language={language} label={label} disabled={busy}
       onCommit={value => choose({ [key]: value })}
       {...(onRemove ? { onDraftChange: (value: number | undefined) => set(key, value) } : {})} />;
-  return <details className="model-editor" open={onRemove ? true : undefined}>
+  return <details ref={details} className="model-editor" data-profile-id={profile.id} open={onRemove || reveal ? true : undefined}>
     <summary><strong>{confirmed.name}</strong><span>{confirmed.model}{profile.id === defaultId ? ` · ${text('最近使用', 'Last used')}` : ''}</span></summary>
     <form noValidate={!onRemove} onSubmit={event => {
       event.preventDefault();

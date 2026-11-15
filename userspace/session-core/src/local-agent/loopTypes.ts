@@ -1,7 +1,7 @@
 import type {
   SessionEvent, RunSettlement, AgentOperation, JsonObject, SessionOperation, NewSessionEvent,
   AssistantDraftProjection, ToolExecutionProgress, ProviderTokenUsage, ProviderOutputBlock,
-  ProviderToolCallInput, LocalAgentError, ModelInteractionRequest,
+  ProviderToolCallInput, ProviderNativeReplay, LocalAgentError, ModelInteractionRequest,
 } from '@achbit/protocol';
 import type { SessionState } from './reducer.js';
 import type { AgentComposition, RunActivity } from './plugins.js';
@@ -47,6 +47,8 @@ export type LoopResult =
     };
 
 export interface AgentLoopDeps {
+  /** Selected by the installed standard driver; never inferred from model arguments. */
+  toolExecution?: 'ordered' | 'parallel';
   composition: AgentComposition;
   capabilities?: SessionCapabilityManager;
   readSnapshot(): Promise<LoopSnapshot>;
@@ -82,6 +84,7 @@ export interface ProviderTurnCompletion {
   purpose: 'agent' | 'contextCompaction' | 'approvalReview';
   providerRuntimeRef: string;
   orderedCallIds: string[];
+  providerReplay?: ProviderNativeReplay;
   reasoningContent?: string;
   reasoningSignature?: string;
   hostedWebSearchCalls?: JsonObject[];
