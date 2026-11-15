@@ -10,6 +10,8 @@ import { useConversationSessionId } from './ConversationSessionScope';
 import { useConversationRowState } from './ConversationVirtualRow';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useViewportBounds } from '../shared/useViewportBounds';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
+import { focusOpenedPanel, useInteractionFocus } from '../shared/interactionFocus';
 import { isBinaryFileChange } from '../../services/localAgentApi';
 
 import { changedFiles, displayedChangedFiles, readRoundChange, readChangeStatistics, previewChangedLines, type FileChangeStatistics, type ChangeCounts, type ChangedFile } from './fileChangeSummary';
@@ -30,8 +32,21 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
     previousView.current = { sessionId, compact };
   }, [sessionId, compact, setShowAll, setExpanded]);
   const all = useMemo(() => changedFiles(activities), [activities]);
+  const rootRef = useRef<HTMLElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  useViewportBounds(listRef, compact && !inlineDiff && all.length > 0);
+  const interaction = useInteractionFocus();
+  const [hovered, setHovered] = useState(false);
+  const transient = compact && !inlineDiff;
+  const open = expanded || (transient && hovered);
+  useViewportBounds(listRef, transient && open && all.length > 0);
+  useDismissibleLayer({ open: transient && open && all.length > 0, roots: [rootRef], trigger: triggerRef,
+    onDismiss: () => { setExpanded(false); setHovered(false); } });
+  useEffect(() => {
+    if (transient && expanded && listRef.current) {
+      focusOpenedPanel(listRef.current, listRef.current.querySelector<HTMLButtonElement>('button'), interaction);
+    }
+  }, [transient, expanded, interaction]);
   const signature = JSON.stringify([sessionId, all.map((file) => [file.key, file.changes.map((entry) => [entry.recordId, entry.index])])]);
   const [statistics, setStatistics] = useState<{ signature: string; files: Map<string, FileChangeStatistics>; errors: Map<string, string> }>({ signature: '', files: new Map(), errors: new Map() });
   const displayed = displayedChangedFiles(all, compact, expanded, showAll);
@@ -73,14 +88,17 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
       </button>
     </div>;
   });
-  return <section className={`conversation-changes${compact ? ' conversation-changes--compact' : ''}${expanded ? ' is-expanded' : ''}`}>
-    <button {...identity.action('toggle', 'click')} type="button" className="conversation-changes-heading" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+  return <section ref={rootRef} className={`conversation-changes${compact ? ' conversation-changes--compact' : ''}${open ? ' is-expanded' : ''}`}
+    onPointerEnter={event => { if (transient && event.pointerType !== 'touch') setHovered(true); }}
+    onPointerLeave={() => { if (!interaction?.keyboard || !rootRef.current?.contains(document.activeElement)) setHovered(false); }}>
+    <button {...identity.action('toggle', 'click')} ref={triggerRef} type="button" className="conversation-changes-heading" aria-expanded={open}
+      onClick={() => { setHovered(false); setExpanded(value => !value); }}>
       <AchbitShellIcon name="compose" /><span><strong>{t(language, 'changes.files', { count: all.length })}</strong>{!compact && <small>{t(language, 'changes.round')}</small>}</span>
       {total && <DiffCounts counts={total} />}
       {binaryCount > 0 && <small className="conversation-change-binary-count">{t(language, 'changes.binaryCount', { count: binaryCount })}</small>}
       <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
-    {(compact || expanded) && <div ref={listRef} className="conversation-change-list" data-native-overlay={compact || undefined}>{entries}
+    {(compact || expanded) && <div ref={listRef} className="conversation-change-list" hidden={!open} tabIndex={compact ? -1 : undefined} data-native-overlay={compact && open || undefined}>{entries}
       {!compact && all.length > 3 && <button {...identity.action('more', 'click')} className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
       {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><summary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</summary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
     </div>}

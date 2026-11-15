@@ -11,7 +11,7 @@ import { PANE_GEOMETRY } from '../../components/shared/paneGeometry';
 import { InterfaceLoadBoundary } from '../../components/shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import { CloseButton, ModalDialog, PanelHeader, ResizeHandle } from '../../ui-components';
-import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../components/shared/interactionFocus';
+import { captureFocusReturn, focusOpenedPanel, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../components/shared/interactionFocus';
 import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   ConversationProject,
@@ -21,6 +21,7 @@ import { normalizeUiLanguage, t } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import AchbitSidebar from './AchbitSidebar';
+import { ModelSettingsNavigation, type ModelSettingsTarget } from '../../components/settings-center/modelSettingsNavigation';
 import SidebarMenu from './SidebarMenu';
 import { useReadRunMarkers } from './useReadRunMarkers';
 import { useCompletionNotifications } from './useCompletionNotifications';
@@ -113,6 +114,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
   const deleteSession = useLocalAgentStore((state) => state.deleteSession);
 
   const [settingsOpen, setSettingsOpen] = useState(() => restoredInterfaceView('settingsOpen', false));
+  const [modelSettingsTarget, setModelSettingsTarget] = useState<ModelSettingsTarget | null>(null);
   const [navigationCollapsed, setNavigationCollapsed] = useState(() => restoredInterfaceView('navigationCollapsed', false));
   const workbench = useRef<HTMLDivElement>(null);
   const navigationWidth = usePaneWidth('navigationWidth', PANE_GEOMETRY.navigation, workbench);
@@ -145,16 +147,32 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     return () => { disposed = true; unlisten?.(); };
   }, [activateSession]);
   const settingsClose = useRef<HTMLButtonElement>(null);
+  const settingsPanel = useRef<HTMLElement>(null);
   const interaction = useInteractionFocus();
-  const settingsOpener = useRef<FocusReturn | null>(null);
+  const navigationFocusRequested = useRef(false);
   useLayoutEffect(() => {
-    if (settingsOpen) {
+    if (!navigationFocusRequested.current) return;
+    navigationFocusRequested.current = false;
+    workbench.current?.querySelector<HTMLButtonElement>(navigationCollapsed || settingsOpen
+      ? '[data-ui-action="navigation.toolbar.toggle-sidebar"]'
+      : '[data-ui-action="navigation.sidebar.collapse"]')?.focus({ preventScroll: true });
+  }, [navigationCollapsed, settingsOpen]);
+  const toggleNavigation = () => {
+    navigationFocusRequested.current = interaction?.keyboard === true;
+    setNavigationCollapsed(value => !value);
+  };
+  const settingsOpener = useRef<FocusReturn | null>(null);
+  const previousSettingsOpen = useRef(settingsOpen);
+  useLayoutEffect(() => {
+    // Restoring an already-open settings view is not a new focus request.
+    if (settingsOpen && !previousSettingsOpen.current) {
       settingsOpener.current = interaction ? interaction.capture() : captureFocusReturn();
-      settingsClose.current?.focus({ preventScroll: true });
-    } else if (settingsOpener.current) {
+      if (settingsPanel.current) focusOpenedPanel(settingsPanel.current, settingsClose.current, interaction);
+    } else if (!settingsOpen && settingsOpener.current) {
       returnInteractionFocus(settingsOpener.current, interaction?.keyboard ?? true);
       settingsOpener.current = null;
     }
+    previousSettingsOpen.current = settingsOpen;
   }, [settingsOpen, interaction]);
   useEffect(() => {
     if (!settingsOpen) return;
@@ -226,19 +244,6 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     }
   };
   const collapsedSet = useMemo(() => new Set(collapsedProjectIds), [collapsedProjectIds]);
-
-  useEffect(() => {
-    if (!projectCreateMenu && !projectMenu && !sessionMenu) return;
-    const close = () => {
-      setProjectCreateMenu(null);
-      setProjectMenu(null);
-      setSessionMenu(null);
-    };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
-    window.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', escape);
-    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', escape); };
-  }, [projectCreateMenu, projectMenu, sessionMenu]);
 
   const createPrimarySession = () => {
     startNewSession(null);
@@ -373,7 +378,10 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
   };
 
   return (
-    <div className={`achbit-gui-workbench${settingsOpen ? ' achbit-gui-workbench--settings' : ''}${navigationCollapsed ? ' achbit-gui-workbench--navigation-collapsed' : ''}`}
+    <ModelSettingsNavigation.Provider value={target => {
+      setModelSettingsTarget(target);
+      setSettingsOpen(true);
+    }}><div className={`achbit-gui-workbench${settingsOpen ? ' achbit-gui-workbench--settings' : ''}${navigationCollapsed ? ' achbit-gui-workbench--navigation-collapsed' : ''}`}
       ref={workbench} data-host-status={apiStatus} style={{ '--ac-navigation-width': `${navigationWidth.width}px` } as React.CSSProperties}
       onKeyDown={(event) => {
         if (settingsOpen && event.key !== 'Escape') event.stopPropagation();
@@ -399,7 +407,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
             direction={1} onResize={navigationWidth.setWidth} />} toolbar={<>
             <button type="button" {...identity.action('back', 'click')} aria-label={t(language, 'achbitGui.navigation.back')} title={t(language, 'achbitGui.navigation.back')} disabled={busy || history.cursor <= 0} onClick={() => void navigate(-1)}><AchbitShellIcon name="chevronLeft" /></button>
             <button type="button" {...identity.action('forward', 'click')} aria-label={t(language, 'achbitGui.navigation.forward')} title={t(language, 'achbitGui.navigation.forward')} disabled={busy || history.cursor >= history.entries.length - 1} onClick={() => void navigate(1)}><AchbitShellIcon name="chevronRight" /></button>
-            <button type="button" {...identity.action('toggle-sidebar', 'click')} className="achbit-gui-navigation-toggle" aria-label={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} title={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} aria-expanded={!navigationCollapsed} aria-controls="achbit-navigation-content" onClick={() => setNavigationCollapsed(value => !value)}><AchbitShellIcon name="sidebar" /></button>
+            {(navigationCollapsed || settingsOpen) && <button type="button" {...identity.action('toggle-sidebar', 'click')} className="achbit-gui-navigation-toggle" aria-label={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} title={t(language, navigationCollapsed ? 'achbitGui.navigation.expand' : 'achbitGui.navigation.collapse')} aria-expanded={!navigationCollapsed} aria-controls="achbit-navigation-content" onClick={toggleNavigation}><AchbitShellIcon name="sidebar" /></button>}
             {navigationError && <p className="achbit-gui-navigation-error" role="alert">{navigationError}</p>}
             {catalogWatchError && <p className="achbit-gui-navigation-error" role="alert">{catalogWatchError}
               <button type="button" onClick={() => useLocalAgentStore.getState().retryCatalogWatch()}>{t(language, 'achbitGui.statusAction.retry')}</button>
@@ -433,7 +441,9 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
           onActivateSession={(session) => void activateSession(session.id)}
           onOpenProjectContextMenu={openProjectMenu}
           onOpenSessionContextMenu={openSessionMenu}
+          onCollapse={toggleNavigation}
           onOpenSettings={() => {
+            setModelSettingsTarget(null);
             setProjectMenu(null); setProjectCreateMenu(null); setSessionMenu(null); setSettingsOpen(true);
           }}
         />
@@ -466,7 +476,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
         <SidebarMenu
           id="achbit-project-create-menu"
           className="achbit-gui-project-create-menu"
-          x={projectCreateMenu.x} y={projectCreateMenu.y}
+          x={projectCreateMenu.x} y={projectCreateMenu.y} onClose={() => setProjectCreateMenu(null)}
         >
           <button
             type="button"
@@ -500,7 +510,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       {sessionMenu && (
         <SidebarMenu
           className="achbit-gui-session-context-menu"
-          x={sessionMenu.x} y={sessionMenu.y}
+          x={sessionMenu.x} y={sessionMenu.y} onClose={() => setSessionMenu(null)}
         >
           <div className="achbit-gui-session-context-menu__title">
             {sessionMenu.value.title || t(language, 'agent.session.newTitle')}
@@ -582,7 +592,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       {projectMenu && (
         <SidebarMenu
           className="achbit-gui-session-context-menu"
-          x={projectMenu.x} y={projectMenu.y}
+          x={projectMenu.x} y={projectMenu.y} onClose={() => setProjectMenu(null)}
         >
           <div className="achbit-gui-session-context-menu__title">{projectMenu.value.title}</div>
           <button
@@ -761,19 +771,20 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       )}
 
       {settingsOpen && (
-        <section className="achbit-local-agent-overlay" aria-label={t(language, 'settings.title')}>
+        <section ref={settingsPanel} tabIndex={-1} className="achbit-local-agent-overlay" aria-label={t(language, 'settings.title')}>
           <div className="achbit-local-agent-settings" onMouseDown={(event) => event.stopPropagation()}>
             <InterfaceLoadBoundary><Suspense fallback={null}>
               <SettingsCenter
                 apiStatus={apiStatus}
                 serverVersion={serverVersion}
                 navigationTarget={settingsNavigation}
+                initialModelTarget={modelSettingsTarget}
               />
             </Suspense></InterfaceLoadBoundary>
           </div>
         </section>
       )}
-    </div>
+    </div></ModelSettingsNavigation.Provider>
   );
 };
 

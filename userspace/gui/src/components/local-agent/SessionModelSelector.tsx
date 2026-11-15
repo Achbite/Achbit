@@ -6,12 +6,17 @@ import { ContextUsageControl } from './ContextUsageControl';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
-import SubagentQuickSettings from './SubagentQuickSettings';
+import { UiIcon as AchbitShellIcon, IconButton } from '../../ui-components';
+import { subagentDefaults } from './SubagentQuickSettings';
+import ReasoningEffortSlider from './ReasoningEffortSlider';
+import { REASONING_CONTROL_SETTING, reasoningControlStyle, type ReasoningControlStyle } from './reasoningControlStyle';
+import { useOpenModelSettings } from '../settings-center/modelSettingsNavigation';
+import { useSettingsHelp } from '../settings-center/SettingsHelp';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
-import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
+import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useViewportBounds } from '../shared/useViewportBounds';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 
 interface SessionModelSelectorProps {
   language: UiLanguage;
@@ -35,10 +40,11 @@ export default function SessionModelSelector({ language, profiles, connections =
   const [choosingModel, setChoosingModel] = useState(false);
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [contextOpen, setContextOpen] = useState(false);
-  const [subagentsOpen, setSubagentsOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const openModelSettings = useOpenModelSettings();
   useEffect(() => {
     if (!requestedPanel) return;
-    setCandidateId(null); setSubagentsOpen(false);
+    setCandidateId(null);
     setContextOpen(requestedPanel.kind === 'context');
     setOpen(requestedPanel.kind === 'model');
     setChoosingModel(requestedPanel.kind === 'model');
@@ -46,7 +52,11 @@ export default function SessionModelSelector({ language, profiles, connections =
   const sessionId = useLocalAgentStore(state => state.sessionId);
   const sessionSubagents = useLocalAgentStore(state => state.projection?.subagentSettings);
   const draftSubagents = useLocalAgentStore(state => state.draftSubagentSettings);
-  const defaultSubagentsEnabled = useSettingsStore(state => state.effectiveSettings['agent.subagents.enabled']);
+  const defaults = useSettingsStore(state => state.effectiveSettings);
+  const defaultsLoading = useSettingsStore(state => state.loading);
+  const subagentBusy = useLocalAgentStore(state => state.loading || state.submitting || state.subagentSettingsBusy);
+  let controlStyle: ReasoningControlStyle | null = null, styleError: string | null = null;
+  try { controlStyle = reasoningControlStyle(defaults[REASONING_CONTROL_SETTING]); } catch (cause) { styleError = String(cause); }
   const rootRef = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null), triggerRef = useRef<HTMLButtonElement>(null);
   useViewportBounds(menuRef, open);
   const menuId = useId(), theme = useDisplayTheme(), chinese = language === 'zh-CN';
@@ -55,33 +65,40 @@ export default function SessionModelSelector({ language, profiles, connections =
   const candidate = profiles.find(profile => profile.id === (candidateId ?? selectedProfileId));
   const candidateEffort = candidate?.thinking === 'disabled' ? null
     : candidate?.id === selectedProfileId ? effectiveEffort : candidate?.reasoningEffort ?? null;
-  const subagentsEnabled = (sessionId ? sessionSubagents?.enabled : draftSubagents?.enabled ?? defaultSubagentsEnabled) === true;
-  const subagentLabel = t(language, 'settings.subagents.configure');
+  const subagentsEnabled = (sessionId ? sessionSubagents?.enabled : draftSubagents?.enabled ?? defaults['agent.subagents.enabled']) === true;
+  const subagentLabel = t(language, subagentsEnabled ? 'settings.subagents.disable' : 'settings.subagents.enable');
+  const subagentHelp = useSettingsHelp(open && !choosingModel ? subagentLabel : undefined, { compact: true });
+  const efforts = modelReasoningEfforts(candidate);
+  const toggleSubagents = async () => {
+    if (subagentBusy || defaultsLoading) return;
+    setActionError(null);
+    try {
+      const current = (sessionId ? sessionSubagents : draftSubagents) ?? subagentDefaults(defaults);
+      const saved = await useLocalAgentStore.getState().setSubagentSettings({ ...current, enabled: !subagentsEnabled });
+      if (!saved) throw new Error(useLocalAgentStore.getState().error ?? t(language, 'settings.common.saveFailed'));
+    } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); }
+  };
   const title = (selected?.name ?? selectedProfileId ?? (chinese ? '选择模型' : 'Choose model')) + (selectedProfileId && !selected?.enabled ? ` · ${t(language, selected ? 'agent.profile.disabled' : 'agent.profile.missing')}` : '');
   const effortLabel = selected?.thinking === 'disabled'
     ? (chinese ? '不适用' : 'Not applicable')
     : effectiveEffort ? t(language, `settings.llm.effort.${effectiveEffort}`) : modelReasoningEfforts(selected).length === 0 ? t(language, 'settings.llm.serviceDefault') : (chinese ? '选择强度' : 'Choose level');
   const close = () => { setOpen(false); returnFocusTo(triggerRef.current, interaction, menuRef.current); };
   useEffect(() => {
-    if (!open) return;
-    menuRef.current?.querySelector<HTMLElement>(subagentsOpen ? 'input[role="switch"]' : choosingModel
+    const panel = menuRef.current;
+    if (!open || !panel) return;
+    focusOpenedPanel(panel, panel.querySelector<HTMLElement>(choosingModel
       ? 'button[aria-checked="true"]:not(:disabled),[role="menuitemradio"]:not(:disabled)'
-      : '.achbit-session-model__current')?.focus({ preventScroll: true });
-  }, [open, choosingModel, subagentsOpen]);
-  useEffect(() => {
-    if (!open) return;
-    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false); };
-    document.addEventListener('pointerdown', outside);
-    return () => document.removeEventListener('pointerdown', outside);
-  }, [open]);
+      : '.achbit-session-model__current'), interaction);
+  }, [open, choosingModel, interaction]);
+  useDismissibleLayer({ open, roots: [rootRef], trigger: triggerRef, onDismiss: () => setOpen(false) });
   const choose = async (effort: LlmReasoningEffort | null, profile = candidate) => {
     if (!profile?.enabled || busy) return;
+    setActionError(null);
     try { await onSelect(profile.id, effort); }
+    catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setCandidateId(null); }
   };
-  return <div {...identity.part('root')} ref={rootRef} className="achbit-session-model" onBlur={event => {
-    if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-  }}>
+  return <div {...identity.part('root')} ref={rootRef} className="achbit-session-model">
     <ContextUsageControl language={language} contextUsage={contextUsage} contextCompositions={contextCompositions}
       contextOpen={contextOpen} setContextOpen={setContextOpen} rootRef={rootRef}
       onToggle={() => { setOpen(false); setContextOpen(value => !value); }} />
@@ -95,30 +112,31 @@ export default function SessionModelSelector({ language, profiles, connections =
       } }}>
       <button {...identity.action('trigger', 'click')} ref={triggerRef} type="button" className="achbit-session-model__selector" disabled={busy}
         aria-label={`${title} · ${effortLabel}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined}
-        onClick={() => { setContextOpen(false); setCandidateId(null); setChoosingModel(false); setSubagentsOpen(false); setOpen(value => !value); }}>
+        onClick={() => { setContextOpen(false); setCandidateId(null); setChoosingModel(false); setActionError(null); setOpen(value => !value); }}>
         <span>{title}</span><span className="achbit-session-model__selector-effort">{effortLabel}</span><AchbitShellIcon name="chevronDown" />
       </button>
-      {open && <div {...identity.part('menu')} id={menuId} ref={menuRef} role="dialog" className="achbit-session-model__menu" data-native-overlay
+      {open && <div {...identity.part('menu')} id={menuId} ref={menuRef} role="dialog" tabIndex={-1} className="achbit-session-model__menu" data-native-overlay
         aria-label={chinese ? '模型与推理强度' : 'Model and reasoning'} onKeyDown={event => {
           if (event.key === 'Escape') {
             event.preventDefault(); event.stopPropagation();
-            if (choosingModel) setChoosingModel(false); else if (subagentsOpen) setSubagentsOpen(false); else close();
+            if (choosingModel) setChoosingModel(false); else close();
           }
           const role = (event.target as HTMLElement).getAttribute('role');
-          if (['menuitemradio', 'radio'].includes(role ?? '') && ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+          const groupRole = ['menuitemradio', 'radio'].includes(role ?? '') ? role
+            : event.target === event.currentTarget ? (choosingModel ? 'menuitemradio' : 'radio') : null;
+          if (groupRole && ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+            const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>(`button[role="${groupRole}"]:not(:disabled)`) ?? [])];
+            if (!buttons.length) return;
             event.preventDefault();
-            const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>(`button[role="${role}"]:not(:disabled)`) ?? [])];
             const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-            const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : -1) + buttons.length) % buttons.length;
+            const forward = ['ArrowDown', 'ArrowRight'].includes(event.key);
+            const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+              : index < 0 ? (forward ? 0 : buttons.length - 1)
+              : (index + (forward ? 1 : -1) + buttons.length) % buttons.length;
             buttons[next]?.focus();
           }
         }}>
-        {subagentsOpen ? <>
-          <button {...identity.action('back', 'click')} type="button" className="achbit-session-model__menu-back" onClick={() => setSubagentsOpen(false)}>
-            <AchbitShellIcon name="chevronLeft" size={16} />{t(language, 'settings.subagents.title')}
-          </button>
-          <SubagentQuickSettings profiles={profiles} connections={connections} mainProfileId={selectedProfileId} language={language} />
-        </> : choosingModel ? <>
+        {choosingModel ? <>
           <button {...identity.action('back', 'click')} type="button" className="achbit-session-model__menu-back" onClick={() => setChoosingModel(false)}>
             <AchbitShellIcon name="chevronLeft" size={16} />{chinese ? '选择模型' : 'Choose model'}
           </button>
@@ -141,23 +159,36 @@ export default function SessionModelSelector({ language, profiles, connections =
           </div>
         </> : <>
           <div className="achbit-session-model__heading">
-            <button {...identity.action('subagents', 'click')} type="button" className="achbit-session-model__subagents" aria-label={subagentLabel}
-              title={subagentLabel} aria-pressed={subagentsEnabled}
-              onClick={() => setSubagentsOpen(true)}><AchbitShellIcon name="subagents" size={19} /></button>
+            <IconButton {...identity.action('subagents', 'click')} {...subagentHelp.helpEvents} icon="subagents" className="achbit-session-model__subagents" aria-label={subagentLabel}
+              title="" aria-describedby={subagentHelp.helpId} aria-pressed={subagentsEnabled}
+              disabled={subagentBusy || defaultsLoading} onClick={() => void toggleSubagents()} />
+            {subagentHelp.help}
             <button {...identity.action('models', 'click')} type="button" className="achbit-session-model__current" aria-haspopup="menu" onClick={() => setChoosingModel(true)}>
               <strong>{candidate?.thinking === 'disabled' ? t(language, 'agent.profile.thinkingDisabled')
                 : candidateEffort ? t(language, `settings.llm.effort.${candidateEffort}`) : modelReasoningEfforts(candidate).length === 0 ? t(language, 'settings.llm.serviceDefault') : (chinese ? '选择强度' : 'Choose level')}</strong>
-              <span>{candidate?.name ?? title}<AchbitShellIcon name="chevronRight" size={14} /></span>
+              <span><b>{candidate?.name ?? title}</b><AchbitShellIcon name="chevronRight" size={14} /></span>
             </button>
+            <IconButton {...identity.action('settings', 'click')} icon="settings" className="achbit-session-model__settings"
+              aria-label={t(language, 'settings.llm.openCurrent')} disabled={!selected || !openModelSettings}
+              onClick={() => {
+                if (!selected || !openModelSettings) return;
+                close();
+                openModelSettings({ profileId: selected.id, connectionId: selected.connectionId });
+              }} />
           </div>
-          {candidate?.thinking !== 'disabled' && modelReasoningEfforts(candidate).length > 0 && <div className="achbit-session-model__efforts" role="radiogroup"
+          {candidate?.thinking !== 'disabled' && efforts.length > 0 && controlStyle === 'slider' && <ReasoningEffortSlider
+            key={candidate?.id} efforts={efforts} value={candidateEffort} disabled={busy || !candidate?.enabled}
+            language={language} subagentsEnabled={subagentsEnabled && confirmed && candidate?.id === selectedProfileId}
+            onSelect={effort => choose(effort)} />}
+          {candidate?.thinking !== 'disabled' && efforts.length > 0 && controlStyle === 'segments' && <div className="achbit-session-model__efforts" role="radiogroup"
             aria-label={t(language, 'settings.llm.reasoningEffort')}>
-            {modelReasoningEfforts(candidate).map(effort => <button
+            {efforts.map(effort => <button
               {...identity.action('select-effort', 'click', { profileId: candidate?.id, effort })}
               key={effort} type="button" role="radio" aria-checked={confirmed && candidate?.id === selectedProfileId && effectiveEffort === effort}
               disabled={!candidate?.enabled} aria-disabled={busy || !candidate?.enabled} onClick={() => void choose(effort)}>{t(language, `settings.llm.effort.${effort}`)}</button>)}
           </div>}
         </>}
+        {(actionError || styleError) && <p className="achbit-session-model__error" role="alert">{actionError || styleError}</p>}
       </div>}
     </UiRegion>
   </div>;

@@ -25,6 +25,7 @@ import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
 import { runHandoffNotice } from './handoffNotice';
 import { uiEvents } from './uiEvents';
+import { dismissUnappliedInputs } from './unappliedInputReminders';
 import type { PastedTextInput } from '../services/pastedText';
 import { supportsNativeFileInput } from '../services/modelFileInput';
 import {
@@ -111,6 +112,7 @@ export interface LocalAgentState {
   startNewSession(projectId?: string | null): void;
   activateSession(sessionId: string): Promise<void>;
   selectModel(profileId: string, effort: LlmReasoningEffort | null): Promise<boolean>;
+  setMode(mode: 'minimal' | 'full'): Promise<CommandReply>;
   setSubagentSettings(settings: AgentSettings): Promise<boolean>;
   refresh(): Promise<void>;
   sendMessage(
@@ -525,6 +527,14 @@ const store = create<LocalAgentState>((set, get) => ({
     }
   },
 
+  setMode: async (mode) => {
+    const sessionId = get().sessionId;
+    if (!sessionId) throw new Error('session_not_found');
+    return submitCommandAndReconcile(set, get, {
+      schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'session.mode.set',
+      sessionId, commandId: nextId('command'), mode,
+    });
+  },
   selectModel: async (profileId, reasoningEffortOverride) => {
     const profile = get().profiles.find(profile => profile.id === profileId && profile.enabled);
     if (!profile || (profile.thinking !== 'disabled' && modelReasoningEfforts(profile).length > 0
@@ -1117,7 +1127,23 @@ async function submitCommandAndReconcile(
   command: ConversationCommand,
 ): Promise<CommandReply> {
   const commandGeneration = generation;
+  const previousProjection = get().projection;
+  const previousReminders = (command.type === 'message.submit' || command.type === 'context.focus')
+    && previousProjection?.sessionId === command.sessionId
+    ? previousProjection.queuedInputs?.filter(input => input.status === 'notApplied').map(input => input.commandId) ?? []
+    : [];
   const reply = await submitLocalAgentCommand(command);
+  if ((reply.status === 'accepted' || reply.status === 'replayed') && previousReminders.length
+    && typeof sessionStorage !== 'undefined') {
+    try {
+      dismissUnappliedInputs(command.sessionId, previousReminders);
+    } catch (error) {
+      // The message is already accepted; a UI receipt failure must never turn it into a failed send.
+      const zh = normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']) === 'zh-CN';
+      uiEvents.publish({ key: `unapplied-dismissal:${command.commandId}`, sessionId: command.sessionId, tone: 'warning',
+        text: `${zh ? '消息已提交，但未能保存旧提醒的关闭状态' : 'Message submitted, but the previous reminders could not be dismissed'}: ${errorMessage(error)}` });
+    }
+  }
   if (reply.status === 'accepted') {
     const profileId = command.type === 'message.submit' || command.type === 'context.focus' ? command.profileId : undefined;
     if (profileId) set({ defaultProfileId: profileId });

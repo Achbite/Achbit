@@ -194,6 +194,28 @@ test('Escape releases a pointer-focused action after dismissal without disturbin
   assert.equal(frames.size, 0, 'dispose cancels pending cleanup');
 });
 
+test('outside pointer releases only a surviving action focus after native handling', async t => {
+  const { createInteractionFocus, installInteractionFocus } = await loadGuiModule(t, '/src/components/shared/interactionFocus.ts');
+  const { document, element, listeners, frames, flushFrames } = documentFixture(t);
+  const interaction = createInteractionFocus();
+  const stop = installInteractionFocus(document, interaction); t.after(stop);
+  const action = element('button'), blank = element(), other = element('button'), child = element('svg');
+  action.children.push(child);
+  const pointer = target => listeners.get('pointerdown').listener({ target });
+  action.focus(); pointer(blank);
+  assert.equal(document.activeElement, action, 'allow pointer defaults to transfer focus first');
+  flushFrames(); assert.equal(document.activeElement, document.body, 'blank-space selection protection must not pin action focus');
+  action.focus(); pointer(child); flushFrames(); assert.equal(document.activeElement, action, 'the same action and its SVG are not outside');
+  action.focus(); pointer(other); other.focus(); flushFrames(); assert.equal(document.activeElement, other, 'keep the newly reached control');
+  action.focus(); pointer(blank); listeners.get('keydown').listener({ key: 'Tab' }); flushFrames();
+  assert.equal(document.activeElement, action, 'new keyboard navigation supersedes pointer cleanup');
+  for (const tag of ['input', 'textarea', 'select']) {
+    const editor = element(tag); editor.focus(); pointer(blank); flushFrames(); assert.equal(document.activeElement, editor, tag);
+  }
+  action.focus(); pointer(blank); pointer(action); flushFrames(); assert.equal(document.activeElement, action);
+  action.focus(); pointer(blank); assert.equal(frames.size, 1); stop(); assert.equal(frames.size, 0);
+});
+
 test('search reveal is cleared on the next interaction and moves focus only for keyboard navigation', async t => {
   const { createInteractionFocus } = await loadGuiModule(t, '/src/components/shared/interactionFocus.ts');
   const { document, element } = documentFixture(t);
@@ -285,6 +307,29 @@ test('manual approval focuses only an idle body in the document that owns keyboa
     assert.equal(document.activeElement, scenario.expectedCalls ? panel : scenario.active, scenario.name);
     if (scenario.expectedCalls) assert.deepEqual(focusCalls, [{ preventScroll: true }]);
   }
+});
+
+test('pointer-opened panels keep neutral focus while keyboard opening still focuses the intended control', async t => {
+  const { createInteractionFocus, focusOpenedPanel } = await loadGuiModule(t, '/src/components/shared/interactionFocus.ts');
+  const { document, element } = documentFixture(t);
+  const interaction = createInteractionFocus(), trigger = element('button'), panel = element(), current = element('button');
+  interaction.pointerDown(trigger);
+  focusOpenedPanel(panel, current, interaction);
+  assert.equal(document.activeElement, panel, 'opening from the mouse must not highlight an unrelated action');
+  interaction.keyDown('Meta');
+  focusOpenedPanel(panel, current, interaction);
+  assert.equal(document.activeElement, panel, 'a modifier alone does not imply keyboard navigation');
+  interaction.keyDown('Tab');
+  focusOpenedPanel(panel, current, interaction);
+  assert.equal(document.activeElement, current);
+  current.disabled = true;
+  focusOpenedPanel(panel, current, interaction);
+  assert.equal(document.activeElement, panel, 'a disabled initial control must not lose panel keyboard access');
+  current.disabled = false;
+  focusOpenedPanel(panel, null, interaction);
+  assert.equal(document.activeElement, panel, 'an empty page still accepts Escape');
+  focusOpenedPanel(panel, current, null);
+  assert.equal(document.activeElement, panel, 'an unknown input method must not invent a selected action');
 });
 
 test('content viewers focus their scrollable content after opening rather than the first toolbar action', async t => {

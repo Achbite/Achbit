@@ -9,6 +9,7 @@ import { requestWorkspacePreview } from '../../components/local-agent/readerStat
 import type { ArtifactProjection, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../../components/shared/AchbitShellIcon';
+import { focusOpenedPanel, useInteractionFocus } from '../../components/shared/interactionFocus';
 
 interface AchbitTaskPanelProps {
   language: UiLanguage;
@@ -74,18 +75,25 @@ export function ConversationOutputs({ artifacts, language, expanded, onExpandedC
   onOpen(workspaceId: string, logicalPath: string): Promise<void>;
 }) {
   const navigation = React.useRef<HTMLButtonElement>(null);
+  const panel = React.useRef<HTMLElement>(null);
+  const interaction = useInteractionFocus();
   const previousExpanded = React.useRef(expanded);
+  const navigationRequested = React.useRef(false);
+  const navigate = (value: boolean) => { navigationRequested.current = true; onExpandedChange(value); };
   React.useLayoutEffect(() => {
-    if (previousExpanded.current !== expanded) navigation.current?.focus({ preventScroll: true });
+    if (previousExpanded.current !== expanded) {
+      if (navigationRequested.current && panel.current) focusOpenedPanel(panel.current, navigation.current, interaction);
+      navigationRequested.current = false;
+    }
     previousExpanded.current = expanded;
-  }, [expanded]);
-  return <section className={expanded ? 'achbit-gui-output-page' : 'achbit-gui-task-list-card achbit-gui-output-card'}
+  }, [expanded, interaction]);
+  return <section ref={panel} tabIndex={-1} className={expanded ? 'achbit-gui-output-page' : 'achbit-gui-task-list-card achbit-gui-output-card'}
     aria-label={t(language, 'achbitGui.outputs.title')} onKeyDown={event => {
-      if (expanded && event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); onExpandedChange(false); }
+      if (expanded && event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); navigate(false); }
     }}>
     <div className="achbit-gui-task-list-card__title">
       {expanded && <button ref={navigation} type="button" className="achbit-gui-output-back"
-        aria-label={t(language, 'achbitGui.outputs.back')} onClick={() => onExpandedChange(false)}><AchbitShellIcon name="chevronLeft" /></button>}
+        aria-label={t(language, 'achbitGui.outputs.back')} onClick={() => navigate(false)}><AchbitShellIcon name="chevronLeft" /></button>}
       <span>{t(language, 'achbitGui.outputs.title')}</span>
       {expanded && <small>{artifacts.length}</small>}
     </div>
@@ -93,7 +101,7 @@ export function ConversationOutputs({ artifacts, language, expanded, onExpandedC
       <div className="achbit-gui-output-list">
         <ArtifactLinks location="outputs" artifacts={expanded ? artifacts : artifacts.slice(0, 3)} onOpen={onOpen} />
       </div>
-      {!expanded && artifacts.length > 3 && <button ref={navigation} type="button" className="achbit-gui-output-more" onClick={() => onExpandedChange(true)}>
+      {!expanded && artifacts.length > 3 && <button ref={navigation} type="button" className="achbit-gui-output-more" onClick={() => navigate(true)}>
         <AchbitShellIcon name="chevronRight" />{t(language, 'achbitGui.outputs.showAll', { count: artifacts.length })}
       </button>}
     </>}

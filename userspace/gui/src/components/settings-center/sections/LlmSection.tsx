@@ -16,12 +16,14 @@ import ModelEditor from '../model-services/ModelEditor';
 import SubscriptionAuth from '../model-services/SubscriptionAuth';
 import UsageView from '../model-services/UsageView';
 import SubagentSettings from '../model-services/SubagentSettings';
+import SubagentQuickSettings from '../../local-agent/SubagentQuickSettings';
+import type { ModelSettingsTarget } from '../modelSettingsNavigation';
 import { Cost, data, Hint, message, periodQuery, useModelLanguage } from '../model-services/shared';
 import { UiSettingsContributions, useDisplayTheme } from '../../../ui-plugins/UiPlugins';
 import '../model-services/modelServices.css';
 
 type Page = { kind: 'list' } | { kind: 'usage'; connectionId?: string } | { kind: 'web' } |
-  { kind: 'connection'; id: string } | { kind: 'new'; mode: 'metered' | 'subscription' };
+  { kind: 'connection'; id: string; profileId?: string } | { kind: 'new'; mode: 'metered' | 'subscription' };
 
 function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProviderProfile[]; connections: ModelConnection[] }) {
   const { language } = useModelLanguage();
@@ -88,9 +90,9 @@ function connectionSettings(connection: ModelConnection): ModelConnection {
   return { id, name, adapterId, billingMode, baseUrl, credentialKind };
 }
 
-export function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onMode, onSaved, onBack }: {
+export function ConnectionDetail({ current, adapters, profiles, defaultId, mode, onMode, onSaved, onBack, targetProfileId }: {
   current?: ConnectionSummary; adapters: ProviderAdapterDescriptor[]; profiles: LlmProviderProfile[];
-  defaultId?: string; mode: 'metered' | 'subscription'; onMode?(mode: 'metered' | 'subscription'): void; onSaved(id?: string): Promise<void>; onBack(): void;
+  targetProfileId?: string; defaultId?: string; mode: 'metered' | 'subscription'; onMode?(mode: 'metered' | 'subscription'): void; onSaved(id?: string): Promise<void>; onBack(): void;
 }) {
   const { text, language } = useModelLanguage();
   const theme = useDisplayTheme();
@@ -149,7 +151,7 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
       {current.credentialKind === 'oauth' && <SubscriptionAuth connection={current} onChanged={() => onSaved()} />}
       <UiSettingsContributions slot="settings.connection.detail" onConnectionChanged={() => onSaved()} input={{ kind: 'settings.connection', connection: current, locale: language, theme }} />
       <div className="model-heading model-divider"><h3>{text('模型', 'Models')}</h3><button disabled={!!newProfile} onClick={() => setNewProfile(newModel(draft, adapter))}>{text('添加模型', 'Add model')}</button></div>
-      {models.map(profile => <ModelEditor key={profile.id} profile={profile} adapter={adapter} defaultId={defaultId} onSaved={() => onSaved()} />)}
+      {models.map(profile => <ModelEditor key={profile.id} profile={profile} adapter={adapter} defaultId={defaultId} reveal={targetProfileId === profile.id} onSaved={() => onSaved()} />)}
       {newProfile && <ModelEditor key={newProfile.id} profile={newProfile} adapter={adapter} onSaved={async () => { await onSaved(); setNewProfile(null); }} onRemove={() => setNewProfile(null)} />}
       <div className="model-actions model-divider"><button onClick={() => void onSaved()}>{text('重新加载', 'Reload')}</button><button className="model-danger model-push" disabled={busy || models.length > 0} onClick={async () => {
         setBusy(true); try { data(await patchModelConnections({ removeConnectionId: draft.id })); await onSaved(); onBack(); } catch (e) { setError(message(e)); } finally { setBusy(false); }
@@ -158,11 +160,14 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
   </>;
 }
 
-export default function LlmSection({ active = true }: { active?: boolean }) {
+export default function LlmSection({ active = true, initialModelTarget }: { active?: boolean; initialModelTarget?: ModelSettingsTarget | null }) {
   const interaction = useInteractionFocus();
   const { text, language } = useModelLanguage();
   const theme = useDisplayTheme();
-  const [page, setPage] = useState<Page>({ kind: 'list' });
+  const [page, setPage] = useState<Page>(() => initialModelTarget
+    ? { kind: 'connection', id: initialModelTarget.connectionId, profileId: initialModelTarget.profileId } : { kind: 'list' });
+  const sessionId = useLocalAgentStore(state => state.sessionId);
+  const mainProfileId = useLocalAgentStore(state => state.selectedProfileId);
   const [catalog, setCatalog] = useState<ConnectionsResult | null>(null);
   const [profiles, setProfiles] = useState<LlmProfilesResult | null>(null);
   const [usage, setUsage] = useState<UsageReport | null>(null);
@@ -214,12 +219,20 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
   return <section className="model-services" id="llm-connections">
     {page.kind !== 'list' && <nav className="model-breadcrumb"><button onClick={goBack}>← {text('模型与服务', 'Models & services')}</button><span>›</span><span>{page.kind === 'usage' ? text('用量统计', 'Usage') : page.kind === 'web' ? text('Web 工具', 'Web tools') : current?.name ?? text('添加连接', 'Add connection')}</span></nav>}
     {error && <div className="settings-error" role="alert">{error}</div>}
+    {!loading && page.kind === 'connection' && (!current || page.profileId && !profiles?.profiles.some(profile => profile.id === page.profileId && profile.connectionId === page.id))
+      && <div className="settings-error" role="alert">{t(language, 'settings.llm.targetUnavailable')}</div>}
     {loading && <div role="status">{text('正在读取…', 'Loading…')}</div>}
     {page.kind === 'list' && <>
       <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-connection-entry"><button ref={addButton} onClick={() => setPage({ kind: 'new', mode: 'metered' })}>+ {text('API 连接', 'API connection')}</button><button onClick={() => setPage({ kind: 'new', mode: 'subscription' })}>+ Coding Plan</button></div></div>
       <div className="model-actions model-subheading"><span>{text('最近使用', 'Last used')} · {profiles?.profiles.find(p => p.id === profiles.defaultProfileId)?.name ?? '—'}</span><button className="model-push" onClick={() => setPage({ kind: 'usage' })}>{text('用量统计', 'Usage')} ↗</button></div>
       {profiles && <ApprovalReviewerModel profiles={profiles.profiles} connections={profiles.connections} />}
-      {profiles && <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />}
+      {profiles && <>
+        {sessionId && <details className="model-editor model-divider">
+          <summary><strong>{t(language, 'settings.subagents.currentSession')}</strong></summary>
+          <SubagentQuickSettings profiles={profiles.profiles} connections={profiles.connections} mainProfileId={mainProfileId} language={language} />
+        </details>}
+        <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />
+      </>}
       {catalog && (['metered', 'subscription'] as const).map(mode => {
         const list = catalog.connections.filter(c => c.billingMode === mode);
         return <section className="model-connection-group" key={mode}><div className="model-heading"><h3>{mode === 'metered' ? text('API 连接', 'API connections') : 'Coding Plan'}</h3><span>{text('近 30 天', 'Last 30 days')}{mode === 'metered' && <Hint>{text('显示已记录请求的 API 费用估算，非服务方账单。', 'Estimated cost of recorded requests; not a provider invoice.')}</Hint>}</span></div>
@@ -239,7 +252,7 @@ export default function LlmSection({ active = true }: { active?: boolean }) {
       {usageError && <div className="settings-error" role="alert">{usageError}</div>}
       <div className="model-actions model-divider"><button onClick={() => setPage({ kind: 'web' })}>{text('Web 工具', 'Web tools')} ›</button><button className="model-push" onClick={() => void refresh().catch(e => setError(message(e)))}>{text('重新加载', 'Reload')}</button></div>
     </>}
-    {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onMode={mode => setPage({ kind: 'new', mode })} onSaved={refresh} onBack={goBack} />}
+    {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} targetProfileId={page.kind === 'connection' ? page.profileId : undefined} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onMode={mode => setPage({ kind: 'new', mode })} onSaved={refresh} onBack={goBack} />}
     {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} />}
     {page.kind === 'web' && <AgentSettingsSection category="services" />}
   </section>;

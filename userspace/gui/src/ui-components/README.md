@@ -54,6 +54,25 @@ A new public region still needs an explicit plugin-interface decision. Do not ad
 
 A feature-owned native tab, tree row, input or progress graphic does not become a public primitive merely because it renders UI. Reuse the existing catalog for ordinary shared chrome, retain feature semantics at their owner, and add a reusable entry only when a distinct reusable control is needed. Static component exports and replaceable region registration serve different purposes; neither requires a second mounted-state registry.
 
+## Shared interaction policy
+
+All application surfaces use the document-level `interactionFocus` policy (including portals). Pointer-opened panels focus a neutral container; genuine keyboard navigation keeps visible focus and restores its opener. After an outside pointer or Escape, only an unchanged, previously focused action is released. Editors, text selection, newer focus and business selection are not reset.
+
+Transient, non-modal surfaces use `components/shared/useDismissibleLayer.ts`. The feature owns `open` and `onDismiss`; pass the anchor and every portal root in `roots`, plus `trigger` when Escape should restore it. The hook shares outside-pointer capture, focus-outside dismissal, Escape and listener cleanup; it adds no UI store or layer registry. Local nested-page/menu Escape handlers take priority via preventDefault/stopPropagation. Non-focusable hover help uses `escapeCapture: true` so its first Escape closes only the hint even while focus stays elsewhere. Native dialogs, IME composition and repeat Escape are not dismissed by a background layer.
+
+| Surface | Owner / policy |
+| --- | --- |
+| Compact file-change card | `FileChanges`: explicit hover preview + pinned expansion; outside/Escape clears both. No CSS focus-within visibility. |
+| Model and context usage | `SessionModelSelector`, `ContextUsageControl`: shared layer boundary; model subpage Escape remains local. |
+| Attachments, permissions, plugin picker | `useAgentComposer`: include permission portal and plugin textarea in the corresponding boundary. |
+| Hover/focus help | `SettingsHelp`: shared boundary with capture-priority Escape, no focus transfer. |
+| Theme, diagram, file-tree and transcript path menus | Their feature owners use the shared hook; selection, errors, viewport layout and commands remain local. |
+| Sidebar menus | `SidebarMenu`: shared dismissal, pointer/keyboard opening and arrow navigation. |
+| Native modal dialogs / inputs / persistent content | `ModalDialog`, native editing controls and feature disclosure state; not outside-dismissed by the transient hook. |
+| Standalone display plugins | Retain published plugin actions and owned listener/disposal lifetimes; do not import React internals into a plugin. |
+
+For a new transient surface, check outside clicks (including stopped propagation), internal/portal clicks, Tab leaving, Escape priority, keyboard return, pointer cleanup, disabled/removed anchors and unmount cleanup. Visibility and `aria-expanded` must derive from the same state, never independently from `:focus-within`. Do not add per-feature document dismissal listeners or a blanket global blur to solve these cases.
+
 ## Validation
 
 `tests/ui-components.test.mjs` verifies registration identity, composition, native attributes, accessible labels, owner callbacks and region selection. It also rejects feature imports and re-exports that bypass the catalog for registered shared controls or icons. Run the existing GUI tests and typechecks in the development container; migrated controls retain their feature-level behavior tests. `tests/manual/ui-components.html` is a backend-free catalog fixture using the registered production components for desktop/narrow layout, button states, form submission, modal dismissal and focus return.

@@ -20,6 +20,11 @@ test('GUI slash menu discovers actions and leaves paths and ordinary messages al
     assert.equal(commands.parseComposerCommand(draft), null, draft);
   }
   assert.deepEqual(commands.parseComposerCommand('/new  '), { name: 'new', argument: '' });
+  for (const draft of ['/SimLoop', '/simloop', '/SIMLOOP']) assert.deepEqual(commands.parseComposerCommand(draft), { name: 'simloop', argument: '' });
+  assert.deepEqual(commands.parseComposerCommand('/fUlLlOoP'), { name: 'fullloop', argument: '' });
+  assert.deepEqual(commands.suggestComposerCommands('/SIM').map(item => item.id), ['simloop']);
+  assert.deepEqual(commands.parseComposerCommand('/SimLoop do not submit'), {name:'simloop',argument:'do not submit'});
+  assert.equal(commands.parseComposerCommand(' /SimLoop'), null);
 });
 
 test('GUI commands dispatch existing actions without sending model prompts or cancelling on view change', async t => {
@@ -57,4 +62,18 @@ test('GUI commands dispatch existing actions without sending model prompts or ca
   await composer.submitDraft();
   assert.equal(draft, '/cancel', 'a matched action failure keeps the draft');
   assert.equal(sent, 0, 'a failed command never falls through to chat');
+  const modes = [];
+  store.setState({setMode: async mode => {modes.push(mode); return {status:'accepted'};}});
+  draft = '/sImLoOp'; render(); await composer.submitDraft();
+  draft = '/FULLLOOP'; render(); await composer.submitDraft();
+  assert.deepEqual(modes, ['minimal','full']);
+  assert.equal(sent, 0, 'mode commands never submit a model prompt');
+  assert.equal(cancelled, 1, 'mode commands do not cancel the running task');
+  draft = '/SimLoop not a task'; render(); await composer.submitDraft();
+  assert.deepEqual(modes, ['minimal','full']);
+  assert.equal(draft, '/SimLoop not a task');
+  store.setState({setMode: async () => {throw new Error('save failed');}});
+  draft = '/SimLoop'; render(); await composer.submitDraft();
+  assert.equal(draft, '/SimLoop', 'failed mode saves preserve the draft');
+  assert.equal(sent, 0);
 });

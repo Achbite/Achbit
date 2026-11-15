@@ -28,8 +28,8 @@ async function setup(t) {
   globalThis.self = {};
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
   const [{ ConversationComposer }] = await loadGuiModules(t, ['/src/components/local-agent/ConversationComposer.tsx']);
-  return (composer, readerExpanded = true, changeBar) => capture(ConversationComposer, {
-    language: 'zh-CN', composer, readerExpanded, changeBar, uiActionError: null,
+  return (composer, readerExpanded = true, changeBar, conversationBodyRef) => capture(ConversationComposer, {
+    language: 'zh-CN', composer, readerExpanded, changeBar, conversationBodyRef, uiActionError: null,
     onDismissUiActionError() {}, onEditBrowserReview() {},
   });
 }
@@ -65,6 +65,34 @@ test('Reader disclosure and file-change entry coexist without entering the edita
   assert.deepEqual(calls, [], 'accessory rendering never submits a message');
   await findReactElement(tree, node => node.props['data-ui-action'] === 'composer.controls.submit').props.onClick();
   assert.deepEqual(calls, ['submit']);
+});
+
+test('the mounted composer connects and releases its own transcript boundary measurement', async t => {
+  const render = await setup(t);
+  const conversationBodyRef = { current: null };
+  const tree = render(draftComposer(), false, undefined, conversationBodyRef);
+  const footer = findReactElement(tree, node => node.type === 'footer');
+  const previous = globalThis.ResizeObserver;
+  let observed = 0, disconnected = 0;
+  globalThis.ResizeObserver = class {
+    observe() { observed++; }
+    disconnect() { disconnected++; }
+  };
+  t.after(() => { globalThis.ResizeObserver = previous; });
+  const properties = new Map();
+  const viewport = { clientHeight: 400, getBoundingClientRect: () => ({ bottom: 400 }), style: {
+    getPropertyValue: name => properties.get(name), setProperty: (name, value) => properties.set(name, value),
+    removeProperty: name => properties.delete(name),
+  } };
+  conversationBodyRef.current = { parentElement: viewport };
+  const shell = { closest: () => null,
+    querySelector: () => ({ getBoundingClientRect: () => ({ top: 448 }) }) };
+  footer.props.ref(shell);
+  assert.equal(properties.get('--conversation-composer-overlap'), '48px');
+  assert.equal(observed, 3);
+  footer.props.ref(null);
+  assert.equal(disconnected, 1);
+  assert.equal(properties.size, 0);
 });
 
 test('ordinary conversation input keeps its full presentation and existing stop action', async t => {

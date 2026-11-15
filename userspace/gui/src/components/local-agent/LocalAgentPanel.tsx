@@ -198,6 +198,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         <button type="button" onClick={updates.retry}>{t(language, 'achbitGui.statusAction.retry')}</button>
       </DismissibleError>}
       <ConversationComposer
+        conversationBodyRef={bodyRef}
         readerExpanded={resourcePreview.visible && resourcePreview.expanded}
         onEditBrowserReview={resourcePreview.editBrowserReview}
         changeBar={showChangeBar && <FileChanges key={`${sessionId}:${projection.run!.runId}`} activities={roundChangeActivities(projection, projection.run!.runId)} compact />}

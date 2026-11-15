@@ -21,5 +21,8 @@ export default defineConfig({
       usageWidget: fileURLToPath(new URL('./usage-widget.html', import.meta.url)),
       viewport: fileURLToPath(new URL('./viewport.html', import.meta.url)),
       messages: fileURLToPath(new URL('./messages.html', import.meta.url)),
+      statusReminders: fileURLToPath(new URL('./status-reminders.html', import.meta.url)),
+      focusPanels: fileURLToPath(new URL('./focus-panels.html', import.meta.url)),
+      modelPanel: fileURLToPath(new URL('./model-panel.html', import.meta.url)),
     } } },
 });

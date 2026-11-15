@@ -13,6 +13,7 @@ import { useConversationViewport } from '../../src/components/local-agent/useCon
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
+import { InteractionPreview } from './InteractionPreview';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/achbit-gui/styles/achbitShell.css';
@@ -242,9 +243,9 @@ function Preview() {
         {viewport.showJumpToLatest && <button className="local-agent__jump-latest" aria-label="前往最新消息" onClick={viewport.scrollToLatest}>↓</button>}
       </div>
       {readerExpanded && <aside className="local-agent__reader" style={{ padding: 20, color: 'var(--ac-muted)' }}>Reader 内容区域 · 保留原网格分区</aside>}
-      <ConversationComposer composer={composer} readerExpanded={readerExpanded} language="zh-CN" uiActionError={null} onDismissUiActionError={() => {}} onEditBrowserReview={() => {}}
+      <ConversationComposer conversationBodyRef={viewport.bodyRef} composer={composer} readerExpanded={readerExpanded} language="zh-CN" uiActionError={null} onDismissUiActionError={() => {}} onEditBrowserReview={() => {}}
         changeBar={showChanges && <ConversationSessionScope.Provider value={sessionId}><FileChanges activities={changeActivities} compact /></ConversationSessionScope.Provider>} />
     </main></div>
   </>;
 }
-createRoot(document.getElementById('root')!).render(<Preview />);
+createRoot(document.getElementById('root')!).render(<InteractionPreview><Preview /></InteractionPreview>);

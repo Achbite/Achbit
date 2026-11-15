@@ -8,6 +8,7 @@ import { useAgentComposer } from '../../src/components/local-agent/useAgentCompo
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
 import { installTextSelectionBoundary } from '../../src/components/shared/textSelection';
+import { InteractionPreview } from './InteractionPreview';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/theme/builtinFonts.css';
@@ -163,4 +164,4 @@ function Preview() {
     </main><p className="fixture-result" role="status">{result}</p>
   </>;
 }
-createRoot(document.getElementById('root')!).render(<Preview />);
+createRoot(document.getElementById('root')!).render(<InteractionPreview><Preview /></InteractionPreview>);

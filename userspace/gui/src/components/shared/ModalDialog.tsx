@@ -1,7 +1,7 @@
 import React, { useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import './modalDialog.css';
-import { captureFocusReturn, returnInteractionFocus, useInteractionFocus } from './interactionFocus';
+import { captureFocusReturn, focusOpenedPanel, returnInteractionFocus, useInteractionFocus } from './interactionFocus';
 
 /** The native top layer owns focus containment, nested dialogs and background inertness. */
 export default function ModalDialog({ children, onClose, busy = false, className = '', ...label }: {
@@ -21,6 +21,11 @@ export default function ModalDialog({ children, onClose, busy = false, className
   useLayoutEffect(() => {
     const dialog = ref.current!;
     dialog.showModal();
+    const active = dialog.ownerDocument.activeElement;
+    if (interaction?.keyboard === false && active instanceof HTMLElement
+      && active.matches('button, summary, a[href], select, input[type="checkbox"], input[type="radio"], input[type="range"], [role="button"], [role="tab"]')) {
+      focusOpenedPanel(dialog, null, interaction);
+    }
     return () => {
       dialog.close();
       if (interaction) interaction.restore(origin.current);
@@ -28,7 +33,7 @@ export default function ModalDialog({ children, onClose, busy = false, className
     };
   }, []);
   const dismiss = () => { if (!state.current.busy) state.current.onClose(); };
-  return createPortal(<dialog ref={ref} {...label} className={`app-modal ${className}`} aria-modal="true"
+  return createPortal(<dialog ref={ref} {...label} className={`app-modal ${className}`} aria-modal="true" tabIndex={-1}
     onCancel={(event) => { event.preventDefault(); event.stopPropagation(); dismiss(); }}
     onKeyDown={(event) => { event.stopPropagation(); }}
     onMouseDown={(event) => { if (event.target === event.currentTarget) dismiss(); }}>

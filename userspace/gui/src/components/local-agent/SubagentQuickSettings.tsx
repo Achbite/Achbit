@@ -5,6 +5,8 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import SubagentModelFields from '../shared/SubagentModelFields';
 import { ToggleSwitch } from '../../ui-components';
+import ConfirmedNumberInput from '../shared/ConfirmedNumberInput';
+import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 
 export default function SubagentQuickSettings({ profiles, connections, mainProfileId, language }: {
   profiles: readonly LlmProviderProfile[];
@@ -21,13 +23,15 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
   const saving = useLocalAgentStore(state => state.subagentSettingsBusy);
   const settings = sessionId ? saved : draft ?? subagentDefaults(defaults);
   const [error, setError] = useState<string | null>(null);
-  const save = async (next: AgentSettings) => {
-    if (saving || loading) return;
+  useInterfaceReloadGuard(false, t(language, 'settings.subagents.currentSession'), saving);
+  const save = async (next: AgentSettings): Promise<boolean> => {
+    if (saving || loading) return false;
     setError(null);
     try {
       const saved = await useLocalAgentStore.getState().setSubagentSettings(next);
       if (!saved) setError(useLocalAgentStore.getState().error ?? t(language, 'settings.common.saveFailed'));
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      return saved;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return false; }
   };
   return <div className="achbit-subagent-config">
     {settings ? <fieldset disabled={saving || loading || (!sessionId && defaultsLoading)}>
@@ -38,6 +42,14 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
       <SubagentModelFields profiles={profiles} connections={connections} mainProfileId={mainProfileId} language={language}
         profileId={settings.profileId} reasoningEffort={settings.reasoningEffort}
         onChange={patches => void save({ ...settings, ...patches })} />
+      {(['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'] as const).map(name => <label key={name}>
+        <span>{t(language, `settings.subagents.${name}`)}</span><ConfirmedNumberInput required min={1} max={Number.MAX_SAFE_INTEGER} step={1}
+          value={settings[name]} language={language} label={t(language, `settings.subagents.${name}`)} disabled={saving || loading}
+          onCommit={value => value === undefined ? Promise.resolve(false) : save({ ...settings, [name]: value })} />
+      </label>)}
+      <label className="achbit-subagent-config__toggle"><span>{t(language, 'settings.subagents.allowMemberAnalysis')}</span>
+        <ToggleSwitch checked={settings.allowMemberAnalysis} onChange={event => void save({ ...settings, allowMemberAnalysis: event.target.checked })} />
+      </label>
       <label className="achbit-subagent-config__toggle"><span title={t(language, 'settings.subagents.fullConfigurationHelp')}>{t(language, 'settings.subagents.allowFullConfiguration')}</span>
         <ToggleSwitch checked={settings.allowFullConfiguration}
           onChange={event => void save({ ...settings, allowFullConfiguration: event.target.checked })} />
@@ -51,7 +63,7 @@ export default function SubagentQuickSettings({ profiles, connections, mainProfi
   </div>;
 }
 
-function subagentDefaults(settings: UserSettings): AgentSettings {
+export function subagentDefaults(settings: UserSettings): AgentSettings {
   return decodeAgentSettings({
     enabled: settings['agent.subagents.enabled'],
     profileId: settings['agent.subagents.profileId'],

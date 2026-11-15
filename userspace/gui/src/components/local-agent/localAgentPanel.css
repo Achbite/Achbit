@@ -157,17 +157,26 @@
   overflow-anchor: none;
 }
 
+/* Accessory rows float over the transcript; its fade ends at the input itself. */
+.local-agent:not(.local-agent--empty):not(.local-agent--expanded) .local-agent__body {
+  height: calc(100% + var(--conversation-composer-overlap, 0px));
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
+}
+
 /* This viewport keeps keyboard scrolling and restored focus without a control outline. */
 :root[data-product='achbit-gui'] .local-agent__body:focus {
   outline: none;
 }
 
 /* Keep wheel, touch and keyboard scrolling; the conversation rail provides navigation. */
-:root[data-product='achbit-gui'] .local-agent__body {
+:root[data-product='achbit-gui'] .local-agent__body,
+:root[data-product='achbit-gui'] .conversation-navigation__ticks {
   scrollbar-width: none;
 }
 
-:root[data-product='achbit-gui'] .local-agent__body::-webkit-scrollbar {
+:root[data-product='achbit-gui'] .local-agent__body::-webkit-scrollbar,
+:root[data-product='achbit-gui'] .conversation-navigation__ticks::-webkit-scrollbar {
   display: none;
 }
 
@@ -228,8 +237,23 @@
 }
 
 .conversation-navigation:is(:hover, :has(:focus-visible)) .conversation-navigation__ticks button span {
-  width: 14px;
-  opacity: .55;
+  width: var(--conversation-tick-width, 14px);
+  opacity: var(--conversation-tick-opacity, .55);
+}
+
+.conversation-navigation__ticks :where(button:has(+ button + button + button:is(:hover, :focus-visible)), button:is(:hover, :focus-visible) + button + button + button) {
+  --conversation-tick-width: 16px;
+  --conversation-tick-opacity: .6;
+}
+
+.conversation-navigation__ticks :where(button:has(+ button + button:is(:hover, :focus-visible)), button:is(:hover, :focus-visible) + button + button) {
+  --conversation-tick-width: 18px;
+  --conversation-tick-opacity: .65;
+}
+
+.conversation-navigation__ticks :where(button:has(+ button:is(:hover, :focus-visible)), button:is(:hover, :focus-visible) + button) {
+  --conversation-tick-width: 20px;
+  --conversation-tick-opacity: .75;
 }
 
 .conversation-navigation:is(:hover, :has(:focus-visible)) .conversation-navigation__ticks button:is(:hover, :focus-visible, [aria-current]) span {
@@ -505,13 +529,15 @@
   margin: 2px 0 20px;
   color: var(--ac-muted);
   font-size: var(--ac-font-caption);
+  line-height: var(--ac-line-body, 1.6);
 }
 
-.local-agent__provider-stage > .local-agent__run-spinner { margin-top: 3px; }
-.local-agent__stage-main { display: flex; gap: 9px; flex-wrap: wrap; align-items: baseline; }
-.local-agent__stage-main > [role="status"] { font-weight: 500; color: var(--ac-foreground); }
+/* Center every marker on the first text line, including wrapped or enlarged labels. */
+.local-agent__provider-stage > .local-agent__run-spinner { margin-top: calc((1lh - 13px) / 2); }
+.local-agent__stage-main { display: flex; min-width: 0; gap: 2px 9px; flex-wrap: wrap; align-items: baseline; }
+.local-agent__stage-main > [role="status"] { min-width: 0; overflow-wrap: anywhere; font-weight: 500; color: var(--ac-foreground); }
 .local-agent__stage-time { font-variant-numeric: tabular-nums; }
-.local-agent__stage-dot { width: 8px; height: 8px; border: 2px solid currentColor; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
+.local-agent__stage-dot { box-sizing: border-box; width: 8px; height: 8px; border: 2px solid currentColor; border-radius: 50%; margin-top: calc((1lh - 8px) / 2); flex: 0 0 auto; }
 .local-agent__provider-stage--completed > .local-agent__stage-dot { color: var(--ac-success); background: currentColor; }
 .local-agent__provider-stage--waiting > .local-agent__stage-dot { color: var(--ac-warning); }
 .local-agent__provider-stage--failed > .local-agent__stage-dot,
@@ -521,6 +547,7 @@
 .local-agent__tool-entry--rejected .local-agent__tool-entry-heading { color: var(--ac-warning); }
 
 .local-agent__run-spinner {
+  box-sizing: border-box;
   width: 13px;
   height: 13px;
   flex: 0 0 13px;
@@ -1458,6 +1485,20 @@
   z-index: 5;
   padding: 0 20px;
   background: transparent;
+  /* Transparent space above the input still belongs to the scrollable transcript. */
+  pointer-events: none;
+}
+
+.local-agent__composer-shell > * {
+  pointer-events: auto;
+}
+
+.local-agent__composer-shell > .conversation-change-dock {
+  pointer-events: none;
+}
+
+.conversation-change-dock > * {
+  pointer-events: auto;
 }
 
 .local-agent__composer-content {
@@ -2154,8 +2195,9 @@
 .conversation-queued-dialog__body { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 18px; font: var(--ac-font-body)/var(--ac-line-body) var(--ac-font-ui); }
 .conversation-queued-dialog__body pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .local-agent__unapplied-inputs { margin: 8px 0; color: var(--ac-muted); font-size: var(--ac-font-caption); }
-.local-agent__unapplied-inputs > summary { cursor: pointer; list-style: none; }
-.local-agent__unapplied-inputs > summary::-webkit-details-marker { display: none; }
+.local-agent__unapplied-label { display: inline-flex; align-items: center; gap: 8px; line-height: var(--ac-line-compact, 1.45); }
+.local-agent__unapplied-label > svg { flex: none; }
+.local-agent__unapplied-label > span { min-width: 0; overflow-wrap: anywhere; }
 .local-agent__unapplied-inputs p { margin: 8px 0; line-height: var(--ac-line-body); }
 .local-agent__unapplied-input { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-top: 8px; padding: 8px 0; border-top: 1px solid var(--ac-border); }
 .local-agent__unapplied-input-text { flex: 1; min-width: 0; }

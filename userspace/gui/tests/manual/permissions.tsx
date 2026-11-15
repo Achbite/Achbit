@@ -8,6 +8,8 @@ import { useAgentComposer } from '../../src/components/local-agent/useAgentCompo
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
+import { InteractionPreview } from './InteractionPreview';
+import '../../src/components/shared/focus.css';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/theme/builtinFonts.css';
@@ -53,4 +55,4 @@ function Preview() {
     </main>
   </>;
 }
-createRoot(document.getElementById('root')!).render(<Preview />);
+createRoot(document.getElementById('root')!).render(<InteractionPreview><Preview /></InteractionPreview>);

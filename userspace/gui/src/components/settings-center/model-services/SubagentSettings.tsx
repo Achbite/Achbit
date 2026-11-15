@@ -61,7 +61,7 @@ export default function SubagentSettings({ profiles, connections }: {
   };
   return <details className="model-editor model-divider">
     <summary aria-describedby={defaultsHelp.helpId} {...defaultsHelp.helpEvents}>
-      {defaultsHelp.help}<strong>{t(language, 'settings.subagents.title')}</strong>
+      {defaultsHelp.help}<strong>{t(language, 'settings.subagents.defaults')}</strong>
       <span>{enabled ? (!selected ? t(language, 'settings.subagents.followMain')
         : available.find(value => value.id === selected)?.name ?? t(language, 'settings.subagents.unavailable'))
         : t(language, 'settings.common.disabled')}</span>

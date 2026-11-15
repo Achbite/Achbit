@@ -3,6 +3,8 @@ import type { ContextCompositionProjection, ContextUsageProjection } from '@achb
 import { t, type UiLanguage } from '../../i18n';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useViewportBounds } from '../shared/useViewportBounds';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
+import { focusOpenedPanel, useInteractionFocus } from '../shared/interactionFocus';
 import { lastCallInputCacheMetric } from '../../utils/providerUsage';
 import { buildContextCompositionLayout, CONTEXT_FOCUS_USED_PERCENT } from './contextCompositionLayout';
 import {
@@ -40,6 +42,9 @@ export function ContextUsageControl({
 }: ContextUsageControlProps) {
   const identity = useUiOwner('composer.context');
   const panelRef = useRef<HTMLElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const interaction = useInteractionFocus();
+  useDismissibleLayer({ open: contextOpen, roots: [rootRef], trigger: triggerRef, onDismiss: () => setContextOpen(false) });
   useViewportBounds(panelRef, contextOpen);
   const [hoverContextKey, setHoverContextKey] = useState<ContextFocusKey | null>(null);
   const displayedUsage = contextUsage;
@@ -100,14 +105,8 @@ export function ContextUsageControl({
   const hasContextFacts = Boolean(displayedUsage || contextReceipt);
 
   useEffect(() => {
-    if (!contextOpen) return undefined;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && !rootRef.current?.contains(target)) setContextOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
-  }, [contextOpen]);
+    if (contextOpen && panelRef.current) focusOpenedPanel(panelRef.current, panelRef.current.querySelector('button'), interaction);
+  }, [contextOpen, interaction]);
 
   useEffect(() => {
     if (!hasContextFacts) setContextOpen(false);
@@ -165,6 +164,7 @@ export function ContextUsageControl({
     <>
       <button
         {...identity.action('trigger', 'click')}
+        ref={triggerRef}
         type="button"
         className={`achbit-session-model__context${contextPercent === null ? ' achbit-session-model__context--unknown' : ''}`}
         style={{ '--achbit-context-percent': `${contextPercent ?? 0}%` } as React.CSSProperties}
@@ -180,6 +180,7 @@ export function ContextUsageControl({
         <section
           {...identity.part('panel')}
           ref={panelRef}
+          tabIndex={-1}
           data-native-overlay
           className="achbit-session-model__context-popover"
           role="dialog"

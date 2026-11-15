@@ -3,6 +3,7 @@ import { UiIcon } from '../../ui-components';
 import type { GuiAccentColor, GuiResolvedTheme } from '../../theme/achbitGuiTheme';
 import { paletteColor, type PaletteOverrides } from '../../theme/palette';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { captureFocusReturn, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../shared/interactionFocus';
 
 export interface ThemeChoice { id: string; name: string; colors: PaletteOverrides }
@@ -63,9 +64,6 @@ export default function ThemePicker({ label, choices, selected, mode, accent, di
   useEffect(() => {
     if (!open) return;
     if (keyboardOpen.current) options.current[choices.findIndex((choice) => choice.id === selected)]?.focus();
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener('pointerdown', outside);
-    return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
   useEffect(() => {
     if (!open && !disabled && restoreFocus.current !== null && origin.current) {
@@ -73,6 +71,7 @@ export default function ThemePicker({ label, choices, selected, mode, accent, di
       restoreFocus.current = null;
     }
   }, [open, disabled]);
+  useDismissibleLayer({ open, roots: [root, menu], trigger, onDismiss: () => setOpen(false) });
   const expand = (keyboard: boolean) => {
     origin.current = interaction ? interaction.capture(trigger.current) : captureFocusReturn(trigger.current);
     keyboardOpen.current = keyboard;
@@ -82,9 +81,7 @@ export default function ThemePicker({ label, choices, selected, mode, accent, di
     restoreFocus.current = keyboard;
     setOpen(false);
   };
-  return <div className="theme-picker" ref={root} onBlur={(event) => {
-    if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false);
-  }} onKeyDown={(event) => {
+  return <div className="theme-picker" ref={root} onKeyDown={(event) => {
     if (open && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
   }}>
     <span id={`${id}-label`}>{label}</span>

@@ -202,7 +202,7 @@ function Preview() {
         hasConversationContent displaySettledRunIds={layoutCheck ? display.displaySettledRunIds : new Set(mode.startsWith('question') ? ['run:second'] : ['run:first', 'run:second'])} onDisplayed={display.onDisplayed}
         conversationItems={items} draftItems={[]} presentation={presentation} viewport={viewport}
         openWorkspaceResource={async () => {}} setUiActionError={setError} canEditMessage={composer.canEditMessage} onEditMessage={composer.beginMessageEdit} />
-    </div></div><ConversationComposer language={language} composer={composer} uiActionError={error}
+    </div></div><ConversationComposer conversationBodyRef={viewport.bodyRef} language={language} composer={composer} uiActionError={error}
       onDismissUiActionError={() => setError(null)} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} /></main>
     {layoutCheck && <AchbitTaskPanel projection={projection} language={language} />}
     </div>
