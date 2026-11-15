@@ -17,6 +17,7 @@ import { HostRebind } from './HostRebind';
 import { ComposerImageAttachment } from './ComposerImageAttachment';
 import { QueuedInputPreview } from './QueuedInputPreview';
 import { observeConversationComposerBoundary } from './conversationComposerBoundary';
+import { composerDecisionView } from './composerDecisions';
 
 interface ConversationComposerProps {
   changeBar?: React.ReactNode;
@@ -48,13 +49,8 @@ export function ConversationComposer({
       : undefined;
   }, [conversationBodyRef]);
   const connections = useLocalAgentStore(state => state.connections);
-  const concurrentDecisionKey = composer.pendingApproval && (composer.pendingPlan || composer.pendingInteraction)
-    ? JSON.stringify([composer.conversationKey, composer.pendingApproval.approvalId,
-      composer.pendingPlan?.planId, composer.pendingPlan?.revision])
-    : null;
-  const [selectedTextDecision, setSelectedTextDecision] = useState<string | null>(null);
-  const showApproval = Boolean(composer.pendingApproval
-    && (!concurrentDecisionKey || selectedTextDecision !== concurrentDecisionKey));
+  const { concurrentDecisionKey, showApproval } = composerDecisionView(composer, composer.selectedTextDecision);
+  const { setSelectedTextDecision } = composer;
   // Select a view only. Both decisions and the answer draft stay in their existing owners.
   const visibleComposer = showApproval
     ? { ...composer, pendingPlan: null, pendingScopeAddition: null, pendingInteraction: null }

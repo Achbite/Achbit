@@ -134,3 +134,25 @@ test('model settings target opens only its matching editor without changing the 
   assert.match(html, /data-profile-id="selected" open=""/);
   assert.doesNotMatch(html, /data-profile-id="other" open/);
 });
+
+// TCR: .task-artifacts/ui-small-fixes-20261115/TCR.md.
+test('the explicit overview target opens Models & services without a connection or profile target', async t => {
+  const [{ default: SettingsCenter }, { default: LlmSection }, { useSettingsStore: settings }, { useLocalAgentStore: agent }] = await loadGuiModules(t, [
+    '/src/components/settings-center/SettingsCenter.tsx', '/src/components/settings-center/sections/LlmSection.tsx',
+    '/src/state/settingsStore.ts', '/src/state/localAgentStore.ts',
+  ]);
+  Object.assign(settings.getInitialState(), { effectiveSettings: { ...DEFAULT_USER_SETTINGS, 'workbench.language': 'en-US' }, loading: false });
+  agent.setState({ selectedProfileId: 'profile:keep', reasoningEffortOverride: 'high' });
+  const target = { kind: 'overview' };
+  const center = capture(SettingsCenter, { apiStatus: 'connected', initialModelTarget: target });
+  assert.equal(findReactElement(center.tree, node => node.props.data?.kind === 'settingsNavigation').props.data.activePage, 'llm');
+  const overview = capture(LlmSection, { initialModelTarget: target });
+  assert.match(overview.html, /Models &amp; services/);
+  assert.match(overview.html, /API connection/);
+  assert.match(overview.html, /Coding Plan/);
+  assert.doesNotMatch(overview.html, /model-breadcrumb|data-profile-id/);
+  const detail = capture(LlmSection, { initialModelTarget: { kind: 'model', connectionId: 'connection:one', profileId: 'profile:keep' } });
+  assert.match(detail.html, /model-breadcrumb/, 'explicit model deep links remain supported');
+  assert.equal(agent.getState().selectedProfileId, 'profile:keep');
+  assert.equal(agent.getState().reasoningEffortOverride, 'high');
+});

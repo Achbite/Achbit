@@ -45,6 +45,8 @@ interface ConversationTranscriptProps {
   loading: boolean;
   showReasoning?: boolean;
   automaticReview?: React.ReactNode;
+  foregroundInteractionId?: string | null;
+  onFocusInteraction?: () => void;
   displaySettledRunIds: Set<string>;
   onDisplayed(identity: string, text: string): void;
   projection: SessionProjection | null;
@@ -66,6 +68,8 @@ export function ConversationTranscript({
   language,
   showReasoning = false,
   automaticReview,
+  foregroundInteractionId,
+  onFocusInteraction,
   displaySettledRunIds,
   onDisplayed,
   loading,
@@ -298,7 +302,9 @@ export function ConversationTranscript({
           onToggle={onPlanToggle}
         />
       ) : item.type === 'interaction' ? (
-        <InteractionCard interaction={item.value} language={language} />
+        <InteractionCard interaction={item.value} language={language}
+          answerInComposer={item.value.interactionId === foregroundInteractionId}
+          onFocusComposer={onFocusInteraction} onToggle={onPlanToggle} />
       ) : (
         <ToolActivityGroup
           activities={item.values}

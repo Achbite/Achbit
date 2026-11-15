@@ -14,7 +14,7 @@ import { shouldSubmitComposerKey } from './composerKeyboard';
 import { composerCommands, parseComposerCommand, suggestComposerCommands, type ComposerCommand } from './composerCommands';
 import { requestAgentOverview } from './agentNavigation';
 import { planScopeAddition } from './planReview';
-import { foregroundApproval, foregroundPlan } from './composerDecisions';
+import { composerDecisionView, foregroundApproval, foregroundInteractions, foregroundPlan } from './composerDecisions';
 import { clipboardImages, readPastedImage } from '../../services/pastedImage';
 import { isLongPastedText } from '../../services/pastedText';
 import { supportsNativeFileInput } from '../../services/modelFileInput';
@@ -54,16 +54,13 @@ export function useAgentComposer(
   const selectedProfileId = useLocalAgentStore((state) => state.selectedProfileId);
   const projection = useLocalAgentStore((state) => state.projection);
   const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
-  // Keep unanswered questions reachable in the shared composer, including
-  // independent work and session.wait. The Session still owns the run status.
-  const pendingInteractions = useMemo(() => projection?.run
-    && ['running', 'waiting'].includes(projection.run.status)
-    ? projection.interactions.filter(item => item.runId === projection.run?.runId && item.status === 'pending')
-    : [], [projection]);
+  const pendingInteractions = useMemo(() => foregroundInteractions(projection), [projection]);
   const [interactionSelection, setInteractionSelection] = useState<{ conversationKey: string; interactionId: string } | null>(null);
-  const interactionIndex = Math.max(0, pendingInteractions.findIndex(item => (
+  const selectedInteractionIndex = pendingInteractions.findIndex(item => (
     interactionSelection?.conversationKey === conversationKey && item.interactionId === interactionSelection.interactionId
-  )));
+  ));
+  const interactionIndex = selectedInteractionIndex >= 0 ? selectedInteractionIndex : Math.max(0,
+    pendingInteractions.findIndex(item => item.interactionId === projection?.pendingInteraction?.interactionId));
   const pendingInteraction = pendingInteractions.at(interactionIndex) ?? null;
   const pendingApproval = foregroundApproval(projection?.pendingApproval ?? null, projection?.run);
   const pendingPlan = foregroundPlan(projection?.pendingPlan ?? null, projection?.effectivePermissions);
@@ -71,6 +68,8 @@ export function useAgentComposer(
     plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1
   )), pendingPlan) : null;
   const textDecision = Boolean(pendingPlan || pendingInteraction);
+  const [selectedTextDecision, setSelectedTextDecision] = useState<string | null>(null);
+  const { foregroundInteractionId } = composerDecisionView({ conversationKey, pendingApproval, pendingPlan, pendingInteraction }, selectedTextDecision);
   const [messageEdit, setMessageEdit] = useState<{ sessionId: string; message: ProjectionMessage; revision: number } | null>(null);
   const editingMessage = messageEdit?.sessionId === sessionId ? messageEdit : null;
   const composerStateKey = pendingPlan
@@ -803,6 +802,14 @@ export function useAgentComposer(
     beginMessageEdit,
     cancelMessageEdit,
     textDecision,
+    selectedTextDecision,
+    setSelectedTextDecision,
+    foregroundInteractionId,
+    focusInteraction: () => {
+      const textarea = textareaRef.current;
+      if (textarea && !textarea.disabled) textarea.focus({ preventScroll: true });
+      else document.getElementById('conversation-interaction')?.focus({ preventScroll: true });
+    },
     pendingPlan,
     pendingScopeAddition,
     pendingInteraction,

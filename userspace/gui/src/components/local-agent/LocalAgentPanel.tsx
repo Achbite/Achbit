@@ -175,6 +175,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           onEditMessage={composer.beginMessageEdit}
           unappliedRecovery={composer.unappliedRecovery}
           automaticReview={automaticReview}
+          foregroundInteractionId={composer.foregroundInteractionId}
+          onFocusInteraction={composer.focusInteraction}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks location="conversation" artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
         {mode !== 'panel' && !!display.artifacts.length && <ArtifactShortcuts location="shortcuts"

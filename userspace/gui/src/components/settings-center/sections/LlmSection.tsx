@@ -163,7 +163,7 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
   const interaction = useInteractionFocus();
   const { text, language } = useModelLanguage();
   const theme = useDisplayTheme();
-  const [page, setPage] = useState<Page>(() => initialModelTarget
+  const [page, setPage] = useState<Page>(() => initialModelTarget?.kind === 'model'
     ? { kind: 'connection', id: initialModelTarget.connectionId, profileId: initialModelTarget.profileId } : { kind: 'list' });
   const [catalog, setCatalog] = useState<ConnectionsResult | null>(null);
   const [profiles, setProfiles] = useState<LlmProfilesResult | null>(null);

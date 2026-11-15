@@ -166,11 +166,11 @@ export default function SessionModelSelector({ language, profiles, connections =
               <span><b>{candidate?.name ?? title}</b><AchbitShellIcon name="chevronRight" size={14} /></span>
             </button>
             <IconButton {...identity.action('settings', 'click')} icon="settings" className="achbit-session-model__settings"
-              aria-label={t(language, 'settings.llm.openCurrent')} disabled={!selected || !openModelSettings}
+              aria-label={t(language, 'settings.llm.openOverview')} disabled={!openModelSettings}
               onClick={() => {
-                if (!selected || !openModelSettings) return;
+                if (!openModelSettings) return;
                 close();
-                openModelSettings({ profileId: selected.id, connectionId: selected.connectionId });
+                openModelSettings({ kind: 'overview' });
               }} />
           </div>
           {candidate?.thinking !== 'disabled' && efforts.length > 0 && controlStyle === 'slider' && <ReasoningEffortSlider

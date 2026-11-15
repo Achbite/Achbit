@@ -70,7 +70,7 @@ useLocalAgentStore.setState({ sessionId: projection.sessionId, projection, profi
 Object.assign(window, { __modelPanel: {
   snapshot: () => ({ writes, settings, projection, model: useLocalAgentStore.getState().selectedProfileId, effort: useLocalAgentStore.getState().reasoningEffortOverride }),
   fail: (value: boolean) => { failSettings = value; },
-  select: (id: string) => { const model = profiles.find(profile => profile.id === id)!; useLocalAgentStore.setState({ selectedProfileId: id, reasoningEffortOverride: model.reasoningEffort ?? null }); },
+  select: (id: string | null) => { const model = profiles.find(profile => profile.id === id); useLocalAgentStore.setState({ selectedProfileId: id, reasoningEffortOverride: model?.reasoningEffort ?? null }); },
 } });
 function Preview() {
   const [settingsOpen, setSettingsOpen] = useState(false), [collapsed, setCollapsed] = useState(false);
