@@ -1064,7 +1064,7 @@ async fn run_chat(
     println!("session: {}", projection.session_id);
     render_projection(&mut io::stdout().lock(), &projection).map_err(|error| error.to_string())?;
     println!("/sessions 列出会话；/resume <序号或完整 ID> 进入；/new 沿用启动目录新建；切换不会取消后台任务。");
-    println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/plan <任务> 先提交计划，确认后执行本次任务；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/cancel；/quit。");
+    println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/plan <任务> 先提交计划，确认后执行本次任务；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/SimLoop 极简、/FullLoop 完整（下一 run 生效）；/cancel；/quit。");
     render_action_required_if_any(&mut io::stdout().lock(), &projection)
         .map_err(|error| error.to_string())?;
     render_pending_agent_decisions(client, &projection).await?;
@@ -1314,6 +1314,7 @@ async fn run_chat(
                 projection = refresh_projection(client, &projection.session_id).await?;
                 let text = line.trim_end_matches(['\r', '\n']);
                 let consumes_plugins = match conversation_input::slash_command(text) {
+                    Some((name, _)) if name.eq_ignore_ascii_case("simloop") || name.eq_ignore_ascii_case("fullloop") => false,
                     Some(("reply", _)) => false,
                     Some(("permissions" | "revoke", argument)) => argument.is_empty(),
                     _ => true,
@@ -1359,6 +1360,9 @@ async fn run_chat(
                 }
                 if consumes_plugins {
                     selected_plugins.clear();
+                }
+                if command["type"] == "session.mode.set" {
+                    println!("会话模式已保存为 {}，下一次 run 生效。", command["mode"].as_str().unwrap_or_default());
                 }
                 projection = refresh_projection(client, &projection.session_id).await?;
             }

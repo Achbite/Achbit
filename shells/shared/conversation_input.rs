@@ -94,6 +94,14 @@ pub fn contextual_input_command(
         return Err(language.text("tui.emptyInput").to_string());
     }
     let command = slash_command(original_text);
+    if let Some((name, argument)) = command.filter(|(name, _)| name.eq_ignore_ascii_case("simloop") || name.eq_ignore_ascii_case("fullloop")) {
+        if !argument.is_empty() || !filesystem_references.is_empty() {
+            return Err(language.text("tui.modeUsage").to_string());
+        }
+        return Ok(json!({"schemaVersion":"achbit.command.v3", "type":"session.mode.set",
+            "sessionId":projection.session_id, "commandId":command_id,
+            "mode": if name.eq_ignore_ascii_case("simloop") { "minimal" } else { "full" }}));
+    }
     if let Some(("permissions", patches)) = command.filter(|(_, argument)| !argument.is_empty()) {
         let patches: serde_json::Value =
             serde_json::from_str(patches).map_err(|error| error.to_string())?;
@@ -310,6 +318,22 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_mode_commands_ignore_case_and_never_submit_task_text() {
+        let projection = fixtures::waiting_projection("pendingPlan", serde_json::Value::Null);
+        for (text, mode) in [("/SimLoop", "minimal"), ("/SIMLOOP", "minimal"), ("/fUlLlOoP", "full")] {
+            let command = contextual_input_command(Language::EnUs, &projection, text, "command:mode", None, &[], &[]).unwrap();
+            assert_eq!(command["type"], "session.mode.set");
+            assert_eq!(command["mode"], mode);
+            assert!(command.get("text").is_none());
+            assert!(command.get("runId").is_none());
+        }
+        assert!(contextual_input_command(Language::EnUs, &projection, "/SimLoop task", "command:mode", None, &[], &[]).is_err());
+        let escaped = contextual_input_command(Language::EnUs, &projection, " /SimLoop", "command:mode", None, &[], &[]).unwrap();
+        assert_eq!(escaped["type"], "message.submit");
+        assert_eq!(escaped["text"], " /SimLoop");
+    }
 
     #[test]
     fn unclaimed_slash_text_preserves_body_references_and_plugins() {
