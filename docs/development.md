@@ -35,9 +35,19 @@ Build and package producers read the canonical version. `package-updates.py mani
 
 A version edit changes source metadata; Git operations, builds and publication remain separate authorized actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
 
+### Daily source saves and pushes
+
+Release means publishing product artifacts, not an ordinary code save. A request to commit, push or change the version does not implicitly request tests, compilation, a PR, merge, tag or Release.
+
+For daily saves, use normal Git operations on the authorized development branch. Review all intended changes, group complete source changes by responsibility, stage explicit paths or reviewed hunks, inspect the staged diff, and write clear commit messages. Keep packages, logs, credentials and task-local inputs out of source commits. Synchronize a requested version with `scripts/version.py` in the development container and review its owned mirrors; a separate version commit keeps source changes reviewable.
+
+Push only with explicit authorization, to the verified remote and branch, without force. Preserve existing work and hooks. Remote divergence requires an integration decision rather than an automatic rebase or merge. Report the commit/push range, final status and version separately from package or publication results.
+
+If the user explicitly excludes tests or builds for a source save, honor that scope. Git scope checks and version consistency do not imply a test/build suite. Do not change test profiles or assertions, and do not present unexecuted validation as passed. Existing development validation and its failures retain their own evidence; a source save alone does not repeat them or rebuild a running installation.
+
 ### Automated submission and release
 
-Use the host entrypoint `bash scripts/release.sh`. The agent fills in UTF-8 JSON text and activates this entrypoint; `scripts/release.py` owns staging, grouped commits, version synchronization, tests, compilation and the selected remote operations. Do not pre-commit changes or reproduce the stages with separate agent-issued Git/`gh` commands.
+For an explicitly requested validated automation or artifact-publication workflow, use the host entrypoint `bash scripts/release.sh`. The agent fills in UTF-8 JSON text; `scripts/release.py` owns staging, grouped commits, version synchronization, tests, compilation and the selected remote operations within that activation. Do not manually duplicate those activated stages. This entrypoint is optional for daily source saves, and its `local` mode is not a no-test, no-build commit route.
 
 | `mode` | Effects after `--confirm` |
 | --- | --- |
@@ -101,7 +111,7 @@ bash scripts/release.sh --input .task-artifacts/submission.json --confirm
 # Optional: --output .task-artifacts/my-submission (must not already exist)
 ```
 
-`--confirm` activates local effects too; it does not grant authority beyond the user's request. There are no `--skip-tests`, `--from` or `--resume` flags. One activation owns one `required` run and one code build; do not duplicate them manually. Reuse separately completed package acceptance without expanding it into a new full suite, real-model conversation or all-platform acceptance matrix. If a request forbids the workflow's required check, report the unsupported scope instead of bypassing it.
+`--confirm` activates local effects too; it does not grant authority beyond the user's request. There are no `--skip-tests`, `--from` or `--resume` flags. One activation owns one `required` run and one code build; do not duplicate them manually. Reuse separately completed package acceptance without expanding it into a new full suite, real-model conversation or all-platform acceptance matrix. For ordinary source saves that exclude validation/builds, use the daily Git route above instead of activating this workflow. If the user explicitly requests this automated workflow while forbidding one of its mandatory stages, explain that capability conflict rather than inventing a skip flag or interrupting the run to simulate one.
 
 The program uses merge commits, never force-pushes or bypasses repository checks. The remote base must already be an ancestor of the source. The pushed head is pinned for merging; if GitHub queues the merge rather than completing it, the workflow stops before packaging/tagging. If the actual merge tree differs from the validated source tree, it also stops. Packages are built after the merge from that exact merge commit, not relabeled pre-merge binaries. Only the selected local source branch is advanced; unrelated local branches/worktrees are untouched.
 
@@ -232,7 +242,7 @@ A minimal read-only `AgentRecipe` is:
 
 ```json
 {
-  "runner": { "id": "standard" },
+  "runner": { "id": "standard", "parameters": { "toolExecution": "parallel" } },
   "configuration": {
     "context": { "id": "coding" },
     "compaction": { "id": "none" },
@@ -243,7 +253,13 @@ A minimal read-only `AgentRecipe` is:
 }
 ```
 
-Add the available shell, `fs.edit` and `fs.write` to the selected Kernel tools when the task needs them; the existing permissions still apply. The coding context exposes their actual read/shell/edit/write wire names and generates guidance only for the declared tools, following [PI's tool-aware prompt assembly](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts). Add `controls: {"id":"standard","parameters":{"optionalTools":["todo.update"]}}` and select `todo.update` in `tools.controls` for progress. Select `compaction: {"id":"summary"}` for context summaries. The default product assembly also includes the existing Plan, interaction, Session, artifact and agent components according to the recipe and permissions. Context admission, cancellation and durable recovery remain active in the minimal assembly.
+Add the available shell, `fs.edit` and `fs.write` to the selected Kernel tools when the task needs them; the existing permissions still apply. The coding context exposes their actual read/shell/edit/write wire names and generates guidance only for the declared tools, following [PI's tool-aware prompt assembly](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts). Add `controls: {"id":"standard","parameters":{"optionalTools":["todo.update"]}}` and select `todo.update` in `tools.controls` for progress. Select `compaction: {"id":"summary"}` for context summaries. The default product assembly also includes the existing Plan, interaction, Session, artifact and agent components according to the recipe and permissions. Context admission, cancellation and durable recovery remain active in the minimal assembly. The minimal preset uses `controls=none`, `compaction=none` and `productComponents=[]`; manual Plan requires explicitly installing its controls. The standard driver's `toolExecution=parallel` policy follows PI's batch scheduling: ordinary calls may overlap, only same-file mutations queue, and a failed predecessor does not skip its successor. Omitted `toolExecution` retains the full product's bounded, ordered file phases.
+
+All contexts use one ordered system-prompt composer: preamble, tools/rules, docs, selected response/product/environment additions, project_context and cwd. The core factory, tool guidance and documentation index each own shared base sentences; full-context details are inserted between those sentences or sections rather than replacing a minimal prompt with another copy. Coding context selects the base, while individual product and callable-tool capabilities can still insert their own contributions independently. Each selected product retains its contribution identity. Extension tool guidance stays in its tool declaration, and Skill locations stay with their originating selection/activation messages; dynamic activation does not rewrite the system prefix. Project contents use the same wrapper, with scope guidance inserted for the full context. Achbit identity, actual paths, captured Kernel scope descriptions and parameter limits remain authoritative. Both contexts project tools through the same binding-to-model path: captured Kernel operation text and schema, actual Shell scope/platform facts, then coding field aliases or full optional fields. Disabled Host execution removes its request field; an ungranted but requestable scope remains available. Third-party descriptions and dynamic guidance retain their existing owners.
+
+Provider wire policy is resolved from the captured protocol/provider/model, never the context strategy. Responses routes use their supported instruction role, stateless and cache metadata; DeepSeek retains system-role authority and omits its documented ignored metadata. Session's coding codec, not a Provider wire flag, selects coding-only truncation feedback. Native Anthropic content keeps individual thinking/signature, redacted and tool-use blocks in the existing Provider turn and journal. Tool outcome is separate from text and maps to the protocol's error indicator where available. Actual reasoning output counts are optional subsets of total output, with aggregate coverage; missing counts remain unknown. Shared thinking rules in `userspace/protocol/src/modelThinkingPolicies.json` drive the existing model selectors and Kernel controls, including manual/adaptive Anthropic modes and Ollama levels. Unknown/unsupported choices retain errors rather than being silently clamped.
+
+A coding Agent response truncated with identifiable tool calls records a failed attempt and failed turn with rejected raw inputs; none execute. Their error results feed a fresh request. Text-only truncation and other failures retain ordinary termination. This is a new logical request, not a transport retry or a claim that the truncated response completed.
 
 For focused configuration debugging, `context-management.test.mjs` exercises bare read → result → answer, then adds controls and summaries through the same registry. `provider-stages.test.mjs` checks narrowed tool stages; `subagent-configuration.test.mjs` checks recipe propagation. Inspect `context.composed`, `provider.attempt`, tool results and `run.finishing`/`run.settled` in that order. A live managed process continues to belong to its owner; an assistant answer does not transfer process ownership or prove that the run has finished.
 
