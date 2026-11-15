@@ -20,6 +20,10 @@ Session owns the Agent Loop and conversation state; Kernel owns tools, permissio
 
 Obtain the user's approval before adding any model-callable tool, including a Kernel tool. First reuse existing tools, CLI commands, Shell or Skills. Keep the tool set small: shell commands can search and read the bundled documentation directory. Dedicated Kernel tools for writes, edits and network search exist to enforce permission gates and record execution facts, not to wrap every shell operation. When proposing a tool, explain the concrete capability gap, necessary responsibility and permission boundary before implementation.
 
+## Keep design guidance aligned
+
+Skills capture reusable lessons, general design approaches and product directions agreed with the user. When a change affects architecture, ownership, shared interactions or lifecycle, point out the relevant Skill section and update it after the new direction is agreed. Prefer concise, positive guidance with a clear scope; keep dates, revision IDs and task-specific check results in task records or Git history.
+
 ## Align interfaces during iteration
 
 For tools, plugins, CLI/Debug and Provider-facing interfaces, trace the declaration, input adapter, permission check, executor and returned result together. Compare the relevant local PI implementation when available: keep one execution path for single and multiple calls, and normalize unambiguous equivalent inputs at the boundary. Preserve the original request and errors; permissions, exact targets and effect boundaries still apply. Serialization belongs to the runtime where needed, rather than extra model formatting rules.

@@ -144,6 +144,8 @@ Use published AX/UIA actions when available; the original `nativeDialogs.lastRes
 
 Receipts retain before/after observations, errors, operation identity and timings. The default `--observation full` also captures `screenshot.contentRef` and native dialog state; missing capture or truncated observation returns `partial` and a nonzero CLI exit. The explicit `--observation state` mode omits those two captures and reports `not-requested`, while retaining DOM/component observations, frame timing and wait conditions. It proves no visual or native-dialog result and does not silently replace a failed full capture. Inspect the receipt; do not replay an action just to obtain a screenshot. Load the original capture through an available image reader when visual evidence is needed; a path, archive or presentation alone does not load pixels.
 
+`frame-not-observed` means the WebView did not deliver the two animation-frame callbacks within the observation deadline; it does not undo the dispatched action. A hidden window can retain readable DOM state without delivering those frames. For a window hidden by Debug control, restore it with `window.show` and `window.focus`, then use `wait` or inspection to check the already changed state instead of replaying the click. State-only observation still requires frames and must remain partial when they are unavailable. A later successful observation does not retroactively change the original receipt or identify an unrecorded historical cause.
+
 ## Session tasks and results
 
 ```sh

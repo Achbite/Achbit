@@ -1,12 +1,12 @@
 # Document design
 
-The layout approach is informed by Kami: restrained color, consistent typography and content-sized templates. Achbit provides its own self-contained HTML and Typst templates; this does not bundle Kami’s fonts, MCP tools or validation suite.
+The layout approach draws on Kami's restrained color, consistent typography and content-sized templates. Apply those ideas through Achbit's self-contained HTML and Typst templates.
 
 ## Hierarchy and rhythm
 
 - Choose one clear title, then headings that describe the document's real structure. Keep heading levels consecutive.
 - Use comfortable reading width, consistent spacing and a restrained accent color. The included template uses warm neutral surfaces and ink blue.
-- Prefer system fonts with Chinese and Latin fallbacks. Keep an explicit user font or brand choice. Do not require a remote font for a complete document.
+- Prefer available system fonts with Chinese and Latin fallbacks, while respecting the user's font or brand choice. Keep the document usable with its included resources.
 - For reading documents, use comfortable paragraph spacing and tighter headings. HTML body line height around 1.5–1.65 or Typst paragraph leading around 0.5–0.65 em is a useful starting point. Keep captions and metadata quieter than the body without making them hard to read.
 - Use tables to compare parallel information, not to position all page content. Let long words and URLs wrap.
 - Preserve semantic code, quotes, lists, figures and captions. Avoid ornamental cards around every paragraph.
@@ -30,4 +30,8 @@ The layout approach is informed by Kami: restrained color, consistent typography
 
 ## Content-sized effort
 
-A short note needs good typography and spacing, not a title page, table of contents or full report system. A long document may need page numbers, navigation and section summaries. Add these only when they improve the requested document.
+A short note benefits from clear typography and spacing. For longer documents, add page numbers, navigation and section summaries where they help the reader.
+
+## Maintaining the guidance
+
+Capture reusable layout lessons and agreed document-design choices here. When the product's design direction or template approach changes, point out the relevant Skill update and align it with the user's decision. Keep one-off measurements and review results in the task record.
