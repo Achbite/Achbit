@@ -870,13 +870,6 @@ impl TuiApp {
         projection: &SessionProjection,
         text: &str,
     ) -> Result<serde_json::Value, String> {
-        // TUI selections apply to the next message and remain selected during a reply.
-        let is_reply = match crate::conversation_input::slash_command(text) {
-            Some((name, _)) if name.eq_ignore_ascii_case("simloop") || name.eq_ignore_ascii_case("fullloop") => true,
-            Some(("reply", _)) => true,
-            Some(("permissions" | "revoke", argument)) => !argument.is_empty(),
-            _ => false,
-        };
         crate::conversation_input::contextual_input_command(
             self.host.language,
             projection,
@@ -884,10 +877,10 @@ impl TuiApp {
             &new_id("command"),
             self.next_message_profile_id.as_deref(),
             &[],
-            if is_reply {
-                &[]
-            } else {
+            if crate::conversation_input::consumes_plugin_selections(text) {
                 &self.selected_plugins
+            } else {
+                &[]
             },
         )
     }

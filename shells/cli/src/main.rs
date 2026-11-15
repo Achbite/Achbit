@@ -1313,12 +1313,7 @@ async fn run_chat(
                 // Polling may still show a run that settled before this input arrived.
                 projection = refresh_projection(client, &projection.session_id).await?;
                 let text = line.trim_end_matches(['\r', '\n']);
-                let consumes_plugins = match conversation_input::slash_command(text) {
-                    Some((name, _)) if name.eq_ignore_ascii_case("simloop") || name.eq_ignore_ascii_case("fullloop") => false,
-                    Some(("reply", _)) => false,
-                    Some(("permissions" | "revoke", argument)) => argument.is_empty(),
-                    _ => true,
-                };
+                let consumes_plugins = conversation_input::consumes_plugin_selections(text);
                 let plugin_binding = if selected_plugins.is_empty() || !consumes_plugins {
                     None
                 } else {
@@ -1362,7 +1357,10 @@ async fn run_chat(
                     selected_plugins.clear();
                 }
                 if command["type"] == "session.mode.set" {
-                    println!("会话模式已保存为 {}，下一次 run 生效。", command["mode"].as_str().unwrap_or_default());
+                    println!(
+                        "会话模式已保存为 {}，下一次 run 生效。",
+                        command["mode"].as_str().unwrap_or_default()
+                    );
                 }
                 projection = refresh_projection(client, &projection.session_id).await?;
             }
