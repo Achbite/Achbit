@@ -925,6 +925,9 @@ impl SessionProjection {
                 || usage.updated_at.is_empty()
                 || usage.context_window_tokens == 0
                 || usage
+                    .reasoning_output_tokens
+                    .is_some_and(|tokens| tokens > usage.output_tokens)
+                || usage
                     .input_tokens
                     .checked_add(usage.output_tokens)
                     .is_none_or(|total| total > usage.context_window_tokens)
@@ -990,6 +993,7 @@ impl SessionProjection {
                     usage.cache_available,
                     usage.cache_complete,
                     usage.cache_hit_ratio,
+                    usage.reasoning_usage.as_ref(),
                 )
             })
         {
@@ -1021,6 +1025,7 @@ impl SessionProjection {
                     round.cache_available,
                     round.cache_complete,
                     round.cache_hit_ratio,
+                    round.reasoning_usage.as_ref(),
                 )
         }) || self
             .token_usage_history
@@ -2152,6 +2157,9 @@ pub struct ContextUsageProjection {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub context_window_tokens: u64,
+    /// Reported subset of output_tokens; absent when the Provider does not supply it.
+    #[serde(default, deserialize_with = "deserialize_reported_usage")]
+    pub reasoning_output_tokens: Option<u64>,
     pub cache_read_input_tokens: Option<u64>,
     pub cache_miss_input_tokens: Option<u64>,
 }
@@ -2159,6 +2167,8 @@ pub struct ContextUsageProjection {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TokenUsageProjection {
+    #[serde(default, deserialize_with = "deserialize_reported_usage")]
+    pub reasoning_usage: Option<ReasoningUsageProjection>,
     pub provider_call_count: u64,
     pub reported_call_count: u64,
     pub input_tokens: u64,
@@ -2173,6 +2183,8 @@ pub struct TokenUsageProjection {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TokenUsageRoundProjection {
+    #[serde(default, deserialize_with = "deserialize_reported_usage")]
+    pub reasoning_usage: Option<ReasoningUsageProjection>,
     pub run_id: String,
     pub input_message_id: String,
     pub title: String,
@@ -2189,6 +2201,23 @@ pub struct TokenUsageRoundProjection {
     pub cache_available: bool,
     pub cache_complete: bool,
     pub cache_hit_ratio: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReasoningUsageProjection {
+    pub output_tokens: u64,
+    pub reported_call_count: u64,
+    pub complete: bool,
+}
+
+// Missing usage is unreported; a present field carries a concrete, typed value.
+fn deserialize_reported_usage<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2980,6 +3009,7 @@ fn valid_token_usage_fields(
     cache_available: bool,
     cache_complete: bool,
     cache_hit_ratio: Option<f64>,
+    reasoning_usage: Option<&ReasoningUsageProjection>,
 ) -> bool {
     let Some(cache_population) = cache_read_input_tokens.checked_add(cache_miss_input_tokens)
     else {
@@ -2990,6 +3020,12 @@ fn valid_token_usage_fields(
         || cache_population > input_tokens
         || cache_available != (reported_call_count > 0)
         || cache_complete != (provider_call_count > 0 && reported_call_count == provider_call_count)
+        || reasoning_usage.is_some_and(|reasoning| {
+            reasoning.output_tokens > output_tokens
+                || reasoning.reported_call_count == 0
+                || reasoning.reported_call_count > provider_call_count
+                || reasoning.complete != (reasoning.reported_call_count == provider_call_count)
+        })
     {
         return false;
     }
@@ -3903,6 +3939,149 @@ mod tests {
         let invalid_projection: SessionProjection =
             serde_json::from_value(value).expect("invalid shell projection still decodes");
         assert!(invalid_projection.validate().is_err());
+    }
+
+    fn reported_reasoning_projection_value() -> Value {
+        let mut value = projection_value();
+        value["contextUsage"]["reasoningOutputTokens"] = json!(4);
+        for pointer in ["/tokenUsage", "/totalTokenUsage", "/tokenUsageHistory/0"] {
+            value.pointer_mut(pointer).unwrap()["reasoningUsage"] =
+                json!({"outputTokens":4,"reportedCallCount":1,"complete":true});
+        }
+        value
+    }
+
+    #[test]
+    fn reasoning_usage_accepts_reported_missing_and_partial_coverage() {
+        let reported: SessionProjection =
+            serde_json::from_value(reported_reasoning_projection_value())
+                .expect("reported reasoning fields decode through the shared shell client");
+        assert_eq!(reported.validate(), Ok(()));
+        assert_eq!(
+            reported
+                .context_usage
+                .as_ref()
+                .unwrap()
+                .reasoning_output_tokens,
+            Some(4)
+        );
+        let expected = ReasoningUsageProjection {
+            output_tokens: 4,
+            reported_call_count: 1,
+            complete: true,
+        };
+        assert_eq!(
+            reported.token_usage.reasoning_usage.as_ref(),
+            Some(&expected)
+        );
+        assert_eq!(
+            reported.total_token_usage.reasoning_usage.as_ref(),
+            Some(&expected)
+        );
+        assert_eq!(
+            reported.token_usage_history[0].reasoning_usage.as_ref(),
+            Some(&expected)
+        );
+
+        let absent: SessionProjection = serde_json::from_value(projection_value()).unwrap();
+        assert_eq!(absent.validate(), Ok(()));
+        assert!(absent
+            .context_usage
+            .as_ref()
+            .unwrap()
+            .reasoning_output_tokens
+            .is_none());
+        assert!(absent.token_usage.reasoning_usage.is_none());
+        assert!(absent.total_token_usage.reasoning_usage.is_none());
+        assert!(absent.token_usage_history[0].reasoning_usage.is_none());
+
+        let mut partial = reported_reasoning_projection_value();
+        partial["contextUsage"]["reasoningOutputTokens"] = json!(0);
+        for pointer in ["/tokenUsage", "/totalTokenUsage", "/tokenUsageHistory/0"] {
+            let usage = partial.pointer_mut(pointer).unwrap();
+            usage["providerCallCount"] = json!(2);
+            usage["cacheComplete"] = json!(false);
+            usage["reasoningUsage"] =
+                json!({"outputTokens":0,"reportedCallCount":1,"complete":false});
+        }
+        let partial: SessionProjection = serde_json::from_value(partial).unwrap();
+        assert_eq!(partial.validate(), Ok(()));
+        assert_eq!(
+            partial
+                .context_usage
+                .as_ref()
+                .unwrap()
+                .reasoning_output_tokens,
+            Some(0)
+        );
+        assert_eq!(
+            partial
+                .token_usage
+                .reasoning_usage
+                .as_ref()
+                .unwrap()
+                .output_tokens,
+            0
+        );
+        assert!(
+            !partial
+                .token_usage
+                .reasoning_usage
+                .as_ref()
+                .unwrap()
+                .complete
+        );
+    }
+
+    #[test]
+    fn reasoning_usage_rejects_invalid_subsets_and_coverage() {
+        let mut value = reported_reasoning_projection_value();
+        value["contextUsage"]["reasoningOutputTokens"] = json!(11);
+        assert!(serde_json::from_value::<SessionProjection>(value)
+            .unwrap()
+            .validate()
+            .is_err());
+
+        for pointer in ["/tokenUsage", "/totalTokenUsage", "/tokenUsageHistory/0"] {
+            for invalid in [
+                json!({"outputTokens":11,"reportedCallCount":1,"complete":true}),
+                json!({"outputTokens":4,"reportedCallCount":0,"complete":false}),
+                json!({"outputTokens":4,"reportedCallCount":2,"complete":false}),
+                json!({"outputTokens":4,"reportedCallCount":1,"complete":false}),
+            ] {
+                let mut value = reported_reasoning_projection_value();
+                value.pointer_mut(pointer).unwrap()["reasoningUsage"] = invalid;
+                assert!(serde_json::from_value::<SessionProjection>(value)
+                    .unwrap()
+                    .validate()
+                    .is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn reasoning_usage_keeps_strict_field_decoding() {
+        for invalid in [json!(null), json!(-1), json!("4")] {
+            let mut value = reported_reasoning_projection_value();
+            value["contextUsage"]["reasoningOutputTokens"] = invalid;
+            assert!(serde_json::from_value::<SessionProjection>(value).is_err());
+        }
+        let mut unknown = reported_reasoning_projection_value();
+        unknown["contextUsage"]["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<SessionProjection>(unknown).is_err());
+
+        for pointer in ["/tokenUsage", "/totalTokenUsage", "/tokenUsageHistory/0"] {
+            for invalid in [
+                json!(null),
+                json!({"outputTokens":4,"reportedCallCount":1}),
+                json!({"outputTokens":4,"reportedCallCount":1,"complete":true,"unexpected":0}),
+                json!({"outputTokens":"4","reportedCallCount":1,"complete":true}),
+            ] {
+                let mut value = reported_reasoning_projection_value();
+                value.pointer_mut(pointer).unwrap()["reasoningUsage"] = invalid;
+                assert!(serde_json::from_value::<SessionProjection>(value).is_err());
+            }
+        }
     }
 
     #[test]
