@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '../../ui-components';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { requestReader } from './readerState';
@@ -100,7 +101,7 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
     </button>
     {(compact || expanded) && <div ref={listRef} className="conversation-change-list" hidden={!open} tabIndex={compact ? -1 : undefined} data-native-overlay={compact && open || undefined}>{entries}
       {!compact && all.length > 3 && <button {...identity.action('more', 'click')} className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
-      {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><summary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</summary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
+      {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><DisclosureSummary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</DisclosureSummary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
     </div>}
   </section>;
 }

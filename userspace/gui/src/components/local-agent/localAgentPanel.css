@@ -1178,20 +1178,6 @@
   user-select: none;
 }
 
-.local-agent__decision-scope > summary::-webkit-details-marker {
-  display: none;
-}
-
-.local-agent__decision-scope > summary svg {
-  width: 13px;
-  height: 13px;
-  transition: transform 140ms ease;
-}
-
-.local-agent__decision-scope[open] > summary svg {
-  transform: rotate(180deg);
-}
-
 .local-agent__decision-scope dl {
   display: grid;
   gap: 6px;

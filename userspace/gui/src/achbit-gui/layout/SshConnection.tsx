@@ -1,6 +1,6 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useState } from 'react';
-import { ModalDialog } from '../../ui-components';
+import { DisclosureSummary, ModalDialog } from '../../ui-components';
 import AchbitShellIcon from '../../components/shared/AchbitShellIcon';
 import { t, type UiLanguage } from '../../i18n';
 import useAppStatusStore from '../../state/appStatusStore';
@@ -56,7 +56,7 @@ export default function SshConnection({ language }: { language: UiLanguage }) {
           <option value="posix">macOS / Linux</option><option value="windows">Windows (OpenSSH)</option>
         </select></label>
         <label>{text('cliPath')}<input required value={cliPath} onChange={e => setCliPath(e.target.value)} /></label>
-        <details><summary>{text('advanced')}</summary>
+        <details><DisclosureSummary>{text('advanced')}</DisclosureSummary>
           <label>{text('identityFile')}<input value={identityFile} onChange={e => setIdentityFile(e.target.value)} /></label>
           <label>{text('configFile')}<input value={configFile} onChange={e => setConfigFile(e.target.value)} /></label>
           <label>{text('userRoot')}<input value={userRoot} onChange={e => setUserRoot(e.target.value)} /></label>

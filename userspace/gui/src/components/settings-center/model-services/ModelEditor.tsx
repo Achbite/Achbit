@@ -1,4 +1,4 @@
-import { NativeSelect, ToggleSwitch } from '../../../ui-components';
+import { DisclosureSummary, NativeSelect, ToggleSwitch } from '../../../ui-components';
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';
 import { modelReasoningEfforts, modelThinkingModes } from '@achbit/protocol';
@@ -81,7 +81,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
       onCommit={value => choose({ [key]: value })}
       {...(onRemove ? { onDraftChange: (value: number | undefined) => set(key, value) } : {})} />;
   return <details ref={details} className="model-editor" data-profile-id={profile.id} open={onRemove || reveal ? true : undefined}>
-    <summary><strong>{confirmed.name}</strong><span>{confirmed.model}{profile.id === defaultId ? ` · ${text('最近使用', 'Last used')}` : ''}</span></summary>
+    <DisclosureSummary><strong>{confirmed.name}</strong><span>{confirmed.model}{profile.id === defaultId ? ` · ${text('最近使用', 'Last used')}` : ''}</span></DisclosureSummary>
     <form noValidate={!onRemove} onSubmit={event => {
       event.preventDefault();
       if (!onRemove && !textDirty) return;
@@ -108,7 +108,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
             <option value="false">{text('不支持', 'Unsupported')}</option><option value="true">{text('支持', 'Supported')}</option>
           </NativeSelect></label>
         </div>
-        <details className="model-advanced"><summary>{text('更多参数', 'More options')}</summary><div className="model-form-grid">
+        <details className="model-advanced"><DisclosureSummary>{text('更多参数', 'More options')}</DisclosureSummary><div className="model-form-grid">
           <label>Thinking<NativeSelect value={selected.thinking ?? ''} onChange={event => void choose({ thinking: (event.target.value || undefined) as LlmProviderProfile['thinking'] })}><option value="">{t(language, 'settings.llm.serviceDefault')}</option>{unsupportedThinking && <option value={selected.thinking} disabled>{text('关闭（当前模型不支持）', 'Disabled (unavailable for this model)')}</option>}{thinkingModes.map(value => <option key={value} value={value}>{value === 'enabled' ? text('启用', 'Enabled') : text('关闭', 'Disabled')}</option>)}</NativeSelect></label>
           <label>{t(language, 'settings.llm.reasoningEffort')}<NativeSelect value={selected.reasoningEffort ?? ''} disabled={selected.thinking === 'disabled' || efforts.length === 0 && !unsupportedEffort} onChange={event => void choose({ reasoningEffort: (event.target.value || undefined) as LlmProviderProfile['reasoningEffort'] })}><option value="">{t(language, 'settings.llm.serviceDefault')}</option>{unsupportedEffort && <option value={selected.reasoningEffort} disabled>{t(language, `settings.llm.effort.${selected.reasoningEffort}`)}</option>}{efforts.map(value => <option key={value} value={value}>{t(language, `settings.llm.effort.${value}`)}</option>)}</NativeSelect></label>
           {(unsupportedThinking || unsupportedEffort) && <p className="model-wide" role="alert">{text('已保存的思考参数不适用于此模型，请重新选择。', 'Saved thinking settings are unavailable for this model. Choose supported values.')}</p>}

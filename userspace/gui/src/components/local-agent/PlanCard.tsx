@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '../../ui-components';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useConversationSessionId } from './ConversationSessionScope';
@@ -115,7 +116,7 @@ export function PlanCardContent({ plan, previousPlan, workspaceBindings = [], la
         && <ApprovalReviewReason language={language} review={{ decision: plan.review.decision, reason: plan.review.reason }} />}
       {plan.mutationManifest.length > 0 && (
         <details className="local-agent__plan-manifest">
-          <summary>{t(language, 'agent.plan.mutationManifest', { count: plan.mutationManifest.length })}</summary>
+          <DisclosureSummary>{t(language, 'agent.plan.mutationManifest', { count: plan.mutationManifest.length })}</DisclosureSummary>
           <ul>{plan.mutationManifest.map((operation, index) => (
             <li key={`${operation.workspaceId}:${operation.operation}:${planOperationDetail(operation)}:${index}`}>
               <code>
@@ -137,7 +138,7 @@ export function PlanCardContent({ plan, previousPlan, workspaceBindings = [], la
       <p>{language === 'zh-CN' ? '阶段与验收要求保持不变，确认后新增范围生效。' : 'Phases and verification are unchanged. Confirm to authorize the added scope.'}</p>
     </div>
     <details className="local-agent__plan-manifest">
-      <summary>{language === 'zh-CN' ? '查看完整方案与全部范围' : 'View the complete Plan and scope'}</summary>
+      <DisclosureSummary>{language === 'zh-CN' ? '查看完整方案与全部范围' : 'View the complete Plan and scope'}</DisclosureSummary>
       {document}
     </details>
   </section>;
@@ -176,7 +177,7 @@ function PlanRevisionDetails({ previous, current, language, workspaceBindings }:
         <p><strong>{chinese ? old ? '调整阶段：' : '新增阶段：' : old ? 'Changed phase: ' : 'Added phase: '}<MarkdownInline>{step.title}</MarkdownInline></strong></p>
         {removedChecks.map((item, index) => <div key={`remove:${index}`}>{chinese ? '移除验收：' : 'Removed verification: '}<MarkdownContent>{item}</MarkdownContent></div>)}
         {addedChecks.map((item, index) => <div key={`add:${index}`}>{chinese ? '新增验收：' : 'Added verification: '}<MarkdownContent>{item}</MarkdownContent></div>)}
-        {detailsChanged && <details><summary>{chinese ? '阶段正文变化' : 'Phase text changes'}</summary>
+        {detailsChanged && <details><DisclosureSummary>{chinese ? '阶段正文变化' : 'Phase text changes'}</DisclosureSummary>
           <p>{chinese ? '修订前' : 'Before'}</p><MarkdownContent>{`${old.title}\n\n${old.details}`}</MarkdownContent>
           <p>{chinese ? '修订后' : 'After'}</p><MarkdownContent>{`${step.title}\n\n${step.details}`}</MarkdownContent>
         </details>}

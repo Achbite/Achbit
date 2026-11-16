@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '../../ui-components';
 import { requestInterfaceReload } from '../../services/interfaceReload';
 import React, { useSyncExternalStore } from 'react';
 import { t, activeT } from '../../i18n';
@@ -12,7 +13,7 @@ export function InterfaceUpdateNotice() {
   return <aside className="interface-update-notice" role="status">
     <div><strong>{t(language, update.available ? 'interfaceUpdate.available' : 'interfaceUpdate.failed')}</strong>
       <span>{t(language, 'interfaceUpdate.saveFirst')}</span>
-      {update.error && <details><summary>{t(language, 'interfaceUpdate.details')}</summary><pre>{update.error}</pre></details>}
+      {update.error && <details><DisclosureSummary>{t(language, 'interfaceUpdate.details')}</DisclosureSummary><pre>{update.error}</pre></details>}
     </div>
     <button type="button" onClick={() => requestInterfaceReload()}>{t(language, 'interfaceUpdate.reload')}</button>
   </aside>;

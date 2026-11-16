@@ -1,4 +1,5 @@
 import type { EffectPreview } from '@achbit/protocol';
+import { DisclosureSummary } from '../../ui-components';
 import { t, type UiLanguage } from '../../i18n';
 
 export function ApprovalOperationDetails({ preview, language }: { preview: EffectPreview; language: UiLanguage }) {
@@ -6,7 +7,7 @@ export function ApprovalOperationDetails({ preview, language }: { preview: Effec
   const workspace = operation?.workspaceRoot ?? preview.authorizationContext?.workspaceRoot;
   if (!operation && !preview.fileAccess && !preview.effects.length && !preview.logicalTargets.length) return null;
   return <details className="local-agent__decision-scope">
-    <summary>{t(language, 'agent.approval.operation')}</summary>
+    <DisclosureSummary>{t(language, 'agent.approval.operation')}</DisclosureSummary>
     <dl>
       {operation && <><dt>{t(language, 'agent.tool.detail.operation')}</dt><dd><code>{operation.toolName}</code></dd></>}
       {typeof workspace === 'string' && <><dt>{t(language, 'agent.tool.shell.cwd')}</dt><dd><code>{workspace}</code></dd></>}

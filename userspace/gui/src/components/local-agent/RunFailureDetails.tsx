@@ -4,12 +4,12 @@ import { runFailureKind } from '@achbit/protocol';
 import type { UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
-import { Button, UiIcon } from '../../ui-components';
+import { Button, DisclosureSummary, UiIcon } from '../../ui-components';
 
 function ErrorDetails({ error, language }: { error: LocalAgentError; language: UiLanguage }) {
   const d = error.diagnostics;
   return <details className="local-agent__error-details">
-    <summary>{language === 'zh-CN' ? '诊断信息' : 'Diagnostics'}</summary>
+    <DisclosureSummary>{language === 'zh-CN' ? '诊断信息' : 'Diagnostics'}</DisclosureSummary>
     <code>{error.code}</code>
     {d && <>
       <p>{d.source} · {d.phase} · {d.category}</p>
@@ -149,13 +149,13 @@ export function RunFailureDetails({ projection, language, onError }: {
     </div>
     <div hidden={!expanded} className="local-agent__continuity-details">
     {error && <><p>{error.message}</p><ErrorDetails error={error} language={language} /></>}
-    {snapshot && <details><summary>{zh ? '失败时的状态' : 'State at failure'}</summary>
+    {snapshot && <details><DisclosureSummary>{zh ? '失败时的状态' : 'State at failure'}</DisclosureSummary>
       <p>{zh ? `会话版本 ${snapshot.revision} · ${snapshot.phase}` : `Session revision ${snapshot.revision} · ${snapshot.phase}`}</p>
       <p>{zh ? `${requests.length} 个模型请求，发送 ${snapshot.providerAttemptIds.length} 次；已记录工具结果 ${snapshot.toolRecordIds.length} 项，待确认调用 ${snapshot.pendingCallIds.length} 项。` : `${requests.length} model requests, ${snapshot.providerAttemptIds.length} sends; ${snapshot.toolRecordIds.length} tool records, ${snapshot.pendingCallIds.length} pending calls.`}</p>
       {snapshot.providerRequestId && <code>{snapshot.providerRequestId}</code>}
-      {requests.map(request => <details key={request.providerRequestId}><summary>{providerPurposeLabel(request.purpose, language)} · {zh ? `发送 ${request.attempts.length} 次，重试 ${request.retries} 次` : `${request.attempts.length} sends, ${request.retries} retries`}{request.providerRequestId === snapshot.providerRequestId && ` · ${zh ? '失败请求' : 'Failed request'}`}</summary>
+      {requests.map(request => <details key={request.providerRequestId}><DisclosureSummary>{providerPurposeLabel(request.purpose, language)} · {zh ? `发送 ${request.attempts.length} 次，重试 ${request.retries} 次` : `${request.attempts.length} sends, ${request.retries} retries`}{request.providerRequestId === snapshot.providerRequestId && ` · ${zh ? '失败请求' : 'Failed request'}`}</DisclosureSummary>
         <code>{request.providerRequestId}</code>
-        {request.attempts.map(attempt => <details key={attempt.providerAttemptId}><summary>{zh ? `第 ${attempt.attempt} 次发送` : `Send ${attempt.attempt}`} · {attempt.phase}</summary><code>{attempt.providerAttemptId}</code>{attempt.error && <ErrorDetails error={attempt.error} language={language} />}</details>)}
+        {request.attempts.map(attempt => <details key={attempt.providerAttemptId}><DisclosureSummary>{zh ? `第 ${attempt.attempt} 次发送` : `Send ${attempt.attempt}`} · {attempt.phase}</DisclosureSummary><code>{attempt.providerAttemptId}</code>{attempt.error && <ErrorDetails error={attempt.error} language={language} />}</details>)}
       </details>)}
     </details>}
     {canContinue && <Button size="compact" disabled={busy} onClick={() => void continueTask(true)}>{zh ? '新会话接手' : 'Continue in a new session'}</Button>}
