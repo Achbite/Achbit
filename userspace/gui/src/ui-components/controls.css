@@ -57,4 +57,9 @@
 .ac-icon-button > svg { width: var(--ac-button-glyph); height: var(--ac-button-glyph); flex: none; }
 .ac-panel-header { display: flex; align-items: center; justify-content: space-between; gap: var(--ac-panel-header-gap, 8px); min-width: 0; }
 .ac-panel-header > :is(h1, h2, h3, strong, span) { min-width: 0; }
-@media (prefers-reduced-motion: reduce) { .ac-button { transition: none; } }
+.ac-disclosure-summary { display: flex; align-items: center; gap: var(--ac-control-gap, 6px); min-width: 0; list-style: none; cursor: pointer; overflow-wrap: anywhere; }
+.ac-disclosure-summary::-webkit-details-marker { display: none; }
+.ac-disclosure-summary::marker { content: ''; }
+.ac-disclosure-summary > .ac-disclosure-summary__chevron { flex: none; width: var(--ac-disclosure-icon-size, 12px); height: var(--ac-disclosure-icon-size, 12px); transition: transform var(--ac-motion-reveal, 200ms) var(--ac-ease-out, ease-out); }
+details[open] > .ac-disclosure-summary > .ac-disclosure-summary__chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .ac-button, .ac-disclosure-summary__chevron { transition: none; } }

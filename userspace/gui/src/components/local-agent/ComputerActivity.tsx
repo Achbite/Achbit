@@ -1,6 +1,6 @@
 import type { ActivityProjection, ArtifactProjection, ComputerActivityProjection, JsonObject } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { DisclosureSummary, UiIcon as AchbitShellIcon } from '../../ui-components';
 import { ArtifactImageLink } from './ArtifactLinks';
 import { FileChanges } from './FileChanges';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
@@ -106,7 +106,7 @@ export function ComputerActivity({ activity, computer, artifacts, language, stat
       </div>}
       <FileChanges activities={[activity]} inlineDiff />
       <details className="computer-activity__parameters" onToggle={onExpand}>
-        <summary {...identity.action('parameters', 'click')}>{t(language, 'agent.computer.parameters')}</summary>
+        <DisclosureSummary {...identity.action('parameters', 'click')}>{t(language, 'agent.computer.parameters')}</DisclosureSummary>
         {computer.inputObservation && computer.inputObservation.artifactIds.length > 0 && <ObservationImages
           ids={computer.inputObservation.artifactIds} artifacts={artifacts} language={language} before />}
         <pre>{JSON.stringify(computer.input, null, 2)}</pre>

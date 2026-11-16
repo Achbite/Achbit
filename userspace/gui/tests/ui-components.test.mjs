@@ -82,6 +82,37 @@ test('CloseButton composes the registered bases and keeps accessible labels and 
   assert.equal(IconButton({ icon: 'plus', 'aria-label': 'New tab' }).props.title, 'New tab');
 });
 
+test('DisclosureSummary preserves native semantics, refs and owner events with a decorative registered glyph', async t => {
+  const { DisclosureSummary } = await loadGuiModule(t, '/src/ui-components/index.ts');
+  const ref = { current: null };
+  const events = [];
+  const onClick = event => events.push(event);
+  const onKeyDown = () => {};
+  const label = createElement('strong', { id: 'disclosure-label' }, '操作参数 / Parameters');
+  const summary = DisclosureSummary({ ref, children: label, onClick, onKeyDown, title: 'Parameters',
+    'aria-describedby': 'disclosure-help', 'data-ui-owner': 'conversation.computer', 'data-ui-action': 'parameters' });
+  assert.equal(summary.type, 'summary');
+  assert.equal(summary.props.ref, ref);
+  assert.equal(summary.props.onClick, onClick);
+  assert.equal(summary.props.onKeyDown, onKeyDown);
+  assert.equal(summary.props.children[0], label);
+  assert.equal(summary.props['aria-describedby'], 'disclosure-help');
+  assert.equal(summary.props['data-ui-owner'], 'conversation.computer');
+  assert.equal(summary.props['data-ui-action'], 'parameters');
+  assert.equal(summary.props['aria-expanded'], undefined, 'the parent details owns native expansion');
+  assert.deepEqual(events, []);
+  const event = { original: true };
+  summary.props.onClick(event);
+  assert.deepEqual(events, [event]);
+  const html = renderToStaticMarkup(createElement('details', { open: true }, summary, createElement('pre', null, '{}')));
+  assert.match(html, /^<details open=""><summary\b/);
+  assert.match(html, /操作参数 \/ Parameters/);
+  assert.equal((html.match(/<summary\b/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /<button\b/);
+  assert.match(html, /data-ui-icon="chevronRight"/);
+  assert.match(html, /<svg[^>]*aria-hidden="true"/);
+});
+
 test('PanelHeader preserves caller headings and action nodes in one semantic header', async t => {
   const { PanelHeader, CloseButton } = await loadGuiModule(t, '/src/ui-components/index.ts');
   const heading = createElement('h2', { id: 'panel-title' }, 'Panel');

@@ -1,4 +1,4 @@
-import { UiIcon } from '../../ui-components';
+import { DisclosureSummary } from '../../ui-components';
 import type { HostStartupStatusV1 } from '../../services/runtimeAdapter';
 import { t, type UiLanguage } from '../../i18n';
 import './hostStartupDiagnostic.css';
@@ -12,7 +12,7 @@ export function HostStartupDiagnostic({ status, workspaceError, runtimeError, la
     <h3>{t(language, ssh ? (disconnected ? 'achbitGui.ssh.disconnectTitle' : 'achbitGui.ssh.failed') : failedStatus || runtimeError ? 'host.startup.failed' : 'workspace.error.load')}</h3>
     {failedStatus && <p>{disconnected ? t(language, 'achbitGui.ssh.disconnected') : failedStatus.code}</p>}
     <details open>
-      <summary>{t(language, 'agent.tool.detail.error')}<UiIcon name="chevronDown" size={14} /></summary>
+      <DisclosureSummary>{t(language, 'agent.tool.detail.error')}</DisclosureSummary>
       {failedStatus && <pre tabIndex={0}>{failedStatus.message}</pre>}
       {runtimeError && <pre tabIndex={0}>{runtimeError}</pre>}
       {workspaceError && <pre tabIndex={0}>{workspaceError}</pre>}

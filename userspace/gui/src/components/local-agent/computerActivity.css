@@ -9,6 +9,5 @@
 .computer-activity__image strong { color: var(--ac-muted); font-size: 11px; font-weight: 400; }
 .computer-activity__interface, .computer-activity__details { display: grid; gap: 6px; font-size: 12px; }
 .computer-activity__parameters { color: var(--ac-muted); font-size: 12px; }
-.computer-activity__parameters > summary { cursor: pointer; }
 .computer-activity__parameters > :not(summary) { margin-top: 6px; }
 .computer-activity pre { margin: 0; padding: 10px; max-height: 320px; overflow: auto; border-radius: 8px; background: var(--ac-surface); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }

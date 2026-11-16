@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { modelReasoningEfforts, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@achbit/protocol';
 import SubagentModelFields from '../../shared/SubagentModelFields';
-import { ToggleSwitch } from '../../../ui-components';
+import { DisclosureSummary, ToggleSwitch } from '../../../ui-components';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';
 import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { t } from '../../../i18n';
@@ -60,12 +60,12 @@ export default function SubagentSettings({ profiles, connections }: {
     finally { setSaving(false); }
   };
   return <details className="model-editor model-divider">
-    <summary aria-describedby={globalHelp.helpId} {...globalHelp.helpEvents}>
+    <DisclosureSummary aria-describedby={globalHelp.helpId} {...globalHelp.helpEvents}>
       {globalHelp.help}<strong>{t(language, 'settings.subagents.title')}</strong>
       <span>{enabled ? (!selected ? t(language, 'settings.subagents.followMain')
         : available.find(value => value.id === selected)?.name ?? t(language, 'settings.subagents.unavailable'))
         : t(language, 'settings.common.disabled')}</span>
-    </summary>
+    </DisclosureSummary>
     <div>
       <fieldset disabled={loading || saving}>
         <div className="model-form-grid model-subagent-settings">

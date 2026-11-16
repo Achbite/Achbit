@@ -40,8 +40,6 @@
 .model-services .model-danger { color: var(--ac-danger); border: 0; background: none; }
 .model-editor { margin: 14px 0; padding: 8px 18px; border: 0; border-radius: var(--ac-radius-inner,12px); background: transparent; }
 .model-editor > summary { display: flex; justify-content: space-between; gap: 18px; cursor: pointer; padding: 17px 0; list-style: none; }
-.model-editor > summary:before { content: '›'; color: var(--text-muted); }
-.model-editor[open] > summary:before { transform: rotate(90deg); }
 .model-editor > summary > strong { margin-right: auto; }
 .model-editor > summary > span { color: var(--text-muted); font-size: 12px; }
 .model-editor form { padding: 10px 0 22px; }

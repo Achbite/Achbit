@@ -1,4 +1,4 @@
-import { NativeSelect } from '../../../ui-components';
+import { DisclosureSummary, NativeSelect } from '../../../ui-components';
 import { useState } from 'react';
 import { decodeShellCommandRules } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../../i18n';
@@ -28,7 +28,7 @@ export default function CommandRuleSettings({ language }: { language: UiLanguage
     <strong>{t(language, 'settings.commandRules.title')}</strong>
     {!rules.length && <p>{t(language, 'settings.commandRules.empty')}</p>}
     {rules.map((rule, index) => <div key={JSON.stringify(rule.context)} className="settings-command-rule">
-      <details><summary><code>{String(rule.context.command)}</code></summary>
+      <details><DisclosureSummary><code>{String(rule.context.command)}</code></DisclosureSummary>
         <pre>{JSON.stringify(rule.context, null, 2)}</pre></details>
       <NativeSelect disabled={busy} aria-label={t(language, 'settings.commandRules.title')} value={rule.decision} onChange={event => void update(index, event.target.value as 'ask' | 'allow' | 'deny')}>
         {(['ask', 'allow', 'deny'] as const).map(mode => <option key={mode} value={mode}>{t(language, `agent.permission.${mode}`)}</option>)}

@@ -1,6 +1,6 @@
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import { captureFocusReturn, returnInteractionFocus, useInteractionFocus } from '../../shared/interactionFocus';
-import { NativeSelect } from '../../../ui-components';
+import { DisclosureSummary, NativeSelect } from '../../../ui-components';
 import { modelReasoningEfforts, type UserSettings } from '@achbit/protocol';
 import { t } from '../../../i18n';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
@@ -45,9 +45,9 @@ function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProvide
     finally { setSaving(false); }
   };
   return <details className="model-editor model-divider">
-    <summary aria-describedby={helpId} {...helpEvents}>{help}<strong>{t(language, 'settings.approvalReview.title')}</strong>
+    <DisclosureSummary aria-describedby={helpId} {...helpEvents}>{help}<strong>{t(language, 'settings.approvalReview.title')}</strong>
       <span>{selected ? profile?.name ?? t(language, 'settings.approvalReview.unavailable') : t(language, 'settings.approvalReview.conversationModel')}
-        {effort ? ` · ${t(language, `settings.llm.effort.${effort}`)}` : ''}</span></summary>
+        {effort ? ` · ${t(language, `settings.llm.effort.${effort}`)}` : ''}</span></DisclosureSummary>
     <div className="model-form-grid model-reviewer-settings">
       <label>{t(language, 'settings.approvalReview.providerModel')}
         <NativeSelect value={selected} disabled={saving} onChange={event => {

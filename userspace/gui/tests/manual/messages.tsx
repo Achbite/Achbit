@@ -87,6 +87,22 @@ if (previewParams.has('tool-summary')) {
   ];
   initial.revision = 6;
 }
+if (previewParams.has('computer')) {
+  const activity: SessionProjection['activities'][number] = {
+    activityId: 'activity:computer', kind: 'tool', status: 'completed', runId: 'run:second', sequence: 5,
+    label: 'browser.page', tool: { operation: 'browser.page', resources: [], computer: {
+      action: 'inspect', input: { action: 'inspect', previewId: 'preview:design' },
+      page: { title: 'Design preview' }, result: { status: 'ready' },
+    } },
+  };
+  initial.activities = [activity];
+  initial.messages[3] = { ...initial.messages[3]!, sequence: 6, content: '已检查界面。' };
+  initial.timeline = [...initial.timeline.slice(0, 3),
+    { kind: 'toolGroup', timelineId: 'timeline:computer', activityIds: [activity.activityId], sequence: 5 },
+    { ...initial.timeline[3]!, sequence: 6 },
+  ];
+  initial.revision = 6;
+}
 const approval = { approvalId: 'approval:preview', callId: 'call:preview', runId: 'run:second', sequence: 5, createdAt: '2026-09-16T08:35:00Z', preview: { summary: '执行 bash：make test', effects: ['external'], logicalTargets: ['host:container'],
   authorizationScope: 'runHostShell', authorizationContext: { workspaceRoot: '/project/example' } } };
 const question: InteractionProjection = { interactionId: 'question:preview', callId: 'call:question-preview',

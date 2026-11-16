@@ -4,7 +4,7 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
-import { CloseButton, IconButton, PanelHeader } from '../../ui-components';
+import { CloseButton, DisclosureSummary, IconButton, PanelHeader } from '../../ui-components';
 import type { AgentComposer } from './useAgentComposer';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { planOperationDetail } from './planReview';
@@ -250,10 +250,9 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
           <div className="local-agent__decision-controls">
           {(sessionBrowser || runCommand) ? (
             <details className="local-agent__decision-scope">
-              <summary {...identity.action('scope', 'click')}>
+              <DisclosureSummary {...identity.action('scope', 'click')}>
                 <span>{t(language, 'agent.approval.scope')}</span>
-                <AchbitShellIcon name="chevronDown" />
-              </summary>
+              </DisclosureSummary>
               {sessionBrowser && <pre className="local-agent__decision-command"><code>{pendingApproval.preview.summary}</code></pre>}
               {runCommand && <p>{t(language, 'agent.permission.grantHelp')}</p>}
               {runCommand && <div className="local-agent__permission-save-rule">

@@ -1,5 +1,5 @@
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import { Button, IconButton } from '../../ui-components';
+import { Button, DisclosureSummary, IconButton } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { BrowserAnnotationDraft } from './browserReview';
 import React, { useCallback, useId, useLayoutEffect, useRef, useState } from 'react';
@@ -211,7 +211,7 @@ export function ConversationComposer({
       {error && <DismissibleError language={language} onDismiss={composer.clearError}>{error}</DismissibleError>}
       {attachmentError && <DismissibleError language={language} onDismiss={composer.clearAttachmentError}>{attachmentError}</DismissibleError>}
       {uiActionError && <DismissibleError language={language} onDismiss={onDismissUiActionError}>{uiActionError.includes('\n')
-        ? <details><summary>{uiActionError.split('\n')[0]}</summary><pre>{uiActionError.slice(uiActionError.indexOf('\n') + 1)}</pre></details>
+        ? <details><DisclosureSummary>{uiActionError.split('\n')[0]}</DisclosureSummary><pre>{uiActionError.slice(uiActionError.indexOf('\n') + 1)}</pre></details>
         : uiActionError}</DismissibleError>}
       {composer.unappliedRecovery?.canUndo && <div className="local-agent__continuity-line">
         <Button size="compact" {...identity.action('undo-recovery', 'click')} onClick={() => composer.unappliedRecovery.undo()}>
@@ -220,7 +220,7 @@ export function ConversationComposer({
       </div>}
       <HostRebind run={projection?.run ?? null} />
       {composer.failedDrafts.map((failed, index) => <details className="local-agent__failed-draft" key={index}>
-        <summary>{language === 'zh-CN' ? '未发送草稿已保留' : 'Unsent draft saved'}</summary>
+        <DisclosureSummary>{language === 'zh-CN' ? '未发送草稿已保留' : 'Unsent draft saved'}</DisclosureSummary>
         <pre>{[failed.draft, ...failed.pastedTexts.map((item) => item.text)].filter(Boolean).join('\n\n')}</pre>
         {failed.pastedImages.map((image) => <div key={image.inputId}>{image.name}</div>)}
         {failed.filesystemPaths.map((item) => <div key={item.path}>{item.path}</div>)}

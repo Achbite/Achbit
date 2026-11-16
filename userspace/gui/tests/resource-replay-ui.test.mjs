@@ -129,7 +129,8 @@ test('closed output shortcuts do not mount artifact image readers', async t => {
     artifacts:[{artifactId:'artifact:image',sessionId:'session:history',title:'Deferred image',contentMode:'fixed',mediaType:'image/png'}],
     onOpen:async()=>{},
   }));
-  assert.match(markup, /<summary>Outputs<\/summary>/);
+  assert.match(markup, /<summary class="ac-disclosure-summary" data-ui-component="DisclosureSummary">Outputs<svg\b[^>]*data-ui-icon="chevronRight"[^>]*aria-hidden="true"/);
+  assert.equal(markup.replace(/<[^>]*>/g, ''), 'Outputs', 'the decorative glyph adds no text to the original label');
   assert.doesNotMatch(markup, /document-artifact|Deferred image/, 'no thumbnail reader mounts before the disclosure is opened');
 });
 

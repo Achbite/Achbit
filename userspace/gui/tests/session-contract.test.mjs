@@ -949,7 +949,7 @@ test('scope-only Plan review foregrounds additions and keeps the complete confir
   assert.ok(html.slice(0, disclosure).includes('Expose the shared options'));
   assert.equal(html.slice(0, disclosure).includes('Maintain mutual exclusion'), false);
   assert.equal(html.includes('新增 0 步'), false);
-  assert.match(html.slice(disclosure), /^<details[^>]*><summary>查看完整方案与全部范围/);
+  assert.match(html.slice(disclosure), /^<details[^>]*><summary class="ac-disclosure-summary" data-ui-component="DisclosureSummary">查看完整方案与全部范围<svg\b[^>]*data-ui-icon="chevronRight"[^>]*aria-hidden="true"/);
   assert.ok(html.slice(disclosure).includes('Maintain mutual exclusion'));
   assert.ok(html.slice(disclosure).includes('--werror'));
   assert.equal(planScopeAddition(previous, { ...current, steps: [{ ...current.steps[0], verification: [] }] }), null);

@@ -1,13 +1,14 @@
 // Isolated review fixture: actual registered controls, no backend or Session writes.
 import { useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Button, CloseButton, IconButton, ModalDialog, NativeSelect, PanelHeader, ToggleSwitch, UI_COMPONENTS, UI_REGION_SLOTS } from '../../src/ui-components';
+import { Button, CloseButton, DisclosureSummary, IconButton, ModalDialog, NativeSelect, PanelHeader, ToggleSwitch, UI_COMPONENTS, UI_REGION_SLOTS } from '../../src/ui-components';
 import { installPaletteDefaults } from '../../src/theme/palette';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/components/shared/focus.css';
 
 installPaletteDefaults();
+const english = new URLSearchParams(location.search).get('language') === 'en-US';
 
 function Catalog() {
   const [modal, setModal] = useState(false);
@@ -44,6 +45,18 @@ function Catalog() {
       </div>}
       <div className="row"><Button id="open-dialog" variant="secondary" onClick={() => setModal(true)}>打开弹窗</Button>
         <NativeSelect aria-label="尺寸示例"><option>紧凑</option><option>标准</option><option>大号</option></NativeSelect></div>
+    </section>
+    <section><h2>{english ? 'Content disclosures' : '内容折叠'}</h2>
+      <details onToggle={event => {
+        if (event.target === event.currentTarget) record(event.currentTarget.open ? 'disclosure-open' : 'disclosure-close');
+      }}>
+        <DisclosureSummary>{english ? 'Parameters' : '操作参数'}</DisclosureSummary>
+        <pre>{JSON.stringify({ action: 'inspect' }, null, 2)}</pre>
+        <details>
+          <DisclosureSummary>{english ? 'Diagnostics for the selected request and its complete operation parameters' : '当前请求的诊断信息与完整操作参数'}</DisclosureSummary>
+          <pre>{JSON.stringify({ status: 'ready' }, null, 2)}</pre>
+        </details>
+      </details>
     </section>
     <section><h2>注册目录</h2><ul>{Object.entries(UI_COMPONENTS).map(([name, entry]) => <li key={name}>
       <code>{name}</code>{'base' in entry ? ` ← ${entry.base}` : ''}

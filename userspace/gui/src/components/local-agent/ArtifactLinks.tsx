@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { t } from '../../i18n';
@@ -82,7 +83,7 @@ export function ArtifactShortcuts({ title, ...props }: React.ComponentProps<type
   return <details className="conversation-artifact-shortcuts" onToggle={event => {
     if (event.currentTarget.open) setOpened(true);
   }}>
-    <summary>{title}</summary>
+    <DisclosureSummary>{title}</DisclosureSummary>
     {opened && <ArtifactLinks {...props} />}
   </details>;
 }
