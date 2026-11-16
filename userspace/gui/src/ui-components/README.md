@@ -30,6 +30,8 @@ A close glyph does not decide what closing means. The owning feature retains vie
 
 `controls.css` owns primitive geometry and states. `achbitDesignTokens.css` owns control size, icon size, spacing and radius variables; colors continue to come from the existing `config/ui/palette.json` semantics. Feature classes position controls and headers, but must not redefine their hit targets, glyphs or hover/focus/disabled chrome. Native window controls and content-specific image controls remain separate from ordinary panel actions.
 
+`DisclosureSummary` renders a native `summary` with the shared decorative chevron for ordinary content disclosures. Its parent `details` retains open state and native keyboard/toggle behavior; refs, events, localized children and owner/action attributes pass through. Feature styles retain placement and surrounding layout. Menus, tree navigation and already specialized disclosure controls keep their existing interaction policies.
+
 ## Regions and ownership
 
 These are complementary mechanisms, not interchangeable registrations:

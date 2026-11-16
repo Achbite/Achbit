@@ -2,6 +2,7 @@ import { Button as ButtonView } from './Button';
 import { IconButton as IconButtonView } from './IconButton';
 import { CloseButton as CloseButtonView } from './CloseButton';
 import { PanelHeader as PanelHeaderView } from './PanelHeader';
+import { DisclosureSummary as DisclosureSummaryView } from './DisclosureSummary';
 import ModalDialogView from '../components/shared/ModalDialog';
 import ToggleSwitchView from '../components/shared/ToggleSwitch';
 import NativeSelectView from '../components/shared/NativeSelect';
@@ -17,6 +18,7 @@ export const UI_COMPONENTS = Object.freeze({
   IconButton: { component: IconButtonView, base: 'Button', purpose: 'Named icon-only action.' },
   CloseButton: { component: CloseButtonView, base: 'IconButton', purpose: 'Owner-controlled close action.' },
   PanelHeader: { component: PanelHeaderView, purpose: 'Panel title and trailing controls.' },
+  DisclosureSummary: { component: DisclosureSummaryView, purpose: 'Native content disclosure with a shared chevron; details owns expansion.' },
   ModalDialog: { component: ModalDialogView, purpose: 'Native modal layer, focus return and dismissal.' },
   ToggleSwitch: { component: ToggleSwitchView, purpose: 'Native checkbox with switch semantics.' },
   NativeSelect: { component: NativeSelectView, purpose: 'Native picker and pointer-focus completion.' },
@@ -29,6 +31,7 @@ export const Button = UI_COMPONENTS.Button.component;
 export const IconButton = UI_COMPONENTS.IconButton.component;
 export const CloseButton = UI_COMPONENTS.CloseButton.component;
 export const PanelHeader = UI_COMPONENTS.PanelHeader.component;
+export const DisclosureSummary = UI_COMPONENTS.DisclosureSummary.component;
 export const ModalDialog = UI_COMPONENTS.ModalDialog.component;
 export const ToggleSwitch = UI_COMPONENTS.ToggleSwitch.component;
 export const NativeSelect = UI_COMPONENTS.NativeSelect.component;
@@ -38,6 +41,7 @@ export type { ButtonProps, ButtonVariant, ControlSize } from './Button';
 export type { IconButtonProps } from './IconButton';
 export type { CloseButtonProps } from './CloseButton';
 export type { PanelHeaderProps } from './PanelHeader';
+export type { DisclosureSummaryProps } from './DisclosureSummary';
 export type { UiIconName, UiIconProps } from '../icons/registry';
 export { UI_ICON_ROLES } from '../icons/registry';
 export { UI_REGION_SLOTS } from '../ui-plugins/slots';
