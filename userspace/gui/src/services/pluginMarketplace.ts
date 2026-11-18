@@ -105,8 +105,49 @@ export function decodePluginMarketplace(value: unknown): PluginMarketplaceEntry[
   return plugins;
 }
 
+const CONTENTS_URL = 'https://api.github.com/repos/Achbite/achbit-plugins/contents/plugins.json?ref=main';
+const REQUEST_TIMEOUT_MS = 6_000;
+
+class DirectoryHttpError extends Error {}
+
+async function readDirectory(url: string, signal?: AbortSignal, headers?: Record<string, string>): Promise<string> {
+  const request = new AbortController();
+  const cancel = () => request.abort();
+  if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  signal?.addEventListener('abort', cancel, { once: true });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    request.abort();
+  }, REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: request.signal, credentials: 'omit', cache: 'no-cache', headers });
+    if (!response.ok) throw new DirectoryHttpError(`Plugin directory HTTP ${response.status}`);
+    // The timeout covers the body transfer as well as connecting to the origin.
+    return await response.text();
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+    if (timedOut) throw new Error(`Plugin directory request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
 export async function fetchPluginMarketplace(signal?: AbortSignal): Promise<PluginMarketplaceEntry[]> {
-  const response = await fetch(PLUGIN_MARKETPLACE_INDEX_URL, { signal, credentials: 'omit', cache: 'no-cache' });
-  if (!response.ok) throw new Error(`Plugin directory HTTP ${response.status}`);
-  return decodePluginMarketplace(await response.json());
+  let raw: string;
+  try {
+    raw = await readDirectory(PLUGIN_MARKETPLACE_INDEX_URL, signal);
+  } catch (primaryError) {
+    if (signal?.aborted || primaryError instanceof DirectoryHttpError) throw primaryError;
+    try {
+      const mirror = await readDirectory(CONTENTS_URL, signal, { Accept: 'application/vnd.github.raw+json' });
+      return decodePluginMarketplace(JSON.parse(mirror));
+    } catch (secondaryError) {
+      if (signal?.aborted) throw secondaryError;
+      throw new Error(`raw.githubusercontent.com: ${String(primaryError)} · api.github.com: ${String(secondaryError)}`);
+    }
+  }
+  return decodePluginMarketplace(JSON.parse(raw));
 }
