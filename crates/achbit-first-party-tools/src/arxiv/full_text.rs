@@ -113,7 +113,8 @@ fn fetch(id: &str) -> ToolResult<Paper> {
             "arXiv returned a non-PDF response",
         ));
     }
-    let pages = extract_pages(&reply.body)?;
+    let (_, pages) = crate::pdf::extract_pages(&reply.body, 0..usize::MAX)
+        .map_err(|message| ToolError::new("arxiv_pdf_extract_failed", message))?;
     if pages.iter().all(|page| page.trim().is_empty()) {
         return Err(ToolError::new(
             "arxiv_pdf_needs_ocr",
@@ -133,33 +134,6 @@ fn fetch(id: &str) -> ToolResult<Paper> {
             })
             .collect(),
     })
-}
-
-fn extract_pages(bytes: &[u8]) -> ToolResult<Vec<String>> {
-    // The upstream by-pages shortcut treats the first parser error as end of document.
-    let parsed = std::panic::catch_unwind(|| -> Result<Vec<String>, String> {
-        let document = arxiv_pdf::Document::load_mem(bytes).map_err(|e| e.to_string())?;
-        let mut pages = Vec::new();
-        for number in document.get_pages().into_keys() {
-            let mut text = String::new();
-            arxiv_pdf::output_doc_page(
-                &document,
-                &mut arxiv_pdf::PlainTextOutput::new(&mut text),
-                number,
-            )
-            .map_err(|e| format!("Page {number}: {e}"))?;
-            pages.push(text);
-        }
-        Ok(pages)
-    });
-    parsed
-        .map_err(|_| {
-            ToolError::new(
-                "arxiv_pdf_extract_failed",
-                "The PDF parser could not decode the document",
-            )
-        })?
-        .map_err(|e| ToolError::new("arxiv_pdf_extract_failed", e))
 }
 
 fn load(id: &str, dir: Option<&Path>) -> ToolResult<Paper> {

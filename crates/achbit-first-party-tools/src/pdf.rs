@@ -1,6 +1,8 @@
 use crate::{input_object, limit_text, optional_u64, required_string, ToolError, ToolResult};
 use serde_json::{json, Value};
 use std::fmt::Write as _;
+use std::io::Read;
+use std::ops::Range;
 use std::path::Path;
 
 const MAX_PDF_BYTES: u64 = 16 * 1024 * 1024;
@@ -73,35 +75,42 @@ fn read(input: &Value, metadata: Option<&Value>) -> ToolResult<Value> {
             "PDF target is not a file",
         ));
     }
-    if metadata.len() > MAX_PDF_BYTES {
-        return Err(ToolError::new(
+    let too_large = || {
+        ToolError::new(
             "pdf_target_too_large",
             format!("PDF exceeds {MAX_PDF_BYTES} bytes"),
-        ));
+        )
+    };
+    if metadata.len() > MAX_PDF_BYTES {
+        return Err(too_large());
     }
-    let pages = pdf_extract::extract_text_by_pages(target)
-        .map_err(|error| ToolError::new("pdf_extract_failed", error.to_string()))?;
-    if pages.is_empty() {
+    let mut bytes = Vec::new();
+    std::fs::File::open(target)
+        .and_then(|file| file.take(MAX_PDF_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|error| ToolError::new("pdf_read_failed", error.to_string()))?;
+    if bytes.len() as u64 > MAX_PDF_BYTES {
+        return Err(too_large());
+    }
+    let start = requested_start - 1;
+    let requested_end = requested_end.unwrap_or(usize::MAX);
+    let range_end = requested_end.min(start.saturating_add(MAX_PDF_PAGES));
+    let (total_pages, pages) = extract_pages(&bytes, start..range_end)
+        .map_err(|message| ToolError::new("pdf_extract_failed", message))?;
+    if total_pages == 0 {
         return Err(ToolError::new(
             "pdf_page_range_invalid",
             "PDF contains no readable pages",
         ));
     }
-    if requested_start > pages.len() {
+    if requested_start > total_pages {
         return Err(ToolError::new(
             "pdf_page_range_invalid",
-            format!(
-                "startPage {requested_start} exceeds PDF page count {}",
-                pages.len()
-            ),
+            format!("startPage {requested_start} exceeds PDF page count {total_pages}"),
         ));
     }
-    let start = requested_start - 1;
-    let requested_end = requested_end.unwrap_or(pages.len());
-    let available_end = requested_end.min(pages.len());
-    let end = available_end.min(start.saturating_add(MAX_PDF_PAGES));
+    let end = start + pages.len();
     let mut joined = String::new();
-    for (index, content) in pages[start..end].iter().enumerate() {
+    for (index, content) in pages.iter().enumerate() {
         write!(joined, "\n--- page {} ---\n{}", start + index + 1, content)
             .expect("writing to String cannot fail");
     }
@@ -112,11 +121,108 @@ fn read(input: &Value, metadata: Option<&Value>) -> ToolResult<Value> {
         "adapter": "pdf_extract",
         "startPage": start + 1,
         "endPage": end,
-        "totalPages": pages.len(),
+        "totalPages": total_pages,
         "text": text,
-        "truncatedPages": end < available_end,
-        "hasMorePages": end < pages.len(),
+        "truncatedPages": end < requested_end.min(total_pages),
+        "hasMorePages": end < total_pages,
         "truncatedOutput": truncated_output,
-        "sizeBytes": metadata.len()
+        "sizeBytes": bytes.len()
     }))
+}
+
+/// The upstream by-pages shortcut treats the first page error as end of document.
+pub(crate) fn extract_pages(
+    bytes: &[u8],
+    range: Range<usize>,
+) -> Result<(usize, Vec<String>), String> {
+    // The parser can panic on malformed page objects. Its state stays inside this
+    // boundary; only the current page number survives to identify the failure.
+    let mut page = None;
+    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut document =
+            pdf_extract::Document::load_mem(bytes).map_err(|error| error.to_string())?;
+        if document.is_encrypted() {
+            document.decrypt("").map_err(|error| error.to_string())?;
+        }
+        let mut pages = Vec::new();
+        let page_numbers = document.get_pages();
+        let count = page_numbers.len();
+        for number in page_numbers.into_keys().skip(range.start).take(range.len()) {
+            page = Some(number);
+            let mut text = String::new();
+            pdf_extract::output_doc_page(
+                &document,
+                &mut pdf_extract::PlainTextOutput::new(&mut text),
+                number,
+            )
+            .map_err(|error| error.to_string())?;
+            pages.push(text);
+        }
+        Ok((count, pages))
+    }))
+    .unwrap_or_else(|panic| {
+        let reason = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("The PDF parser could not decode the document");
+        Err(reason.to_owned())
+    });
+    decoded.map_err(|error| match page {
+        Some(number) => format!("Page {number}: {error}"),
+        None => error,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pdf_extract::{dictionary, Document, Object};
+
+    #[test]
+    fn local_read_reports_the_failed_page_instead_of_returning_a_short_document() {
+        let mut doc = Document::with_version("1.5");
+        let pages = doc.new_object_id();
+        let mut kids = Vec::new();
+        for number in 1..=3 {
+            let mut page = dictionary! { "Type" => "Page", "Parent" => pages };
+            if number != 2 {
+                page.set("MediaBox", vec![0.into(), 0.into(), 100.into(), 100.into()]);
+            }
+            kids.push(Object::Reference(doc.add_object(page)));
+        }
+        doc.objects.insert(
+            pages,
+            dictionary! {
+                "Type" => "Pages", "Count" => 3, "Kids" => kids
+            }
+            .into(),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        doc.trailer.set("Root", catalog);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paper.pdf");
+        doc.save(&path).unwrap();
+        let context = json!({"achbit": {"workspaceId":"test", "resolvedWorkspaceTargets":[path]}});
+        let error = call(
+            "read",
+            &json!({"path":"paper.pdf","startPage":1,"endPage":3}),
+            Some(&context),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "pdf_extract_failed");
+        assert!(error.message.contains("Page 2"), "{}", error.message);
+        assert!(error.message.contains("MediaBox"), "{}", error.message);
+        for number in [1, 3] {
+            let output = call(
+                "read",
+                &json!({"path":"paper.pdf", "startPage":number, "endPage":number}),
+                Some(&context),
+            )
+            .unwrap();
+            assert_eq!(output["totalPages"], 3);
+            assert_eq!(output["startPage"], number);
+            assert_eq!(output["endPage"], number);
+        }
+    }
 }
