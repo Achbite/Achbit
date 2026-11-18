@@ -269,6 +269,7 @@ fn manage_owned(state: &AppState, request: ManageRequest) -> Json<ApiResponse> {
                 replace_path: Some(path),
             },
             Some(&key),
+            None,
         );
     }
     let mut sources = match crate::plugin_installation::source_list(&settings, &key) {

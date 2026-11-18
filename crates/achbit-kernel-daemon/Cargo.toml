@@ -20,7 +20,7 @@ achbit-kernel-runtime.workspace = true
 achbit-kernel-tools.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
-tokio = { workspace = true, features = ["process", "io-util"] }
+tokio = { workspace = true, features = ["process", "io-util", "fs"] }
 tower-http.workspace = true
 reqwest.workspace = true
 hyper.workspace = true
