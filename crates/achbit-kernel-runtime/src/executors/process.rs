@@ -1545,6 +1545,67 @@ mod plan_scope_tests {
     }
 
     #[test]
+    fn child_exit_drains_final_output_even_if_a_pipe_stays_open() {
+        struct FinishingPipe {
+            stop: Arc<AtomicBool>,
+            reads: usize,
+            stays_open: bool,
+        }
+
+        impl Read for FinishingPipe {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                match self.reads {
+                    1 => {
+                        // This read observed an empty pipe before the final writes and child exit.
+                        self.stop.store(true, AtomicOrdering::Release);
+                        thread::current().unpark();
+                        Err(std::io::ErrorKind::WouldBlock.into())
+                    }
+                    2 | 3 => {
+                        let bytes = if self.reads == 2 {
+                            b"final ".as_slice()
+                        } else {
+                            b"bytes"
+                        };
+                        buffer[..bytes.len()].copy_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                    _ if !self.stays_open => Ok(0),
+                    4..=12 => Err(std::io::ErrorKind::WouldBlock.into()),
+                    _ => Err(std::io::Error::other(
+                        "kept polling an empty pipe after child exit",
+                    )),
+                }
+            }
+        }
+
+        for (stream, stays_open) in [("stdout", true), ("stderr", false)] {
+            let stop = Arc::new(AtomicBool::new(false));
+            let reader = FinishingPipe {
+                stop: stop.clone(),
+                reads: 0,
+                stays_open,
+            };
+            let path = std::env::temp_dir().join(new_process_scope_id());
+            let handle = spawn_output_reader(
+                reader,
+                fs::File::create(&path).unwrap(),
+                BASH_OUTPUT_LIMIT_BYTES,
+                stop,
+                KernelProgressSink::default(),
+                stream,
+                false,
+            );
+            let result = join_output_reader(handle, stream);
+            let archived = fs::read(&path).unwrap();
+            fs::remove_file(path).unwrap();
+            assert_eq!(result.unwrap().bytes, b"final bytes", "{stream}");
+            assert_eq!(archived, b"final bytes", "{stream} archive");
+        }
+    }
+
+    #[test]
     fn terminated_processes_report_no_exit_code() {
         let root = std::env::temp_dir().join(new_process_scope_id());
         let context = KernelToolExecutionContext {
@@ -1840,11 +1901,13 @@ fn spawn_output_reader(
         let mut offset = 0_u64;
         let mut chunk = [0_u8; 8 * 1024];
         loop {
+            // WouldBlock can end capture only when cleanup happened before this read.
+            let stopping = stop.load(AtomicOrdering::Acquire);
             let read = match reader.read(&mut chunk) {
                 Ok(read) => read,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if stop.load(AtomicOrdering::Acquire) {
+                    if stopping {
                         break;
                     }
                     thread::park_timeout(PROCESS_POLL_INTERVAL);
