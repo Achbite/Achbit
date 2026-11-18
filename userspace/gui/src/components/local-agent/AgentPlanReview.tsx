@@ -1,3 +1,4 @@
+import { ConversationBodyLinkScope, useConversationBodyLinks } from './useConversationBodyLinks';
 import { useCallback, useEffect, useState } from 'react';
 import type { PendingAgentDecision, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
@@ -42,12 +43,14 @@ function AgentPlanReviewDialog({ decision, language, onDismiss, onResolved }: {
 }) {
   const child = useAgentChildConversation(decision.agentSessionId, true);
   const projection = child.projection;
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const bodyLinks = useConversationBodyLinks(projection, language, setLinkError);
   const matches = projection && matchesAgentPlanReview(decision, projection);
   useEffect(() => {
     if (projection && !matches && !child.readError) onResolved();
   }, [projection, matches, child.readError, onResolved]);
   if (projection && !matches && !child.readError) return null;
-  return <ConversationSessionScope.Provider value={decision.agentSessionId}>
+  return <ConversationBodyLinkScope.Provider value={bodyLinks.open}><ConversationSessionScope.Provider value={decision.agentSessionId}>
     <ModalDialog className="agent-plan-review" aria-label={t(language, 'agent.plan.review')}
       busy={child.submitting} onClose={onDismiss}>
       <section className="local-agent agent-plan-review__card">
@@ -56,6 +59,8 @@ function AgentPlanReviewDialog({ decision, language, onDismiss, onResolved }: {
           <button type="button" disabled={child.submitting} onClick={onDismiss}>{t(language, 'agent.team.reviewLater')}</button>
         </header>
         <div className="agent-plan-review__body">
+          {bodyLinks.selection}
+          {linkError && <p role="alert" className="agent-tasks__error">{linkError}</p>}
           {child.readError && <div role="alert" className="agent-tasks__error"><p>{child.readError}</p>
             <button type="button" onClick={() => void child.refresh()}>{t(language, 'agent.team.refresh')}</button></div>}
           {child.commandError && <p role="alert" className="agent-tasks__error">{child.commandError}</p>}
@@ -64,5 +69,5 @@ function AgentPlanReviewDialog({ decision, language, onDismiss, onResolved }: {
         </div>
       </section>
     </ModalDialog>
-  </ConversationSessionScope.Provider>;
+  </ConversationSessionScope.Provider></ConversationBodyLinkScope.Provider>;
 }

@@ -33,7 +33,9 @@ export function localReference(href: string): string | null {
 
 function normalizedPath(path: string): string {
   const parts: string[] = [];
-  for (const part of path.replace(/\\/gu, '/').split('/')) {
+  // Rust's canonical Windows disk paths can carry the extended-length prefix.
+  const portable = path.replace(/\\/gu, '/').replace(/^\/\/\?\/(?=[a-z]:\/)/iu, '');
+  for (const part of portable.split('/')) {
     if (part === '.' || (part === '' && parts.length)) continue;
     if (part === '..') { if (parts.length > 1) parts.pop(); }
     else parts.push(part);

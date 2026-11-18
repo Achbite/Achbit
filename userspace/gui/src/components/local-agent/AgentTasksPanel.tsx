@@ -1,3 +1,4 @@
+import { ConversationBodyLinkScope, useConversationBodyLinks } from './useConversationBodyLinks';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { CONVERSATION_COMMAND_VERSION, type AgentChildProjection, type AgentTaskProjection,
   type PlanResponse, type SessionProjection, type ShellAuthorizationScope, type UserSettings } from '@achbit/protocol';
@@ -61,6 +62,8 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
   const decision = useRef<HTMLDivElement>(null);
   const child = useAgentChildConversation(sessionId, expanded);
   const projection = child.projection;
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const bodyLinks = useConversationBodyLinks(projection, language, setLinkError);
   const name = instance?.displayName ?? tasks[0]?.displayName ?? displayName!;
   const pendingKey = agentDecisionKey(projection);
   useLayoutEffect(() => {
@@ -69,11 +72,13 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
     if (!expanded || !pendingKey || !container || !target) return;
     container.scrollTop += target.getBoundingClientRect().top - container.getBoundingClientRect().top - 12;
   }, [expanded, pendingKey, entryId]);
-  return <ConversationSessionScope.Provider value={sessionId}><AgentNavigationScope sessionId={sessionId} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}>
+  return <ConversationBodyLinkScope.Provider value={bodyLinks.open}><ConversationSessionScope.Provider value={sessionId}><AgentNavigationScope sessionId={sessionId} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}>
     <section hidden={!expanded} className="agent-tasks__page" aria-label={t(language, 'agent.page.title')} onKeyDown={event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); onBack(); } }}>
       <AgentPageInformation name={name} sessionId={sessionId} projection={projection} language={language} onBack={onBack}
         status={`${pendingKey ? t(language, 'agent.team.needsInput') : tasks.at(-1) ? t(language, `agent.team.status.${tasks.at(-1)!.status}`) : ''}${instance?.closed ? ` · ${t(language, 'agent.team.closed')}` : ''}`} />
       <div ref={body} className="agent-tasks__child-body">
+          {bodyLinks.selection}
+          {linkError && <p role="alert" className="agent-tasks__error">{linkError}</p>}
         {child.readError && <div role="alert" className="agent-tasks__error"><p>{child.readError}</p>
           <button type="button" onClick={() => void child.refresh()}>{t(language, 'agent.team.refresh')}</button></div>}
         {child.commandError && <p role="alert" className="agent-tasks__error">{child.commandError}</p>}
@@ -87,7 +92,7 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
         </>}
       </div>
     </section>
-  </AgentNavigationScope></ConversationSessionScope.Provider>;
+  </AgentNavigationScope></ConversationSessionScope.Provider></ConversationBodyLinkScope.Provider>;
 }
 
 export function AgentPageInformation({ name, sessionId, projection, language, onBack, status }: {

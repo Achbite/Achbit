@@ -398,6 +398,76 @@ test('multi-workspace links resolve exact targets and never guess through read e
   assert.equal(selected, multiple[1]);
 });
 
+test('body link activation uses the owning Session, file preference, directory and original errors', async t => {
+  const [{ useConversationBodyLinks }, { useConversationHost }, { useSettingsStore }, { READER_OPEN_EVENT }] =
+    await loadGuiModules(t, ['/src/components/local-agent/useConversationBodyLinks.tsx', '/src/components/local-agent/ConversationHost.tsx',
+      '/src/state/settingsStore.ts', '/src/components/local-agent/readerState.ts']);
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const host = useConversationHost();
+  const oldHost = { resolveResource: host.resolveResource, openFile: host.openFile, locatePath: host.locatePath };
+  const settings = useSettingsStore.getState().effectiveSettings;
+  const actions = [], resolves = [];
+  const previousWindow = globalThis.window, previousElement = globalThis.Element;
+  class Link {
+    constructor(href) { this.href = href; }
+    closest() { return this; }
+    getAttribute() { return this.href; }
+    contains(target) { return target === this; }
+  }
+  globalThis.Element = Link;
+  globalThis.window = new EventTarget();
+  t.after(() => {
+    globalThis.window = previousWindow; globalThis.Element = previousElement;
+    Object.assign(host, oldHost); useSettingsStore.setState({ effectiveSettings: settings });
+  });
+  window.addEventListener(READER_OPEN_EVENT, event => actions.push(['reader', event.detail]));
+  Object.assign(host, {
+    async resolveResource(sessionId, workspaceId, path) {
+      resolves.push([sessionId, workspaceId]);
+      const root = '/' + workspaceId;
+      if (path === '.') return { path: root, kind: 'directory' };
+      if (path === '中文 目录') return { path: root + '/' + path, kind: 'directory' };
+      if (path === '笔记 A.md' || path === '图.png') return { path: root + '/' + path, kind: 'file' };
+      throw Object.assign(new Error('Host: missing ' + path), { code: 'host_inspection_path_not_found' });
+    },
+    async openFile(path, position) { actions.push(['vscode', path, position?.line, position?.column]); },
+    async locatePath(path) { actions.push(['directory', path]); },
+  });
+  async function click(workspaceId, href) {
+    const projection = { sessionId: 'session:' + workspaceId, workspaceBindings: [{ workspaceId }], messages: [], artifacts: [] };
+    let open, settle;
+    const complete = new Promise(resolve => { settle = resolve; });
+    function View() {
+      open = useConversationBodyLinks(projection, 'en-US', settle, workspaceId === 'main').open;
+      return null;
+    }
+    renderToStaticMarkup(createElement(View));
+    const anchor = new Link(href);
+    const event = { target: anchor, currentTarget: anchor, button: 0, preventDefault() { this.defaultPrevented = true; } };
+    open(event);
+    assert.equal(event.defaultPrevented, true);
+    return complete;
+  }
+  useSettingsStore.setState({ effectiveSettings: { ...settings, 'gui.defaultFileOpen': 'reader' } });
+  assert.equal(await click('child', 'file:///child/笔记%20A.md#L4C2'), null);
+  assert.deepEqual(actions.pop(), ['reader', { sessionId: 'session:child', target: {
+    kind: 'workspace', workspaceId: 'child', logicalPath: '笔记 A.md', line: 4, column: 2,
+  } }]);
+  assert.match(await click('child', '/main/笔记%20A.md'), /No bound workspace/);
+  assert.equal(actions.length, 0);
+  assert.ok(resolves.every(([session, workspace]) => session === 'session:child' && workspace === 'child'));
+  useSettingsStore.setState({ effectiveSettings: { ...settings, 'gui.defaultFileOpen': 'vscode' } });
+  assert.equal(await click('main', './笔记%20A.md:7:3'), null);
+  assert.deepEqual(actions.pop(), ['vscode', '/main/笔记 A.md', 7, 3]);
+  assert.equal(await click('main', './中文%20目录'), null);
+  assert.deepEqual(actions.pop(), ['directory', '/main/中文 目录']);
+  assert.equal(await click('main', 'workspace://main/图.png'), null);
+  assert.equal(actions.pop()[0], 'reader');
+  assert.match(await click('main', './missing.txt'), /Host: missing missing\.txt/);
+  assert.equal(actions.length, 0);
+});
+
 test('error dismissal clears only its owner and allows the next error to appear', async t => {
   const [{ DismissibleError }, { CloseButton, IconButton, Button }] = await loadGuiModules(t, [
     '/src/components/local-agent/DismissibleError.tsx', '/src/ui-components/index.ts',
@@ -429,6 +499,24 @@ test('document links retain Unicode paths and choose the appropriate reader', as
   assert.deepEqual(workspaceResourceLink('workspace://workspace%3Adoc/reports%2F%E6%8A%A5%E5%91%8A%20a.pdf'), { workspaceId: 'workspace:doc', logicalPath: 'reports/报告 a.pdf' });
   assert.equal(workspaceResourceLink('https://example.com/report.pdf'), null);
   assert.equal(workspaceResourceLink('workspace://workspace:doc/%FF'), null);
+});
+
+test('Reader opens manually selected images, PDF and text through their respective viewers', async t => {
+  const { selectedFilePreview } = await loadGuiModule(t, '/src/components/local-agent/documentResources.ts');
+  const bytes = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jrS8AAAAASUVORK5CYII=', 'base64'));
+  const picture = await selectedFilePreview('/work/图 像.PNG', new Blob([bytes]));
+  assert.equal(picture.status, 'document');
+  assert.equal(picture.format, 'image');
+  assert.equal(picture.blob.type, 'image/png');
+  assert.deepEqual(new Uint8Array(await picture.blob.arrayBuffer()), bytes);
+  const svg = await selectedFilePreview('图.svg', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>']));
+  assert.equal(svg.blob.type, 'image/svg+xml');
+  assert.equal(svg.format, 'image');
+  const pdf = new Blob(['%PDF-1.7\n']);
+  assert.deepEqual(await selectedFilePreview('报告.pdf', pdf), { status: 'document', format: 'pdf', blob: pdf });
+  assert.deepEqual(await selectedFilePreview('文字.txt', new Blob(['原文'])), { status: 'source', content: '原文' });
+  await assert.rejects(selectedFilePreview('损坏.pdf', new Blob(['text'])), /PDF/);
+  await assert.rejects(selectedFilePreview('损坏.txt', new Blob([Uint8Array.of(0xff)])), /encoded|encoding|decode/i);
 });
 
 test('reader text decoding preserves Unicode BOM documents and rejects unsupported bytes', async (t) => {
@@ -1931,6 +2019,33 @@ test('Markdown keeps archived artifact links and image sources in streaming and 
     parser.update(source, streaming).forEach(block => visit(block.tree));
     assert.deepEqual(references, [['a', artifact], ['img', artifact], ['a', ''], ['img', 'workspace://workspace:review/review.png']]);
   }
+});
+
+test('Markdown body file and folder links retain navigable paths and source positions', async t => {
+  const [{ StreamingMarkdownParser }, { parseLocalTarget, bindLocalTarget }] = await loadGuiModules(t, [
+    '/src/components/local-agent/streamingMarkdown.ts', '/src/components/local-agent/resourceLinks.ts',
+  ]);
+  const source = '[位置](file:///project/%E4%B8%AD%E6%96%87%20A/main.rs#L12C3) ' +
+    '[文件夹](<C:/Work/中文 目录/>) [相对位置](README.md:20:2) [网页](https://example.com/) ' +
+    '[不支持](javascript:alert) [远程文件](file://remote/path) ![本地来源](file:///project/a.png)';
+  const parser = new StreamingMarkdownParser();
+  for (const streaming of [true, false]) {
+    const links = [], images = [];
+    const visit = node => {
+      if (node.tagName === 'a') links.push(node.properties.href);
+      if (node.tagName === 'img') images.push(node.properties.src);
+      node.children?.forEach(visit);
+    };
+    parser.update(source, streaming).forEach(block => visit(block.tree));
+    assert.deepEqual(parseLocalTarget(links[0]), { path: '/project/中文 A/main.rs', absolute: true, line: 12, column: 3 });
+    assert.deepEqual(parseLocalTarget(links[1]), { path: 'C:/Work/中文 目录/', absolute: true });
+    assert.equal(bindLocalTarget(parseLocalTarget(links[2]), [{ workspaceId: 'w', root: '/work' }]).logicalPath, 'README.md');
+    assert.deepEqual([parseLocalTarget(links[2]).line, parseLocalTarget(links[2]).column], [20, 2]);
+    assert.deepEqual(links.slice(3), ['https://example.com/', '', '']);
+    assert.deepEqual(images, ['']);
+  }
+  const target = parseLocalTarget('C:/Work/中文%20目录/README.md#L12');
+  assert.equal(bindLocalTarget(target, [{ workspaceId: 'win', root: '\\\\?\\C:\\Work' }]).logicalPath, '中文 目录/README.md');
 });
 
 test('completed Markdown is reused across remounts while changed and streaming text stay current', async (t) => {

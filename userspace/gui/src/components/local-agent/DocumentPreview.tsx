@@ -54,7 +54,8 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
     </div>
     {error ? <p role="alert" className="local-agent__resource-error">{error}</p>
       : showSource ? (content === null ? loading : <SourceFileView content={content} filename={filename} viewKey={`${readingKey ?? filename}:source`} wrap />)
-        : format === 'image' ? <ImageReview source={download || undefined} alt={filename} imageClassName="document-preview__image" /> : <UiPluginSlotView slot={`document.${format}`} input={{ kind: 'document', blob, format, filename, locale: language, theme }}>
+        : format === 'image' ? <ImageReview source={download || undefined} alt={filename} imageClassName="document-preview__image"
+              onError={() => setError(chinese ? '无法解码图片：' + filename : 'Could not decode the image: ' + filename)} /> : <UiPluginSlotView slot={`document.${format}`} input={{ kind: 'document', blob, format, filename, locale: language, theme }}>
           {format === 'pdf' ? <InterfaceLoadBoundary><Suspense fallback={loading}><PdfDocumentPreview blob={blob} language={language} readingKey={readingKey} /></Suspense></InterfaceLoadBoundary>
             : content === null ? loading
             : format === 'html' ? <HtmlDocumentFrame content={content} title={filename} viewport={viewport} />

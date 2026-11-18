@@ -2,7 +2,6 @@ import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { CloseButton, ResizeHandle } from '../../ui-components';
 import { usePaneWidth } from '../shared/usePaneWidth';
 import { PANE_GEOMETRY, boundedPaneWidth } from '../shared/paneGeometry';
-import { readDocumentText } from './documentResources';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { AgentConversationPage } from './AgentTasksPanel';
 import SshConnection from '../../achbit-gui/layout/SshConnection';
@@ -26,7 +25,7 @@ import {
   readConversationArtifact,
   type ConversationResourceReadResult,
 } from '../../services/localAgentApi';
-import { documentFormat, type DocumentFormat } from './documentResources';
+import { documentFormat, imageMediaType, readDocumentText, selectedFilePreview, type DocumentFormat } from './documentResources';
 import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, selectReaderTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
 import { NativeBrowserPreview } from './NativeBrowserPreview';
 import { browserAddressError } from './BrowserChrome';
@@ -41,7 +40,7 @@ import {
   type NativeHostBinding,
   type NativePage,
 } from '../../services/nativeBrowser';
-import { useSettingsStore } from '../../state/settingsStore';
+import { openBoundResource } from './useConversationBodyLinks';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
 import './documentPreview.css';
@@ -212,22 +211,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   }, []);
   const openWorkspaceResource = async (workspaceId: string, logicalPath: string, position?: SourcePosition) => {
     if (!sessionId) return;
-    const resource = await host.resolveResource(sessionId, workspaceId, logicalPath);
-    if (currentSession.current !== sessionId) return;
-    if (resource.kind === 'directory') {
-      if (!host.locatePath) throw new Error('Directory opening requires the desktop Host.');
-      await host.locatePath(resource.path);
-      return;
-    }
-    if (
-      useSettingsStore.getState().effectiveSettings['gui.defaultFileOpen'] === 'vscode' &&
-      !/\.(pdf|png|jpe?g|gif|webp|svg|bmp)$/i.test(logicalPath)
-    ) {
-      if (!host.openFile) throw new Error('Open in VS Code is unavailable in this Host.');
-      await host.openFile(resource.path, position);
-      return;
-    }
-    openTarget({ kind: 'workspace', workspaceId, logicalPath, line: position?.line, column: position?.column });
+    await openBoundResource(host, sessionId, workspaceId, logicalPath, position, () => currentSession.current === sessionId, openTarget);
   };
   const removeTab = (id: string) => {
     navigation?.onTabClosed(sessionId, id);
@@ -681,14 +665,8 @@ function ReaderDocument({
       if (target.kind === 'file') {
         if (!host.readLocalFile) throw new Error('Local file reading requires the desktop Host.');
         const blob = await host.readLocalFile(target.path);
-        if (documentFormat(path)) {
-          const header = await blob.slice(0, 5).text();
-          if (documentFormat(path) === 'pdf' && header !== '%PDF-') throw new Error('当前文件不是 PDF 文档。');
-          if (!controller.signal.aborted) setState({ status: 'document', blob, format: documentFormat(path)! });
-        } else {
-          const content = await readDocumentText(blob);
-          if (!controller.signal.aborted) setState({ status: 'source', content });
-        }
+        const result = await selectedFilePreview(path, blob);
+        if (!controller.signal.aborted) setState(result);
         return;
       }
       if (target.kind === 'artifact') {
@@ -713,7 +691,7 @@ function ReaderDocument({
         return;
       }
       const format = startByte === undefined && sourceLine === undefined ? documentFormat(path) : null;
-      if (startByte === undefined && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(path)) {
+      if (startByte === undefined && imageMediaType(path)) {
         const blob = await host.resources.readResourceBlob(sessionId, reference!, 'image', controller.signal);
         if (!controller.signal.aborted) setState({ status: 'document', blob, format: 'image' });
       } else if (format) {
