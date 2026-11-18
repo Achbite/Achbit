@@ -1,5 +1,6 @@
 mod config;
 mod connection;
+mod conversation;
 mod error;
 mod host;
 mod llm;
@@ -11,6 +12,7 @@ pub use tool_plugin::*;
 
 pub use config::*;
 pub use connection::*;
+pub use conversation::*;
 pub use error::*;
 pub use host::*;
 pub use llm::*;

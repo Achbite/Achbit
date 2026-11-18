@@ -1,3 +1,4 @@
+use achbit_kernel_abi::{valid_logical_path, valid_media_type, valid_plugin_uri};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -1579,18 +1580,6 @@ pub(crate) fn invalid_filesystem_references(references: &[FilesystemReference]) 
     })
 }
 
-fn valid_logical_path(value: &str) -> bool {
-    if value.is_empty() || value.len() > 4_096 || value.contains('\0') || value.contains('\\') {
-        return false;
-    }
-    value == "."
-        || !value.starts_with('/')
-            && !value.ends_with('/')
-            && value
-                .split('/')
-                .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."))
-}
-
 fn invalid_context_tools(tools: &[ContextCompositionTool]) -> bool {
     let mut item_ids = HashSet::new();
     let mut canonical_names = HashSet::new();
@@ -2960,37 +2949,6 @@ fn is_run_status(status: &str) -> bool {
             | "cancelled"
             | "indeterminate"
     )
-}
-
-fn valid_plugin_uri(value: &str) -> bool {
-    let Some(identity) = value.strip_prefix("plugin://") else {
-        return false;
-    };
-    let Some((name, source)) = identity.split_once('@') else {
-        return false;
-    };
-    !name.is_empty()
-        && !source.is_empty()
-        && !name.contains('@')
-        && name.chars().chain(source.chars()).all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
-        })
-}
-
-fn valid_media_type(value: &str) -> bool {
-    let Some((kind, subtype)) = value.split_once('/') else {
-        return false;
-    };
-    !kind.is_empty()
-        && !subtype.is_empty()
-        && value.len() <= 128
-        && kind.chars().chain(subtype.chars()).all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(
-                    character,
-                    '!' | '#' | '$' | '&' | '^' | '_' | '.' | '+' | '-'
-                )
-        })
 }
 
 fn invalid_durations(values: &[Option<f64>]) -> bool {
