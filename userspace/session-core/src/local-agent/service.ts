@@ -89,6 +89,7 @@ export class SessionService implements ConversationPort {
   readonly #openingActors = new Set<string>();
   readonly #actorUsers = new Map<string, number>();
   readonly #retirements = new Map<string, Promise<void>>();
+  readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
   readonly #historyReads = new Map<string, Promise<SessionProjection>>();
   readonly #resourceReads = new Map<string, Promise<SessionResourceProjection>>();
@@ -429,6 +430,8 @@ export class SessionService implements ConversationPort {
   dispose(cancelActiveRuns = false): Promise<void> {
     if (this.#disposeTask) return this.#disposeTask;
     this.#lifetime.abort(new Error('session_service_disposed'));
+    for (const timer of this.#idleTimers.values()) clearTimeout(timer);
+    this.#idleTimers.clear();
     this.#disposeTask = this.disposeActors(cancelActiveRuns);
     return this.#disposeTask;
   }
@@ -494,21 +497,38 @@ export class SessionService implements ConversationPort {
         this.#actorUsers.delete(sessionId);
         const pending = this.#actors.get(sessionId);
         if (pending && retire) {
-          const retirement = (async () => {
-            const actor = await pending;
-            if (await actor.retireIfSettledChild() && this.#actors.get(sessionId) === pending) this.#actors.delete(sessionId);
-          })();
-          this.#retirements.set(sessionId, retirement);
-          try { await retirement; }
+          try { await this.retireActorIfIdle(sessionId, pending, false); }
           catch (error) {
             if (failure) throw new AggregateError([failure, error], 'session_actor_operation_cleanup_failed');
             throw error;
-          } finally {
-            if (this.#retirements.get(sessionId) === retirement) this.#retirements.delete(sessionId);
           }
         }
+        this.scheduleIdleRetirement(sessionId);
       }
     }
+  }
+
+  private scheduleIdleRetirement(sessionId: string): void {
+    if (this.#lifetime.signal.aborted || !this.#actors.has(sessionId) || this.#idleTimers.has(sessionId)) return;
+    const timer = setTimeout(() => {
+      this.#idleTimers.delete(sessionId);
+      const pending = this.#actors.get(sessionId);
+      if (!pending || this.#actorUsers.has(sessionId) || this.#retirements.has(sessionId)
+        || this.#deletingSessionIds.has(sessionId) || this.#lifetime.signal.aborted) return;
+      void this.retireActorIfIdle(sessionId, pending, true).catch(error => this.observation?.failed(sessionId, error));
+    }, 2_000);
+    timer.unref?.();
+    this.#idleTimers.set(sessionId, timer);
+  }
+
+  private retireActorIfIdle(sessionId: string, pending: Promise<SessionActor>, includeOrdinary: boolean): Promise<void> {
+    const retirement = pending.then(async actor => {
+      if (await actor.retireIfIdle(includeOrdinary) && this.#actors.get(sessionId) === pending) this.#actors.delete(sessionId);
+    }).finally(() => {
+      if (this.#retirements.get(sessionId) === retirement) this.#retirements.delete(sessionId);
+    });
+    this.#retirements.set(sessionId, retirement);
+    return retirement;
   }
 
   private async actor(sessionId: string): Promise<SessionActor> {
@@ -580,6 +600,7 @@ export class SessionService implements ConversationPort {
     const composition = await createComposition(mode);
     const actor = new SessionActor(sessionId, this.journal, composition, {
       initialEvents: events, mode, createComposition,
+      onLoopFinished: () => this.scheduleIdleRetirement(sessionId),
       ...(this.observation ? { observation: {
         accept: input => this.observation!.accept({ ...input, parentSessionId: first.payload.agentContext?.parentSessionId ?? null }),
         failed: (id, error) => this.observation!.failed(id, error),

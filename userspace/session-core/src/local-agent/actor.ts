@@ -55,6 +55,7 @@ export interface SessionActorOptions {
   mode?: SessionMode;
   createComposition?(mode: SessionMode): Promise<AgentComposition>;
   observation?: SessionObservationSink;
+  onLoopFinished?(): void;
   agents?: AgentSessionRuntime;
   profileId?: string;
   initialEvents?: readonly SessionEvent[];
@@ -86,6 +87,8 @@ export class SessionActor {
   #writes = Promise.resolve();
   #active?: ActiveRun;
   #pendingPreparations = 0;
+  #customCapabilities = false;
+  readonly #onLoopFinished?: () => void;
   readonly #inputWaits = new Set<{ runId: string; timed: boolean }>();
   #disposed = false;
   readonly #wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -109,6 +112,7 @@ export class SessionActor {
   ) {
     this.#timing = new RunTiming(sessionId);
     this.#observation = options.observation;
+    this.#onLoopFinished = options.onLoopFinished;
     this.#journal = journal;
     this.#composition = composition;
     this.#mode = options.mode ?? 'full';
@@ -216,9 +220,12 @@ export class SessionActor {
   }
 
   /** Called only after the service's last external Actor lease has been released. */
-  async retireIfSettledChild(): Promise<boolean> {
+  async retireIfIdle(includeOrdinary: boolean): Promise<boolean> {
     const state = (await this.loadSnapshot()).state;
-    if (!state.agentContext || state.run && !isTerminal(state.run.status)) return false;
+    if (state.run && !isTerminal(state.run.status) || state.agentContext && includeOrdinary && !state.run) return false;
+    if (!state.agentContext && (!includeOrdinary || this.#active || this.#pendingPreparations
+      || this.#customCapabilities || this.#loopFailure || this.#wakeTimers.size || this.#inputWaits.size
+      || Object.values(state.processes).some(job => job.status === 'active'))) return false;
     // run.settled can wake a result consumer just before the Loop's finally completes.
     await this.#active?.task;
     await this.dispose();
@@ -486,6 +493,7 @@ export class SessionActor {
         throw new Error('session_capabilities_run_active');
       }
       await this.#capabilities.replace(implementation);
+      this.#customCapabilities = true;
     });
   }
 
@@ -1441,6 +1449,7 @@ export class SessionActor {
       })
       .finally(() => {
         if (this.#active === active) this.#active = undefined;
+        this.#onLoopFinished?.();
         this.notifyActivityChanged();
         for (const wake of this.#changes) wake();
       });
@@ -1805,7 +1814,7 @@ export class SessionActor {
         type: 'run.settled',
         sessionId: this.sessionId,
         runId,
-        payload: cloneSettlement(settlement),
+        payload: structuredClone(settlement),
       }]);
       return true;
     }
@@ -1865,7 +1874,7 @@ export class SessionActor {
         type: 'run.settled',
         sessionId: this.sessionId,
         runId,
-        payload: cloneSettlement(settlement),
+        payload: structuredClone(settlement),
       },
     ]);
     return true;
@@ -2122,14 +2131,6 @@ function recoveryPluginSelection(
   return {
     pluginSelections: selections.map((selection) => ({ ...selection })),
   };
-}
-
-function cloneSettlement(settlement: RunSettlement): RunSettlement {
-  if (settlement.outcome === 'completed') return { ...settlement };
-  if (settlement.outcome === 'failed' || settlement.outcome === 'indeterminate') {
-    return { outcome: settlement.outcome, error: { ...settlement.error } };
-  }
-  return { outcome: 'cancelled' };
 }
 
 function closesAssistantDraft(
