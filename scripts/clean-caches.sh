@@ -30,6 +30,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/clean-caches.sh [options]
+  scripts/clean-caches.sh --maintenance [--dry-run|--yes]    # inside the development container
 
 Default behavior:
   Dry-run only. Shows the Achbit project caches that would be removed.
@@ -275,6 +276,46 @@ clean_global_docker_system() {
   log "prune Docker system cache, images, stopped containers, networks, and volumes"
   run_command docker system prune -a --volumes -f
 }
+
+# Routine maintenance has a separate scope from the complete development reset.
+# Run inside the selected worktree container so its private caches stay scoped.
+if [ "${1:-}" = --maintenance ]; then
+  shift
+  case "$#" in
+    0) ;;
+    1) case "$1" in --yes) dry_run=0 ;; -n|--dry-run) ;; *) fail "unknown maintenance option: $1" ;; esac ;;
+    *) fail "use --maintenance with either --dry-run or --yes" ;;
+  esac
+  [ -f /.dockerenv ] || fail "run --maintenance inside the project's development container"
+  cache_root="$ROOT_DIR/.build-cache"
+  if [ "$dry_run" -eq 0 ]; then
+    mkdir -p "$cache_root"
+    mkdir "$cache_root/build.lock" || fail "another build or maintenance run owns $cache_root/build.lock"
+    trap 'rmdir "$cache_root/build.lock"' EXIT
+  fi
+
+  # Only discard generated caches. Linked package roots may belong to another checkout.
+  for modules in "$ROOT_DIR/node_modules" "$ROOT_DIR/userspace/gui/node_modules"; do
+    [ "$(realpath -m "$modules")" = "$modules" ] || continue
+    for cache in .vite .vite-temp .cache; do
+      if [ -e "$modules/$cache" ]; then remove_path "$modules/$cache"; fi
+    done
+  done
+  if [ -d "$ROOT_DIR/.pytest_cache" ]; then remove_path "$ROOT_DIR/.pytest_cache"; fi
+  # npm's command preserves its configuration, installed packages and credentials.
+  if [ -d "$(npm config get cache)/_cacache" ]; then run_command npm cache clean --force; fi
+  # APT owns its archive lock, package database and partial downloads.
+  if command_exists apt-get; then run_command apt-get clean; fi
+
+  # Old runs of the kernel fixture left private test directories after exit.
+  # The exact generated name and a full idle day exclude new in-flight fixtures.
+  while IFS= read -r -d '' path; do
+    remove_path "$path"
+  done < <(find "${TMPDIR:-/tmp}" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended \
+    -regex '.*/kernel-test-outputs-[[:xdigit:]]{32}' -mmin +1440 -print0)
+  log "maintenance complete"
+  exit 0
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in

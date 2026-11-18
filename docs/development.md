@@ -16,6 +16,10 @@ make shell CONTAINER_NAME=achbit-my-task CONTAINER_HOSTNAME=achbit-my-task ACHBI
 
 Reuse those settings for host-side entrypoints. `make docker-info` prints the selected checkout, container, port, and cache volume names. macOS `make shell` also prepares the checkout's native build bridge.
 
+### Routine cache maintenance
+
+Between builds and tests, run `bash scripts/clean-caches.sh --maintenance` inside the selected project development container to preview cleanup, then add `--yes` to execute it. This removes disposable Vite, test, npm download and APT archive caches and old Kernel test scratch directories. Cargo targets (including incremental and sccache), installed dependencies, shared dependency stores, packaged products and task receipts remain available. The ordinary build lock serializes execution with packaging. Run the command as needed.
+
 ## Version updates and delivery
 
 The product version is owned by `Cargo.toml` under `[workspace.package].version`. Required package manifests are synchronized mirrors. Use the version command inside the development container:
