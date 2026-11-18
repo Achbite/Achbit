@@ -43,3 +43,24 @@ test('Command digits no longer switch sessions or advertise shortcuts; click and
     && JSON.parse(node.props['data-ui-target']).sessionId === sessions[1].id).props.onClick();
   assert.deepEqual(activated, [sessions[1].id]);
 });
+
+test('empty sidebar preserves loading and errors; project disclosure and show-more retain their actions', async t => {
+  const { default: Sidebar } = await loadGuiModule(t, '/src/achbit-gui/layout/AchbitSidebar.tsx');
+  const props = { language: 'zh-CN', catalogStatus: 'ready', projects: [], sessions: [],
+    sessionStatuses: {}, readRunMarkers: {}, collapsedProjectIds: new Set(), activeSessionId: null,
+    busy: false, activationBusy: false, reorderDisabled: false };
+  const render = overrides => renderToStaticMarkup(createElement(Sidebar, { ...props, ...overrides }));
+  const empty = render({});
+  assert.doesNotMatch(empty, /暂无项目|暂无对话|正在加载对话/);
+  assert.equal((empty.match(/class="achbit-gui-sidebar-empty"/g) ?? []).length, 2);
+  const loading = render({ catalogStatus: 'pending', busy: true });
+  assert.match(loading, /正在加载对话/);
+  assert.match(loading, /data-ui-action="navigation.sidebar.project-create-menu"[^>]*disabled=""/);
+  assert.match(render({ catalogStatus: 'error' }), /无法加载对话/);
+  const project = { id: 'project:empty', title: '空项目' };
+  assert.match(render({ projects: [project] }), /achbit-gui-sidebar-empty--nested/);
+  assert.doesNotMatch(render({ projects: [project], collapsedProjectIds: new Set([project.id]) }), /achbit-gui-sidebar-empty--nested/);
+  const sessions = Array.from({ length: 12 }, (_, i) => ({ id: `session:${i}`, title: `对话 ${i}`, projectId: project.id }));
+  assert.match(render({ projects: [project], sessions }), />展开更多<\/button>/);
+  assert.doesNotMatch(render({ projects: [project], sessions }), /展开更多（/);
+});

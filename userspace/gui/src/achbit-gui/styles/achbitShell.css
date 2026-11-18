@@ -97,6 +97,7 @@
 }
 
 .achbit-gui-sidebar-empty {
+  min-height: 31px;
   padding: 7px 10px;
   color: var(--ac-faint);
   font-size: var(--ac-font-caption);
@@ -271,7 +272,7 @@
 .achbit-gui-sidebar-section__label {
   padding: 0;
   color: var(--ac-faint);
-  font-size: var(--ac-font-caption);
+  font-size: var(--ac-font-label);
   font-weight: var(--ac-weight-medium);
 }
 

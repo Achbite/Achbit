@@ -220,8 +220,10 @@ test('catalog loading and failure never masquerade as an empty history', async t
   failed = false;
   await store.getState().refreshCatalog();
   assert.equal(store.getState().catalogStatus, 'ready');
-  assert.match(render(), /No projects yet/);
-  assert.match(render(), /No chats yet/);
+  const ready = render();
+  assert.doesNotMatch(ready, /No projects yet|No chats yet|Loading conversations|Unable to load conversations/);
+  assert.equal((ready.match(/class="achbit-gui-sidebar-empty"/g) ?? []).length, 2,
+    'loaded empty groups keep their spacing containers without placeholder copy');
 });
 
 test('plugin discovery failure does not invalidate a successfully loaded catalog', async t => {

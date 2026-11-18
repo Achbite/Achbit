@@ -280,8 +280,8 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
 
         {projects.length === 0 ? (
           <div className="achbit-gui-sidebar-empty">
-            {t(language, catalogStatus === 'pending' ? 'achbitGui.sidebar.loading'
-              : catalogStatus === 'error' ? 'achbitGui.sidebar.loadFailed' : 'achbitGui.project.empty')}
+            {catalogStatus === 'pending' ? t(language, 'achbitGui.sidebar.loading')
+              : catalogStatus === 'error' ? t(language, 'achbitGui.sidebar.loadFailed') : null}
           </div>
         ) : (
           <div className="achbit-gui-project-archive-list">
@@ -350,9 +350,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                         style={{ '--ac-project-session-limit': PROJECT_SESSION_PREVIEW_LIMIT } as React.CSSProperties}
                       >
                         {projectSessions.length === 0 ? (
-                          <div className="achbit-gui-sidebar-empty achbit-gui-sidebar-empty--nested">
-                            {t(language, 'achbitGui.sidebar.noChats')}
-                          </div>
+                          <div className="achbit-gui-sidebar-empty achbit-gui-sidebar-empty--nested" />
                         ) : visibleSessions.map(renderSession)}
                       </div>
                       {projectSessions.length > PROJECT_SESSION_PREVIEW_LIMIT && (
@@ -370,9 +368,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                           aria-expanded={expanded}
                           aria-controls={sessionsId}
                         >
-                          {t(language, expanded ? 'achbitGui.sidebar.showLess' : 'achbitGui.sidebar.showMore', {
-                            count: projectSessions.length - visibleSessions.length,
-                          })}
+                          {t(language, expanded ? 'achbitGui.sidebar.showLess' : 'achbitGui.sidebar.showMore')}
                         </button>
                       )}
                     </div>
@@ -400,9 +396,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
           </button>
         </div>
         {standalone.length === 0 ? (
-          <div className="achbit-gui-sidebar-empty">
-            {catalogStatus === 'ready' ? t(language, 'achbitGui.sidebar.noChats') : null}
-          </div>
+          <div className="achbit-gui-sidebar-empty" />
         ) : (
           <div className="achbit-gui-session-list">
             {standalone.map(renderSession)}
