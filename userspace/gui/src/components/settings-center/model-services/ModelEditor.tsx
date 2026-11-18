@@ -12,6 +12,15 @@ import { useModelLanguage, data, message, Hint } from './shared';
 
 const editableFields = ['name', 'model', 'contextWindowTokens', 'maxOutputTokens', 'temperature'] as const;
 
+export function newModelDraft(connectionId: string, adapter: ProviderAdapterDescriptor, model = ''): LlmProviderProfile {
+  const preset = adapter.models.find(item => item.model === model);
+  return { ...(preset ?? {
+    name: model.trim(), model: model.trim(), kind: adapter.protocols[0],
+    providerFlavor: adapter.models[0]?.providerFlavor ?? 'openai',
+    contextWindowTokens: 128000, maxOutputTokens: 16000, enabled: true,
+  }), id: `model:${crypto.randomUUID()}`, connectionId };
+}
+
 // Applying a preset is an explicit action on a new, unsaved profile only.
 export function selectNewModelPreset(profile: LlmProviderProfile, adapter: ProviderAdapterDescriptor, model: string): LlmProviderProfile {
   const preset = adapter.models.find(item => item.model === model);
@@ -80,8 +89,8 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
     });
   };
   const selected = onRemove ? draft : confirmed;
-  const efforts = modelReasoningEfforts(selected);
-  const thinkingModes = modelThinkingModes(selected);
+  const efforts = modelReasoningEfforts(selected, adapter.id);
+  const thinkingModes = modelThinkingModes(selected, adapter.id);
   const unsupportedEffort = selected.reasoningEffort !== undefined && !efforts.includes(selected.reasoningEffort);
   const unsupportedThinking = selected.thinking !== undefined && !thinkingModes.includes(selected.thinking);
   const saveChanges = (keys: readonly (keyof LlmProviderProfile)[]) => perform(async () => {

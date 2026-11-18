@@ -263,6 +263,37 @@ pub fn achbit_update_restored() -> Result<(), String> {
     }
 }
 
+fn update_error(stage: &str, error: tauri_plugin_updater::Error) -> String {
+    let mut heading = stage.to_owned();
+    let error = match error {
+        tauri_plugin_updater::Error::Reqwest(request) => {
+            if let Some(url) = request.url() {
+                heading.push_str(&format!(" ({})", url.origin().ascii_serialization()));
+            }
+            // Redirect targets can contain signed queries and private path segments.
+            tauri_plugin_updater::Error::Reqwest(request.without_url())
+        }
+        other => other,
+    };
+    let mut details = vec![heading];
+    let mut cause: Option<&dyn std::error::Error> = Some(&error);
+    while let Some(error) = cause {
+        let mut message = error.to_string();
+        if message.contains("://") {
+            message = message
+                .split_whitespace()
+                .map(|word| if word.contains("://") { "[URL]" } else { word })
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+        if details.last() != Some(&message) {
+            details.push(message);
+        }
+        cause = error.source();
+    }
+    details.join(": ")
+}
+
 async fn check(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<ProductUpdates>();
     state.publish(app, "checking", None, None);
@@ -306,7 +337,7 @@ async fn check(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .check()
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| update_error("Check for updates", error))?
     else {
         state.publish(app, "current", None, None);
         return Ok(());
@@ -333,7 +364,7 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             || {},
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| update_error("Download update", error))?;
     let bytes = Arc::new(bytes);
     state.publish(app, "waiting", None, None);
     let mut confirmed = false;
@@ -634,6 +665,34 @@ fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_failure_preserves_the_cause_without_exposing_private_urls() {
+        #[derive(Debug)]
+        struct FailedRequest(std::io::Error);
+        impl std::fmt::Display for FailedRequest {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("request failed for https://test-user:password@assets.test/private?signature=secret")
+            }
+        }
+        impl std::error::Error for FailedRequest {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        for stage in ["Check for updates", "Download update"] {
+            let cause = FailedRequest(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "proxy connection refused",
+            ));
+            let message = update_error(stage, std::io::Error::other(cause).into());
+            assert!(message.contains(stage) && message.contains("proxy connection refused"));
+            for secret in ["test-user", "password", "/private", "signature", "secret"] {
+                assert!(!message.contains(secret), "{message}");
+            }
+        }
+    }
 
     #[test]
     fn preparation_replies_are_bound_to_one_attempt_and_consumed_once() {

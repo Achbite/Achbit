@@ -1,4 +1,9 @@
 {
+  "geminiChatEfforts": {
+    "gemini-4-carbon": ["low", "medium", "high"],
+    "gemini-4-argon": ["low", "medium", "high"],
+    "gemini-4-hydrogen": ["low", "medium", "high", "xhigh"]
+  },
   "anthropicAdaptive": [
     {"prefix": "claude-opus-5-5", "efforts": ["low", "medium", "high", "xhigh", "max"], "disable": "never"},
     {"prefix": "claude-mythos-preview", "efforts": ["low", "medium", "high", "max"], "disable": "never"},

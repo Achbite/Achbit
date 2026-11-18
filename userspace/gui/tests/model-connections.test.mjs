@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Children, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { loadGuiModule, loadGuiModules, findReactElement } from './gui-projection-contract.mjs';
+import { loadGuiModule, loadGuiModules, findReactElement, installGuiFetch } from './gui-projection-contract.mjs';
 
 test('connection creation follows authentication capability, independently of plan billing', async t => {
   const { ConnectionDetail, adapterCredentialKind } = await loadGuiModule(t, '/src/components/settings-center/sections/LlmSection.tsx');
@@ -23,6 +23,46 @@ test('connection creation follows authentication capability, independently of pl
     assert.match(html, /aria-pressed="true"/);
     if (billing === 'subscription' && expected === 'apiKey') assert.match(html, /套餐 Key|Plan keys/);
   }
+});
+
+test('creating a Kimi connection saves a custom first model with its provider behavior', async t => {
+  const { ConnectionDetail } = await loadGuiModule(t, '/src/components/settings-center/sections/LlmSection.tsx');
+  const adapter = { id: 'moonshot', name: 'Kimi', billingModes: ['metered'], authMethods: ['apiKey'],
+    protocols: ['openaiCompatible'], defaultBaseUrl: 'https://api.moonshot.ai/v1', models: [{
+      name: 'Kimi K3', model: 'kimi-k3', kind: 'openaiCompatible', providerFlavor: 'moonshot', enabled: true,
+      contextWindowTokens: 1048576, maxOutputTokens: 32768, imageInput: true, thinking: 'enabled',
+    }] };
+  const customId = 'my-kimi-deployment';
+  let form;
+  function FillConnection() {
+    const panel = ConnectionDetail({ adapters: [adapter], profiles: [], mode: 'metered', async onSaved() {}, onBack() {} });
+    const field = findReactElement(panel, node => node.type === 'input' && node.props.list);
+    if (field.props.value !== customId) field.props.onChange({ target: { value: customId } });
+    form = findReactElement(panel, node => node.type === 'form');
+    return null;
+  }
+  const writes = [];
+  installGuiFetch(t, (url, init) => {
+    writes.push({ path: url.pathname, method: init.method, ...JSON.parse(init.body) });
+    return Response.json({ ok: true, data: {} });
+  });
+  renderToStaticMarkup(createElement(FillConnection));
+  form.props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(writes.length, 1);
+  const [{ path, method, connection, profile }] = writes;
+  assert.equal(path, '/api/llm/connections');
+  assert.equal(method, 'PATCH');
+  assert.equal(connection.adapterId, 'moonshot');
+  assert.equal(profile.connectionId, connection.id);
+  assert.equal(profile.name, customId);
+  assert.equal(profile.model, customId);
+  assert.equal(profile.kind, 'openaiCompatible');
+  assert.equal(profile.providerFlavor, 'moonshot');
+  assert.equal(profile.contextWindowTokens, 128000);
+  assert.equal(profile.maxOutputTokens, 16000);
+  assert.equal(profile.imageInput, undefined);
+  assert.equal(profile.thinking, undefined);
 });
 
 test('foreground sound is a discoverable persisted GUI preference and defaults to silent', async t => {

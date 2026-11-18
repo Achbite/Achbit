@@ -1,5 +1,35 @@
 [
   {
+    "model": "gpt-6.2-astra",
+    "adapterId": "openai",
+    "input": 8,
+    "cacheRead": 0.4,
+    "cacheWrite": 10,
+    "output": 40,
+    "source": "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+    "effectiveFrom": "2026-11-17",
+    "longContext": {
+      "threshold": 272000,
+      "inputMultiplier": 2,
+      "outputMultiplier": 1.5
+    }
+  },
+  {
+    "model": "gpt-6.2-sol",
+    "adapterId": "openai",
+    "input": 2,
+    "cacheRead": 0.1,
+    "cacheWrite": 2.5,
+    "output": 10,
+    "source": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+    "effectiveFrom": "2026-11-17",
+    "longContext": {
+      "threshold": 272000,
+      "inputMultiplier": 2,
+      "outputMultiplier": 1.5
+    }
+  },
+  {
     "model": "gpt-6-astra",
     "adapterId": "openai",
     "input": 10,

@@ -1,4 +1,4 @@
-import { modelReasoningEfforts, type AgentSettings, type LlmProviderProfile, type ModelConnection } from '@achbit/protocol';
+import { connectedModelReasoningEfforts, type AgentSettings, type LlmProviderProfile, type ModelConnection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { NativeSelect } from '../../ui-components';
 
@@ -15,13 +15,13 @@ export default function SubagentModelFields({ profiles, connections, profileId, 
 }) {
   const profile = profiles.find(value => value.id === (profileId || mainProfileId));
   const available = profiles.filter(value => value.enabled && connections.some(connection => connection.id === value.connectionId));
-  const efforts = modelReasoningEfforts(profile);
+  const efforts = connectedModelReasoningEfforts(profile, connections);
   return <>
     <label>{t(language, 'settings.subagents.providerModel')}
       <NativeSelect value={profileId} disabled={disabled} onChange={event => {
         const next = profiles.find(value => value.id === (event.target.value || mainProfileId));
         onChange({ profileId: event.target.value,
-          ...(next?.thinking === 'disabled' || reasoningEffort && !modelReasoningEfforts(next).some(value => value === reasoningEffort)
+          ...(next?.thinking === 'disabled' || reasoningEffort && !connectedModelReasoningEfforts(next, connections).some(value => value === reasoningEffort)
             ? { reasoningEffort: '' } : {}) });
       }}>
         <option value="">{t(language, 'settings.subagents.followMain')}</option>

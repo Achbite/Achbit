@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
+import { checkPluginMarketplace } from './plugin-marketplace-check.mjs';
 const preview = resolve(process.env.UI_FIXTURE_ROOT ?? fileURLToPath(new URL('../../../../.task-artifacts/manual-preview', import.meta.url)));
 const out = process.env.UI_EVIDENCE_DIR ? resolve(process.env.UI_EVIDENCE_DIR) : await mkdtemp(join(tmpdir(), 'achbit-ui-results-'));
 console.log('Browser evidence: ' + out);
@@ -187,6 +188,7 @@ try {
   await evaluate('document.querySelector(".settings-disclosure > summary").focus()'); await key('Enter');
   const plugin = await evaluate(`(()=>{const s=document.activeElement;return {control:s.dataset.uiComponent,open:s.parentElement.open,arrows:s.querySelectorAll('svg').length}})()`);
   await record('plugin-disclosure', plugin, plugin.control==='DisclosureSummary' && plugin.open && plugin.arrows===1);
+  await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, type, selectFixture, record });
   await checkPreviewLayout({ navigate, evaluate, cmd, until, frame, click, key, record });
   assert.ok(results.every(result => result.pass), 'see the retained browser result for failed invariants');
   await call('Browser.close');

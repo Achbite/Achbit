@@ -1,7 +1,7 @@
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import { captureFocusReturn, returnInteractionFocus, useInteractionFocus } from '../../shared/interactionFocus';
 import { DisclosureSummary, NativeSelect } from '../../../ui-components';
-import { modelReasoningEfforts, type UserSettings } from '@achbit/protocol';
+import { connectedModelReasoningEfforts, type UserSettings } from '@achbit/protocol';
 import { t } from '../../../i18n';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -12,7 +12,7 @@ import { useSettingsStore } from '../../../state/settingsStore';
 import { useSettingsSearchEntries } from '../settingsSearch';
 import { useSettingsHelp } from '../SettingsHelp';
 import { AgentSettingsSection } from './CategorizedSettingsSections';
-import ModelEditor from '../model-services/ModelEditor';
+import ModelEditor, { newModelDraft } from '../model-services/ModelEditor';
 import ModelPickerDialog from '../model-services/ModelPickerDialog';
 import SubscriptionAuth from '../model-services/SubscriptionAuth';
 import UsageView from '../model-services/UsageView';
@@ -35,7 +35,7 @@ function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProvide
   const conversationModel = useLocalAgentStore(state => state.selectedProfileId);
   const profile = profiles.find(profile => profile.id === (selected || conversationModel));
   const available = profiles.filter(profile => profile.enabled);
-  const efforts = modelReasoningEfforts(profile);
+  const efforts = connectedModelReasoningEfforts(profile, connections);
   const unsupportedEffort = !!effort && (profile?.thinking === 'disabled' || !efforts.some(value => value === effort));
   const save = async (patches: UserSettings) => {
     setSaving(true); setError('');
@@ -54,7 +54,7 @@ function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProvide
         <NativeSelect value={selected} disabled={saving} onChange={event => {
           const next = profiles.find(profile => profile.id === (event.target.value || conversationModel));
           void save({ 'agent.approvalReview.profileId': event.target.value,
-            ...(next?.thinking === 'disabled' || effort && !modelReasoningEfforts(next).some(value => value === effort)
+            ...(next?.thinking === 'disabled' || effort && !connectedModelReasoningEfforts(next, connections).some(value => value === effort)
               ? { 'agent.approvalReview.reasoningEffort': '' } : {}) });
         }}>
           <option value="">{t(language, 'settings.approvalReview.useConversationModel')}</option>
@@ -82,9 +82,6 @@ export function adapterCredentialKind(adapter: ProviderAdapterDescriptor): Model
   return 'none';
 }
 
-function newModel(connection: ModelConnection, adapter: ProviderAdapterDescriptor): LlmProviderProfile {
-  return { ...(adapter.models[0] ?? { name: '', model: '', kind: adapter.protocols[0], providerFlavor: 'openai', enabled: true, contextWindowTokens: 128000, maxOutputTokens: 16000 }), id: `model:${crypto.randomUUID()}`, connectionId: connection.id };
-}
 function connectionSettings(connection: ModelConnection): ModelConnection {
   const { id, name, adapterId, billingMode, baseUrl, credentialKind } = connection;
   return { id, name, adapterId, billingMode, baseUrl, credentialKind };
@@ -119,9 +116,8 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
   const save = async () => {
     setBusy(true); setError(''); setSaved(false);
     try {
-      const template = adapter.models.find(model => model.model === initialModel);
-      const profile = { ...newModel(draft, template ? adapter : { ...adapter, models: [] }), ...(template ?? { name: initialModel.trim(), model: initialModel.trim() }) };
-      data(await patchModelConnections({ connection: draft, ...(apiKey ? { apiKey } : {}), ...(!current ? { profile } : {}) }));
+      data(await patchModelConnections({ connection: draft, ...(apiKey ? { apiKey } : {}),
+        ...(!current ? { profile: newModelDraft(draft.id, adapter, initialModel) } : {}) }));
       setApiKey(''); await onSaved(draft.id); setSaved(true);
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   };

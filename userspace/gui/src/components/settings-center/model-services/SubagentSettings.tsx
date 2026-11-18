@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { modelReasoningEfforts, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@achbit/protocol';
+import { connectedModelReasoningEfforts, type LlmProviderProfile, type ModelConnection, type UserSettings } from '@achbit/protocol';
 import SubagentModelFields from '../../shared/SubagentModelFields';
 import { DisclosureSummary, ToggleSwitch } from '../../../ui-components';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';
@@ -31,7 +31,7 @@ export default function SubagentSettings({ profiles, connections }: {
   const available = profiles.filter(value => value.enabled
     && connections.some(connection => connection.id === value.connectionId));
   const configured = !selected || available.some(value => value.id === selected);
-  const efforts = modelReasoningEfforts(profile);
+  const efforts = connectedModelReasoningEfforts(profile, connections);
   const unsupportedEffort = !!effort && (profile?.thinking === 'disabled' || !efforts.some(value => value === effort));
   const save = async (patches: UserSettings): Promise<boolean> => {
     const next = { ...useSettingsStore.getState().effectiveSettings, ...patches };
@@ -41,7 +41,7 @@ export default function SubagentSettings({ profiles, connections }: {
       if (id && !available.some(value => value.id === id)) { setError(t(language, 'settings.subagents.profileRequired')); return false; }
       const model = profiles.find(value => value.id === (id || mainProfileId));
       const reasoning = String(next['agent.subagents.reasoningEffort']);
-      if (reasoning && (model?.thinking === 'disabled' || !modelReasoningEfforts(model).some(value => value === reasoning))) {
+      if (reasoning && (model?.thinking === 'disabled' || !connectedModelReasoningEfforts(model, connections).some(value => value === reasoning))) {
         setError(t(language, 'settings.subagents.effortUnavailable')); return false;
       }
     }

@@ -372,7 +372,10 @@ fn estimate(price: &ModelPrice, observed: &ObservedUsage) -> (Option<f64>, bool)
         None | Some("default" | "standard") => 1.0,
         Some("flex") if price.adapter_id == "openai" => 0.5,
         Some("fast" | "priority")
-            if price.model.starts_with("gpt-6-") || price.model.starts_with("gpt-5.6-") =>
+            if price.adapter_id == "openai"
+                && (matches!(price.model.as_str(), "gpt-6.2-astra" | "gpt-6.2-sol")
+                    || price.model.starts_with("gpt-6-")
+                    || price.model.starts_with("gpt-5.6-")) =>
         {
             2.0
         }
@@ -541,6 +544,31 @@ mod tests {
             cache_write_tokens: None,
         };
         assert_eq!(estimate(&peak, &missing), (None, false));
+    }
+
+    #[test]
+    fn gpt62_fast_prices_follow_observed_route_and_context() {
+        let observed = ObservedUsage {
+            usage: Some(ProviderUsage {
+                input_tokens: 300_000,
+                output_tokens: 10_000,
+                reasoning_output_tokens: None,
+                cache_read_input_tokens: Some(10_000),
+                cache_miss_input_tokens: Some(290_000),
+            }),
+            model: None,
+            service_tier: Some("fast".into()),
+            cache_write_tokens: Some(10_000),
+        };
+        for (id, expected) in [("gpt-6.2-astra", 10.576), ("gpt-6.2-sol", 2.644)] {
+            let price = prices()
+                .into_iter()
+                .find(|price| price.model == id)
+                .unwrap();
+            let (cost, complete) = estimate(&price, &observed);
+            assert!(complete);
+            assert!((cost.unwrap() - expected).abs() < 1e-9);
+        }
     }
 
     #[test]

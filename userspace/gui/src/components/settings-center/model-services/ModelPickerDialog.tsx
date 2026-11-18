@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react';
-import type { LlmProviderProfile, ModelConnection, ProviderAdapterDescriptor } from '@achbit/protocol';
+import type { ModelConnection, ProviderAdapterDescriptor } from '@achbit/protocol';
 import { Button, CloseButton, ModalDialog, PanelHeader, UiIcon } from '../../../ui-components';
 import { useUiOwner } from '../../../ui-ownership/useUiOwner';
 import { patchLlmProfiles } from '../../../services/apiClient';
-import ModelEditor from './ModelEditor';
+import ModelEditor, { newModelDraft } from './ModelEditor';
 import { data, message, useModelLanguage } from './shared';
 import './modelPicker.css';
 
@@ -20,9 +20,7 @@ export default function ModelPickerDialog({ connection, adapter, onClose, onSave
   const pending = useRef(false);
   const [error, setError] = useState('');
   // One draft identity per opening, including a retry after a failed readback.
-  const [custom] = useState<LlmProviderProfile>(() => ({ id: `model:${crypto.randomUUID()}`, connectionId: connection.id,
-    name: '', model: '', kind: adapter.protocols[0], providerFlavor: adapter.models[0]?.providerFlavor ?? 'openai',
-    contextWindowTokens: 128000, maxOutputTokens: 16000, enabled: true }));
+  const [custom] = useState(() => newModelDraft(connection.id, adapter));
   const words = query.trim().toLocaleLowerCase().split(/\s+/u);
   const candidates = adapter.models.filter(model => words.every(word => `${model.name} ${model.model}`.toLocaleLowerCase().includes(word)));
   const preset = candidates.find(model => model.model === selected);
