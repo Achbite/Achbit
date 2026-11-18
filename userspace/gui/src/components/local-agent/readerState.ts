@@ -60,6 +60,26 @@ export function reconcileReaderPages(state: ReaderViewState, pages: NativePage[]
   const selected = state.activeId ?? (state.tabs.length === 0 && savedSelection ? readerTargetKey(savedSelection) : null);
   return { ...state, tabs, activeId: tabs.some(tab => tab.id === selected) ? selected : null };
 }
+/** File-backed outputs and body links use the file manager's ordinary target.
+ * Inline component previews keep their explicit archived HTML placement. */
+export function artifactReaderTarget(artifact: ArtifactProjection): ResolvedReaderTarget {
+  return artifact.workspaceId && artifact.logicalPath
+    ? { kind: 'workspace', workspaceId: artifact.workspaceId, logicalPath: artifact.logicalPath }
+    : { kind: 'artifact', artifact };
+}
+
+export function selectReaderTarget(state: ReaderViewState, sessionId: string, target: ResolvedReaderTarget): ReaderViewState {
+  const key = readerTargetKey(target);
+  const tabs = state.sessionId === sessionId ? state.tabs : [];
+  const existing = tabs.find(tab => tab.id === key
+    || target.kind === 'browser' && tab.page?.previewId === target.previewId);
+  return { sessionId,
+    tabs: existing ? tabs.map(tab => tab === existing && (target.kind === 'workspace' || target.kind === 'agent')
+      ? { ...tab, target } : tab) : [...tabs, { id: key, target }],
+    activeId: existing?.id ?? key, visible: true,
+    expanded: state.sessionId === sessionId && state.expanded };
+}
+
 export const READER_OPEN_EVENT = 'achbit:reader-open';
 export function requestReader(sessionId: string, target: ReaderTarget): void {
   window.dispatchEvent(new CustomEvent(READER_OPEN_EVENT, {detail: {sessionId, target}}));

@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const script = await readFile(new URL('../../../shells/shared/native_browser/review.js', import.meta.url), 'utf8');
 const plain = value => JSON.parse(JSON.stringify(value));
 
-function harness(t) {
+function harness(t, { inModal = false } = {}) {
   let now = 0, timerId = 0, host, root;
   const timers = new Map();
   class Node {
@@ -24,6 +24,7 @@ function harness(t) {
     append(node) { this.children.push(node); }
     prepend(node) { this.children.unshift(node); }
     remove() { this.removed = true; }
+    showPopover() { this.raised = true; }
     focus() { this.focused = true; }
     hasPointerCapture(id) { return this.captured.has(id); }
     setPointerCapture(id) { this.captured.add(id); }
@@ -38,6 +39,8 @@ function harness(t) {
   const document = new Node(), window = new Node();
   const target = { nodeType: 1, id: 'card', localName: 'article', innerText: 'Task content',
     getBoundingClientRect: () => ({ x: 50, y: 70, right: 350, bottom: 270, width: 300, height: 200 }) };
+  const modal = inModal ? new Node() : null;
+  target.closest = selector => selector === 'dialog:modal' ? modal : null;
   document.documentElement = new Node();
   document.createElement = () => { const node = new Node(); host ??= node; return node; };
   document.elementFromPoint = () => target;
@@ -53,7 +56,7 @@ function harness(t) {
   start({ reviewId: 'review:one', labels: { annotation: 'Annotate', comment: 'Comment', hint: 'Click or drag' } });
   t.after(() => window.__achbitReview.dispose());
   const shield = root.children[0], box = root.querySelector('.box'), editor = root.querySelector('.editor'), input = root.querySelector('textarea');
-  return { window, document, shield, box, editor, input, host, timers,
+  return { window, document, modal, shield, box, editor, input, host, timers,
     tick(ms) {
       now += ms;
       for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.callback(); }
@@ -71,6 +74,16 @@ test('annotation click preserves element evidence, saves once and clears on matc
   h.window.__achbitReview.acknowledge('other'); assert.ok(h.window.__achbitReview.pending);
   h.window.__achbitReview.acknowledge(note.id);
   assert.equal(h.window.__achbitReview.pending, null); assert.equal(h.box.hidden, true); assert.equal(h.input.value, '');
+});
+
+test('review belongs to the active modal and does not close it on Escape', t => {
+  const h = harness(t, { inModal: true });
+  assert.deepEqual(h.modal.children, [h.host]);
+  assert.equal(h.host.popover, 'manual'); assert.equal(h.host.raised, true);
+  h.shield.emit('pointerdown'); h.shield.emit('pointerup');
+  assert.equal(h.save().selector, '#card');
+  assert.equal(h.document.emit('keydown', { key: 'Escape' }).defaultPrevented, true);
+  assert.equal(h.host.removed, true); assert.ok(!h.modal.removed);
 });
 
 test('annotation paints feedback immediately on pointerdown', t => {

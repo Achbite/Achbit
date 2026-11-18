@@ -14,6 +14,7 @@ use tauri::{Emitter, Manager, WebviewUrl};
 mod control_indicator;
 #[cfg(feature = "debug-control")]
 pub mod debug;
+mod navigation;
 #[cfg(any(windows, test))]
 mod preview_image;
 mod services;
@@ -54,6 +55,9 @@ struct Page {
     kind: String,
     surface: SurfaceState,
     viewport: Viewport,
+    navigation: navigation::Snapshot,
+    zoom: f64,
+    load_error: Option<String>,
     #[serde(skip)]
     preview_run_id: Option<String>,
     #[serde(skip)]
@@ -295,6 +299,97 @@ fn publish(app: &tauri::AppHandle, page: &Page) {
     let _ = app.emit_to("main", "achbit:browser-page", page);
 }
 
+fn page_loaded(view: tauri::Webview, payload: tauri::webview::PageLoadPayload<'_>) {
+    let app = view.app_handle().clone();
+    let id = view.label().to_string();
+    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+        navigation::started(&app, &id);
+        return;
+    }
+    let completed_url = payload.url().to_string();
+    // Read on the native UI queue after its completion/error handlers. Failed
+    // and explicitly stopped loads keep their original result.
+    tauri::async_runtime::spawn(async move {
+        match navigation::operate(view, "status").await {
+            Ok(snapshot) => {
+                let state = app.state::<NativeBrowser>();
+                if let Ok(mut pages) = state.pages.lock() {
+                    if let Some(page) = pages.get_mut(&id) {
+                        if snapshot.url != completed_url
+                            || matches!(page.status.as_str(), "error" | "stopped")
+                        {
+                            return;
+                        }
+                        page.url = snapshot.url.clone();
+                        page.navigation = snapshot;
+                        page.status = "ready".into();
+                        publish(&app, page);
+                        state.page_changed.notify_all();
+                    }
+                };
+            }
+            Err(error) => navigation::failed(&app, &id, error),
+        }
+    });
+}
+
+fn browser_navigation(app: &tauri::AppHandle, id: &str, url: &tauri::Url, self_page: bool) -> bool {
+    if url.scheme() == "achbit-browser-control" {
+        let action = url.path().trim_start_matches('/');
+        if url.host_str() == Some("shortcut")
+            && matches!(
+                action,
+                "address" | "find" | "reload" | "close" | "zoomIn" | "zoomOut" | "resetZoom"
+            )
+            && page_state(app, id).is_ok_and(|page| page.visible)
+        {
+            // Let the GUI select its DOM destination first. Taking native focus
+            // here would restore the old surface and bounce back to this page.
+            let _ = app.emit_to(
+                "main",
+                "achbit:browser-chrome",
+                json!({"previewId":id,"action":action}),
+            );
+        }
+        return false;
+    }
+    !self_page
+        || (url.scheme() == "achbit-gui" && url.host_str() == Some("localhost"))
+        || (url.scheme() == "about" && matches!(url.path(), "srcdoc" | "blank"))
+}
+
+fn open_link(app: tauri::AppHandle, source: String, url: tauri::Url) {
+    // A user-created page uses the same Host and Session catalogue as Reader's
+    // open control. It does not acquire a model tool or a desktop permission.
+    std::thread::spawn(move || {
+        let opened = (|| -> Result<Value, String> {
+            let page = page_state(&app, &source)?;
+            let binding = json!({"hostInstanceId":page.binding.host_instance_id,
+                "windowLabel":page.binding.window_label,"sessionId":page.session_id});
+            let mut input = json!({"action":"open","viewport":page.viewport});
+            if url.scheme() == "file" {
+                input["filePath"] =
+                    json!(url.to_file_path().map_err(|_| "Invalid browser file URL")?);
+            } else {
+                input["url"] = json!(url.as_str());
+            }
+            tauri::async_runtime::block_on(execute(app.clone(), binding, input))
+        })();
+        match opened {
+            Ok(page) => {
+                let _ = app.emit_to("main", "achbit:browser-activate", page);
+            }
+            Err(error) => {
+                let _ = app.emit_to(
+                    "main",
+                    "achbit:browser-chrome",
+                    json!({"previewId":source,"error":error}),
+                );
+            }
+        }
+    });
+}
+
 /// Navigation belongs to the native page, independently of the selected Reader.
 async fn ready_page(app: tauri::AppHandle, preview_id: String) -> Result<Page, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -315,6 +410,11 @@ async fn ready_page(app: tauri::AppHandle, preview_id: String) -> Result<Page, S
             .get(&preview_id)
             .ok_or_else(|| format!("native_browser_page_closed: {preview_id}"))?;
         if page.status != "ready" {
+            if let Some(error) = &page.load_error {
+                return Err(format!(
+                    "native_browser_navigation_failed: {preview_id}; {error}"
+                ));
+            }
             return Err(format!(
                 "native_browser_navigation_not_ready: {preview_id}; status={}; url={}",
                 page.status, page.url
@@ -329,6 +429,7 @@ async fn ready_page(app: tauri::AppHandle, preview_id: String) -> Result<Page, S
 fn apply_viewport(
     view: &tauri::Webview,
     viewport: Viewport,
+    zoom: f64,
     available: [f64; 4],
 ) -> Result<[f64; 4], String> {
     let (bounds @ [x, y, width, height], scale) = viewport.fit(available);
@@ -337,7 +438,14 @@ fn apply_viewport(
         size: tauri::LogicalSize::new(width, height).into(),
     })
     .map_err(|error| error.to_string())?;
-    view.set_zoom(scale).map_err(|error| error.to_string())?;
+    // Fixed viewports retain their CSS geometry; reading zoom belongs to the
+    // adaptive browser layout, independently of the fixed preview's fit scale.
+    view.set_zoom(if matches!(viewport, Viewport::Adaptive {}) {
+        zoom
+    } else {
+        scale
+    })
+    .map_err(|error| error.to_string())?;
     Ok(bounds)
 }
 
@@ -353,7 +461,7 @@ fn set_viewport(app: &tauri::AppHandle, id: &str, viewport: Viewport) -> Result<
         let (width, height) = viewport.initial_size();
         [0.0, 0.0, width, height]
     });
-    let bounds = apply_viewport(&view, viewport, available)?;
+    let bounds = apply_viewport(&view, viewport, current.zoom, available)?;
     current.viewport = viewport;
     current.surface.bounds = Some(bounds);
     // Invalidate an in-flight capture without consuming the GUI's sequence.
@@ -465,6 +573,14 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
     let control_binding = binding.clone();
     let binding = checked_binding(&app, &binding)?;
     let action = string(&input, "action")?;
+    if tool_request
+        && matches!(
+            action,
+            "back" | "forward" | "stop" | "setZoom" | "find" | "endFind" | "focusChrome"
+        )
+    {
+        return Err("Browser chrome commands belong to the GUI Host.".into());
+    }
     #[cfg(feature = "debug-control")]
     if action.starts_with("debug:") {
         if tool_request || session_id.is_some() {
@@ -607,6 +723,9 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             kind: kind.into(),
             surface: SurfaceState::default(),
             viewport,
+            navigation: navigation::Snapshot::default(),
+            zoom: 1.0,
+            load_error: None,
             preview_run_id: None,
             preview_sequence: 0,
             #[cfg(windows)]
@@ -631,6 +750,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                     tauri::webview::WebviewBuilder::new(&id_for_create, WebviewUrl::External(url))
                         .focused(false)
                         .initialization_script("window.__ACHBIT_BROWSER_PREVIEW__ = true;")
+                        .initialization_script_for_all_frames(include_str!("shortcuts.js"))
                         .data_directory(
                             app_for_create
                                 .state::<NativeBrowser>()
@@ -638,27 +758,30 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                                 .cache_dir
                                 .join("webview"),
                         )
-                        .on_page_load(|webview, payload| {
+                        .on_page_load(page_loaded)
+                        .on_document_title_changed(|webview, title| {
                             let app = webview.app_handle();
-                            let state = app.state::<NativeBrowser>();
-                            if let Ok(mut pages) = state.pages.lock() {
+                            if let Ok(mut pages) = app.state::<NativeBrowser>().pages.lock() {
                                 if let Some(page) = pages.get_mut(webview.label()) {
-                                    page.url = payload.url().to_string();
-                                    page.status = match payload.event() {
-                                        tauri::webview::PageLoadEvent::Started => "loading",
-                                        tauri::webview::PageLoadEvent::Finished => "ready",
-                                    }
-                                    .into();
+                                    page.navigation.title = title;
                                     publish(app, page);
-                                    state.page_changed.notify_all();
                                 }
                             };
                         });
+                let navigation_app = app_for_create.clone();
+                let navigation_id = id_for_create.clone();
+                let self_page = self_bootstrap.is_some();
+                builder = builder.on_navigation(move |url| {
+                    browser_navigation(&navigation_app, &navigation_id, url, self_page)
+                });
+                let new_page_app = app_for_create.clone();
+                let new_page_id = id_for_create.clone();
+                builder = builder.on_new_window(move |url, _| {
+                    open_link(new_page_app.clone(), new_page_id.clone(), url);
+                    tauri::webview::NewWindowResponse::Deny
+                });
                 if let Some(script) = self_bootstrap {
-                    builder = builder.initialization_script(script).on_navigation(|url| {
-                        (url.scheme() == "achbit-gui" && url.host_str() == Some("localhost"))
-                            || (url.scheme() == "about" && matches!(url.path(), "srcdoc" | "blank"))
-                    });
+                    builder = builder.initialization_script(script);
                 }
                 #[cfg(feature = "debug-control")]
                 let builder =
@@ -670,6 +793,13 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                         tauri::LogicalSize::<f64>::from(viewport.initial_size()),
                     )
                     .map_err(|error| error.to_string())?;
+                if let Err(error) = navigation::install(&view) {
+                    let closed = view.close().map_err(|reason| reason.to_string());
+                    return Err(match closed {
+                        Ok(()) => error,
+                        Err(close) => format!("{error}; page cleanup: {close}"),
+                    });
+                }
                 view.hide().map_err(|error| error.to_string())?;
                 Ok::<_, String>(())
             })();
@@ -733,6 +863,41 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         page = ready_page(app.clone(), id.to_string()).await?;
     }
     match action {
+        "back" | "forward" | "stop" => {
+            let snapshot = navigation::operate(view.clone(), action).await?;
+            if action == "stop" {
+                let state = app.state::<NativeBrowser>();
+                let mut pages = state
+                    .pages
+                    .lock()
+                    .map_err(|_| "native_browser_state_unavailable")?;
+                let current = pages.get_mut(id).ok_or("native_browser_page_closed")?;
+                current.status = "stopped".into();
+                state.page_changed.notify_all();
+            }
+            navigation::changed(&app, id, snapshot);
+        }
+        "setZoom" => {
+            let zoom = input["zoom"]
+                .as_f64()
+                .filter(|value| value.is_finite() && (0.25..=3.0).contains(value))
+                .ok_or("Browser zoom must be from 0.25 to 3.0.")?;
+            if !matches!(page.viewport, Viewport::Adaptive {}) {
+                return Err("Reading zoom requires an adaptive viewport.".into());
+            }
+            view.set_zoom(zoom).map_err(|error| error.to_string())?;
+            let state = app.state::<NativeBrowser>();
+            let mut pages = state
+                .pages
+                .lock()
+                .map_err(|_| "native_browser_state_unavailable")?;
+            let current = pages.get_mut(id).ok_or("native_browser_page_closed")?;
+            current.zoom = zoom;
+            current.surface.viewport_revision += 1;
+        }
+        "find" | "endFind" => {
+            return eval(view, format!("({})({input})", include_str!("find.js"))).await;
+        }
         "setViewport" => {
             return serde_json::to_value(set_viewport(
                 &app,
@@ -823,6 +988,12 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         "focus" => {
             view.set_focus().map_err(|error| error.to_string())?;
         }
+        "focusChrome" => {
+            app.get_webview(&binding.window_label)
+                .ok_or("native_browser_window_closed")?
+                .set_focus()
+                .map_err(|error| error.to_string())?;
+        }
         "navigate" => {
             if page.kind == "achbit" {
                 return Err("The Achbit preview remains connected to its original Host; open a separate page to navigate.".into());
@@ -837,17 +1008,21 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                 let current = pages.get_mut(id).ok_or("native_browser_page_closed")?;
                 current.url = url.to_string();
                 current.status = "loading".into();
+                current.load_error = None;
             }
             view.navigate(url).map_err(|error| error.to_string())?;
         }
         "reload" => {
-            app.state::<NativeBrowser>()
-                .pages
-                .lock()
-                .map_err(|_| "native_browser_state_unavailable")?
-                .get_mut(id)
-                .ok_or("native_browser_page_closed")?
-                .status = "loading".into();
+            {
+                let state = app.state::<NativeBrowser>();
+                let mut pages = state
+                    .pages
+                    .lock()
+                    .map_err(|_| "native_browser_state_unavailable")?;
+                let current = pages.get_mut(id).ok_or("native_browser_page_closed")?;
+                current.status = "loading".into();
+                current.load_error = None;
+            }
             view.reload().map_err(|error| error.to_string())?;
         }
         "layout" => {
@@ -894,7 +1069,12 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                     return Err("Browser bounds are empty.".into());
                 }
                 let available = [x, y, width, height];
-                current.surface.bounds = Some(apply_viewport(&view, current.viewport, available)?);
+                current.surface.bounds = Some(apply_viewport(
+                    &view,
+                    current.viewport,
+                    current.zoom,
+                    available,
+                )?);
                 current.surface.available_bounds = Some(available);
                 view.show().map_err(|error| error.to_string())?;
             } else {
@@ -984,6 +1164,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             );
         }
         "close" => {
+            navigation::operate(view.clone(), "dispose").await?;
             view.close().map_err(|error| error.to_string())?;
             app.state::<NativeBrowser>()
                 .pages
@@ -1507,6 +1688,9 @@ mod tests {
             visible: false,
             surface: SurfaceState::default(),
             viewport: Viewport::default(),
+            navigation: navigation::Snapshot::default(),
+            zoom: 1.0,
+            load_error: None,
             preview_run_id: None,
             preview_sequence: 0,
             #[cfg(windows)]

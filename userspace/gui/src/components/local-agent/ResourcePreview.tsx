@@ -27,8 +27,10 @@ import {
   type ConversationResourceReadResult,
 } from '../../services/localAgentApi';
 import { documentFormat, type DocumentFormat } from './documentResources';
-import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
+import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, selectReaderTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
 import { NativeBrowserPreview } from './NativeBrowserPreview';
+import { browserAddressError } from './BrowserChrome';
+import { useUiLanguage } from '../../useUiLanguage';
 import {
   hasNativeBrowser,
   listenNativeActivation,
@@ -75,7 +77,7 @@ export function readerPageName(url: string): string {
   }
 }
 function tabName(tab: ReaderTab, language: UiLanguage): string {
-  if (tab.page) return readerPageName(tab.page.url);
+  if (tab.page) return tab.page.navigation?.title.trim() || readerPageName(tab.page.url);
   if (tab.target.kind === 'agent') return t(language, 'agent.page.title');
   if (tab.target.kind === 'diff') return readerFilename(tab.target.file.path) + ' · diff';
   if (tab.target.kind === 'resource') return tab.target.name;
@@ -94,6 +96,7 @@ function tabName(tab: ReaderTab, language: UiLanguage): string {
 /** View state owns open tabs; a collapsed panel keeps their content and native pages mounted. */
 export function useResourcePreview(sessionId: string | null, navigation?: ReaderNavigation) {
   const host = useConversationHost();
+  const language = useUiLanguage();
   const [state, setState] = useState<ReaderViewState>(() => readReaderViewState(sessionId));
   useInterfaceReloadView('reader', { ...state, tabs: state.tabs.map(tab => tab.page ? { ...tab, target: { kind: 'browser', previewId: tab.page.previewId } } : tab) });
   const [treeVisible, setTreeVisible] = useState(() => readViewState('file-tree', true));
@@ -110,24 +113,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const selectTarget = useCallback(
     (target: ResolvedReaderTarget) => {
       if (!sessionId) return;
-      const key = targetKey(target);
-      setState((old) => {
-        const tabs = old.sessionId === sessionId ? old.tabs : [];
-        const existing = tabs.find(
-          (tab) =>
-            tab.id === key ||
-            (target.kind === 'browser' &&
-              target.previewId &&
-              tab.page?.previewId === target.previewId),
-        );
-        return {
-          sessionId,
-          tabs: existing ? tabs.map((tab) => tab === existing && (target.kind === 'workspace' || target.kind === 'agent') ? { ...tab, target } : tab) : [...tabs, { id: key, target }],
-          activeId: existing?.id ?? key,
-          visible: true,
-          expanded: old.sessionId === sessionId && old.expanded,
-        };
-      });
+      setState(old => selectReaderTarget(old, sessionId, target));
       saveViewState(sessionId + ':selection', target);
       setError(null);
     },
@@ -148,11 +134,11 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       if (!binding) throw new Error('Native browser requires the desktop GUI Host.');
       const page = await nativeBrowserCommand<NativePage>({ ...binding, sessionId }, target.selfPreview
         ? { action: 'openSelf' }
-        : { action: 'open', ...(target.filePath ? { filePath: target.filePath } : nativeNavigationInput(target.url ?? '')) });
+        : { action: 'open', viewport: { mode: 'adaptive' }, ...(target.filePath ? { filePath: target.filePath } : nativeNavigationInput(target.url ?? '')) });
       if (currentSession.current === sessionId) selectTarget({ kind: 'browser', previewId: page.previewId });
     };
-    void open().catch((reason) => { if (currentSession.current === sessionId) setError(String(reason)); });
-  }, [sessionId, selectTarget]);
+    void open().catch((reason) => { if (currentSession.current === sessionId) setError(browserAddressError(reason, language)); });
+  }, [sessionId, selectTarget, language]);
   useEffect(() => {
     bindings.current.clear();
     setState(current => current.sessionId === sessionId ? current : readReaderViewState(sessionId));
@@ -509,7 +495,7 @@ export function ReaderControls({ sessionId, language, preview, disabled }: {
   const identity = useUiOwner('reader.controls', undefined, { sessionId });
   const chinese = language === 'zh-CN';
   const expandLabel = preview.expanded ? (chinese ? '返回并排' : 'Restore split view') : (chinese ? '铺满工作区' : 'Expand preview');
-  const sidebarLabel = chinese ? '浏览器与预览' : 'Browser and preview';
+  const sidebarLabel = t(language, 'agent.resource.preview');
   return <>
     {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" {...identity.action('toggle-tree', 'click')} className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><AchbitShellIcon name="folder" /></button>}
     {preview.visible && <button type="button" {...identity.action('toggle-expanded', 'click')} className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>

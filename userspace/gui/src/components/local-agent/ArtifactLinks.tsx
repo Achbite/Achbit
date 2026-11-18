@@ -6,7 +6,7 @@ import { useUiLanguage } from '../../useUiLanguage';
 import React from 'react';
 import type { ArtifactProjection } from '@achbit/protocol';
 import { workspaceResourceLink } from './documentResources';
-import { requestReader } from './readerState';
+import { requestReader, artifactReaderTarget } from './readerState';
 import { useConversationHost } from './ConversationHost';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { ImageReview } from './ImageReview';
@@ -36,7 +36,7 @@ export function ArtifactLinks({ artifacts, onOpen, location }: {
       const content = <><span className="document-artifacts__thumbnail"><AchbitShellIcon name={artifact.contentType === 'text/html' ? 'browser' : 'artifact'} /></span><strong>{label}</strong></>;
       return fixed || resource || external ? <button {...trigger} type="button" className="achbit-gui-output-item document-artifacts__item" key={artifact.artifactId}
         aria-label={label} title={title}
-        onClick={() => { setError(null); if(fixed) {requestReader(artifact.sessionId,{kind:'artifact',artifact});return;} void (resource ? onOpen(resource.workspaceId, resource.logicalPath) : host.openExternalLink(external!))
+        onClick={() => { setError(null); if(fixed) {requestReader(artifact.sessionId, artifactReaderTarget(artifact));return;} void (resource ? onOpen(resource.workspaceId, resource.logicalPath) : host.openExternalLink(external!))
           .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))); }}>{content}</button>
         : <div className="achbit-gui-output-item document-artifacts__item" title={resourceLocation} key={artifact.artifactId}>{content}</div>;
     })}

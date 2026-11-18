@@ -43,6 +43,23 @@ test('browser preview preserves target identity and removes a closed page until 
     'actual preview failures remain visible');
 });
 
+// TCR: .task-artifacts/browser-interaction-20261117/TCR.md.
+test('a stopped desktop capture removes the floating preview without hiding an active failure or dismissing future targets', async t => {
+  const { acceptPreview } = await loadGuiModule(t, '/src/services/computerPreview.ts');
+  const active = { state: 'active', target, frame };
+  const stopped = { state: 'stopped', target, reason: 'SCStreamErrorDomain: capture source ended' };
+  const original = structuredClone(stopped);
+  const ended = acceptPreview(active, stopped);
+  assert.equal(ended, null, 'neither the ended placeholder nor its reason remains as a floating card');
+  assert.deepEqual(stopped, original, 'the original native diagnostic is not rewritten');
+  const pending = acceptPreview(ended, { pending: true });
+  assert.deepEqual(pending, { state: 'starting' });
+  const next = { state: 'active', target: { ...target, windowId: 99, generation: 4 }, frame: { ...frame, sequence: 5 } };
+  assert.deepEqual(acceptPreview(pending, next), { ...next, pointer: undefined }, 'ending one target does not dismiss another target in the same run');
+  assert.equal(acceptPreview(active, { state: 'failed', target, reason: 'live transport failed' }).reason, 'live transport failed');
+  assert.equal(acceptPreview(active, { state: 'active', target, frameError: 'frame failed' }).frameError, 'frame failed');
+});
+
 test('preview sits below right-rail cards and follows the bounded conversation when Reader resizes', async t => {
   const { previewPlacement } = await loadGuiModule(t, '/src/services/computerPreview.ts');
   const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });

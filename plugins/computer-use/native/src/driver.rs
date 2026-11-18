@@ -1063,8 +1063,10 @@ fn key(value: &str) -> Result<(u16, u64), String> {
         "4" => 21,
         "6" => 22,
         "5" => 23,
+        "=" | "equal" => 24,
         "9" => 25,
         "7" => 26,
+        "-" | "minus" => 27,
         "8" => 28,
         "0" => 29,
         "o" => 31,
@@ -1486,6 +1488,9 @@ unsafe fn dispatch_input(input: &Value, saved: &Observation) -> Result<(), Strin
             let text: Vec<_> = text.encode_utf16().collect();
             for down in [true, false] {
                 let event = Owned::new(CGEventCreateKeyboardEvent(null, 0, down))?;
+                // Text input has no modifiers. Do not inherit the event source's
+                // flags after a shortcut and turn Unicode text into commands.
+                CGEventSetFlags(event.0, 0);
                 CGEventKeyboardSetUnicodeString(event.0, text.len(), text.as_ptr());
                 events.push(event);
             }

@@ -3125,13 +3125,15 @@ test('resource preview keeps expansion beside the shared sidebar control while c
     selectTab(){},closeTab(){},newPage(){},expand(){},resize(){},openTarget(){},
   } }));
   assert.match(html, /role="separator"/);
-  assert.doesNotMatch(html, /aria-label="铺满工作区"|aria-label="浏览器与预览"/);
+  // TCR: .task-artifacts/browser-interaction-20261117/TCR.md — the pane and its toggle share the file-sidebar label.
+  assert.doesNotMatch(html, /<button[^>]*aria-label="(?:铺满工作区|文件与预览)"/);
+  assert.match(html, /<aside[^>]*aria-label="文件与预览"/);
   for (const expanded of [false, true]) {
     const controls = renderToStaticMarkup(createElement(ReaderControls, { language: 'zh-CN', disabled: false,
       preview: { tabs: [], activeId: null, visible: true, expanded, expand() {}, toggle() {} } }));
     const label = expanded ? '返回并排' : '铺满工作区';
     assert.ok(controls.includes(`aria-label="${label}"`));
-    assert.match(controls, /aria-label="浏览器与预览"/);
+    assert.match(controls, /aria-label="文件与预览"/);
     assert.match(controls, /aria-pressed="true"/);
   }
   assert.doesNotMatch(html, /<dialog\b/);

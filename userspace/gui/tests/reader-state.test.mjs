@@ -57,3 +57,54 @@ test('browser selection is reconciled with live native pages without overriding 
   assert.equal(reconciled.activeId, 'browser:preview:one');
   assert.equal(reconciled.visible, false);
 });
+
+// TCR: .task-artifacts/browser-interaction-20261117/TCR.md.
+test('file-backed output and body links open the same file target as the file tree', async t => {
+  const { artifactReaderTarget, selectReaderTarget, readerTargetKey, readReaderViewState } = await setup(t);
+  const artifact = { artifactId: 'artifact:first', sessionId: 'session:a', contentMode: 'fixed', contentType: 'text/markdown',
+    label: 'report.md', workspaceId: 'workspace:a', logicalPath: 'reviews/report.md' };
+  const anotherReference = { ...artifact, artifactId: 'artifact:another', resourceKey: 'resource:report' };
+  const file = { kind: 'workspace', workspaceId: 'workspace:a', logicalPath: 'reviews/report.md' };
+  const before = structuredClone([artifact, anotherReference]);
+  assert.deepEqual(artifactReaderTarget(artifact), file);
+  assert.deepEqual(artifactReaderTarget(anotherReference), file, 'archive identity does not create another file tab');
+  let state = selectReaderTarget(readReaderViewState('session:a'), 'session:a', artifactReaderTarget(artifact));
+  state = selectReaderTarget(state, 'session:a', artifactReaderTarget(anotherReference));
+  state = selectReaderTarget(state, 'session:a', file);
+  assert.equal(state.tabs.length, 1);
+  assert.deepEqual(state.tabs[0].target, file);
+  assert.equal(state.activeId, readerTargetKey(file));
+  assert.deepEqual([artifact, anotherReference], before, 'routing a file link does not rewrite archived facts');
+});
+
+test('file routing distinguishes workspaces and paths while archive-only and explicit interactive outputs retain their existing viewers', async t => {
+  const { artifactReaderTarget, selectReaderTarget, readReaderViewState, readerTargetKey } = await setup(t);
+  const artifact = { artifactId: 'artifact:report', sessionId: 'session:a', contentMode: 'fixed', contentType: 'text/html',
+    label: 'report.html', workspaceId: 'workspace:a', logicalPath: 'one/report.html' };
+  const target = artifactReaderTarget(artifact);
+  for (const other of [
+    { ...artifact, logicalPath: 'two/report.html' },
+    { ...artifact, workspaceId: 'workspace:b' },
+  ]) {
+    const first = selectReaderTarget(readReaderViewState('session:a'), 'session:a', target);
+    assert.equal(selectReaderTarget(first, 'session:a', artifactReaderTarget(other)).tabs.length, 2,
+      'same names in different file locations remain distinct');
+  }
+  const archived = { artifactId: 'artifact:bytes', sessionId: 'session:a', label: 'report.html' };
+  assert.deepEqual(artifactReaderTarget(archived), { kind: 'artifact', artifact: archived }, 'a file path is never guessed from a label');
+  assert.notEqual(readerTargetKey(target), readerTargetKey({ kind: 'artifact', artifact, interactive: true }),
+    'an explicitly requested interactive component is not converted into a static file view');
+});
+
+test('reopening a file selects its existing tab and preserves unrelated tabs and layout', async t => {
+  const { selectReaderTarget, readerTargetKey } = await setup(t);
+  const file = { kind: 'workspace', workspaceId: 'workspace:a', logicalPath: 'A.md' };
+  const unrelated = { id: 'file:/notes.txt', target: { kind: 'file', path: '/notes.txt' } };
+  const state = { sessionId: 'session:a', visible: true, expanded: true, activeId: unrelated.id,
+    tabs: [unrelated, { id: readerTargetKey(file), target: file }] };
+  const selected = selectReaderTarget(state, 'session:a', { ...file });
+  assert.deepEqual(selected.tabs, state.tabs);
+  assert.equal(selected.activeId, readerTargetKey(file));
+  assert.equal(selected.expanded, true);
+  assert.equal(state.activeId, unrelated.id);
+});
