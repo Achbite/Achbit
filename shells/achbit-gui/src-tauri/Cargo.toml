@@ -54,7 +54,7 @@ objc2 = "0.6"
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGWindow", "CGImage", "CGGeometry"], optional = true }
 block2 = "0.6"
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKNavigationDelegate", "WKSnapshotConfiguration", "block2"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSOpenPanel", "NSSavePanel", "NSWindow", "NSResponder", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSOpenPanel", "NSSavePanel", "NSWindow", "NSResponder", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSData", "NSDictionary", "NSError", "NSBundle"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

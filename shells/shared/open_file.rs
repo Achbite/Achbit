@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -18,7 +19,32 @@ fn is_directory(path: &Path) -> Result<bool, String> {
     }
 }
 
-fn editor_command(path: &Path, line: Option<u32>, column: Option<u32>) -> Result<Command, String> {
+fn editor_program() -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = objc2_app_kit::NSWorkspace::sharedWorkspace()
+            .URLForApplicationWithBundleIdentifier(&objc2_foundation::NSString::from_str(
+                "com.microsoft.VSCode",
+            ))
+            .ok_or("Visual Studio Code was not found by macOS.")?;
+        let path = bundle
+            .to_file_path()
+            .ok_or("Visual Studio Code has no local application path.")?;
+        Ok(path.join("Contents/Resources/app/bin/code"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(PathBuf::from(if cfg!(windows) {
+        "code.cmd"
+    } else {
+        "code"
+    }))
+}
+
+fn editor_arguments(
+    path: &Path,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> Result<Vec<OsString>, String> {
     let directory = is_directory(path)?;
     if line == Some(0) || column == Some(0) || (column.is_some() && line.is_none()) {
         return Err("File positions must use a positive line and column.".into());
@@ -26,35 +52,14 @@ fn editor_command(path: &Path, line: Option<u32>, column: Option<u32>) -> Result
     if directory && line.is_some() {
         return Err("A folder does not have a file position.".into());
     }
-    #[cfg(target_os = "macos")]
-    {
-        let mut command = Command::new("/usr/bin/open");
-        command.args(["-a", "Visual Studio Code"]);
-        if let Some(line) = line {
-            let file = tauri::Url::from_file_path(path).map_err(|_| "Invalid file path")?;
-            command.arg(format!(
-                "vscode://file{}:{line}:{}",
-                file.path(),
-                column.unwrap_or(1)
-            ));
-        } else {
-            command.arg(path);
-        }
-        Ok(command)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        #[cfg(windows)]
-        let path = dunce::simplified(path);
-        let mut command = Command::new(if cfg!(windows) { "code.cmd" } else { "code" });
-        if let Some(line) = line {
-            command
-                .arg("--goto")
-                .arg(format!("{}:{line}:{}", path.display(), column.unwrap_or(1)));
-        } else {
-            command.arg(path);
-        }
-        Ok(command)
+    #[cfg(windows)]
+    let path = dunce::simplified(path);
+    if let Some(line) = line {
+        let mut position = path.as_os_str().to_owned();
+        position.push(format!(":{line}:{}", column.unwrap_or(1)));
+        Ok(vec!["--goto".into(), position])
+    } else {
+        Ok(vec![path.as_os_str().to_owned()])
     }
 }
 
@@ -82,10 +87,10 @@ pub async fn achbit_open_file(
         return Err("File opening belongs to the primary application view.".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        run_command(
-            editor_command(Path::new(&path), line, column)?,
-            "Open in VS Code",
-        )
+        let args = editor_arguments(Path::new(&path), line, column)?;
+        let mut command = Command::new(editor_program()?);
+        command.args(args);
+        run_command(command, "Open in VS Code")
     })
     .await
     .map_err(|error| error.to_string())?
@@ -181,12 +186,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("含 空格 #.txt");
         std::fs::write(&file, "first\nsecond\n").unwrap();
-        let folder = editor_command(root.path(), None, None).unwrap();
-        assert_eq!(Path::new(folder.get_args().last().unwrap()), root.path());
-        assert!(editor_command(&file, Some(2), Some(1)).is_ok());
-        assert!(editor_command(root.path(), Some(2), None).is_err());
-        assert!(editor_command(&file, Some(0), None).is_err());
-        assert!(editor_command(&file, None, Some(1)).is_err());
-        assert!(editor_command(&root.path().join("missing"), None, None).is_err());
+        let folder = editor_arguments(root.path(), None, None).unwrap();
+        assert_eq!(
+            Path::new(folder.last().unwrap()).canonicalize().unwrap(),
+            root.path().canonicalize().unwrap()
+        );
+        let args = editor_arguments(&file, Some(2), Some(1)).unwrap();
+        let target = args.last().unwrap().to_string_lossy();
+        assert!(target.ends_with("含 空格 #.txt:2:1"));
+        assert!(editor_arguments(root.path(), Some(2), None).is_err());
+        assert!(editor_arguments(&file, Some(0), None).is_err());
+        assert!(editor_arguments(&file, None, Some(1)).is_err());
+        assert!(editor_arguments(&root.path().join("missing"), None, None).is_err());
     }
 }
