@@ -146,6 +146,7 @@ pub struct ProviderErrorDetails {
     pub status: Option<String>,
     pub http_status: Option<u16>,
     pub retry_directive: Option<String>,
+    pub retry_at: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -4230,13 +4231,14 @@ mod provider_diagnostic_tests {
             "diagnostics":{"source":"providerTransport", "phase":"response",
                 "category":"provider", "retryable":false, "causes":[],
                 "providerError":{"code":"server_is_overloaded", "type":"service_unavailable_error",
-                    "retryDirective":"NO_MORE_RETRY"}},
+                    "retryDirective":"NO_MORE_RETRY", "retryAt":1_795_000_000_000u64}},
         }))
         .unwrap();
         let details = error.diagnostics.unwrap().provider_error.unwrap();
         assert_eq!(details.code.as_deref(), Some("server_is_overloaded"));
         assert_eq!(details.r#type.as_deref(), Some("service_unavailable_error"));
         assert_eq!(details.retry_directive.as_deref(), Some("NO_MORE_RETRY"));
+        assert_eq!(details.retry_at, Some(1_795_000_000_000));
     }
 
     #[test]

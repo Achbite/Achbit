@@ -14,9 +14,10 @@ import {
   acquireCapabilities, ToolViewRetirementFailure, releaseCapabilities, CapabilityReleaseFailure,
 } from './loopCapabilities.js';
 import { prepareControlTurn, settleProviderTurn } from './loopTurn.js';
-import { pendingContextCompaction } from './compaction.js';
+import { continueCompaction, pendingContextCompaction } from './compaction.js';
 import { performContextCompaction, prepareTurnBudget } from './loopContext.js';
 import { LoopFailure, ProviderReportedFailure, ProviderCompletedFailure } from './loopFailure.js';
+import { waitForRetryAt } from './providerAttempts.js';
 import { modelContextEvents } from './modelContext.js';
 import { stageForRequest } from './sessionCapabilities.js';
 import { consumeProvider } from './loopProvider.js';
@@ -121,6 +122,12 @@ export async function runAgentLoop(
     }
 
     if (command.type === 'cancel') return await cancelRun(snapshot, command, deps, commit);
+    const continuation = snapshot.state.run?.continuation;
+    if (continuation && !snapshot.state.contextCompositions.some(item => item.runId === runId)) {
+      await waitForRetryAt(continuation.retryAt, signal);
+      const compaction = continueCompaction(snapshot, continuation.providerRequestId, runId, deps.nextId);
+      if (compaction.length) await commit(compaction);
+    }
 
     while (true) {
       throwIfAborted(signal);
@@ -198,7 +205,7 @@ export async function runAgentLoop(
         let turn;
         try {
           turn = await consumeProvider(preparedProviderRequest.request, preparedProviderRequest.toolCodec,
-            runId, deps, signal, capabilities.controls);
+            runId, deps, signal, capabilities.controls, Boolean(continuation && !Object.values(snapshot.state.providerTurns).some(turn => turn.runId === runId && turn.purpose === 'agent')));
         } catch (error) {
           if (!(error instanceof TruncatedToolOutput) || signal.aborted) throw error;
           await commit({ type: 'provider.turn.settled', sessionId: snapshot.state.sessionId, runId,

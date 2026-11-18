@@ -1392,10 +1392,13 @@ function isRun(value: unknown): boolean {
   return isExactRecord(
     value,
     ['runId', 'profileId', 'workspaceBindings', 'status'],
-    ['mode', 'waitingReason', 'reasoningEffort', 'thinking', 'hostBinding', 'fileInputMediaTypes'],
+    ['mode', 'waitingReason', 'reasoningEffort', 'thinking', 'hostBinding', 'fileInputMediaTypes', 'continuation'],
   )
     && isIdentifier(value.runId)
     && (value.mode === undefined || isSessionMode(value.mode))
+    && (value.continuation === undefined || (isExactRecord(value.continuation, ['runId', 'providerRequestId', 'retryAt'])
+      && isIdentifier(value.continuation.runId) && isIdentifier(value.continuation.providerRequestId)
+      && isNaturalNumber(value.continuation.retryAt) && value.continuation.retryAt <= 8_640_000_000_000_000))
     && isIdentifier(value.profileId)
     && (value.fileInputMediaTypes === undefined || (isArrayOf(value.fileInputMediaTypes, item => item === 'application/pdf')
       && new Set(value.fileInputMediaTypes).size === value.fileInputMediaTypes.length))

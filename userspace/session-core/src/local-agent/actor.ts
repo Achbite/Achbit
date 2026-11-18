@@ -1,6 +1,7 @@
 import { RunTiming } from './runTiming.js';
 import { recipeForMode } from './sessionMode.js';
 import type { SessionMode } from '@achbit/protocol';
+import { providerNeedsContinuation, type ProviderContinuation } from '@achbit/protocol';
 import { sameModelContext } from './modelContext.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
 import { decodeAgentCapabilities, isLlmReasoningEffort } from '@achbit/protocol';
@@ -569,6 +570,8 @@ export class SessionActor {
         return await this.handleMessageFeedback(command);
       case 'tool.cancel':
         return await this.handleToolCancel(command);
+      case 'provider.continue':
+        return this.handleProviderContinuation(command, beforeRunStart);
       case 'run.cancel':
         return await this.handleCancel(command);
       case 'interaction.respond':
@@ -811,6 +814,35 @@ export class SessionActor {
     return reply;
   }
 
+  private async handleProviderContinuation(
+    command: Extract<ConversationCommand, { type: 'provider.continue' }>,
+    beforeRunStart?: (runId: string) => Promise<void>,
+  ): Promise<CommandReply> {
+    const { state, events } = await this.loadSnapshot();
+    const alreadyAccepted = events.some(event => event.type === 'run.started' && event.payload.continuation?.runId === command.runId);
+    if (alreadyAccepted) return this.commitCommand(command, [], acceptedReply(command));
+    const run = state.run;
+    const failure = state.failureSnapshots[command.runId];
+    const started = events.find(event => event.type === 'run.started' && event.runId === command.runId);
+    const turn = failure?.providerRequestId ? state.providerTurns[failure.providerRequestId] : undefined;
+    if (run?.runId !== command.runId || run.status !== 'failed' || !failure || failure.pendingCallIds.length
+      || !providerNeedsContinuation(failure.error) || !turn || turn.purpose === 'approvalReview' || turn.outcome !== 'failed'
+      || started?.type !== 'run.started') {
+      return this.recordRejection(command, 'provider_continuation_unavailable', '这次模型请求没有可继续的失败回执。');
+    }
+    const runtime = state.runRuntimeSnapshots[command.runId]!;
+    const messageId = started.payload.inputMessageId;
+    const original = state.messages.find(message => message.messageId === messageId && message.role === 'user');
+    if (!original) throw new Error('run_input_message_missing');
+    const continuation = { runId: command.runId, providerRequestId: turn.providerRequestId,
+      retryAt: failure.error.diagnostics?.providerError?.retryAt ?? 0 };
+    return this.handleRunInput({ ...command, type: 'message.submit', runId: undefined, text: original.content,
+      profileId: runtime.provider.profileId, reasoningEffortOverride: runtime.provider.reasoningEffortOverride ?? null,
+      ...(runtime.planMode ? { planMode: runtime.planMode } : {}),
+      ...(run.hostBinding ? { hostBinding: run.hostBinding } : {}),
+    }, original.content, null, undefined, beforeRunStart, { command, messageId, continuation });
+  }
+
   private async handleMessage(
     command: Extract<ConversationCommand, { type: 'message.submit' }>,
     beforeRunStart?: (runId: string) => Promise<void>,
@@ -862,13 +894,14 @@ export class SessionActor {
     focusTask: string | null,
     edit?: { command: Extract<ConversationCommand, { type: 'message.edit' }>; revised: Extract<NewSessionEvent, { type: 'conversation.revised' }> },
     beforeRunStart?: (runId: string) => Promise<void>,
+    continuation?: { command: Extract<ConversationCommand, { type: 'provider.continue' }>; messageId: string; continuation: ProviderContinuation },
   ): Promise<CommandReply> {
-    const journalCommand = edit?.command ?? command;
+    const journalCommand = continuation?.command ?? edit?.command ?? command;
     const manualPlan = command.type === 'message.submit' && command.planMode === 'manual';
     if (manualPlan && !submittedText.trim()) {
       return await this.recordRejection(journalCommand, 'plan_task_empty', '/plan 后必须提供任务正文。');
     }
-    if (!submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
+    if (!continuation && !submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
       if (command.type === 'context.focus') {
         return await this.recordRejection(
           command,
@@ -960,7 +993,7 @@ export class SessionActor {
       return await this.recordRejection(journalCommand, 'plan_tool_unavailable', '当前 Agent 的工具范围不包含提交计划。');
     }
     await this.configureMode(before.state.mode);
-    const messageId = this.#nextId('message');
+    const messageId = continuation?.messageId ?? this.#nextId('message');
     const runId = this.#nextId('run');
     const profileId = command.profileId ?? before.state.modelSettings?.profileId ?? this.#profileId;
     const reasoningEffortOverride = command.reasoningEffortOverride !== undefined
@@ -1008,13 +1041,18 @@ export class SessionActor {
     const previousProvider = previousRun ? before.state.runRuntimeSnapshots[previousRun]?.provider : undefined;
     const contextStart = previousProvider && !sameModelContext(previousProvider, runtimeSnapshot.provider)
       ? { historyThroughSequence: before.state.revision, previousProfileId: previousProvider.profileId } : undefined;
+    if (continuation && contextStart) {
+      await this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
+        kernelCatalogSnapshotRef: runtimeSnapshot.kernelCatalogSnapshotRef });
+      return this.recordRejection(journalCommand, 'provider_continuation_model_changed', '模型连接已变更，请选择当前模型后继续对话。');
+    }
     if ((contextStart || before.state.contextHandoff?.status === 'reading')
       && !runtimeSnapshot.tools.some(tool => tool.name === 'session.read' && tool.availability === 'callable')) {
       await this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
         kernelCatalogSnapshotRef: runtimeSnapshot.kernelCatalogSnapshotRef });
       return this.recordRejection(journalCommand, 'model_handoff_reader_unavailable', '当前 Agent 的工具范围不支持读取会话历史，不能接手。');
     }
-    const events: NewSessionEvent[] = [
+    const inputEvents: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
       {
         type: 'session.model-settings.updated',
@@ -1056,6 +1094,9 @@ export class SessionActor {
         },
       },
       ...directoryBindingEvents(this.sessionId, command.commandId, before.state.workspaceBindings, directoryReferences),
+    ];
+    const events: NewSessionEvent[] = [
+      ...(continuation ? [] : inputEvents),
       {
         type: 'run.started',
         sessionId: this.sessionId,
@@ -1065,6 +1106,7 @@ export class SessionActor {
           workspaceBindings: runWorkspaceBindings,
           runtimeSnapshot,
           ...(contextStart ? { contextStart } : {}),
+          ...(continuation ? { continuation: continuation.continuation } : {}),
         },
       },
     ];

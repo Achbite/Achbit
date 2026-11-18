@@ -249,7 +249,7 @@ export class SessionService implements ConversationPort {
     return this.withActor(command.sessionId, async actor => {
       this.assertOpen();
       const projection = await actor.agentSnapshot();
-      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'session.mode.set', 'run.host.rebind'].includes(command.type)) {
+      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'session.mode.set', 'run.host.rebind', 'provider.continue'].includes(command.type)) {
         throw new Error('agent_session_requires_managed_task');
       }
       if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');

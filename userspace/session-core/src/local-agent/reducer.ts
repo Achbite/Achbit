@@ -386,6 +386,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       }
       next.run = {
         ...lifecycle!.run!,
+        ...(event.payload.continuation ? { continuation: { ...event.payload.continuation } } : {}),
         mode: event.payload.runtimeSnapshot.mode ?? 'full',
         ...(event.payload.runtimeSnapshot.environment.hostBinding
           ? { hostBinding: structuredClone(event.payload.runtimeSnapshot.environment.hostBinding) as unknown as NonNullable<RunProjection['hostBinding']> } : {}),

@@ -86,8 +86,8 @@ pub(crate) fn network_failure(error: reqwest::Error, phase: &str, secret: Option
             );
             // A peer can close during TLS setup or before the HTTP body ends.
             // Session owns the retry budget and never resends a completed turn.
-            retryable |= io.kind() == ErrorKind::UnexpectedEof
-                && ((is_connect && phase == "send") || phase == "responseBody");
+            retryable |=
+                io.kind() == ErrorKind::UnexpectedEof && matches!(phase, "send" | "responseBody");
         }
         // HTTP header EOF is a typed Hyper error without an underlying io::Error.
         // Keep malformed HTTP and explicit upstream failures out of network retries.
@@ -115,13 +115,118 @@ pub(crate) fn network_failure(error: reqwest::Error, phase: &str, secret: Option
     })
 }
 
-/// A well-formed upstream failure is not a local protocol or network failure.
-/// Session retains its existing network-only retry policy.
+/// Capture only retry-related headers, including those embedded in streamed errors.
+#[derive(Default)]
+pub(crate) struct RetryAdvice {
+    directive: Option<String>,
+    at: Option<u64>,
+}
+
+impl RetryAdvice {
+    pub(crate) fn read<'a>(header: impl Fn(&str) -> Option<&'a str>) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now();
+        let milliseconds = |date: SystemTime| {
+            u64::try_from(
+                date.duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .ok()
+        };
+        let after = |duration| now.checked_add(duration).and_then(milliseconds);
+        let numeric = |text: &str| text.trim().parse::<u64>().ok();
+        let standard = header("retry-after").and_then(|text| {
+            numeric(text)
+                .and_then(|seconds| after(Duration::from_secs(seconds)))
+                .or_else(|| httpdate::parse_http_date(text).ok().and_then(milliseconds))
+        });
+        let millis = header("retry-after-ms")
+            .and_then(numeric)
+            .and_then(|ms| after(Duration::from_millis(ms)));
+        Self {
+            directive: header("x-retry-metadata")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            at: standard
+                .max(millis)
+                .filter(|ms| *ms <= 8_640_000_000_000_000),
+        }
+    }
+
+    pub(crate) fn http(headers: &reqwest::header::HeaderMap) -> Self {
+        Self::read(|key| headers.get(key).and_then(|value| value.to_str().ok()))
+    }
+
+    pub(crate) fn apply(&self, failure: &mut Value, secret: Option<&str>) {
+        if failure
+            .pointer("/diagnostics/category")
+            .and_then(Value::as_str)
+            != Some("provider")
+        {
+            return;
+        }
+        let detail = &mut failure["diagnostics"]["providerError"];
+        if let Some(value) = &self.directive {
+            if detail["retryDirective"].as_str() != Some("NO_MORE_RETRY") {
+                detail["retryDirective"] = json!(safe_detail(value, secret));
+            }
+        }
+        if let Some(at) = self.at {
+            detail["retryAt"] = json!(at.max(detail["retryAt"].as_u64().unwrap_or(0)));
+        }
+        let status = detail["httpStatus"].as_u64();
+        let has = |values: &[&str]| {
+            ["code", "type", "status"]
+                .iter()
+                .filter_map(|key| detail[*key].as_str())
+                .any(|code| values.iter().any(|value| code.eq_ignore_ascii_case(value)))
+        };
+        let permanent = matches!(status, Some(401 | 402 | 403))
+            || has(&[
+                "insufficient_quota",
+                "insufficient_balance",
+                "billing_hard_limit_reached",
+                "payment_required",
+                "credit_balance_exhausted",
+                "organization_spend_limit_exceeded",
+                "project_spend_limit_exceeded",
+                "authentication_error",
+                "invalid_api_key",
+                "permission_denied",
+                "response.incomplete",
+            ]);
+        let temporary = status == Some(429)
+            || has(&[
+                "rate_limit_exceeded",
+                "rate_limit_error",
+                "rate_limit",
+                "resource_exhausted",
+                "server_is_overloaded",
+                "overloaded_error",
+                "slow_down",
+            ]);
+        let retryable = temporary
+            && !permanent
+            && detail["retryAt"].is_u64()
+            && detail["retryDirective"].as_str() != Some("NO_MORE_RETRY");
+        failure["diagnostics"]["retryable"] = json!(retryable);
+        if failure["diagnostics"]["providerError"].is_null() {
+            failure["diagnostics"]
+                .as_object_mut()
+                .unwrap()
+                .remove("providerError");
+        }
+    }
+}
+
+/// A well-formed upstream failure retains its own code and retry instructions.
 pub(crate) fn upstream_failure(
     code: &str,
     message: &str,
     error: &Value,
-    retry_directive: Option<&str>,
+    advice: Option<&RetryAdvice>,
     secret: Option<&str>,
 ) -> Value {
     let mut details = serde_json::Map::new();
@@ -129,14 +234,6 @@ pub(crate) fn upstream_failure(
         ("code", error.get("code").and_then(Value::as_str)),
         ("type", error.get("type").and_then(Value::as_str)),
         ("status", error.get("status").and_then(Value::as_str)),
-        (
-            "retryDirective",
-            retry_directive.or_else(|| {
-                error
-                    .pointer("/headers/x-retry-metadata")
-                    .and_then(Value::as_str)
-            }),
-        ),
     ] {
         if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
             let value = safe_detail(value, secret);
@@ -156,6 +253,18 @@ pub(crate) fn upstream_failure(
     });
     if !details.is_empty() {
         failure["diagnostics"]["providerError"] = Value::Object(details);
+    }
+    let headers = error.get("headers").and_then(Value::as_object);
+    RetryAdvice::read(|key| {
+        headers?
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))?
+            .1
+            .as_str()
+    })
+    .apply(&mut failure, secret);
+    if let Some(advice) = advice {
+        advice.apply(&mut failure, secret);
     }
     failure
 }
@@ -216,7 +325,9 @@ pub(crate) fn valid_diagnostics(value: &Value) -> bool {
             details.as_object().is_some_and(|details| {
                 !details.is_empty()
                     && details.iter().all(|(key, value)| {
-                        if key == "httpStatus" {
+                        if key == "retryAt" {
+                            value.as_u64().is_some_and(|ms| ms <= 8_640_000_000_000_000)
+                        } else if key == "httpStatus" {
                             value
                                 .as_u64()
                                 .is_some_and(|status| (100..=599).contains(&status))
@@ -363,6 +474,48 @@ mod tests {
         drop(next);
         assert!(response.chunk().await.unwrap().is_none());
         peer.await.unwrap();
+    }
+
+    #[test]
+    fn retry_advice_handles_dates_delay_milliseconds_and_stop_directives() {
+        let date = "Sun, 06 Nov 1994 08:49:37 GMT";
+        let advice = RetryAdvice::read(|name| (name == "retry-after").then_some(date));
+        assert_eq!(advice.at, Some(784111777000));
+        let invalid = RetryAdvice::read(|_| Some("n/a"));
+        assert_eq!(invalid.at, None);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut failure = upstream_failure(
+            "provider_error",
+            "slow down",
+            &json!({
+                "code":"rate_limit_exceeded","headers":{"Retry-After-Ms":"750"}
+            }),
+            None,
+            None,
+        );
+        assert!(
+            failure["diagnostics"]["providerError"]["retryAt"]
+                .as_u64()
+                .unwrap()
+                >= now + 750
+        );
+        assert_eq!(failure["diagnostics"]["retryable"], true);
+        RetryAdvice::read(|key| (key == "x-retry-metadata").then_some("NO_MORE_RETRY"))
+            .apply(&mut failure, None);
+        assert_eq!(failure["diagnostics"]["retryable"], false);
+        assert!(valid_diagnostics(&failure["diagnostics"]));
+        let quota = upstream_failure(
+            "provider_error",
+            "out of credit",
+            &json!({"code":"insufficient_quota",
+            "type":"rate_limit_error", "headers":{"Retry-After":"2"}}),
+            None,
+            None,
+        );
+        assert_eq!(quota["diagnostics"]["retryable"], false);
     }
 
     #[tokio::test]

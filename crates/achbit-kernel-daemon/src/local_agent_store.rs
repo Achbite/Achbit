@@ -2439,8 +2439,20 @@ fn validate_new_event(
             exact_object(
                 payload,
                 &["inputMessageId", "workspaceBindings", "runtimeSnapshot"],
-                &["contextStart"],
+                &["contextStart", "continuation"],
             )?;
+            if let Some(source) = payload.get("continuation") {
+                exact_object(source, &["runId", "providerRequestId", "retryAt"], &[])?;
+                for key in ["runId", "providerRequestId"] {
+                    validate_id(key, required_string(source, key)?)?;
+                }
+                if required_u64(source, "retryAt")? > 8_640_000_000_000_000 {
+                    return Err(LocalAgentStoreError::new(
+                        "provider_retry_time_invalid",
+                        "模型等待时间无效。",
+                    ));
+                }
+            }
             if let Some(start) = payload.get("contextStart") {
                 exact_object(start, &["historyThroughSequence", "previousProfileId"], &[])?;
                 if required_u64(start, "historyThroughSequence")? == 0 {
@@ -3661,6 +3673,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
         "context.focus",
         "message.feedback.set",
         "run.cancel",
+        "provider.continue",
         "tool.cancel",
         "run.host.rebind",
         "interaction.respond",
@@ -3695,6 +3708,14 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
             &[],
         )?;
         validate_workspace_bindings(&command["workspaceBindings"])?;
+    }
+    if command_type == "provider.continue" {
+        exact_object(
+            command,
+            &["schemaVersion", "type", "commandId", "sessionId", "runId"],
+            &[],
+        )?;
+        validate_id("runId", required_string(command, "runId")?)?;
     }
     if command_type == "run.host.rebind" {
         exact_object(

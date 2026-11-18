@@ -16,6 +16,7 @@ export function isErrorDiagnostics(value: unknown): value is ErrorDiagnostics {
       && Object.keys(value.providerError).length > 0
       && Object.entries(value.providerError).every(([key, entry]) => key === 'httpStatus'
         ? Number.isInteger(entry) && Number(entry) >= 100 && Number(entry) <= 599
+        : key === 'retryAt' ? Number.isSafeInteger(entry) && Number(entry) >= 0 && Number(entry) <= 8_640_000_000_000_000
         : ['code', 'type', 'status', 'retryDirective'].includes(key) && text(entry)))
     && (value.secondary === undefined || Array.isArray(value.secondary) && value.secondary.length <= 16
       && value.secondary.every((entry) => object(entry) && Object.keys(entry).length === 2 && text(entry.code) && text(entry.message)));
@@ -24,6 +25,13 @@ export function isErrorDiagnostics(value: unknown): value is ErrorDiagnostics {
 export function isLocalAgentErrorValue(value: unknown): value is LocalAgentError {
   return object(value) && Object.keys(value).every((key) => ['code', 'message', 'diagnostics'].includes(key))
     && text(value.code) && text(value.message) && (value.diagnostics === undefined || isErrorDiagnostics(value.diagnostics));
+}
+
+/** An explicit upstream stop requires a fresh user decision. */
+export function providerNeedsContinuation(error?: LocalAgentError): boolean {
+  const diagnostics = error?.diagnostics;
+  return diagnostics?.source === 'providerTransport' && diagnostics.category === 'provider'
+    && !diagnostics.secondary?.length && diagnostics.providerError?.retryDirective === 'NO_MORE_RETRY';
 }
 
 /** Presentation classification only. Never authorizes a retry or changes the recorded failure. */

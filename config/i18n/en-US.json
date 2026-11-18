@@ -4,6 +4,9 @@
   "status": "active",
   "notes": "Achbit UI localization pack. Translators can add messages/settings entries without changing frontend code.",
   "messages": {
+    "agent.retryAfter": "Retrying after {time}",
+    "agent.continue.input": "Continue the current task. First check the completed tool results and outstanding plan, then resume the remaining work.",
+    "agent.handoff.input": "Take over from session {sessionId}. Use the session tools to read its goal, plan, and relevant tool results. Verify the completed work, then continue the remaining task.",
     "agent.timing.responseElapsed": "Time {duration}",
     "agent.computer.action.status": "Check status",
     "agent.computer.action.list": "List pages",

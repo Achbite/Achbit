@@ -350,6 +350,7 @@ function decodeCommand(value: unknown): ConversationCommand {
       if (!hasExactKeys(value, ['schemaVersion', 'type', 'commandId', 'sessionId', 'runId', 'callId'])
         || !validId(value.runId) || !validId(value.callId)) throw new Error('conversation_command_invalid');
       return value as unknown as ConversationCommand;
+    case 'provider.continue':
     case 'run.cancel':
       if (
         !hasExactKeys(value, [
