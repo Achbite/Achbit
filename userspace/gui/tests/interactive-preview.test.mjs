@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
+import vm from 'node:vm';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { loadGuiModules, loadGuiModule } from './gui-projection-contract.mjs';
 
@@ -27,6 +28,59 @@ test('explicit preview references resolve archived HTML while code and ordinary 
   }
   const original = { kind: 'artifact', artifact };
   assert.notEqual(readerTargetKey(original), readerTargetKey({ ...original, interactive: true }), 'interactive and document views retain distinct tabs');
+});
+
+test('the shipped frame bridge measures flow but does not mistake a viewport shell for its natural height', async t => {
+  const { interactivePreviewDocument } = await loadGuiModule(t, '/src/components/local-agent/interactivePreviewFrame.ts');
+  let script, measured, scheduled, height = 84, extent = 0, overflowY = 'visible';
+  const original = globalThis.DOMParser;
+  globalThis.DOMParser = class { parseFromString() { return { createElement: () => ({}), head: { prepend: node => { script = node.textContent; } }, documentElement: { outerHTML: '' } }; } };
+  t.after(() => { if (original) globalThis.DOMParser = original; else delete globalThis.DOMParser; });
+  interactivePreviewDocument('<main>Fixture</main>');
+  const messages = [];
+  const root = { get scrollHeight() { return Math.max(extent, 420); } };
+  const page = { readyState: 'complete', documentElement: root, addEventListener() {}, body: {
+    getBoundingClientRect: () => ({ height }), get scrollHeight() { return Math.max(height, extent); } } };
+  const context = { document: page, parent: { postMessage(value) { messages.push(value); } }, innerWidth: 700, innerHeight: 420,
+    getComputedStyle: () => ({ marginTop: '0px', marginBottom: '0px', overflowY }), addEventListener() {},
+    requestAnimationFrame(fn) { scheduled = fn; return 1; }, ResizeObserver: class { constructor(f) { measured = f; } observe() {} } };
+  context.window = context;
+  vm.runInNewContext(script, context); scheduled();
+  assert.equal(messages.at(-1).height, 84, 'short content does not inherit the document viewport floor');
+  extent = 980; measured(); scheduled(); assert.equal(messages.at(-1).height, 980);
+  height = 420; extent = 420; overflowY = 'hidden'; measured(); scheduled();
+  assert.equal(messages.at(-1).viewport, true, 'body-sized app with an internal scroller delegates geometry to the host pane');
+  const count = messages.length; context.innerHeight = height = 800; measured(); scheduled();
+  assert.equal(messages.length, count, 'fitting the app canvas does not feed its new viewport back into host layout');
+  overflowY = 'visible'; height = 96; extent = 0; measured(); scheduled();
+  assert.equal(messages.at(-1).viewport, false); assert.equal(messages.at(-1).height, 96);
+});
+
+test('inline geometry distinguishes natural, wrappable and viewport-relative widths without a resize loop', async t => {
+  const { interactivePreviewDocument } = await loadGuiModule(t, '/src/components/local-agent/interactivePreviewFrame.ts');
+  let script, scheduled, observer, declaration = 'auto', priority = '', ideal = 368, min = 120;
+  const original = globalThis.DOMParser;
+  globalThis.DOMParser = class { parseFromString() { return { createElement: () => ({}), head: { prepend: node => { script = node.textContent; } }, documentElement: { outerHTML: '' } }; } };
+  t.after(() => { if (original) globalThis.DOMParser = original; else delete globalThis.DOMParser; });
+  interactivePreviewDocument('<main>Intrinsic size fixture</main>', true);
+  const messages = [];
+  const root = { style: { getPropertyValue: () => declaration, getPropertyPriority: () => priority,
+    setProperty(_, v, p) { declaration = v; priority = p; }, removeProperty() { declaration = ''; } },
+    get clientWidth() { return env.innerWidth; }, get scrollHeight() { return env.innerHeight; },
+    getBoundingClientRect: () => ({ width: declaration === 'max-content' ? ideal : declaration === 'min-content' ? min : env.innerWidth }) };
+  const env = { innerWidth: 840, innerHeight: 360, parent: { postMessage(v) { messages.push(v); } },
+    document: { readyState: 'complete', documentElement: root, addEventListener() {}, body: { scrollHeight: 96, getBoundingClientRect: () => ({ height: 96 }) } },
+    addEventListener() {}, getComputedStyle: () => ({ marginTop: '0px', marginBottom: '0px', overflowY: 'visible' }),
+    requestAnimationFrame(f) { scheduled = f; return 1; }, ResizeObserver: class { constructor(f) { observer = f; } observe() {} } };
+  env.window = env; vm.runInNewContext(script, env); scheduled();
+  const sample = () => { observer(); scheduled(); return messages.at(-1); };
+  assert.deepEqual([sample().preferredWidth, sample().minimumWidth, sample().height], [368, 120, 96]);
+  const n = messages.length; env.innerWidth = ideal; sample(); assert.equal(messages.length, n, 'fitting is not another size request');
+  env.innerWidth = 280; assert.equal(sample().preferredWidth, 368, 'a narrower pane does not become the new natural width');
+  min = ideal; assert.equal(sample().minimumWidth, 368, 'only intrinsically wide content asks for a larger minimum canvas');
+  ideal = min = 224; sample(); env.innerWidth = 224; ideal = min = 180;
+  assert.equal(sample().preferredWidth, 0, 'viewport-dependent lengths release the cap instead of shrinking recursively');
+  assert.equal(declaration, 'auto'); assert.equal(priority, '', 'the author declaration and priority are restored');
 });
 
 test('an unfinished preview waits while a stable streaming block keeps its identity through settlement', async t => {
@@ -102,7 +156,11 @@ test('preview actions distinguish repeated inline blocks and the Reader of the s
   assert.equal(saveActions.length, 3);
   assert.equal(new Set(saveActions.map(item => JSON.stringify(item))).size, 3);
   assert.ok(saveActions.every(item => item.target.artifactId === artifact.artifactId && item.target.sessionId === scope.sessionId));
-  const originalActions = actions.filter(item => item.action !== 'save');
+  const moreActions = actions.filter(item => item.action === 'more');
+  assert.equal(moreActions.length, 2);
+  assert.ok(moreActions.every(item => item.target.location === 'inline'));
+  assert.equal(new Set(moreActions.map(item => JSON.stringify(item.target))).size, 2);
+  const originalActions = actions.filter(item => item.action !== 'save' && item.action !== 'more');
   assert.equal(originalActions.length, 8);
   assert.equal(new Set(originalActions.map(item => JSON.stringify(item))).size, 8);
   assert.equal(originalActions.filter(item => item.target.location === 'inline').length, 6);

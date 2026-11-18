@@ -5,6 +5,82 @@ import { assertRuntimeContract } from './support/runtimeContract.mjs';
 import { actorWith, fakeRunPreparation, emptyKernel, providerEvent, createSession,
   messageCommand, readEvents, waitForProjection, waitUntil, workspaceBinding } from './local-agent-fixtures.mjs';
 
+// TCR: .task-artifacts/browser-interaction-20261117/TCR.md.
+test('explicit session.wait promotes unanswered questions after independent work and resumes the same Loop once', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:question-explicit-wait';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const preparation = fakeRunPreparation({ contextWindowTokens: 16000 });
+  let release, working = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const requests = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    requests.push(request);
+    assert.ok(requests.length <= 3, 'one question, one wait and one continuation');
+    if (requests.length === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'question:explicit-wait',
+      name: request.tools.find(tool => tool.inputSchema.properties?.allowFreeform).name,
+      input: { kind: 'question', mode: 'continue', prompt: 'Which example should we show?', allowFreeform: true } });
+    else if (requests.length === 2) {
+      working = true; await gate;
+      yield providerEvent(request.requestId, 'text.delta', { text: 'The independent inspection is complete.' });
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'wait:question', name: 'session', input: { action: 'wait' } });
+    } else {
+      assert.equal(request.messages.filter(message => message.role === 'user' && message.content.includes('Use the small form')).length, 1);
+      yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:question-done', content: 'Answer incorporated.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), preparation.port, 'question-explicit-wait');
+  t.after(async () => { release(); await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Clarify, inspect independently, then wait for my answer.'));
+  await waitUntil(() => working, 'independent work');
+  const running = await actor.snapshot();
+  assert.equal(running.run.status, 'running');
+  const question = running.interactions[0];
+  release();
+  const waiting = await waitForProjection(actor, state => state.run?.status === 'waiting');
+  assertRuntimeContract('SessionProjection', waiting);
+  assert.equal(waiting.run.waitingReason, 'userInput');
+  assert.equal(waiting.pendingInteraction.interactionId, question.interactionId);
+  assert.equal(waiting.interactions.length, 1);
+  assert.equal(requests.length, 2);
+  assert.equal(preparation.released.length, 0);
+  assert.equal((await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'interaction.respond',
+    sessionId, commandId: 'command:answer', runId: running.run.runId,
+    interactionId: question.interactionId, response: 'Use the small form' })).status, 'accepted');
+  const done = await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.equal(done.interactions[0].status, 'answered');
+  assert.equal(requests.length, 3);
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(event => event.type === 'run.started').length, 1);
+  assert.equal(events.filter(event => event.type === 'run.waiting').length, 1);
+  assert.equal(events.filter(event => event.type === 'run.runtime.released').length, 1);
+});
+
+test('explicit event waits retain queued input, dependencies and deadlines instead of promoting questions', async () => {
+  const { prepareControlTurn } = await import('../dist/local-agent/loopTurn.js');
+  const runId = 'run:wait', question = { runId, interactionId: 'question:pending', status: 'pending', mode: 'continue' };
+  for (const condition of ['queued', 'process', 'agent', 'schedule', 'arrived', 'deadline']) {
+    const wait = { afterSequence: 2, ...(condition === 'deadline' ? { deadline: Date.now() + 1000 } : {}) };
+    const events = [{ type: 'session.control.completed', sequence: 3, runId,
+      payload: { operation: { action: 'wait' }, result: { wait } } }];
+    if (condition === 'schedule') events.push({ type: 'wake.scheduled', sequence: 1, runId, payload: { scheduleId: 'wake:later', dueAt: Date.now() + 1000 } });
+    if (condition === 'arrived') events.push({ type: 'input.queued', sequence: 4, runId, payload: {} });
+    const snapshot = { events, state: { sessionId: 'session:wait', run: { runId, status: 'running' },
+      interactions: [question], pendingPlan: null,
+      queuedInputs: condition === 'queued' ? [{ runId, status: 'queued' }] : [],
+      processes: condition === 'process' ? { job: { runId, status: 'active' } } : {},
+      agentTasks: condition === 'agent' ? [{ parentRunId: runId, status: 'running' }] : [],
+    } };
+    let waited = 0;
+    const result = await prepareControlTurn(snapshot, {
+      commit: async producer => { assert.deepEqual(producer(snapshot), [], condition); return snapshot; },
+      readSnapshot: async () => snapshot,
+      waitForInput: async (id, accepted) => { assert.equal(id, runId); assert.deepEqual(accepted, wait); waited++; },
+    }, runId, new AbortController().signal);
+    assert.equal(result, snapshot);
+    assert.equal(waited, 1, condition);
+  }
+});
+
 for (const surface of ['aggregate', 'responses']) test(`questions continue on the single Loop and replies enter at request boundaries (${surface})`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = `session:questions-${surface}`;
   await createSession(journal, sessionId, [workspaceBinding]);

@@ -6,7 +6,7 @@ import type { MessageFeedback, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useConversationHost } from './ConversationHost';
 import { workspaceResourceLink } from './documentResources';
-import { requestReader } from './readerState';
+import { requestReader, artifactReaderTarget } from './readerState';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { PresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -24,12 +24,12 @@ import PlanCard from './PlanCard';
 import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
 import { conversationRounds, type ProjectionItem, type AssistantDraftItem } from './conversationItems';
 import type { ConversationViewport } from './useConversationViewport';
-import { formatBytes } from './conversationFormatting';
 import { ConversationNavigation } from './ConversationNavigation';
 import { conversationNavigation } from './conversationWindow';
 import { ConversationLayoutCache, ConversationVirtualizer } from './conversationVirtualizer';
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
+import { MessageAttachments } from './MessageAttachments';
 import { RunFailureDetails, StoppedRunStatus, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
 import { UiEventStack } from './UiEventStack';
 import { InteractionCard } from './InteractionCard';
@@ -47,6 +47,8 @@ interface ConversationTranscriptProps {
   automaticReview?: React.ReactNode;
   foregroundInteractionId?: string | null;
   onFocusInteraction?: () => void;
+  readInteractionDraft?: (interactionId: string) => string;
+  onInteractionDraftChange?: (interactionId: string, text: string) => void;
   displaySettledRunIds: Set<string>;
   onDisplayed(identity: string, text: string): void;
   projection: SessionProjection | null;
@@ -70,6 +72,8 @@ export function ConversationTranscript({
   automaticReview,
   foregroundInteractionId,
   onFocusInteraction,
+  readInteractionDraft,
+  onInteractionDraftChange,
   displaySettledRunIds,
   onDisplayed,
   loading,
@@ -177,7 +181,7 @@ export function ConversationTranscript({
       event.preventDefault();
       const artifact = projection?.artifacts.find(item => item.artifactId === href.slice('artifact://'.length));
       if (!artifact) { setUiActionError(t(language, 'reader.artifactMissing')); return; }
-      if (artifact.contentMode === 'fixed') requestReader(artifact.sessionId, { kind: 'artifact', artifact });
+      if (artifact.contentMode === 'fixed') requestReader(artifact.sessionId, artifactReaderTarget(artifact));
       else if (artifact.uri && /^https?:\/\//i.test(artifact.uri)) {
         void host.openExternalLink(artifact.uri).catch(reason => setUiActionError(String(reason)));
       } else if (artifact.workspaceId && artifact.logicalPath) {
@@ -252,25 +256,9 @@ export function ConversationTranscript({
             )}
             <SourceReferences references={item.value.sourceReferences} language={language} />
             {item.value.filesystemReferences.length > 0 && (
-              <div className="local-agent__message-attachments">
-                {item.value.filesystemReferences.map((reference) => (
-                  <button type="button" {...referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
-                    onClick={() => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }}
-                    className={reference.kind === 'directory'
-                      ? 'local-agent__message-directory'
-                      : undefined}
-                    key={reference.referenceId}
-                  >
-                    <AchbitShellIcon name={reference.kind === 'directory'
-                      ? 'folder'
-                      : 'artifact'} />
-                    {reference.displayName}
-                    {reference.kind === 'file' && (
-                      <small>{reference.source === 'pastedText' ? 'TXT · ' : ''}{formatBytes(reference.byteLength, language)}</small>
-                    )}
-                  </button>
-                ))}
-              </div>
+              <MessageAttachments sessionId={projection!.sessionId} references={item.value.filesystemReferences} language={language}
+                identity={reference => referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
+                onOpen={openWorkspaceResource} onError={setUiActionError} />
             )}
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
@@ -304,7 +292,8 @@ export function ConversationTranscript({
       ) : item.type === 'interaction' ? (
         <InteractionCard interaction={item.value} language={language}
           answerInComposer={item.value.interactionId === foregroundInteractionId}
-          onFocusComposer={onFocusInteraction} onToggle={onPlanToggle} />
+          onFocusComposer={onFocusInteraction} draft={readInteractionDraft?.(item.value.interactionId)}
+          onDraftChange={onInteractionDraftChange} />
       ) : (
         <ToolActivityGroup
           activities={item.values}

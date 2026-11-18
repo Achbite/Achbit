@@ -128,6 +128,7 @@ export function useAgentComposer(
   const permissionMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerStatesRef = useRef(new Map<string, ComposerState>());
+  const [, refreshInteractionDrafts] = useState(0);
   const pendingSubmissionsRef = useRef(new Map<string, ComposerState>());
   const [failedDrafts, setFailedDrafts] = useState<Record<string, ComposerState[]>>({});
   const currentComposerStateRef = useRef<ComposerState>(emptyComposerState());
@@ -176,6 +177,19 @@ export function useAgentComposer(
     setPendingFilesystemPaths(copy.filesystemPaths);
     setPluginSelections(copy.pluginSelections);
     pendingComposerRestoreRef.current = { key, state: copy };
+  };
+
+  const readInteractionDraft = (interactionId: string) => {
+    const key = `${conversationKey}:interaction:${interactionId}`;
+    return (activeComposerStateKeyRef.current === key ? currentComposerStateRef.current
+      : composerStatesRef.current.get(key) ?? readComposerDraft(key)).draft;
+  };
+  const updateInteractionDraft = (interactionId: string, text: string) => {
+    const key = `${conversationKey}:interaction:${interactionId}`;
+    const previous = activeComposerStateKeyRef.current === key ? currentComposerStateRef.current
+      : composerStatesRef.current.get(key) ?? readComposerDraft(key);
+    setComposerStateForKey(key, { ...previous, draft: text, selectionStart: text.length, selectionEnd: text.length });
+    refreshInteractionDrafts(value => value + 1);
   };
 
   const canEditMessage = Boolean(sessionId && projection && !loading && !submitting && !catalogBusy
@@ -683,7 +697,7 @@ export function useAgentComposer(
       next.filesystemPaths = next.filesystemPaths.filter(item => item.path !== previous.browserReview!.screenshot);
     if ((next.filesystemReferences?.length ?? 0) + next.filesystemPaths.length + next.pastedTexts.length + next.pastedImages.length + (screenshot ? 2 : 1) > 8)
       throw new Error(t(language, 'agent.attachment.error.maxFiles'));
-    next.pastedTexts.push({ inputId: nextPanelId('annotation'), text: formatBrowserAnnotation(annotation, previewId, language === 'zh-CN'),
+    next.pastedTexts.push({ inputId: nextPanelId('annotation'), text: formatBrowserAnnotation(annotation, previewId, language === 'zh-CN', screenshot),
       expanded: false, browserReview: { annotation, previewId, screenshot } });
     if (screenshot) next.filesystemPaths.push({ path: screenshot, kind: 'file' });
     setComposerStateForKey(key, next);
@@ -805,6 +819,8 @@ export function useAgentComposer(
     selectedTextDecision,
     setSelectedTextDecision,
     foregroundInteractionId,
+    readInteractionDraft,
+    updateInteractionDraft,
     focusInteraction: () => {
       const textarea = textareaRef.current;
       if (textarea && !textarea.disabled) textarea.focus({ preventScroll: true });

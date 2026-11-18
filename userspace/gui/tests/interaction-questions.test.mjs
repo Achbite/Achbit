@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModules } from './gui-projection-contract.mjs';
 
-// TCR: .task-artifacts/ui-small-fixes-20261115/TCR.md.
+// TCR: .task-artifacts/ui-small-fixes-20261115/TCR.md; .task-artifacts/browser-interaction-20261117/TCR.md.
 test('only the foreground question collapses its history answer controls; historical and answered cards remain intact', async t => {
   const previousSelf = globalThis.self;
   globalThis.self = {};
@@ -23,10 +23,12 @@ test('only the foreground question collapses its history answer controls; histor
   assert.match(deferred, /This window/);
   assert.equal((deferred.match(/<textarea/g) ?? []).length, 1);
   const compact = render(InteractionCard, { interaction, answerInComposer: true });
-  assert.match(compact, /aria-expanded="false"/);
+  assert.match(compact, /local-agent__question-summary-text/);
+  assert.doesNotMatch(compact, /aria-expanded|question-details|question-readonly-options|This window/);
   assert.match(compact, /Answer below/);
   assert.doesNotMatch(compact, /<textarea|<form|class="local-agent__question-choice"/);
-  assert.match(compact, /hidden=""/);
+  assert.equal((compact.match(/Which scope should we inspect\?/g) ?? []).length, 1,
+    'only the short summary remains; details and choices belong to the foreground composer');
   const answered = render(InteractionCard, { interaction: { ...interaction, status: 'answered', response: 'narrow' }, answerInComposer: true });
   assert.match(answered, /This window/);
   assert.doesNotMatch(answered, /<textarea/);
@@ -150,6 +152,41 @@ test('a promoted non-blocking question uses the original question and leaves the
   assert.equal(JSON.parse(saved.get(ordinaryKey)).draft, 'Keep this unrelated follow-up');
   assert.equal(JSON.parse(saved.get(answerKey)).draft, '');
   assert.deepEqual(projection, before, 'only the Session response may change question/run facts');
+});
+
+test('a reply drafted in history is retained by the existing per-question composer owner when promoted', async t => {
+  const previousStorage = globalThis.sessionStorage, previousDocument = globalThis.document;
+  const saved = new Map();
+  globalThis.sessionStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  t.after(() => {
+    if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage;
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+  });
+  const [{ useLocalAgentStore: store }, { useAgentComposer }, { InteractionCard }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/components/local-agent/useAgentComposer.ts', '/src/components/local-agent/InteractionCard.tsx',
+  ]);
+  globalThis.document = { activeElement: null };
+  const question = { interactionId: 'question:history-draft', runId: 'run:history-draft', status: 'pending', mode: 'continue',
+    kind: 'question', prompt: 'Which component?', allowFreeform: true };
+  const projection = { sessionId: 'session:history-draft', run: { runId: question.runId, status: 'running' }, interactions: [question], plans: [] };
+  let composer, card;
+  function Probe() {
+    composer = useAgentComposer('en-US', () => {});
+    card = InteractionCard({ interaction: question, language: 'en-US', draft: composer.readInteractionDraft(question.interactionId),
+      onDraftChange: composer.updateInteractionDraft });
+    return card;
+  }
+  const render = () => { store.setState({ sessionId: projection.sessionId, projection, loading: false, submitting: false });
+    Object.assign(store.getInitialState(), store.getState()); renderToStaticMarkup(createElement(Probe)); };
+  render();
+  assert.equal(composer.pendingInteraction, null);
+  findReactElement(card, node => node.type === 'textarea').props.onChange({ target: { value: 'Show the selector' } });
+  assert.equal(composer.readInteractionDraft(question.interactionId), 'Show the selector');
+  assert.equal(JSON.parse(saved.get(`achbit:composer:${projection.sessionId}:interaction:${question.interactionId}`)).draft, 'Show the selector');
+  projection.run = { ...projection.run, status: 'waiting', waitingReason: 'userInput' };
+  render();
+  assert.equal(composer.pendingInteraction.interactionId, question.interactionId);
+  assert.equal(composer.draft, 'Show the selector');
 });
 
 test('shared question choices send stable IDs even when labels match and never invent Markdown choices', async t => {
