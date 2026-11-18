@@ -4,7 +4,8 @@
 <p align="center">
   <a href="https://github.com/Achbite/Achbit/releases">Download</a> ·
   <a href="docs/product/deepseek.md">DeepSeek setup</a> ·
-  <a href="examples/README.md">Examples</a>
+  <a href="examples/README.md">Examples</a> ·
+  <strong>English</strong> · <a href="README.zh-CN.md" lang="zh-CN">简体中文</a>
 </p>
 
 # Achbit
@@ -82,7 +83,9 @@ Copy the saved profile ID from `connections`. In TUI, use `/model` to choose a m
 
 ## Plugins
 
-Import an external plugin from **Settings → Plugins → Add**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
+Open **Settings → Plugins → Marketplace** to search by name, author or type. Expand a result to see its source commit, license and any verification record. **Download from author** opens the version supplied by the publisher. [Public plugin directory](https://github.com/Achbite/achbit-plugins)
+
+Import an external plugin from **Settings → Plugins → Installed → Add…**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
 
 Plugins use shared discovery, invocation and cleanup protocols. A hosted service starts when enabled and releases its process/port when disabled; a compatible model endpoint is configured through the usual model connection settings. Task tools and context are assembled before model requests, keeping optional capabilities separate from the main Loop.
 
