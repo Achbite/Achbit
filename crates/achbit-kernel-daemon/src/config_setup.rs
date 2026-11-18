@@ -289,8 +289,7 @@ mod tests {
         let settings = crate::default_user_settings();
         atomic_write_json(&paths.settings_path, &settings).unwrap();
         let settings_bytes = fs::read(&paths.settings_path).unwrap();
-        let mut profiles: Value =
-            serde_json::from_str(crate::llm_profiles::DEFAULT_PROFILES).unwrap();
+        let mut profiles = crate::llm_profiles::fixture_profiles();
         profiles["profiles"][0]
             .as_object_mut()
             .unwrap()

@@ -73,6 +73,52 @@ def files(root):
 
 
 class ProgramCleanupTests(unittest.TestCase):
+    @unittest.skipUnless(Path('/.dockerenv').exists(), 'maintenance targets the development container')
+    def test_routine_maintenance_preserves_builds_and_removes_only_disposable_caches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root, scratch, commands = base / 'source', base / 'scratch', base / 'commands'
+            (root / 'scripts').mkdir(parents=True)
+            scratch.mkdir()
+            commands.mkdir()
+            script = root / 'scripts/clean-caches.sh'
+            shutil.copy2(ROOT / 'scripts/clean-caches.sh', script)
+            for name in ('node_modules/.vite/deps', 'userspace/gui/node_modules/.vite-temp/file',
+                         '.pytest_cache/data', 'target/debug/incremental/reuse', 'target/release/achbit',
+                         'node_modules/required-package/module.js', 'bin/debug/app', '.task-artifacts/report'):
+                write(root, name, b'keep or discard by ownership')
+            for name in ('npm', 'apt-get'):
+                executable = commands / name
+                executable.write_text('#!/bin/sh\nexit 0\n')
+                executable.chmod(0o755)
+            old = scratch / ('kernel-test-outputs-' + 'a' * 32)
+            current = scratch / ('kernel-test-outputs-' + 'b' * 32)
+            unrelated = scratch / 'kernel-test-outputs-user'
+            for path in (old, current, unrelated):
+                path.mkdir()
+            for path in (old, unrelated):
+                os.utime(path, (1, 1))
+            env = dict(os.environ, TMPDIR=str(scratch), PATH=f"{commands}:{os.environ['PATH']}")
+            def run(*args):
+                return subprocess.run(['bash', str(script), '--maintenance', *args], env=env,
+                                      capture_output=True, text=True, timeout=15)
+            before = files(root)
+            self.assertEqual(run().returncode, 0)
+            self.assertEqual(files(root), before)
+            lock = root / '.build-cache/build.lock'
+            lock.mkdir(parents=True)
+            self.assertNotEqual(run('--yes').returncode, 0)
+            self.assertTrue(old.exists())
+            lock.rmdir()
+            for _ in range(2):
+                result = run('--yes')
+                self.assertEqual(result.returncode, 0, result.stderr)
+            removed = {'node_modules/.vite/deps', 'userspace/gui/node_modules/.vite-temp/file', '.pytest_cache/data'}
+            self.assertEqual(files(root), {p: data for p, data in before.items() if p not in removed})
+            self.assertFalse(old.exists())
+            self.assertTrue(current.is_dir())
+            self.assertTrue(unrelated.is_dir())
+
     def test_dry_run_reads_program_ownership_without_removing_files(self):
         with tempfile.TemporaryDirectory(prefix='achbit-clean-dry-run-') as directory:
             root = Path(directory)

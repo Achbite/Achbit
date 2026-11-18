@@ -37,6 +37,13 @@ function admitCommandBatch(command: ConversationCommand, events: readonly NewSes
     if (events.length) throw new Error('rejected_command_event_batch_invalid');
     return;
   }
+  if (command.type === 'provider.continue') {
+    const [start, timing] = events;
+    if (events.length && (events.length !== 2 || start?.type !== 'run.started'
+      || start.payload.continuation?.runId !== command.runId || timing?.type !== 'run.timing.updated'
+      || timing.runId !== start.runId)) throw new Error('provider_continuation_batch_invalid');
+    return;
+  }
   if (command.type === 'run.host.rebind') {
     const event = events[0];
     if (events.length !== 1 || event?.type !== 'run.host.rebound' || event.runId !== command.runId
@@ -92,6 +99,13 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       if (event.payload.subagentSettings) decodeAgentSettings(event.payload.subagentSettings);
       break;
     case 'run.started':
+      if (event.payload.continuation) {
+        const { runId, providerRequestId, retryAt } = event.payload.continuation;
+        const failure = state.failureSnapshots[runId];
+        if (state.run?.runId !== runId || state.run.status !== 'failed' || failure?.providerRequestId !== providerRequestId
+          || failure.pendingCallIds.length || failure.error.diagnostics?.providerError?.retryDirective !== 'NO_MORE_RETRY'
+          || retryAt !== (failure.error.diagnostics.providerError.retryAt ?? 0)) throw new Error('provider_continuation_source_invalid');
+      }
       if (event.payload.contextStart) {
         const boundary = event.payload.contextStart.historyThroughSequence;
         const input = events.find(item => item.type === 'message.committed' && item.payload.messageId === event.payload.inputMessageId);

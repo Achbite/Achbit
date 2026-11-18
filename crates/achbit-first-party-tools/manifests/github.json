@@ -3,14 +3,16 @@
   "id": "github",
   "uri": "plugin://github@first-party",
   "displayName": "GitHub",
-  "shortDescription": "查找仓库、阅读代码和议题。",
+  "shortDescription": "读取 GitHub 仓库、Issue 和 PR 链接，搜索仓库与代码。",
   "activationMediaTypes": [],
   "providerRef": "tool-provider:first-party:github",
   "capabilityRefs": [
     "github:search",
-    "github:contents-read"
+    "github:contents-read",
+    "github:issue-read",
+    "github:pull-request-read"
   ],
-  "capabilitySummary": "Provides source-native GitHub repository, code, and issue search plus repository contents reads.",
+  "capabilitySummary": "Read GitHub repository, issue and pull request links, discussions, reviews, changed files and repository contents through the official API. Search GitHub repositories, code and issues.",
   "tools": [
     {
       "remoteName": "search",
@@ -61,14 +63,14 @@
         "promptSnippet": "Search GitHub repositories, code, and issues through GitHub's native API.",
         "usageGuidelines": [
           "Use this for GitHub-specific discovery instead of routing GitHub queries through the general web search tool.",
-          "Code search requires the GitHub token exposed to the selected plugin process."
+          "Code search requires a connected GitHub account."
         ]
       }
     },
     {
       "remoteName": "read",
       "canonicalName": "github.read",
-      "description": "Read a GitHub repository directory listing or UTF-8 file through the Contents API.",
+      "description": "Read a github.com repository, Issue or PR URL. Select a part for discussion, changed files or reviews. With repository/path/ref, read a directory or a UTF-8 file.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -91,11 +93,32 @@
             "minimum": 1024,
             "maximum": 262144,
             "default": 262144
+          },
+          "url": {
+            "type": "string",
+            "description": "HTTPS github.com repository, issue or pull request URL."
+          },
+          "part": {
+            "type": "string",
+            "enum": [
+              "overview",
+              "files",
+              "comments",
+              "reviews",
+              "reviewComments"
+            ]
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30
           }
         },
-        "required": [
-          "repository"
-        ],
         "additionalProperties": false
       },
       "effect": "networkRead",
@@ -106,9 +129,9 @@
       "toolContributionRef": "tool-contribution:first-party:github.read",
       "promptContribution": {
         "contributionRef": "tool-prompt-contribution:first-party:github.read",
-        "promptSnippet": "Read a repository directory or UTF-8 file through GitHub's native Contents API.",
+        "promptSnippet": "Read a GitHub repository, issue, or pull request link through the official API.",
         "usageGuidelines": [
-          "Use the repository and path returned by GitHub search when source contents are needed."
+          "Use url for a GitHub link, or repository with optional path and ref for contents. Read the overview first. Follow nextPage for additional discussion, reviews or changed files."
         ]
       }
     }

@@ -192,9 +192,10 @@ export async function consumeProvider(
   deps: AgentLoopDeps,
   signal: AbortSignal,
   controls: Pick<NonNullable<SessionCapabilities['controls']>, 'decode'> | undefined,
+  continuing = false,
 ): Promise<ProviderTurn> {
   return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
-    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls, onEvent)
+    consumeProviderOutput(attempt, toolCodec, runId, deps, signal, onCompleted, controls, onEvent, continuing || (attempt.attempt ?? 1) > 1)
   ));
 }
 
@@ -207,6 +208,7 @@ async function consumeProviderOutput(
   onCompleted: () => void,
   controls: Pick<NonNullable<SessionCapabilities['controls']>, 'decode'> | undefined,
   onEvent: (event: ProviderEvent) => void,
+  replaying: boolean,
 ): Promise<ProviderTurn> {
   const activity = trackProviderActivity(request, deps);
   const truncatedCalls = new TruncatedCallCollector();
@@ -527,6 +529,26 @@ async function consumeProviderOutput(
     ),
   );
   const seenCalls = new Set<string>();
+  if (replaying) {
+    // Compaction can omit a tool result from the model view. Its execution
+    // remains in the journal of this run or a predecessor it continued.
+    const snapshot = await deps.readSnapshot();
+    let sourceRunId = runId;
+    for (let i = snapshot.events.length - 1; i >= 0; i--) {
+      const event = snapshot.events[i]!;
+      if (event.type === 'tool.completed' && event.runId === sourceRunId && event.payload.record.outcome === 'completed') {
+        seenCalls.add(snapshot.state.providerCallFacts[event.callId]!.providerCallId);
+      } else if (event.type === 'run.started' && event.runId === sourceRunId) {
+        if (!event.payload.continuation) break;
+        sourceRunId = event.payload.continuation.runId;
+      }
+    }
+    for (const message of request.messages) {
+      if (message.role === 'tool' && message.toolOutcome === 'completed' && message.providerCallId) {
+        seenCalls.add(message.providerCallId);
+      }
+    }
+  }
   for (const call of [...providerCalls, ...rejectedCalls]) {
     if (!call.providerCallId || seenCalls.has(call.providerCallId)) {
       throw new LoopFailure(

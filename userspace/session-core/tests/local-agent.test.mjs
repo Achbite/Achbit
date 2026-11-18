@@ -6077,6 +6077,154 @@ test('an upstream service error retains its directive and ends without a network
   assert.equal(events.some((event) => event.type === 'tool.requested'), false);
 });
 
+test('a replay consults completed Kernel calls even when the context composer omits their results', async t => {
+  const { createSessionCapabilities } = await import('../dist/local-agent/sessionCapabilities.js');
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:replay-compacted-tool';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const tool = { toolBindingRef: 'tool-binding:read:g1', name: 'fs.read', description: 'Read a file.',
+    inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } },
+    possibleEffects: ['workspaceRead'], availability: 'callable', origin: 'coreBuiltin' };
+  let sends = 0, executions = 0, omitted = false;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    sends++;
+    if (sends === 2) {
+      yield providerEvent(request.requestId, 'failed', { code: 'provider_error', message: 'Busy', diagnostics: {
+        source: 'providerTransport', phase: 'response', category: 'provider', retryable: false, causes: [],
+        providerError: { retryDirective: 'NO_MORE_RETRY' },
+      } });
+      return;
+    }
+    if (sends <= 3) {
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'native:already-done', name: 'fs_read', input: { path: 'sample.txt' } });
+    } else yield providerEvent(request.requestId, 'text.delta', { text: 'Done.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async execute(request) {
+    executions++;
+    return completedExecutionReply(request, { content: 'Result.' });
+  } }), fakeRunPreparation({ tools: [tool] }).port, 'replay-compacted-tool');
+  t.after(() => actor.dispose());
+  const installed = createSessionCapabilities();
+  await actor.replaceCapabilities({ ...installed, context: { ...installed.context, async prepare(...args) {
+    const prepared = await installed.context.prepare(...args);
+    if (sends < 2) return prepared;
+    const messages = prepared.request.messages.filter(message => message.role !== 'tool');
+    omitted ||= messages.length < prepared.request.messages.length;
+    return { ...prepared, request: { ...prepared.request, messages } };
+  } } });
+  await actor.submit(messageCommand(sessionId, 'command:first', 'Read the sample.'));
+  const failed = await waitForProjection(actor, view => view.run?.status === 'failed');
+  const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'provider.continue',
+    sessionId, runId: failed.run.runId, commandId: 'command:restore' });
+  assert.equal(reply.status, 'accepted');
+  const final = await waitForProjection(actor, view => view.run?.runId !== failed.run.runId
+    && ['failed', 'completed', 'indeterminate'].includes(view.run?.status));
+  assert.equal(omitted, true);
+  assert.equal(executions, 1);
+  assert.equal(final.terminalError?.code, 'provider_tool_call_duplicate');
+  assert.equal((await readEvents(journal, sessionId)).filter(event => event.type === 'tool.completed').length, 1);
+});
+
+test('one decision schedules a failed Provider run using its original input across GUI retries', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:user-continued';
+  await createSession(journal, sessionId);
+  const requests = [];
+  let deadline;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    requests.push({ at: Date.now(), request });
+    if (requests.length === 1) {
+      deadline = Date.now() + 200;
+      yield providerEvent(request.requestId, 'failed', { code: 'provider_error', message: 'Busy', diagnostics: {
+        source: 'providerTransport', phase: 'response', category: 'provider', retryable: false, causes: [],
+        providerError: { code: 'server_is_overloaded', retryDirective: 'NO_MORE_RETRY', retryAt: deadline },
+      } });
+    } else {
+      yield providerEvent(request.requestId, 'text.delta', { text: 'Finished.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    }
+  } }, emptyKernel(), fakeRunPreparation().port, 'continued');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:initial', 'Original task.'));
+  const failed = await waitForProjection(actor, view => view.run?.status === 'failed');
+  assert.equal(requests.length, 1);
+  const command = { schemaVersion: 'achbit.command.v3', type: 'provider.continue', sessionId, runId: failed.run.runId };
+  assertRuntimeContract('ConversationCommand', { ...command, commandId: 'command:continue' });
+  for (const id of ['first', 'duplicate']) {
+    const reply = await actor.submit({ ...command, commandId: 'command:' + id });
+    assert.equal(reply.status, 'accepted', JSON.stringify(reply));
+  }
+  const final = await waitForProjection(actor, view => view.run?.status === 'completed');
+  assert.equal(requests.length, 2);
+  assert.ok(requests[1].at >= deadline);
+  assert.equal(final.run.continuation.runId, failed.run.runId);
+  assert.deepEqual(final.messages.filter(m => m.role === 'user').map(m => m.content), ['Original task.']);
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(e => e.type === 'run.started').length, 2);
+  assert.deepEqual(requests[1].request.messages, requests[0].request.messages);
+});
+
+test('continuing an unconfirmed manual Plan retains the plan stage on the successor run', async t => {
+  const sessionId = 'session:continue-manual-plan', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const preparation = fakeRunPreparation({ permissions: { 'agent.permissions.workspaceMutation': 'allow' },
+    tools: [{ name: 'fs.write', toolBindingRef: 'binding:write', description: 'Write a file.',
+      availability: 'callable', origin: 'coreBuiltin', possibleEffects: ['workspaceMutation'],
+      inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } },
+        required: ['path', 'content'] } }] });
+  const requests = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      yield providerEvent(request.requestId, 'failed', { code: 'provider_error', message: 'Busy', diagnostics: {
+        source: 'providerTransport', phase: 'response', category: 'provider', retryable: false, causes: [],
+        providerError: { retryDirective: 'NO_MORE_RETRY' },
+      } });
+      return;
+    }
+    yield providerEvent(request.requestId, 'tool.call', { name: 'plan_publish', callId: 'native:plan',
+      input: { title: 'Review', summary: 'Review the guide.',
+        steps: [{ stepId: 'review', title: 'Review', details: 'Read the guide.' }], mutationManifest: [] } });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), preparation.port, 'manual-plan-continuation');
+  t.after(() => actor.dispose());
+  await actor.submit({ ...messageCommand(sessionId, 'command:plan', 'Review the guide.'), planMode: 'manual' });
+  const failed = await waitForProjection(actor, view => view.run?.status === 'failed');
+  const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'provider.continue', sessionId,
+    commandId: 'command:continue-plan', runId: failed.run.runId });
+  assert.equal(reply.status, 'accepted');
+  await waitUntil(() => requests.length >= 2, 'successor Provider request');
+  assert.ok(!requests[1].tools.some(tool => tool.name === 'fs_write'));
+  assert.ok(requests[1].tools.some(tool => tool.name === 'plan_publish'));
+  await waitForProjection(actor, view => view.run?.waitingReason === 'plan' && view.pendingPlan?.title === 'Review');
+});
+
+test('continuing a stopped focus retries the original summary before the next agent step', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:resume-focus';
+  await createSession(journal, sessionId);
+  const requests = [];
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    requests.push(request);
+    if (requests.length === 2) {
+      yield providerEvent(request.requestId, 'failed', { code: 'provider_error', message: 'Busy', diagnostics: {
+        source: 'providerTransport', phase: 'response', category: 'provider', retryable: false, causes: [],
+        providerError: { retryDirective: 'NO_MORE_RETRY' },
+      } });
+    } else {
+      yield providerEvent(request.requestId, 'assistant.message', { messageId: 'provider:' + requests.length, content: 'Saved work.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    }
+  } }, emptyKernel(), fakeRunPreparation().port, 'focus-recovery');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:seed', 'Seed.'));
+  await waitForProjection(actor, view => view.run?.status === 'completed');
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'context.focus', sessionId, commandId: 'command:focus', task: 'Preserve results.' });
+  const failed = await waitForProjection(actor, view => view.run?.status === 'failed');
+  const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'provider.continue', sessionId, commandId: 'command:continue-focus', runId: failed.run.runId });
+  assert.equal(reply.status, 'accepted', JSON.stringify(reply));
+  await waitForProjection(actor, view => view.run?.status === 'completed');
+  assert.deepEqual(requests.map(request => request.purpose), ['agent', 'contextCompaction', 'contextCompaction', 'agent']);
+  assert.deepEqual(requests[2].messages, requests[1].messages);
+});
+
 test('a Kernel input rejection can request confirmation and resume the same run', async (t) => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:input-confirmation';
   await createSession(journal, sessionId, [workspaceBinding]);

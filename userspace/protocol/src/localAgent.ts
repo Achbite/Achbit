@@ -260,7 +260,7 @@ export interface ErrorDiagnostics {
   isBody?: boolean;
   stopReason?: string;
   archivePath?: string;
-  providerError?: { code?: string; type?: string; status?: string; httpStatus?: number; retryDirective?: string };
+  providerError?: { code?: string; type?: string; status?: string; httpStatus?: number; retryDirective?: string; retryAt?: number };
   secondary?: Array<{ code: string; message: string }>;
 }
 
@@ -526,6 +526,7 @@ export type ConversationCommand =
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.mode.set'; commandId: string; sessionId: string; mode: SessionMode }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.workspaces.set'; commandId: string; sessionId: string; workspaceBindings: WorkspaceBindingDisplay[] }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.subagent-settings.set'; commandId: string; sessionId: string; settings: AgentSettings }
+  | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'provider.continue'; commandId: string; sessionId: string; runId: string }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'run.host.rebind'; commandId: string; sessionId: string; runId: string; expectedHostBinding: HostWindowBinding; hostBinding: HostWindowBinding }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'session.permissions.set'; commandId: string; sessionId: string; patches: UserSettings }
   | { schemaVersion: typeof CONVERSATION_COMMAND_VERSION; type: 'approval.revoke'; commandId: string; sessionId: string; runId: string; authorityId: string }
@@ -1121,6 +1122,7 @@ export type SessionEvent =
         inputMessageId: string;
         workspaceBindings: WorkspaceBindingDisplay[];
         runtimeSnapshot: RunRuntimeSnapshot;
+        continuation?: ProviderContinuation;
         /** New model context only; earlier conversation facts remain in this Session. */
         contextStart?: { historyThroughSequence: number; previousProfileId: string };
       };
@@ -1589,7 +1591,10 @@ export const RUN_PROJECTION_STATUSES = [
 
 export type RunProjectionStatus = typeof RUN_PROJECTION_STATUSES[number];
 
+export interface ProviderContinuation { runId: string; providerRequestId: string; retryAt: number }
+
 export interface RunProjection {
+  continuation?: ProviderContinuation;
   /** Captured mode; a later Session selection does not change this run. */
   mode?: SessionMode;
   runId: string;

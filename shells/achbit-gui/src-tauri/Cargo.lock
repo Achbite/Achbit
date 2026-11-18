@@ -4,12 +4,13 @@ version = 4
 
 [[package]]
 name = "achbit-gui-tauri-shell"
-version = "0.7.82"
+version = "0.7.83"
 dependencies = [
  "achbit-host-connection",
  "achbit-kernel-abi",
  "base64 0.22.1",
  "block2",
+ "dunce",
  "flate2",
  "getrandom 0.3.4",
  "gtk",
@@ -31,6 +32,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "tokio",
+ "webkit2gtk",
  "webview2-com",
  "windows 0.61.3",
  "windows-core 0.61.2",
@@ -39,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "achbit-host-connection"
-version = "0.7.82"
+version = "0.7.83"
 dependencies = [
  "achbit-kernel-abi",
  "base64 0.22.1",
@@ -54,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "achbit-kernel-abi"
-version = "0.7.82"
+version = "0.7.83"
 dependencies = [
  "serde",
  "serde_json",

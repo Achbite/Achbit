@@ -127,3 +127,27 @@ test('confirmed update cancels parent and child before releasing their Actors', 
   const parent = await readEvents(journal, ownerId);
   assert.deepEqual(parent.filter(e => e.type === 'agent.task.completed').map(e => e.payload.result.outcome), ['cancelled']);
 });
+
+test('idle ordinary Actors retire and journal reads keep them cold until the next command', async t => {
+  const journal = new InMemoryCommandJournal();
+  let opened = 0, disposed = 0, sends = 0;
+  const service = new SessionService(journal, { async create() {
+    opened++;
+    return { composition: { kernel: emptyKernel(), runPreparation: fakeRunPreparation().port,
+      provider: { async *stream(request) {
+        sends++;
+        yield providerEvent(request.requestId, 'text.delta', { text: 'complete' });
+        yield providerEvent(request.requestId, 'completed', {});
+      } }, async dispose() { disposed++; } } };
+  } });
+  t.after(() => service.dispose());
+  const sessionId = 'session:ordinary-retirement';
+  await service.createSession({ sessionId, displayTitle: 'Ordinary', workspaceBindings: [] });
+  await waitUntil(() => disposed === 1, 'idle creation released');
+  assert.equal((await service.snapshot(sessionId)).display.creationTitle, 'Ordinary');
+  assert.equal(opened, 1);
+  await service.submit(messageCommand(sessionId, 'command:ordinary-run', 'Complete the work.'));
+  await waitUntil(() => disposed === 2, 'settled Actor released without a subsequent UI read');
+  assert.equal((await service.snapshot(sessionId)).run.status, 'completed');
+  assert.deepEqual([opened, sends], [2, 1]);
+});

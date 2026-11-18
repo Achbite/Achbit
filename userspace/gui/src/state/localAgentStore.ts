@@ -140,6 +140,7 @@ export interface LocalAgentState {
   revokeAuthorization(authorityId: string): Promise<CommandReply>;
   respondApproval(decision: 'allow' | 'deny', authorizationScope?: ShellAuthorizationScope): Promise<CommandReply>;
   respondPlan(response: PlanResponse, submissionId?: string): Promise<CommandReply>;
+  continueProvider(sessionId: string, runId: string): Promise<CommandReply>;
   cancelRun(): Promise<CommandReply>;
   cancelTool(sessionId: string, runId: string, callId: string): Promise<CommandReply>;
   createProject(title: string, workspacePaths?: string[]): Promise<void>;
@@ -801,6 +802,10 @@ const store = create<LocalAgentState>((set, get) => ({
 
   cancelTool: async (sessionId, runId, callId) => submitDecision(set, get, `cancel-tool:${sessionId}:${callId}`, () => ({
     schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'tool.cancel', commandId: nextId('command'), sessionId, runId, callId,
+  })),
+
+  continueProvider: (sessionId, runId) => submitDecision(set, get, `continue-provider:${sessionId}:${runId}`, () => ({
+    schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'provider.continue', commandId: nextId('command'), sessionId, runId,
   })),
 
   cancelRun: async () => {

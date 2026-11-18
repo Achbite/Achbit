@@ -1569,6 +1569,7 @@ pub(crate) fn local_agent_provider_stream_response(
                     json!({"code": "execution_archive_failed", "message": error.to_string()}))));
                 return;
             }
+        let response_advice = crate::provider_transport::RetryAdvice::http(response.headers());
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let failure = match read_provider_http_failure(&mut response, status, &mut archive, profile.api_key.as_deref()).await {
@@ -1658,7 +1659,7 @@ pub(crate) fn local_agent_provider_stream_response(
                             &mut archive,
                             &request_id, provider_attempt_id.as_deref(),
                             "failed",
-                            error.into_failure(profile.api_key.as_deref()),
+                            error.into_failure(profile.api_key.as_deref(), Some(&response_advice)),
                         );
                         yield Ok::<Bytes, Infallible>(Bytes::from(packet));
                         return;
@@ -1671,7 +1672,7 @@ pub(crate) fn local_agent_provider_stream_response(
                             &mut archive,
                             &request_id, provider_attempt_id.as_deref(),
                             "failed",
-                            error.into_failure(profile.api_key.as_deref()),
+                            error.into_failure(profile.api_key.as_deref(), Some(&response_advice)),
                         );
                         yield Ok::<Bytes, Infallible>(Bytes::from(packet));
                         return;
@@ -1818,7 +1819,7 @@ pub(crate) fn local_agent_provider_stream_response(
                     &mut archive,
                     &request_id, provider_attempt_id.as_deref(),
                     "failed",
-                    error.into_failure(profile.api_key.as_deref()),
+                    error.into_failure(profile.api_key.as_deref(), Some(&response_advice)),
                 );
                 yield Ok::<Bytes, Infallible>(Bytes::from(packet));
                 return;
@@ -2009,11 +2010,7 @@ async fn read_provider_http_failure(
     archive: &mut achbit_kernel_runtime::execution_archive::ExecutionArchive,
     secret: Option<&str>,
 ) -> std::io::Result<Value> {
-    let retry_directive = response
-        .headers()
-        .get("x-retry-metadata")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+    let advice = crate::provider_transport::RetryAdvice::http(response.headers());
     let mut body = Vec::new();
     let mut body_error = None;
     while body.len() < PROVIDER_ERROR_BODY_LIMIT {
@@ -2041,7 +2038,7 @@ async fn read_provider_http_failure(
             "limitReached": body.len() == PROVIDER_ERROR_BODY_LIMIT,
         }),
     )?;
-    let mut failure = provider_http_failure(status, &body, retry_directive.as_deref(), secret);
+    let mut failure = provider_http_failure(status, &body, Some(&advice), secret);
     if let Some(error) = body_error {
         failure["diagnostics"]["causes"] = error["diagnostics"]["causes"].clone();
         failure = crate::provider_transport::secondary_failure(
@@ -2059,7 +2056,7 @@ async fn read_provider_http_failure(
 fn provider_http_failure(
     status: u16,
     body: &[u8],
-    retry_directive: Option<&str>,
+    advice: Option<&crate::provider_transport::RetryAdvice>,
     secret: Option<&str>,
 ) -> Value {
     let value = serde_json::from_slice::<Value>(body).ok();
@@ -2088,10 +2085,13 @@ fn provider_http_failure(
         "provider_http_failed",
         &message,
         error.unwrap_or(&Value::Null),
-        retry_directive,
+        None,
         secret,
     );
     failure["diagnostics"]["providerError"]["httpStatus"] = json!(status);
+    advice
+        .unwrap_or(&Default::default())
+        .apply(&mut failure, secret);
     failure
 }
 
@@ -2714,7 +2714,14 @@ mod tests {
     #[test]
     fn upstream_http_errors_keep_details_and_header_directives_without_retrying() {
         let body = br#"{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Try again later.","headers":{"x-retry-metadata":"BODY_DIRECTIVE"}}}"#;
-        let failure = provider_http_failure(503, body, Some("NO_MORE_RETRY"), None);
+        let failure = provider_http_failure(
+            503,
+            body,
+            Some(&crate::provider_transport::RetryAdvice::read(|name| {
+                (name == "x-retry-metadata").then_some("NO_MORE_RETRY")
+            })),
+            None,
+        );
         assert_eq!(
             failure["message"],
             "Provider 返回 HTTP 503：Try again later."

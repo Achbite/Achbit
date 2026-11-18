@@ -386,6 +386,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       }
       next.run = {
         ...lifecycle!.run!,
+        ...(event.payload.continuation ? { continuation: { ...event.payload.continuation } } : {}),
         mode: event.payload.runtimeSnapshot.mode ?? 'full',
         ...(event.payload.runtimeSnapshot.environment.hostBinding
           ? { hostBinding: structuredClone(event.payload.runtimeSnapshot.environment.hostBinding) as unknown as NonNullable<RunProjection['hostBinding']> } : {}),
@@ -1193,7 +1194,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (event.payload.outcome === 'completed' && next.interactions.some(item => item.runId === event.runId && item.status === 'pending')) {
         throw new Error('run_finishing_unanswered_interaction');
       }
-      next.pendingRunSettlements[event.runId] = cloneRunSettlement(event.payload);
+      next.pendingRunSettlements[event.runId] = structuredClone(event.payload);
       next.activePlanRef = null;
       closeInteractions(next, event.runId);
       for (const approval of next.pendingApprovals) {
@@ -1885,14 +1886,6 @@ function cloneApproval(
       logicalTargets: [...approval.preview.logicalTargets],
     },
   };
-}
-
-function cloneRunSettlement(settlement: RunSettlement): RunSettlement {
-  if (settlement.outcome === 'completed') return { ...settlement };
-  if (settlement.outcome === 'failed' || settlement.outcome === 'indeterminate') {
-    return { outcome: settlement.outcome, error: { ...settlement.error } };
-  }
-  return { outcome: 'cancelled' };
 }
 
 function sameRunSettlement(left: RunSettlement, right: RunSettlement): boolean {

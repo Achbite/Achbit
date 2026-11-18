@@ -1,12 +1,10 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
-import { parseLocalTarget, bindLocalTarget, resolveLocalTargets, type ResolvedLocalTarget, type SourcePosition } from './resourceLinks';
-import { ResourceLinkChoices } from './ResourceLinkChoices';
+import { parseLocalTarget, type SourcePosition } from './resourceLinks';
+import { ConversationBodyLinkScope, useConversationBodyLinks } from './useConversationBodyLinks';
 import React, { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MessageFeedback, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useConversationHost } from './ConversationHost';
-import { workspaceResourceLink } from './documentResources';
-import { requestReader } from './readerState';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { PresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -24,12 +22,12 @@ import PlanCard from './PlanCard';
 import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
 import { conversationRounds, type ProjectionItem, type AssistantDraftItem } from './conversationItems';
 import type { ConversationViewport } from './useConversationViewport';
-import { formatBytes } from './conversationFormatting';
 import { ConversationNavigation } from './ConversationNavigation';
 import { conversationNavigation } from './conversationWindow';
 import { ConversationLayoutCache, ConversationVirtualizer } from './conversationVirtualizer';
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
+import { MessageAttachments } from './MessageAttachments';
 import { RunFailureDetails, StoppedRunStatus, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
 import { UiEventStack } from './UiEventStack';
 import { InteractionCard } from './InteractionCard';
@@ -47,6 +45,8 @@ interface ConversationTranscriptProps {
   automaticReview?: React.ReactNode;
   foregroundInteractionId?: string | null;
   onFocusInteraction?: () => void;
+  readInteractionDraft?: (interactionId: string) => string;
+  onInteractionDraftChange?: (interactionId: string, text: string) => void;
   displaySettledRunIds: Set<string>;
   onDisplayed(identity: string, text: string): void;
   projection: SessionProjection | null;
@@ -70,6 +70,8 @@ export function ConversationTranscript({
   automaticReview,
   foregroundInteractionId,
   onFocusInteraction,
+  readInteractionDraft,
+  onInteractionDraftChange,
   displaySettledRunIds,
   onDisplayed,
   loading,
@@ -110,15 +112,12 @@ export function ConversationTranscript({
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const pathMenuRef = useRef<HTMLDivElement>(null);
   const pathTriggerRef = useRef<HTMLAnchorElement>(null);
-  const linkRequest = useRef(0);
-  const [linkChoices, setLinkChoices] = useState<{ sessionId: string; request: number; targets: ResolvedLocalTarget[] } | null>(null);
+  const bodyLinks = useConversationBodyLinks(projection, language, setUiActionError, true);
   const currentSessionRef = useRef({ sessionId: projection?.sessionId });
   if (currentSessionRef.current.sessionId !== projection?.sessionId) currentSessionRef.current = { sessionId: projection?.sessionId };
   useLayoutEffect(() => {
     setCopyFeedback(null);
     setPathMenu(null);
-    setLinkChoices(null);
-    linkRequest.current += 1;
   }, [projection?.sessionId]);
   useEffect(() => {
     if (!pathMenu) return;
@@ -166,72 +165,6 @@ export function ConversationTranscript({
     }
   };
 
-  const openTranscriptLink = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.defaultPrevented || (event.button !== 0 && event.button !== 1)) return;
-    const anchor = event.target instanceof Element
-      ? event.target.closest<HTMLAnchorElement>('a[href]')
-      : null;
-    if (!anchor || !event.currentTarget.contains(anchor)) return;
-    const href = anchor.getAttribute('href') ?? '';
-    if (href.startsWith('artifact://')) {
-      event.preventDefault();
-      const artifact = projection?.artifacts.find(item => item.artifactId === href.slice('artifact://'.length));
-      if (!artifact) { setUiActionError(t(language, 'reader.artifactMissing')); return; }
-      if (artifact.contentMode === 'fixed') requestReader(artifact.sessionId, { kind: 'artifact', artifact });
-      else if (artifact.uri && /^https?:\/\//i.test(artifact.uri)) {
-        void host.openExternalLink(artifact.uri).catch(reason => setUiActionError(String(reason)));
-      } else if (artifact.workspaceId && artifact.logicalPath) {
-        void openWorkspaceResource(artifact.workspaceId, artifact.logicalPath).catch(reason => setUiActionError(String(reason)));
-      }
-      return;
-    }
-    const resource = workspaceResourceLink(href);
-    if (resource) {
-      event.preventDefault();
-      void openWorkspaceResource(resource.workspaceId, resource.logicalPath).catch(reason=>setUiActionError(String(reason)));
-      return;
-    }
-    const localTarget=parseLocalTarget(href);
-    if(localTarget&&projection) {
-      event.preventDefault();
-      const requestedView = currentSessionRef.current;
-      const request = ++linkRequest.current;
-      const current = () => currentSessionRef.current === requestedView && linkRequest.current === request;
-      setLinkChoices(null);
-      void (async () => {
-        const ids = [...new Set([...projection.workspaceBindings.map(binding => binding.workspaceId),
-          ...projection.messages.flatMap(message => message.filesystemReferences.map(reference => reference.workspaceId))])];
-        const roots = await Promise.all(ids.map(async workspaceId => ({ workspaceId,
-          root: (await host.resolveResource(projection.sessionId, workspaceId, '.')).path })));
-        if (!current()) return;
-        if (localTarget.absolute && !bindLocalTarget(localTarget, roots)) {
-          if (!host.locatePath) throw new Error('Manual file location requires the desktop Host.');
-          await host.locatePath(localTarget.path);
-        } else {
-          const targets = await resolveLocalTargets(localTarget, roots,
-            (workspaceId, path) => host.resolveResource(projection.sessionId, workspaceId, path));
-          if (!current()) return;
-          if (targets.length > 1) setLinkChoices({ sessionId: projection.sessionId, request, targets });
-          else await openWorkspaceResource(targets[0].workspaceId, targets[0].logicalPath, targets[0]);
-        }
-        if (current()) setUiActionError(null);
-      })().catch(reason => {
-        if (current()) setUiActionError(`${t(language, 'agent.link.unableToOpen')}\n${localTarget.path}\n${reason instanceof Error ? reason.message : String(reason)}`);
-      });
-      return;
-    }
-    if (!/^https?:\/\//i.test(href)) return;
-    event.preventDefault();
-    const requestedView = currentSessionRef.current;
-    void host.openExternalLink(href).then(() => {
-      if (currentSessionRef.current !== requestedView) return;
-      setUiActionError(null);
-    }).catch((error: unknown) => {
-      if (currentSessionRef.current !== requestedView) return;
-      setUiActionError(error instanceof Error ? error.message : String(error));
-    });
-  };
-
   const renderItem = (item: ProjectionItem): React.ReactNode => item.type === 'message' ? (
         <article
           className={`local-agent__message local-agent__message--${item.value.role}`}
@@ -252,25 +185,9 @@ export function ConversationTranscript({
             )}
             <SourceReferences references={item.value.sourceReferences} language={language} />
             {item.value.filesystemReferences.length > 0 && (
-              <div className="local-agent__message-attachments">
-                {item.value.filesystemReferences.map((reference) => (
-                  <button type="button" {...referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
-                    onClick={() => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }}
-                    className={reference.kind === 'directory'
-                      ? 'local-agent__message-directory'
-                      : undefined}
-                    key={reference.referenceId}
-                  >
-                    <AchbitShellIcon name={reference.kind === 'directory'
-                      ? 'folder'
-                      : 'artifact'} />
-                    {reference.displayName}
-                    {reference.kind === 'file' && (
-                      <small>{reference.source === 'pastedText' ? 'TXT · ' : ''}{formatBytes(reference.byteLength, language)}</small>
-                    )}
-                  </button>
-                ))}
-              </div>
+              <MessageAttachments sessionId={projection!.sessionId} references={item.value.filesystemReferences} language={language}
+                identity={reference => referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
+                onOpen={openWorkspaceResource} onError={setUiActionError} />
             )}
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
@@ -304,7 +221,8 @@ export function ConversationTranscript({
       ) : item.type === 'interaction' ? (
         <InteractionCard interaction={item.value} language={language}
           answerInComposer={item.value.interactionId === foregroundInteractionId}
-          onFocusComposer={onFocusInteraction} onToggle={onPlanToggle} />
+          onFocusComposer={onFocusInteraction} draft={readInteractionDraft?.(item.value.interactionId)}
+          onDraftChange={onInteractionDraftChange} />
       ) : (
         <ToolActivityGroup
           activities={item.values}
@@ -375,26 +293,15 @@ export function ConversationTranscript({
   }, [virtualizer, viewport.bodyRef]);
 
   return (
-    <PreviewArtifactsScope.Provider value={projection}>
-    {linkChoices && linkChoices.sessionId === projection?.sessionId && <ResourceLinkChoices
-      language={language} targets={linkChoices.targets} onClose={() => setLinkChoices(null)}
-      onSelect={target => {
-        const selection = linkChoices;
-        const requestedView = currentSessionRef.current;
-        setLinkChoices(null);
-        if (selection.request !== linkRequest.current) return;
-        void openWorkspaceResource(target.workspaceId, target.logicalPath, target).catch(reason => {
-          if (currentSessionRef.current === requestedView && linkRequest.current === selection.request)
-            setUiActionError(`${t(language, 'agent.link.unableToOpen')}\n${target.path}\n${reason instanceof Error ? reason.message : String(reason)}`);
-        });
-      }} />}
+    <ConversationBodyLinkScope.Provider value={bodyLinks.open}><PreviewArtifactsScope.Provider value={projection}>
+    {bodyLinks.selection}
     <ConversationNavigation key={sessionKey} sessionId={sessionKey} entries={navigation} viewport={viewport} language={language}
       onNavigate={(entry) => viewport.scrollToAnchor(entry.key)} />
     <div
       ref={transcriptRef}
       className="local-agent__transcript"
-      onClick={openTranscriptLink}
-      onAuxClick={openTranscriptLink}
+      onClick={bodyLinks.open}
+      onAuxClick={bodyLinks.open}
       onContextMenu={(event) => {
         const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
         const target = anchor && parseLocalTarget(anchor.getAttribute('href') ?? '');
@@ -460,7 +367,7 @@ export function ConversationTranscript({
         onOpenReference={reference => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }} />}
       <div ref={messageEndRef} />
     </div>
-    </PreviewArtifactsScope.Provider>
+    </PreviewArtifactsScope.Provider></ConversationBodyLinkScope.Provider>
   );
 }
 

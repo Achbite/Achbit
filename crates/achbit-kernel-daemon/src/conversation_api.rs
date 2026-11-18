@@ -347,7 +347,7 @@ pub(crate) async fn conversation_resource_read(
             )
             .into_response();
         }
-        return match read_image_resource(&target) {
+        return match read_reader_image(&target) {
             Ok((media_type, bytes)) => {
                 ([(axum::http::header::CONTENT_TYPE, media_type)], bytes).into_response()
             }
@@ -504,27 +504,60 @@ fn read_document_resource(path: &StdPath) -> Result<(&'static str, Vec<u8>), Str
     Ok((media_type, bytes))
 }
 
-// Image presentation uses the same Session/workspace binding check as text.
-// The byte cap applies while reading, including if the file grows concurrently.
-pub(crate) fn read_image_resource(path: &StdPath) -> Result<(&'static str, Vec<u8>), String> {
-    const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+// The read cap also applies to files that grow after opening.
+fn read_image_bytes(path: &StdPath) -> Result<Vec<u8>, String> {
+    use achbit_kernel_tools::file_content::MAX_IMAGE_INPUT_BYTES;
+
     let mut bytes = Vec::new();
     fs::File::open(path)
         .map_err(|error| error.to_string())?
-        .take(MAX_IMAGE_BYTES + 1)
+        .take(MAX_IMAGE_INPUT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
-    let media = image_media_type(&bytes)?;
+    check_image_size(&bytes)?;
+    Ok(bytes)
+}
+
+fn read_reader_image(path: &StdPath) -> Result<(&'static str, Vec<u8>), String> {
+    let bytes = read_image_bytes(path)?;
+    let media =
+        if let Some(media) = achbit_kernel_tools::file_content::image_type_from_header(&bytes) {
+            media
+        } else if bytes.starts_with(b"BM") {
+            "image/bmp"
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+        {
+            // SVG is XML and has no fixed magic bytes. The Reader's image element
+            // handles its encoding and reports a decode error for invalid documents.
+            "image/svg+xml"
+        } else {
+            return Err("当前资源不是支持的图片。".into());
+        };
     Ok((media, bytes))
 }
 
-pub(crate) fn image_media_type(bytes: &[u8]) -> Result<&'static str, String> {
-    use achbit_kernel_tools::file_content::{image_type_from_header, MAX_IMAGE_INPUT_BYTES};
-    if bytes.len() > MAX_IMAGE_INPUT_BYTES {
+pub(crate) fn read_image_resource(path: &StdPath) -> Result<(&'static str, Vec<u8>), String> {
+    let bytes = read_image_bytes(path)?;
+    Ok((provider_image_type(&bytes)?, bytes))
+}
+
+fn check_image_size(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > achbit_kernel_tools::file_content::MAX_IMAGE_INPUT_BYTES {
         return Err("图片超过 8 MiB 读取限额。".into());
     }
-    image_type_from_header(bytes)
+    Ok(())
+}
+
+fn provider_image_type(bytes: &[u8]) -> Result<&'static str, String> {
+    achbit_kernel_tools::file_content::image_type_from_header(bytes)
         .ok_or_else(|| "当前资源不是支持的 PNG、JPEG、GIF 或 WebP 图片。".into())
+}
+
+pub(crate) fn image_media_type(bytes: &[u8]) -> Result<&'static str, String> {
+    check_image_size(bytes)?;
+    provider_image_type(bytes)
 }
 
 pub(crate) fn resolve_provider_images(
@@ -3668,6 +3701,30 @@ mod tests {
     impl Drop for TemporaryTree {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn reader_serves_display_images_without_changing_provider_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>"#;
+        let mut bmp = vec![0; 58]; // One padded 24-bit pixel.
+        bmp[..2].copy_from_slice(b"BM");
+        bmp[2] = 58;
+        bmp[10] = 54;
+        bmp[14] = 40;
+        bmp[18] = 1;
+        bmp[22] = 1;
+        bmp[26] = 1;
+        bmp[28] = 24;
+        for (name, bytes, media) in [
+            ("图像.SVG", svg.as_slice(), "image/svg+xml"),
+            ("图像.bmp", bmp.as_slice(), "image/bmp"),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(read_reader_image(&path).unwrap(), (media, bytes.to_vec()));
+            assert!(read_image_resource(&path).is_err());
         }
     }
 

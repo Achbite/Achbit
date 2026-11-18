@@ -7,6 +7,9 @@ export interface NativePage extends NativeHostBinding {
   previewId: string; url: string; status: string; visible: boolean; serviceOwner: string;
   kind:string; serviceId?:string;
   viewport: BrowserViewport;
+  navigation: { title: string; canGoBack: boolean; canGoForward: boolean };
+  zoom: number;
+  loadError: string | null;
   control?: { activeRuns: string[] };
   surface: { generation: number; sequence: number; activationId: number; activationAck: number; reason: string; bounds: [number, number, number, number] | null };
 }
@@ -14,15 +17,25 @@ export interface NativePage extends NativeHostBinding {
 export function nativeNavigationInput(address: string): { url: string } | { filePath: string } {
   const value = address.trim();
   if (value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)) return { filePath: value };
+  if (!value) throw new Error('browser_address_empty');
+  let candidate = value;
+  if (!/^(?:https?|file):/i.test(value)) {
+    const host = /^(localhost(?:\.[\w-]+)*|(?:[\w-]+\.)+[\w-]+|\[[\da-f:]+\]|[\w-]+:\d+)(?::\d+)?(?:[/?#].*)?$/i.exec(value);
+    if (!host || /\s/.test(value)) throw new Error(/^[a-z][\w+.-]*:/i.test(value) ? 'browser_address_scheme' : 'browser_address_invalid');
+    const authority = value.split(/[/?#]/, 1)[0];
+    const local = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])$/i.test(authority) || /:\d+$/.test(authority);
+    candidate = `${local ? 'http' : 'https'}://${value}`;
+  }
   let url: URL;
-  try { url = new URL(value); }
-  catch { throw new Error('请输入完整的网页地址，或选择本地 HTML 文件。'); }
+  try { url = new URL(candidate); }
+  catch { throw new Error('browser_address_invalid'); }
   if (url.protocol === 'file:' && (!url.hostname || url.hostname === 'localhost')) {
-    const path = decodeURIComponent(url.pathname);
+    let path: string;
+    try { path = decodeURIComponent(url.pathname); } catch { throw new Error('browser_address_invalid'); }
     return { filePath: /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path };
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:')
-    throw new Error('支持 HTTP、HTTPS 网页和本地 HTML 文件。');
+    throw new Error('browser_address_scheme');
   return { url: url.href };
 }
 export function hasNativeBrowser(): boolean {
@@ -69,6 +82,12 @@ export async function listenNativeActivation(listener: (page: NativePage) => voi
   if (!hasNativeBrowser()) return () => {};
   if (!window.__TAURI__?.event) throw new Error('Native browser page events are unavailable.');
   return window.__TAURI__.event.listen<NativePage>('achbit:browser-activate', ({ payload }) => listener(payload));
+}
+export interface NativeBrowserChromeEvent { previewId: string; action?: string; error?: string | null }
+export async function listenNativeBrowserChrome(listener: (event: NativeBrowserChromeEvent) => void): Promise<() => void> {
+  if (!hasNativeBrowser()) return () => {};
+  if (!window.__TAURI__?.event) throw new Error('Native browser page events are unavailable.');
+  return window.__TAURI__.event.listen<NativeBrowserChromeEvent>('achbit:browser-chrome', ({ payload }) => listener(payload));
 }
 export async function nativeHostBinding(): Promise<NativeHostBinding | undefined> {
   if (!hasNativeBrowser()) return undefined;

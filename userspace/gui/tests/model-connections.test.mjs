@@ -35,6 +35,23 @@ test('foreground sound is a discoverable persisted GUI preference and defaults t
 });
 
 
+test('the connection picker starts without a selection or write and cancellation does not save', async t => {
+  const { default: Picker } = await loadGuiModule(t, '/src/components/settings-center/model-services/ModelPickerDialog.tsx');
+  const models = ['fast', 'large'].map(model => ({ name: model.toUpperCase(), model, contextWindowTokens: 128_000 }));
+  let tree, closed = 0, saved = 0;
+  function Capture() { tree = Picker({ connection: { id: 'connection:catalog', name: 'Provider' },
+    adapter: { name: 'Provider', protocols: ['responses'], models }, onClose() { closed++; }, async onSaved() { saved++; } }); return null; }
+  renderToStaticMarkup(createElement(Capture));
+  for (const model of models) {
+    const row = findReactElement(tree, node => node.props.role === 'option' && JSON.parse(node.props['data-ui-target']).model === model.model);
+    assert.equal(row.props['aria-selected'], false); assert.equal(row.props.tabIndex, model === models[0] ? 0 : -1);
+  }
+  const confirm = findReactElement(tree, node => node.props['data-ui-action'] === 'settings.model-picker.add');
+  assert.equal(confirm.props.disabled, true); confirm.props.onClick();
+  findReactElement(tree, node => node.props['data-ui-action'] === 'settings.model-picker.cancel').props.onClick();
+  assert.deepEqual([closed, saved], [1, 0]);
+});
+
 test('adding a model applies its complete preset without changing identity or a custom display name', async t => {
   const { selectNewModelPreset } = await loadGuiModule(t, '/src/components/settings-center/model-services/ModelEditor.tsx');
   const large = { name: 'Kimi K3.1 Pro', model: 'k3.1-pro', kind: 'responses', providerFlavor: 'moonshot',

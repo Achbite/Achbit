@@ -450,6 +450,8 @@ pub(crate) struct LocalAgentKernel {
     prepared_file_calls: Arc<Mutex<HashMap<String, PreparedFileCall>>>,
     pub(crate) jobs: crate::managed_processes::Jobs,
     pub(crate) desktop: Arc<crate::desktop_tools::DesktopHost>,
+    #[cfg(test)]
+    _fixture_output: Option<Arc<tempfile::TempDir>>,
 }
 
 struct KernelClock {
@@ -627,6 +629,8 @@ impl LocalAgentKernel {
             prepared_file_calls: Arc::default(),
             jobs: Default::default(),
             desktop: Arc::new(crate::desktop_tools::DesktopHost::unbound()),
+            #[cfg(test)]
+            _fixture_output: None,
         })
     }
 
@@ -4234,8 +4238,12 @@ mod attempt_control_tests {
             LocalAgentKernel::open(Path::new(":memory:"), journal.clone(), resolver).unwrap();
         // An in-memory record store has no sibling directory; ":memory:.outputs" is
         // a relative path on Unix and an invalid file name on Windows.
-        kernel.output_root =
-            std::env::temp_dir().join(random_id("kernel-test-outputs").unwrap().replace(':', "-"));
+        let output = tempfile::Builder::new()
+            .prefix("kernel-test-outputs-")
+            .tempdir()
+            .unwrap();
+        kernel.output_root = output.path().to_owned();
+        kernel._fixture_output = Some(Arc::new(output));
         let generation = LocalAgentKernel::prepare_generation(
             "extension:test",
             config,

@@ -1,3 +1,4 @@
+use achbit_kernel_abi::{valid_logical_path, valid_media_type, valid_plugin_uri};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -146,6 +147,7 @@ pub struct ProviderErrorDetails {
     pub status: Option<String>,
     pub http_status: Option<u16>,
     pub retry_directive: Option<String>,
+    pub retry_at: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1578,18 +1580,6 @@ pub(crate) fn invalid_filesystem_references(references: &[FilesystemReference]) 
     })
 }
 
-fn valid_logical_path(value: &str) -> bool {
-    if value.is_empty() || value.len() > 4_096 || value.contains('\0') || value.contains('\\') {
-        return false;
-    }
-    value == "."
-        || !value.starts_with('/')
-            && !value.ends_with('/')
-            && value
-                .split('/')
-                .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."))
-}
-
 fn invalid_context_tools(tools: &[ContextCompositionTool]) -> bool {
     let mut item_ids = HashSet::new();
     let mut canonical_names = HashSet::new();
@@ -2961,37 +2951,6 @@ fn is_run_status(status: &str) -> bool {
     )
 }
 
-fn valid_plugin_uri(value: &str) -> bool {
-    let Some(identity) = value.strip_prefix("plugin://") else {
-        return false;
-    };
-    let Some((name, source)) = identity.split_once('@') else {
-        return false;
-    };
-    !name.is_empty()
-        && !source.is_empty()
-        && !name.contains('@')
-        && name.chars().chain(source.chars()).all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
-        })
-}
-
-fn valid_media_type(value: &str) -> bool {
-    let Some((kind, subtype)) = value.split_once('/') else {
-        return false;
-    };
-    !kind.is_empty()
-        && !subtype.is_empty()
-        && value.len() <= 128
-        && kind.chars().chain(subtype.chars()).all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(
-                    character,
-                    '!' | '#' | '$' | '&' | '^' | '_' | '.' | '+' | '-'
-                )
-        })
-}
-
 fn invalid_durations(values: &[Option<f64>]) -> bool {
     values
         .iter()
@@ -4230,13 +4189,14 @@ mod provider_diagnostic_tests {
             "diagnostics":{"source":"providerTransport", "phase":"response",
                 "category":"provider", "retryable":false, "causes":[],
                 "providerError":{"code":"server_is_overloaded", "type":"service_unavailable_error",
-                    "retryDirective":"NO_MORE_RETRY"}},
+                    "retryDirective":"NO_MORE_RETRY", "retryAt":1_795_000_000_000u64}},
         }))
         .unwrap();
         let details = error.diagnostics.unwrap().provider_error.unwrap();
         assert_eq!(details.code.as_deref(), Some("server_is_overloaded"));
         assert_eq!(details.r#type.as_deref(), Some("service_unavailable_error"));
         assert_eq!(details.retry_directive.as_deref(), Some("NO_MORE_RETRY"));
+        assert_eq!(details.retry_at, Some(1_795_000_000_000));
     }
 
     #[test]

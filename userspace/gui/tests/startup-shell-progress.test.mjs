@@ -220,8 +220,15 @@ test('catalog loading and failure never masquerade as an empty history', async t
   failed = false;
   await store.getState().refreshCatalog();
   assert.equal(store.getState().catalogStatus, 'ready');
-  assert.match(render(), /No projects yet/);
-  assert.match(render(), /No chats yet/);
+  const ready = render();
+  assert.doesNotMatch(ready, /No projects yet|No chats yet|Loading conversations|Unable to load conversations/);
+  assert.match(ready, />Projects</);
+  assert.match(ready, />Chats</);
+  for (const name of ['New project', 'New chat']) {
+    const actions = [...ready.matchAll(/<button\b[^>]*>/g)].map(match => match[0]);
+    assert.ok(actions.some(tag => tag.includes(`aria-label="${name}"`) && !/\bdisabled=/.test(tag)),
+      `the empty sidebar keeps the ${name} action available`);
+  }
 });
 
 test('plugin discovery failure does not invalidate a successfully loaded catalog', async t => {

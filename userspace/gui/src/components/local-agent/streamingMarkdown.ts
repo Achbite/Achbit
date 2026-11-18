@@ -5,6 +5,7 @@ import remarkMath from 'remark-math';
 import remarkRehype from 'remark-rehype';
 import rehypeKatex from 'rehype-katex';
 import { defaultUrlTransform } from 'react-markdown';
+import { parseLocalTarget } from './resourceLinks';
 import type { Root as MarkdownRoot, Nodes as MarkdownNode } from 'mdast';
 import type { Root, RootContent } from 'hast';
 
@@ -67,8 +68,11 @@ function renderTree(root: MarkdownRoot): Root {
     if (node.type === 'element') {
       for (const name of ['href', 'src']) {
         const value = node.properties[name];
-        if (typeof value === 'string') node.properties[name] = /^(?:workspace:\/\/[^/]+\/.+|artifact:\/\/.+)/.test(value)
-          ? value : defaultUrlTransform(value);
+        if (typeof value !== 'string' || /^(?:workspace:\/\/[^/]+\/.+|artifact:\/\/.+)/.test(value)) continue;
+        const url = defaultUrlTransform(value);
+        const target = !url && node.tagName === 'a' && name === 'href' ? parseLocalTarget(value) : null;
+        // A relative filename followed by a line number looks like a URL scheme.
+        node.properties[name] = target ? (target.absolute ? value : './' + value) : url;
       }
     }
     if ('children' in node) node.children.forEach(clean);

@@ -96,7 +96,8 @@ Present materials that need user review as clickable links and register them in 
 
 Keep simple explanations inline. Routine source references can be file links without a separate document. Keep temporary scripts, raw logs and observation images intermediate unless selected for review; summarize relevant evidence in the delivered report.` },
   { id: 'achbit.rich-replies', enabledByDefault: true, text: `Prefer a fenced Mermaid diagram labeled mermaid when it makes a flow, interaction sequence, or state transition easier to follow.
-Prefer a Markdown table when comparing items across the same fields. Use prose or a short list when clearer.` },
+Prefer a Markdown table when comparing items across the same fields. Use prose or a short list when clearer.
+Standalone components can be previewed interactively within a reply, alongside the explanation. Frontend Design describes the presentation options and preview reference format.` },
   { id: 'achbit.product-operations', enabledByDefault: true, environmentInstructions: productDocumentation, toolGuidance: productShellGuidance },
   { id: 'achbit.conversation-title', enabledByDefault: true },
 ];

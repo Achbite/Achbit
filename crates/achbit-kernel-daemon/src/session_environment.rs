@@ -116,7 +116,7 @@ pub(crate) fn prepare(
 
 /// The macOS GUI does not inherit the user's terminal startup environment.
 /// Capture its PATH once per Host refresh, then share it between discovery and execution.
-fn host_execution_path(_revision: u64) -> Result<std::ffi::OsString, String> {
+pub(crate) fn host_execution_path(_revision: u64) -> Result<std::ffi::OsString, String> {
     #[cfg(target_os = "macos")]
     {
         use std::sync::{Mutex, OnceLock};

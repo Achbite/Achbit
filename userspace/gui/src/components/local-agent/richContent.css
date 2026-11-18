@@ -96,7 +96,8 @@
 .conversation-process > summary:hover, .conversation-reasoning > summary:hover { color: var(--ac-foreground); background: var(--ac-surface-hover); }
 
 .conversation-process > summary, .conversation-reasoning > summary { display: flex; align-items: center; gap: 8px; list-style: none; width: fit-content; max-width: 100%; color: var(--ac-muted); }
-.conversation-process > summary::-webkit-details-marker, .conversation-reasoning > summary::-webkit-details-marker { display: none; }
+.conversation-reasoning > summary { --ac-disclosure-icon-size: 14px; }
+.conversation-process > summary::-webkit-details-marker { display: none; }
 .conversation-process > summary > svg { width: 16px; height: 16px; flex: none; }
 .conversation-disclosure-chevron { display: inline-block; flex: none; color: var(--ac-muted); transition: transform var(--ac-motion-reveal) var(--ac-ease-out); }
 .local-agent .conversation-process-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 30px; margin: 4px 0 16px; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--ac-muted); font: inherit; font-size: var(--ac-font-label); cursor: pointer; }

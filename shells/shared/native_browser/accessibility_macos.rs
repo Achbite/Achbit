@@ -8,7 +8,8 @@ use std::time::Duration;
 async fn remote_children(view: tauri::Webview) -> Result<usize, String> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
-        let root = platform.inner().cast::<AnyObject>();
+        let webview = super::macos_webview(platform);
+        let root = objc2::rc::Retained::as_ptr(&webview).cast::<AnyObject>();
         let name = NSString::from_str("AXChildren");
         // This public attribute request enables accessibility in WebContent.
         // Cocoa returns remote proxies, not that process's traversed AX tree.

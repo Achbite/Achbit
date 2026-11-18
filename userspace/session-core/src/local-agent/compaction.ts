@@ -1,3 +1,5 @@
+import type { NewSessionEvent } from '@achbit/protocol';
+import type { LoopSnapshot } from './loopTypes.js';
 import { estimateContextInput } from './contextBudget.js';
 import type {
   ContextCompositionReceipt,
@@ -65,6 +67,26 @@ export function prepareContextCompaction(input: {
   });
   signal?.throwIfAborted();
   return { request, receipt };
+}
+
+/** Resume a known failed summary at its original history boundary and focus. */
+export function continueCompaction(snapshot: LoopSnapshot, sourceRequestId: string, runId: string,
+  nextId: (kind: string) => string): NewSessionEvent[] {
+  if (snapshot.state.providerTurns[sourceRequestId]?.purpose !== 'contextCompaction'
+    || snapshot.events.some(event => event.type === 'context.compaction.requested' && event.runId === runId)) return [];
+  const source = snapshot.events.find(event => event.type === 'context.compaction.requested'
+    && event.payload.providerRequestId === sourceRequestId);
+  if (source?.type !== 'context.compaction.requested') throw new Error('context_compaction_request_missing');
+  const compactionId = nextId('compaction'), sessionId = snapshot.state.sessionId;
+  const events: NewSessionEvent[] = [];
+  if (source.payload.trigger === 'agent') {
+    const previous = snapshot.events.find(event => event.type === 'context.compaction.scheduled'
+      && event.payload.compactionId === source.payload.compactionId);
+    if (previous?.type !== 'context.compaction.scheduled') throw new Error('context_compaction_schedule_missing');
+    events.push({ type: 'context.compaction.scheduled', sessionId, payload: { ...previous.payload, compactionId } });
+  }
+  return [...events, { type: 'context.compaction.requested', sessionId, runId,
+    payload: { ...source.payload, compactionId, providerRequestId: nextId('provider-request') } }];
 }
 
 export function pendingContextCompaction(

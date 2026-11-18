@@ -8,6 +8,16 @@ import {
   providerEvent, readEvents, waitForProjection, workspaceBinding,
 } from './local-agent-fixtures.mjs';
 
+
+test('ordinary reader links respect scope, local execution policy and official origins', async () => {
+  const { linkedReaderUris } = await import('../dist/local-agent/pluginActivation.js');
+  const text = '阅读 https://github.com/team/r/pull/12，见 [论文](https://arxiv.org/pdf/hep-th/9711200v3.pdf)。 https://github.com/team/r';
+  assert.deepEqual(linkedReaderUris(text, {}), ['plugin://github@first-party', 'plugin://arxiv@first-party']);
+  assert.deepEqual(linkedReaderUris('https://github.com.example.org/team/r https://github.com@other.org/team/r https://arxiv.org/nosuch/1706.03762', {}), []);
+  for (const recipe of [{ tools: { plugins: false } }, { permissionPolicy: { id: 'workspace-only' } },
+    { workspaceSandbox: { requireIsolatedProcesses: true } }]) assert.deepEqual(linkedReaderUris(text, recipe), []);
+});
+
 test('activated plugins survive completed Loops and journal reload, merge explicit selection, and withdraw when disabled', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:plugin-continuity';
   await createSession(journal, sessionId, [workspaceBinding]);

@@ -1,14 +1,54 @@
 .interactive-preview { min-width: 0; max-width: 100%; overflow: hidden; border: 1px solid var(--ac-border); border-radius: 12px; background: var(--ac-surface); }
-.interactive-preview--inline { margin-block: 16px; }
+.interactive-preview--inline {
+  display: grid; box-sizing: border-box; width: 100%;
+  grid-template-columns: minmax(0, 1fr) min(100%, var(--preview-ideal-width, 100%)) minmax(0, 1fr);
+  margin-block: 4px 16px; overflow: visible; border: 0; background: transparent;
+  --preview-controls-height: var(--ac-control-size, 30px);
+  --preview-room: max(160px, calc(82vh - var(--preview-controls-height) - 12px));
+}
+.interactive-preview--inline > .interactive-preview__body {
+  grid-column: 2; grid-row: 2; min-width: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--ac-border) 60%, transparent);
+  border-radius: var(--ac-radius-sm, 6px); background: var(--ac-surface);
+}
+.interactive-preview--inline:is(:focus-within, [data-frame-focused]) > .interactive-preview__body { border-color: var(--ac-border); }
+/* Keep host actions in flow above the framed document, including when More is open. */
+.interactive-preview__controls {
+  grid-column: 1 / 3; grid-row: 1; justify-self: end; max-width: 100%;
+  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px;
+  min-height: var(--preview-controls-height);
+}
+.interactive-preview__options:not([hidden]) { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px; }
+.interactive-preview--inline:not(:focus-within, [data-frame-focused]) > .interactive-preview__controls { visibility: hidden; }
+.interactive-preview--inline .interactive-preview__status { min-height: 36px; }
+.interactive-preview--reader > .interactive-preview__body { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+@container conversation (min-height: 1px) {
+  .interactive-preview--inline { --preview-room: max(160px, calc(100cqh - var(--preview-controls-height) - 12px)); }
+}
+/* Center the content track in the conversation. Wide pages can use space outside the prose column. */
+.interactive-preview--inline[data-viewport-page] { --preview-ideal-width: 1280px; }
+@container conversation (min-width: 828px) {
+  .local-agent__message--assistant .conversation-markdown > .interactive-preview--inline {
+    --preview-width: min(1280px, calc(100cqi - 48px));
+    width: var(--preview-width); max-width: none;
+    margin-inline: calc((100% - var(--preview-width)) / 2);
+  }
+}
 .interactive-preview--pending { min-height: 160px; padding: 16px; color: var(--ac-muted); }
 .interactive-preview__toolbar { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--ac-border); }
 .interactive-preview__toolbar strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ac-font-label); font-weight: 500; }
-.interactive-preview__frame { display: block; width: 100%; border: 0; background: white; }
-.interactive-preview__frame[hidden], .interactive-preview__source[hidden] { display: none; }
+.interactive-preview__surface { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.interactive-preview--inline .interactive-preview__surface[data-preview-layout='flow'] { height: min(var(--preview-flow-height, var(--preview-room)), var(--preview-room)); }
+.interactive-preview--inline .interactive-preview__surface[data-preview-layout='adaptive'] { height: var(--preview-room); }
+.interactive-preview__frame { display: block; width: 100%; height: 100%; border: 0; background: white; }
+.interactive-preview__surface[hidden], .interactive-preview__source[hidden] { display: none; }
 .interactive-preview__status { margin: 0; padding: 8px 12px; color: var(--ac-muted); font-size: var(--ac-font-caption); }
 .interactive-preview__status[role="alert"] { color: var(--ac-danger); white-space: pre-wrap; }
 .interactive-preview__source { min-height: 0; max-height: 720px; overflow: auto; }
 .interactive-preview__source .conversation-code { border-radius: 0; }
 .interactive-preview--reader { display: flex; flex-direction: column; flex: 1; height: 100%; border: 0; border-radius: 0; }
-.interactive-preview--reader .interactive-preview__frame { flex: 1; min-height: 0; }
+.interactive-preview--reader .interactive-preview__surface { flex: 1; }
+.interactive-preview--reader .interactive-preview__surface[data-preview-layout='flow'] {
+  flex: 0 1 auto; align-self: center; margin-block: auto;
+  width: min(100%, var(--preview-ideal-width, 100%)); height: min(100%, var(--preview-flow-height, 100%));
+}
 .interactive-preview--reader .interactive-preview__source { flex: 1; max-height: none; }

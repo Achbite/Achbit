@@ -177,6 +177,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           automaticReview={automaticReview}
           foregroundInteractionId={composer.foregroundInteractionId}
           onFocusInteraction={composer.focusInteraction}
+          readInteractionDraft={composer.readInteractionDraft}
+          onInteractionDraftChange={composer.updateInteractionDraft}
         />
         {mode === 'panel' && !!display.artifacts.length && <ArtifactLinks location="conversation" artifacts={display.artifacts} onOpen={resourcePreview.openWorkspaceResource} />}
         {mode !== 'panel' && !!display.artifacts.length && <ArtifactShortcuts location="shortcuts"
@@ -201,7 +203,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
       </DismissibleError>}
       <ConversationComposer
         conversationBodyRef={bodyRef}
-        readerExpanded={resourcePreview.visible && resourcePreview.expanded}
+        readerExpanded={resourcePreview.visible}
         onEditBrowserReview={resourcePreview.editBrowserReview}
         changeBar={showChangeBar && <FileChanges key={`${sessionId}:${projection.run!.runId}`} activities={roundChangeActivities(projection, projection.run!.runId)} compact />}
         language={language}

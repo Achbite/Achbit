@@ -1,7 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { DEFAULT_USER_SETTINGS, type UserSettings } from '@achbit/protocol';
-import { NativeSelect } from '../../ui-components';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
+import { DisclosureSummary, NativeSelect } from '../../ui-components';
 import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
@@ -93,7 +92,7 @@ export default function GuiFontSettings({ language }: { language: UiLanguage }) 
         <code className="appearance-font-preview__code">const message = "你好，Achbit";</code>
       </div>}
       <details className="appearance-font-details" onToggle={event => setExpanded(event.currentTarget.open)}>
-        <summary><AchbitShellIcon name="chevronRight" size={14} />{t(language, 'settings.font.details')}</summary>
+        <DisclosureSummary chevronPosition="leading">{t(language, 'settings.font.details')}</DisclosureSummary>
         <div className="appearance-font-groups">
           {GROUPS.map(group => {
             let family: string | undefined;

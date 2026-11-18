@@ -9,11 +9,9 @@ import { formatDecisionProse, StreamingMarkdownParser, type MarkdownBlock } from
 import { StreamingTextBuffer } from './streamingText';
 import type { Element, ElementContent, Root, RootContent } from 'hast';
 import './richContent.css';
-import { readableResourceLinks } from './resourceLinks';
-import { ConversationSessionScope } from './ConversationSessionScope';
-import { useConversationHost } from './ConversationHost';
-import { workspaceResourceLink } from './documentResources';
-import { requestWorkspacePreview } from './readerState';
+import { parseLocalTarget, readableResourceLinks } from './resourceLinks';
+import { ConversationBodyLinkScope } from './useConversationBodyLinks';
+import { defaultUrlTransform } from 'react-markdown';
 import 'katex/dist/katex.min.css';
 import { InlineInteractivePreview } from './InteractivePreview';
 
@@ -56,19 +54,9 @@ const COMPONENTS = {
 };
 
 function ScopedMarkdownLink({ href, children, node: _node, ...attributes }: React.ComponentPropsWithoutRef<'a'> & { node?: Element }) {
-  const childSession = useContext(ConversationSessionScope);
-  const host = useConversationHost();
-  const [error, setError] = useState<string | null>(null);
-  if (!childSession) return <a {...attributes} href={href}>{children}</a>;
-  const resource = workspaceResourceLink(href ?? '');
-  if (!href || !resource && !/^https?:\/\//i.test(href)) return <span title={href}>{children}</span>;
-  const open = (event: React.MouseEvent<HTMLAnchorElement>) => {
-    event.preventDefault();
-    setError(null);
-    void (resource ? requestWorkspacePreview(childSession, resource.workspaceId, resource.logicalPath) : host.openExternalLink(href))
-      .catch(reason => setError(reason instanceof Error ? reason.message : String(reason)));
-  };
-  return <><a {...attributes} href={href} onClick={open} onAuxClick={open}>{children}</a>{error && <span role="alert">{error}</span>}</>;
+  const open = useContext(ConversationBodyLinkScope);
+  const target = !open && href && parseLocalTarget(href) ? defaultUrlTransform(href) : href;
+  return <a {...attributes} href={target} onClick={open ?? undefined} onAuxClick={open ?? undefined}>{children}</a>;
 }
 
 const RenderedBlock = memo(function RenderedBlock({ block }: { block: MarkdownBlock }) {

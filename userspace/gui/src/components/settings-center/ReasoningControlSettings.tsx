@@ -31,7 +31,6 @@ export default function ReasoningControlSettings({ language }: { language: UiLan
   return <section {...identity.part('root')} className="settings-card appearance-config-box appearance-reasoning-control">
     <h3 ref={target} className="settings-card__title">{title}</h3>
     <div className="appearance-config-box__body">
-      <p className="appearance-config-box__hint">{t(language, 'settings.reasoningControl.description')}</p>
       <div className="appearance-reasoning-choices" role="radiogroup" aria-label={title} onKeyDown={event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
@@ -44,9 +43,8 @@ export default function ReasoningControlSettings({ language }: { language: UiLan
         {(['segments', 'slider'] as const).map(style => <button key={style} {...identity.action('select-style', 'click', { style })}
           type="button" role="radio" aria-checked={selected === style} disabled={saving || loading}
           onClick={() => void save(style)} className="appearance-reasoning-choice">
-          <span className={`appearance-reasoning-choice__${style}`} aria-hidden="true">{style === 'segments' && <><i /><i /><i /><i /><i /></>}</span>
           <strong>{t(language, `settings.reasoningControl.${style}`)}</strong>
-          <small>{t(language, `settings.reasoningControl.${style}Help`)}</small>
+          <span className={`appearance-reasoning-choice__${style}`} aria-hidden="true">{style === 'segments' && <><i /><i /><i /><i /><i /></>}</span>
         </button>)}
       </div>
       {(configError || error) && <p className="settings-error" role="alert">{configError || error}</p>}

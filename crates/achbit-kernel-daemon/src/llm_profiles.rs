@@ -5,6 +5,18 @@ use std::collections::HashSet;
 pub(crate) const DEFAULT_PROFILES: &str =
     include_str!("../../../config/defaults/llm-profiles.json");
 
+#[cfg(test)]
+pub(crate) fn fixture_profiles() -> Value {
+    json!({"profiles":[{
+        "id":"model:fixture", "name":"Fixture model", "connectionId":"connection:fixture",
+        "kind":"responses", "providerFlavor":"openai", "model":"fixture-model",
+        "contextWindowTokens":128000, "maxOutputTokens":16000, "enabled":true
+    }], "defaultProfileId":"model:fixture", "connections":[{
+        "id":"connection:fixture", "name":"Fixture connection", "adapterId":"custom",
+        "billingMode":"metered", "baseUrl":"https://example.test/v1", "credentialKind":"apiKey"
+    }]})
+}
+
 #[derive(Debug)]
 pub(crate) enum LlmProfileStore {
     Ready(Value),
@@ -471,23 +483,24 @@ mod tests {
         let root = ConfigRoot::new();
         let defaults: Value = serde_json::from_str(DEFAULT_PROFILES).unwrap();
         validate_llm_profile_store(&defaults).unwrap();
-        let id = defaults["defaultProfileId"].as_str().unwrap();
-        assert!(defaults["profiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|profile| {
-                profile["id"].as_str() == Some(id) && llm_profile_value_is_enabled(profile)
-            }));
+        assert_eq!(
+            defaults,
+            json!({"profiles":[], "connections":[], "defaultProfileId":null})
+        );
         let gui = crate::GuiState::open_at(&root.0).unwrap();
         assert_eq!(gui.llm_profiles.usable().unwrap(), &defaults);
         assert!(!root.profile_path().exists());
-        let mut invalid = defaults;
+        assert!(!gui.paths.llm_secrets_path.exists());
+        assert!(!crate::model_connections::adapter_descriptors()
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let mut invalid = fixture_profiles();
         invalid["profiles"][0]["maxOutputTokens"] = json!("invalid");
         assert!(validate_llm_profile_store(&invalid)
             .unwrap_err()
             .contains("profiles[0].maxOutputTokens"));
-        let mut missing_flavor: Value = serde_json::from_str(DEFAULT_PROFILES).unwrap();
+        let mut missing_flavor = fixture_profiles();
         missing_flavor["profiles"][0]
             .as_object_mut()
             .unwrap()
@@ -522,7 +535,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let mut config: Value = serde_json::from_str(DEFAULT_PROFILES).unwrap();
+        let mut config = fixture_profiles();
         config["defaultProfileId"] = json!("profile:missing");
         let original = serde_json::to_string(&config).unwrap();
         fs::write(root.profile_path(), &original).unwrap();

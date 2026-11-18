@@ -13,6 +13,7 @@ export interface ConversationHost {
   saveImage(image: ContentImage): Promise<void>;
   openExternalLink(url: string): Promise<void>;
   readLocalFile?(path: string): Promise<Blob>;
+  selectedFilePath(path: string): Promise<string>;
   readArtifact: typeof readConversationArtifact;
   readChange: typeof readFileChange;
   readConversation: typeof readConversation;
@@ -37,6 +38,13 @@ const defaultHost: ConversationHost = {
     try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0); }
   },
   openExternalLink: openExternalUrl,
+  selectedFilePath: async (path) => {
+    // The remote browser lists entries below a canonical parent and omits symlinks.
+    if (isRemoteHost()) return path;
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) throw new Error('Local file selection requires the desktop Host.');
+    return invoke<string>('achbit_read_local_file', { path, format: 'path' });
+  },
   readLocalFile: async (path) => {
     if (isRemoteHost()) {
       const response = await fetch(`${getKernelApiBase()}/fs/read`, {

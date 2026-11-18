@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import type { LocalAgentError, ProviderActivityProjection, ProviderAttemptFact, SessionProjection } from '@achbit/protocol';
-import { runFailureKind } from '@achbit/protocol';
-import type { UiLanguage } from '../../i18n';
+import { providerNeedsContinuation, runFailureKind } from '@achbit/protocol';
+import { t, type UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { Button, DisclosureSummary, UiIcon } from '../../ui-components';
 
 function ErrorDetails({ error, language }: { error: LocalAgentError; language: UiLanguage }) {
@@ -48,7 +47,7 @@ function failureLabel(error: LocalAgentError | undefined, language: UiLanguage) 
 
 export function providerRetryAttempt(projection: SessionProjection, activity?: ProviderActivityProjection) {
   const attempt = projection.providerAttempts?.at(-1);
-  if (projection.run?.status !== 'running' || !attempt) return null;
+  if (projection.run?.status !== 'running' || !attempt || attempt.runId !== projection.run.runId) return null;
   if (attempt.phase === 'retryWaiting') return attempt.attempt + 1;
   if (attempt.phase === 'started' && attempt.attempt > 1 && (!activity || activity.phase === 'waitingResponse')) return attempt.attempt;
   return null;
@@ -59,8 +58,14 @@ export function ProviderRetryStatus({ projection, language, activity }: {
 }) {
   const attempt = providerRetryAttempt(projection, activity);
   if (attempt === null) return null;
+  const waiting = projection.providerAttempts?.at(-1);
+  const deadline = waiting?.phase === 'retryWaiting' && waiting.error?.diagnostics?.category === 'provider'
+    ? waiting.error.diagnostics.providerError?.retryAt : undefined;
+  const label = deadline !== undefined
+    ? `${failureLabel(waiting?.error, language)} · ${t(language, 'agent.retryAfter', { time: new Date(deadline).toLocaleTimeString(language) })}`
+    : language === 'zh-CN' ? `正在重新连接 · 第 ${attempt} 次尝试` : `Reconnecting · attempt ${attempt}`;
   return <aside className="local-agent__retry-status" role="status">
-    <p><AchbitShellIcon name="network" size={16} />{language === 'zh-CN' ? `正在重新连接 · 第 ${attempt} 次尝试` : `Reconnecting · attempt ${attempt}`}</p>
+    <p><UiIcon name="network" size={16} />{label}</p>
   </aside>;
 }
 
@@ -93,7 +98,7 @@ export function StoppedRunStatus({ projection, language, onError }: {
     <Button size="compact" disabled={busy} onClick={() => {
       const store = useLocalAgentStore.getState();
       if (store.sessionId !== projection.sessionId) return;
-      void store.sendMessage('继续当前任务。请先核对已经执行的工具结果和未完成计划，再继续处理。')
+      void store.sendMessage(t(language, 'agent.continue.input'))
         .then(() => onError(null), error => onError(String(error)));
     }}>{language === 'zh-CN' ? '继续' : 'Continue'}</Button>
   </aside>;
@@ -108,6 +113,13 @@ export function RunFailureDetails({ projection, language, onError }: {
   const snapshot = run && ['failed', 'cancelled', 'indeterminate', 'releaseFailed'].includes(run.status) ? projection.failureSnapshot : undefined;
   const error = projection.terminalError ?? snapshot?.error;
   if (run?.status === 'cancelled' && !error) return null;
+  const scheduled = run?.continuation;
+  if (scheduled && run.status === 'running' && !projection.providerAttempts?.some(item => item.runId === run.runId)) {
+    const time = new Date(scheduled.retryAt).toLocaleTimeString(language);
+    if (scheduled.retryAt > Date.now()) return <aside className="local-agent__continuity-line" role="status">
+      <UiIcon name="network" size={15} />{language === 'zh-CN' ? `已安排，${time} 后继续` : `Scheduled to continue after ${time}`}
+    </aside>;
+  }
   const handoff = projection.contextHandoff;
   const reading = handoff?.status === 'reading';
   const switching = reading && run?.status === 'running';
@@ -123,18 +135,28 @@ export function RunFailureDetails({ projection, language, onError }: {
     : failureLabel(error, language);
   const requests = groupProviderAttempts((projection.providerAttempts ?? [])
     .filter(attempt => snapshot?.providerAttemptIds.includes(attempt.providerAttemptId)));
+  const providerContinuation = run.status === 'failed' && providerNeedsContinuation(error)
+    && !snapshot?.pendingCallIds.length && requests.some(request => request.purpose !== 'approvalReview' && request.providerRequestId === snapshot?.providerRequestId);
+  const deadline = error?.diagnostics?.providerError?.retryAt;
+  const scheduledLabel = providerContinuation && deadline && deadline > Date.now()
+    ? (zh ? `到 ${new Date(deadline).toLocaleTimeString(language)} 继续` : `Continue at ${new Date(deadline).toLocaleTimeString(language)}`) : null;
   const continueTask = async (inNewSession: boolean) => {
     setBusy(true);
     try {
       const store = useLocalAgentStore.getState();
       if (store.sessionId !== projection.sessionId) return;
+      if (!inNewSession && providerContinuation) {
+        await store.continueProvider(projection.sessionId, run.runId);
+        onError(null);
+        return;
+      }
       if (inNewSession) {
         const projectId = store.catalog.sessions.find((item) => item.id === projection.sessionId)?.projectId;
         store.startNewSession(projectId ?? null);
       }
       await useLocalAgentStore.getState().sendMessage(inNewSession
-        ? `接手来源会话 ${projection.sessionId}。先通过 session 工具读取该会话的目标、计划和相关工具结果，确认已完成事实后继续未完成的任务。`
-        : '继续当前任务。请先核对已经执行的工具结果和未完成计划，再继续处理。');
+        ? t(language, 'agent.handoff.input', { sessionId: projection.sessionId })
+        : t(language, 'agent.continue.input'));
       onError(null);
     } catch (cause) { onError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
@@ -143,7 +165,7 @@ export function RunFailureDetails({ projection, language, onError }: {
     <div className="local-agent__continuity-line" role="status">
       <UiIcon name={switching ? 'network' : run.status === 'cancelled' ? 'stop' : error ? 'warning' : 'check'} size={15} />
       <span>{label}</span>
-      {canContinue && <Button size="compact" disabled={busy} onClick={() => void continueTask(false)}>{reading ? (zh ? '重试接手' : 'Retry handoff') : (zh ? '继续' : 'Continue')}</Button>}
+      {canContinue && <Button size="compact" disabled={busy} onClick={() => void continueTask(false)}>{scheduledLabel || (reading ? (zh ? '重试接手' : 'Retry handoff') : (zh ? '继续' : 'Continue'))}</Button>}
       {switching && <Button size="compact" disabled={busy} onClick={() => void useLocalAgentStore.getState().cancelRun().catch(cause => onError(String(cause)))}>{zh ? '停止' : 'Stop'}</Button>}
       {(error || snapshot) && <Button size="compact" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{zh ? '详情' : 'Details'}</Button>}
     </div>

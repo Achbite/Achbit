@@ -71,13 +71,17 @@ impl ProviderStreamError {
         }
     }
 
-    pub(crate) fn into_failure(self, secret: Option<&str>) -> Value {
+    pub(crate) fn into_failure(
+        self,
+        secret: Option<&str>,
+        response_advice: Option<&crate::provider_transport::RetryAdvice>,
+    ) -> Value {
         match self.reported_error {
             Some(error) => crate::provider_transport::upstream_failure(
                 self.code,
                 &self.message,
                 &error,
-                None,
+                response_advice,
                 secret,
             ),
             None => {
@@ -1781,7 +1785,7 @@ mod tests {
             let failure = parser
                 .ingest_payload(payload.to_string().as_bytes())
                 .unwrap_err()
-                .into_failure(None);
+                .into_failure(None, None);
             assert_eq!(failure["message"], reported["message"]);
             assert_eq!(failure["diagnostics"]["category"], "provider");
             assert_eq!(failure["diagnostics"]["retryable"], false);
@@ -1801,7 +1805,7 @@ mod tests {
         let failure = parser
             .ingest_payload(br#"{"type":"error","code":"server_error","message":"Unavailable"}"#)
             .unwrap_err()
-            .into_failure(None);
+            .into_failure(None, None);
         assert_eq!(
             failure["diagnostics"]["providerError"]["code"],
             "server_error"
@@ -1810,7 +1814,7 @@ mod tests {
 
         let mut parser = ProviderStreamAccumulator::new(ProviderStreamKind::Responses);
         let failure = parser.ingest_payload(br#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#)
-            .unwrap_err().into_failure(None);
+            .unwrap_err().into_failure(None, None);
         assert_eq!(failure["diagnostics"]["category"], "provider");
         assert!(failure["message"]
             .as_str()
@@ -1821,7 +1825,7 @@ mod tests {
         let failure = parser
             .ingest_payload(b"invalid json")
             .unwrap_err()
-            .into_failure(None);
+            .into_failure(None, None);
         assert_eq!(failure["code"], "provider_stream_json_invalid");
         assert!(
             failure.get("diagnostics").is_none(),

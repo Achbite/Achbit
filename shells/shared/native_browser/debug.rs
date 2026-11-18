@@ -240,11 +240,11 @@ fn query_metrics(records: Vec<Value>, input: &Value) -> Result<Value, String> {
 async fn dispatch(view: tauri::Webview, request: Value) -> Result<Value, String> {
     use objc2::{msg_send, runtime::AnyObject, MainThreadOnly};
     use objc2_foundation::{NSError, NSString};
-    use objc2_web_kit::{WKContentWorld, WKWebView};
+    use objc2_web_kit::WKContentWorld;
     let script = dispatch_script(&request);
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
-        let webview = &*(platform.inner() as *const WKWebView);
+        let webview = super::macos_webview(platform);
         let completion = block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
             let result = if let Some(error) = error.as_ref() {
                 Err(error.localizedDescription().to_string())
@@ -586,6 +586,7 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
             return Err("debug_observation_mode_invalid".into());
         }
         let args = input.get("args").cloned().unwrap_or_else(|| json!({}));
+        let mut document_before = None;
         let outcome = if name == "menu.select" {
             dialogs(&app, "menu", args).await
         } else if name.starts_with("dialog.") {
@@ -606,6 +607,10 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
             .map(|()| json!({"dispatched":true}))
         } else {
             let view = app.get_webview(&id).ok_or("debug_surface_not_found")?;
+            if cfg!(windows) && frame.is_empty() && matches!(name, "click" | "key" | "ui.action") {
+                // A top-level navigation can destroy WebView2's pending JS observation.
+                document_before = view.url().ok();
+            }
             dispatch(view, json!({"name":name,"args":args,"framePath":frame})).await
         };
         let response_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -669,7 +674,17 @@ pub async fn execute(app: tauri::AppHandle, input: Value) -> Result<Value, Strin
                 receipt["result"] = value;
             }
             Err(error) => {
-                receipt["status"] = json!("failed");
+                let changed = document_before.and_then(|before| {
+                    let after = app.get_webview(&id)?.url().ok()?;
+                    (before != after).then_some((before, after))
+                });
+                if let Some((before, after)) = changed {
+                    // Only the location change is known; do not infer that the input caused it.
+                    receipt["status"] = json!("partial");
+                    receipt["observationFailures"] = json!([{"stage":"ui","reason":"document-changed","beforeUrl":before.as_str(),"afterUrl":after.as_str()}]);
+                } else {
+                    receipt["status"] = json!("failed");
+                }
                 receipt["error"] = json!(error);
             }
         }

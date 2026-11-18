@@ -107,10 +107,9 @@ test('ordinary conversation input keeps its full presentation and existing stop 
   assert.deepEqual(calls, ['stop']);
 });
 
-test('Reader keeps attachments, editing and Plan decisions in their full existing views', async t => {
+test('Reader keeps message editing and Plan decisions in their full existing views', async t => {
   const render = await setup(t);
   for (const overrides of [
-    { pendingFilesystemPaths: [{ kind: 'file', path: '/workspace/保留附件.md' }] },
     { editingMessage: { message: { filesystemReferences: [] } } },
     { pendingPlan: { planId: 'plan:reader', runId: 'run:reader', revision: 1, status: 'pending',
       title: '确认计划', steps: [], mutationManifest: [] }, textDecision: true },
@@ -118,8 +117,46 @@ test('Reader keeps attachments, editing and Plan decisions in their full existin
     const composer = draftComposer(overrides), tree = render(composer), html = renderToStaticMarkup(tree);
     assert.doesNotMatch(html, /展开输入框|收起输入框/);
     assert.equal(findReactElement(tree, node => node.type === 'textarea').props.value, composer.draft);
-    if (overrides.pendingFilesystemPaths) assert.ok(html.includes('保留附件.md'));
     if (overrides.editingMessage) assert.match(html, /重新生成/);
     if (overrides.pendingPlan) assert.match(html, /确认执行|Confirm/);
   }
+});
+
+test('Reader attachment summary preserves the one-line draft, attachment actions and normal conversation view', async t => {
+  const render = await setup(t), sent = [], removed = [];
+  const composer = draftComposer({ pendingFilesystemPaths: [{ kind: 'file', path: '/workspace/保留附件.md' }],
+    setPendingFilesystemPaths: update => removed.push(update(composer.pendingFilesystemPaths)),
+    submitDraft: async () => sent.push(composer.draft) });
+  const tree = render(composer);
+  const input = findReactElement(tree, node => node.type === 'textarea');
+  const summary = findReactElement(tree, node => node.props['data-ui-action'] === 'composer.controls.attachment-summary');
+  const rail = findReactElement(tree, node => node.props.id === summary.props['aria-controls']);
+  assert.equal(input.props.rows, 1);
+  assert.equal(input.props.wrap, 'off');
+  assert.equal(input.props.value, composer.draft);
+  assert.equal(summary.props['aria-expanded'], false);
+  assert.equal(summary.props['aria-label'], '查看 1 个附件');
+  assert.match(renderToStaticMarkup(rail), /保留附件.md/);
+  findReactElement(rail, node => node.props['aria-label'] === '移除 保留附件.md').props.onClick();
+  assert.deepEqual(removed, [[]], 'the summary keeps the original removal route');
+  await findReactElement(tree, node => node.props['data-ui-action'] === 'composer.controls.submit').props.onClick();
+  assert.deepEqual(sent, [composer.draft]);
+  const full = render(composer, false);
+  assert.equal(findReactElement(full, node => node.type === 'textarea').props.rows, 3);
+  assert.equal(findReactElement(full, node => node.type === 'textarea').props.value, composer.draft);
+  assert.match(renderToStaticMarkup(full), /保留附件.md/);
+  assert.doesNotMatch(renderToStaticMarkup(full), /composer.controls.attachment-summary/);
+});
+
+test('Reader counts an annotation and its capture as one visible item without losing the capture', async t => {
+  const render = await setup(t);
+  const composer = draftComposer({ pendingFilesystemPaths: [{ kind: 'file', path: '/captures/one.png' }],
+    pastedTexts: [{ inputId: 'annotation:one', text: '浏览器批注', browserReview: { screenshot: '/captures/one.png',
+      annotation: { id: 'note:one', title: '页面', url: 'https://example.test', comment: '保留' } } }] });
+  const tree = render(composer);
+  const summary = findReactElement(tree, node => node.props['data-ui-action'] === 'composer.controls.attachment-summary');
+  assert.match(renderToStaticMarkup(summary), /标注 1/);
+  assert.equal(summary.props['aria-label'], '查看 1 个附件');
+  assert.equal(findReactElement(tree, node => node.type === 'textarea').props.rows, 1);
+  assert.deepEqual(composer.pendingFilesystemPaths, [{ kind: 'file', path: '/captures/one.png' }]);
 });

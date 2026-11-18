@@ -1,6 +1,7 @@
 import { RunTiming } from './runTiming.js';
 import { recipeForMode } from './sessionMode.js';
 import type { SessionMode } from '@achbit/protocol';
+import { providerNeedsContinuation, type ProviderContinuation } from '@achbit/protocol';
 import { sameModelContext } from './modelContext.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
 import { decodeAgentCapabilities, isLlmReasoningEffort } from '@achbit/protocol';
@@ -18,6 +19,7 @@ import { errorFact, LoopFailure } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
+import { linkedReaderUris } from './pluginActivation.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
 import { appendResourceBindings, directoryBindingEvents, validLogicalPath } from './workspaceBindings.js';
 import type {
@@ -53,6 +55,7 @@ export interface SessionActorOptions {
   mode?: SessionMode;
   createComposition?(mode: SessionMode): Promise<AgentComposition>;
   observation?: SessionObservationSink;
+  onLoopFinished?(): void;
   agents?: AgentSessionRuntime;
   profileId?: string;
   initialEvents?: readonly SessionEvent[];
@@ -84,6 +87,8 @@ export class SessionActor {
   #writes = Promise.resolve();
   #active?: ActiveRun;
   #pendingPreparations = 0;
+  #customCapabilities = false;
+  readonly #onLoopFinished?: () => void;
   readonly #inputWaits = new Set<{ runId: string; timed: boolean }>();
   #disposed = false;
   readonly #wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -107,6 +112,7 @@ export class SessionActor {
   ) {
     this.#timing = new RunTiming(sessionId);
     this.#observation = options.observation;
+    this.#onLoopFinished = options.onLoopFinished;
     this.#journal = journal;
     this.#composition = composition;
     this.#mode = options.mode ?? 'full';
@@ -214,9 +220,12 @@ export class SessionActor {
   }
 
   /** Called only after the service's last external Actor lease has been released. */
-  async retireIfSettledChild(): Promise<boolean> {
+  async retireIfIdle(includeOrdinary: boolean): Promise<boolean> {
     const state = (await this.loadSnapshot()).state;
-    if (!state.agentContext || state.run && !isTerminal(state.run.status)) return false;
+    if (state.run && !isTerminal(state.run.status) || state.agentContext && includeOrdinary && !state.run) return false;
+    if (!state.agentContext && (!includeOrdinary || this.#active || this.#pendingPreparations
+      || this.#customCapabilities || this.#loopFailure || this.#wakeTimers.size || this.#inputWaits.size
+      || Object.values(state.processes).some(job => job.status === 'active'))) return false;
     // run.settled can wake a result consumer just before the Loop's finally completes.
     await this.#active?.task;
     await this.dispose();
@@ -484,6 +493,7 @@ export class SessionActor {
         throw new Error('session_capabilities_run_active');
       }
       await this.#capabilities.replace(implementation);
+      this.#customCapabilities = true;
     });
   }
 
@@ -568,6 +578,8 @@ export class SessionActor {
         return await this.handleMessageFeedback(command);
       case 'tool.cancel':
         return await this.handleToolCancel(command);
+      case 'provider.continue':
+        return this.handleProviderContinuation(command, beforeRunStart);
       case 'run.cancel':
         return await this.handleCancel(command);
       case 'interaction.respond':
@@ -810,6 +822,35 @@ export class SessionActor {
     return reply;
   }
 
+  private async handleProviderContinuation(
+    command: Extract<ConversationCommand, { type: 'provider.continue' }>,
+    beforeRunStart?: (runId: string) => Promise<void>,
+  ): Promise<CommandReply> {
+    const { state, events } = await this.loadSnapshot();
+    const alreadyAccepted = events.some(event => event.type === 'run.started' && event.payload.continuation?.runId === command.runId);
+    if (alreadyAccepted) return this.commitCommand(command, [], acceptedReply(command));
+    const run = state.run;
+    const failure = state.failureSnapshots[command.runId];
+    const started = events.find(event => event.type === 'run.started' && event.runId === command.runId);
+    const turn = failure?.providerRequestId ? state.providerTurns[failure.providerRequestId] : undefined;
+    if (run?.runId !== command.runId || run.status !== 'failed' || !failure || failure.pendingCallIds.length
+      || !providerNeedsContinuation(failure.error) || !turn || turn.purpose === 'approvalReview' || turn.outcome !== 'failed'
+      || started?.type !== 'run.started') {
+      return this.recordRejection(command, 'provider_continuation_unavailable', '这次模型请求没有可继续的失败回执。');
+    }
+    const runtime = state.runRuntimeSnapshots[command.runId]!;
+    const messageId = started.payload.inputMessageId;
+    const original = state.messages.find(message => message.messageId === messageId && message.role === 'user');
+    if (!original) throw new Error('run_input_message_missing');
+    const continuation = { runId: command.runId, providerRequestId: turn.providerRequestId,
+      retryAt: failure.error.diagnostics?.providerError?.retryAt ?? 0 };
+    return this.handleRunInput({ ...command, type: 'message.submit', runId: undefined, text: original.content,
+      profileId: runtime.provider.profileId, reasoningEffortOverride: runtime.provider.reasoningEffortOverride ?? null,
+      ...(runtime.planMode ? { planMode: runtime.planMode } : {}),
+      ...(run.hostBinding ? { hostBinding: run.hostBinding } : {}),
+    }, original.content, null, undefined, beforeRunStart, { command, messageId, continuation });
+  }
+
   private async handleMessage(
     command: Extract<ConversationCommand, { type: 'message.submit' }>,
     beforeRunStart?: (runId: string) => Promise<void>,
@@ -861,13 +902,14 @@ export class SessionActor {
     focusTask: string | null,
     edit?: { command: Extract<ConversationCommand, { type: 'message.edit' }>; revised: Extract<NewSessionEvent, { type: 'conversation.revised' }> },
     beforeRunStart?: (runId: string) => Promise<void>,
+    continuation?: { command: Extract<ConversationCommand, { type: 'provider.continue' }>; messageId: string; continuation: ProviderContinuation },
   ): Promise<CommandReply> {
-    const journalCommand = edit?.command ?? command;
+    const journalCommand = continuation?.command ?? edit?.command ?? command;
     const manualPlan = command.type === 'message.submit' && command.planMode === 'manual';
     if (manualPlan && !submittedText.trim()) {
       return await this.recordRejection(journalCommand, 'plan_task_empty', '/plan 后必须提供任务正文。');
     }
-    if (!submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
+    if (!continuation && !submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
       if (command.type === 'context.focus') {
         return await this.recordRejection(
           command,
@@ -959,7 +1001,7 @@ export class SessionActor {
       return await this.recordRejection(journalCommand, 'plan_tool_unavailable', '当前 Agent 的工具范围不包含提交计划。');
     }
     await this.configureMode(before.state.mode);
-    const messageId = this.#nextId('message');
+    const messageId = continuation?.messageId ?? this.#nextId('message');
     const runId = this.#nextId('run');
     const profileId = command.profileId ?? before.state.modelSettings?.profileId ?? this.#profileId;
     const reasoningEffortOverride = command.reasoningEffortOverride !== undefined
@@ -974,14 +1016,17 @@ export class SessionActor {
       && event.payload.runtimeSnapshot.toolSelection?.plugins !== false);
     const pluginView = pluginRun?.type === 'run.started'
       ? before.state.runToolViews[pluginRun.runId] ?? pluginRun.payload.runtimeSnapshot : undefined;
+    const readerSelections = recipe.tools?.plugins === false ? [] : [...new Set([
+      ...(pluginView?.selectedPlugins.plugins.map(plugin => plugin.uri) ?? []), ...linkedReaderUris(submittedText, recipe),
+    ])];
     const prepared = await this.prepareRun({
       sessionId: this.sessionId,
       runId,
       workspaceBindingIds: runWorkspaceBindings.map(binding => binding.workspaceId),
       previousProviderToolAliases: previousView?.providerToolAliases,
-      ...(recipe.tools?.plugins !== false && pluginView?.selectedPlugins.plugins.length ? {
-        inheritedPluginSelections: pluginView.selectedPlugins.plugins.map(plugin => ({
-          selectionId: this.#nextId('plugin-selection'), uri: plugin.uri, label: plugin.uri.slice(0, 160),
+      ...(readerSelections.length ? {
+        inheritedPluginSelections: readerSelections.map(uri => ({
+          selectionId: this.#nextId('plugin-selection'), uri, label: uri.slice(0, 160),
         })),
       } : {}),
       environment: savedSessionEnvironment(before.events),
@@ -1004,13 +1049,18 @@ export class SessionActor {
     const previousProvider = previousRun ? before.state.runRuntimeSnapshots[previousRun]?.provider : undefined;
     const contextStart = previousProvider && !sameModelContext(previousProvider, runtimeSnapshot.provider)
       ? { historyThroughSequence: before.state.revision, previousProfileId: previousProvider.profileId } : undefined;
+    if (continuation && contextStart) {
+      await this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
+        kernelCatalogSnapshotRef: runtimeSnapshot.kernelCatalogSnapshotRef });
+      return this.recordRejection(journalCommand, 'provider_continuation_model_changed', '模型连接已变更，请选择当前模型后继续对话。');
+    }
     if ((contextStart || before.state.contextHandoff?.status === 'reading')
       && !runtimeSnapshot.tools.some(tool => tool.name === 'session.read' && tool.availability === 'callable')) {
       await this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
         kernelCatalogSnapshotRef: runtimeSnapshot.kernelCatalogSnapshotRef });
       return this.recordRejection(journalCommand, 'model_handoff_reader_unavailable', '当前 Agent 的工具范围不支持读取会话历史，不能接手。');
     }
-    const events: NewSessionEvent[] = [
+    const inputEvents: NewSessionEvent[] = [
       ...(edit ? [edit.revised] : []),
       {
         type: 'session.model-settings.updated',
@@ -1052,6 +1102,9 @@ export class SessionActor {
         },
       },
       ...directoryBindingEvents(this.sessionId, command.commandId, before.state.workspaceBindings, directoryReferences),
+    ];
+    const events: NewSessionEvent[] = [
+      ...(continuation ? [] : inputEvents),
       {
         type: 'run.started',
         sessionId: this.sessionId,
@@ -1061,6 +1114,7 @@ export class SessionActor {
           workspaceBindings: runWorkspaceBindings,
           runtimeSnapshot,
           ...(contextStart ? { contextStart } : {}),
+          ...(continuation ? { continuation: continuation.continuation } : {}),
         },
       },
     ];
@@ -1395,6 +1449,7 @@ export class SessionActor {
       })
       .finally(() => {
         if (this.#active === active) this.#active = undefined;
+        this.#onLoopFinished?.();
         this.notifyActivityChanged();
         for (const wake of this.#changes) wake();
       });
@@ -1463,9 +1518,11 @@ export class SessionActor {
             const initialSelections = recoveryPluginSelection(current, runId, runtime).pluginSelections ?? [];
             const selections = [...new Map([...initialSelections, ...queued.flatMap((input) => input.pluginSelections)]
               .map((selection) => [selection.uri, selection])).values()];
-            return { queued, runtime, activeView, selections };
+            const recipe = recipeForMode(current.state.recipe, current.state.mode);
+            const linked = [...new Set(queued.flatMap(input => linkedReaderUris(input.text, recipe)))];
+            return { queued, runtime, activeView, selections, linked };
           });
-          const { runtime, activeView, selections } = captured;
+          const { runtime, activeView, selections, linked } = captured;
           signal.throwIfAborted();
           // Preparation owns run resources. Drain admitted I/O before cancellation
           // releases the run; never hold the Actor write queue while it is pending.
@@ -1476,6 +1533,9 @@ export class SessionActor {
               environment: runtime.environment,
               ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
               pluginSelections: selections,
+              ...(linked.length ? { inheritedPluginSelections: linked.map(uri => ({
+                selectionId: this.#nextId('plugin-selection'), uri, label: uri.slice(0, 160),
+              })) } : {}),
               previousProviderToolAliases: activeView.providerToolAliases,
               refreshPlugins: !captured.queued.some(input => input.pluginSelections.length),
             }) : undefined;
@@ -1754,7 +1814,7 @@ export class SessionActor {
         type: 'run.settled',
         sessionId: this.sessionId,
         runId,
-        payload: cloneSettlement(settlement),
+        payload: structuredClone(settlement),
       }]);
       return true;
     }
@@ -1814,7 +1874,7 @@ export class SessionActor {
         type: 'run.settled',
         sessionId: this.sessionId,
         runId,
-        payload: cloneSettlement(settlement),
+        payload: structuredClone(settlement),
       },
     ]);
     return true;
@@ -2071,14 +2131,6 @@ function recoveryPluginSelection(
   return {
     pluginSelections: selections.map((selection) => ({ ...selection })),
   };
-}
-
-function cloneSettlement(settlement: RunSettlement): RunSettlement {
-  if (settlement.outcome === 'completed') return { ...settlement };
-  if (settlement.outcome === 'failed' || settlement.outcome === 'indeterminate') {
-    return { outcome: settlement.outcome, error: { ...settlement.error } };
-  }
-  return { outcome: 'cancelled' };
 }
 
 function closesAssistantDraft(

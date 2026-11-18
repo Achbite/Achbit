@@ -7,7 +7,7 @@ import {
   PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, isPaletteColor,
   paletteColor, paletteToken, type PaletteOverrides,
 } from '../../theme/palette';
-import { UiIcon } from '../../ui-components';
+import { DisclosureSummary, UiIcon } from '../../ui-components';
 import { reconcileSettingDraft, reconcileJsonSettingDraft } from './settingDraft';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from './settingsSearch';
 
@@ -70,10 +70,9 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
   const previewColor = (field: typeof PALETTE_FIELDS[number]) => isPaletteColor(color(field)) ? color(field) : paletteColor({}, theme, field, accent);
 
   return <details className="settings-palette settings-appearance__setting">
-    <summary ref={target} className="settings-palette__summary">
-      <UiIcon name="chevronRight" size={14} />
+    <DisclosureSummary ref={target} className="settings-palette__summary" chevronPosition="leading">
       <span>{t(language, 'settings.palette.title')}</span>
-    </summary>
+    </DisclosureSummary>
     <div className="settings-palette__toolbar">
       <div className="settings-palette__tabs" role="group" aria-label={t(language, 'settings.palette.editTheme')}>
         {(['light', 'dark'] as const).map((value) => <button key={value} type="button"

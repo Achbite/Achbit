@@ -14,6 +14,7 @@ import type { AgentComposer } from './useAgentComposer';
 import { pastedTextTitle } from '../../services/pastedText';
 import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { ComposerImageAttachment } from './ComposerImageAttachment';
 import { QueuedInputPreview } from './QueuedInputPreview';
 import { observeConversationComposerBoundary } from './conversationComposerBoundary';
@@ -157,9 +158,18 @@ export function ConversationComposer({
   const previousAttachments = useRef(new Set<string>());
   const inputMode = pendingApproval ? 'approval' : pendingPlan ? 'plan' : pendingInteraction ? 'interaction' : 'message';
   const compactInput = inputMode !== 'message';
-  // Decisions, message edits and attachments keep their complete existing controls visible.
-  const canCollapseInput = readerExpanded && !compactInput && !composer.editingMessage && !hasDraftAttachments;
+  // Decisions and message edits stay complete; attachments do not expand a reading draft.
+  const canCollapseInput = readerExpanded && !compactInput && !composer.editingMessage;
   const readerInputCollapsed = canCollapseInput && !readerInputExpanded;
+  const [readerAttachmentsOpen, setReaderAttachmentsOpen] = useState(false);
+  const attachmentSummary = useRef<HTMLButtonElement>(null);
+  const attachmentListId = useId();
+  const visibleAttachmentCount = composer.pastedTexts.length + composer.pastedImages.length + pluginSelections.length
+    + composer.recoveredContent.filesystemReferences.length + composer.recoveredContent.guidanceReferences.length
+    + pendingFilesystemPaths.filter(item => !annotations.some(note => note.browserReview?.screenshot === item.path)).length;
+  useLayoutEffect(() => setReaderAttachmentsOpen(false), [readerInputCollapsed, composer.conversationKey, hasDraftAttachments]);
+  useDismissibleLayer({ open: readerAttachmentsOpen, roots: [attachmentRail, attachmentSummary], trigger: attachmentSummary,
+    onDismiss: () => setReaderAttachmentsOpen(false) });
   const currentRequest = projection?.contextCompositions.filter((item)=>item.runId===projection.run?.runId).at(-1);
   const readyPlugins = new Set(currentRequest?.tools.filter((tool)=>tool.availability==='callable').map((tool)=>tool.pluginUri));
 
@@ -371,14 +381,25 @@ export function ConversationComposer({
         {selectedProfileId && !profiles.some((profile) => profile.id === selectedProfileId && profile.enabled) && (
           <p className="local-agent__profile-notice" role="status">{t(language, 'agent.profile.boundUnavailable')}</p>
         )}
+        {readerInputCollapsed && hasDraftAttachments && <Button ref={attachmentSummary} size="compact" variant="secondary"
+          {...identity.action('attachment-summary', 'click')}
+          className="local-agent__attachment-summary" aria-expanded={readerAttachmentsOpen} aria-controls={attachmentListId}
+          aria-label={language === 'zh-CN' ? `查看 ${visibleAttachmentCount} 个附件` : `View ${visibleAttachmentCount} attachments`}
+          onClick={() => setReaderAttachmentsOpen(value => !value)}>
+          <AchbitShellIcon name={annotations.length === visibleAttachmentCount ? 'compose' : 'paperclip'} size={14} />
+          {language === 'zh-CN' ? (annotations.length === visibleAttachmentCount ? '标注' : '附件')
+            : (annotations.length === visibleAttachmentCount ? 'Annotations' : 'Attachments')} {visibleAttachmentCount}
+        </Button>}
         {hasDraftAttachments && (
-          <div ref={attachmentRail} className="local-agent__draft-attachments" role="group" tabIndex={0}
+          <div id={attachmentListId} ref={attachmentRail} className="local-agent__draft-attachments" role="group" tabIndex={0}
+            data-reader-open={readerInputCollapsed && readerAttachmentsOpen || undefined}
+            data-native-overlay={readerInputCollapsed && readerAttachmentsOpen || undefined}
             aria-label={language === 'zh-CN' ? '消息附件，可左右滚动查看' : 'Message attachments, scroll horizontally to browse'}>
             {composer.pastedTexts.map(paste => paste.browserReview ? (
               <div className="local-agent__browser-annotation" key={paste.inputId} data-attachment-id={paste.inputId}>
                 <button type="button" className="local-agent__annotation-edit"
                   title={`${paste.browserReview.annotation.title || paste.browserReview.annotation.url}\n\n${paste.browserReview.annotation.comment}`}
-                  onClick={() => onEditBrowserReview(paste.browserReview!)}>
+                  onClick={() => { setReaderAttachmentsOpen(false); onEditBrowserReview(paste.browserReview!); }}>
                   <AchbitShellIcon name="compose" />
                   <span><strong>{language === 'zh-CN' ? '批注' : 'Annotation'} {annotations.indexOf(paste) + 1} · {paste.browserReview.annotation.title || paste.browserReview.annotation.url}</strong><small>{paste.browserReview.annotation.comment}</small></span>
                 </button>

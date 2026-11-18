@@ -124,6 +124,8 @@ Add `waitFor` to `--args` to observe a result, with `timeoutMs` up to 15000:
 
 Conditions also support `value` / `absent`, or `{"componentId":"ID","path":["data","activeSessionId"],"equals":"SESSION_ID"}`. A UI condition is not a task terminal state. Clicks check the real hit target; keyboard dispatch does not guarantee native editing defaults.
 
+On Windows, a top-level WebView2 navigation can replace the document before a click or key observation returns. When the native URL changed and the action bridge failed, the receipt is `partial` (nonzero exit), with the original error and both URLs in `observationFailures`. Inspect the new surface before deciding whether any further action is needed. The URL change alone does not prove the input caused it.
+
 Native selectors use `surfaces inspect --target native-dialog`, then `action --target native-dialog` with observed `dialogId` and node paths:
 
 | Action name | Arguments |

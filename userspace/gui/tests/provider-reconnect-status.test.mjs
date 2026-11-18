@@ -34,6 +34,26 @@ test('reconnect status spans retry wait and reconnect send, and clears when cont
   assert.doesNotMatch(recovering, /\/5/);
 });
 
+test('a scheduled retry names the actual provider failure alongside its deadline', async t => {
+  const { ProviderRetryStatus } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
+  const retryAt = Date.now() + 60_000;
+  for (const [detail, language, expected] of [
+    [{ code: 'server_is_overloaded' }, 'zh-CN', '模型服务过载'],
+    [{ httpStatus: 429 }, 'en-US', 'Model rate limit reached'],
+  ]) {
+    const error = { code: 'provider_error', message: 'Upstream retry', diagnostics: {
+      source: 'providerTransport', phase: 'response', category: 'provider', retryable: true, causes: [],
+      providerError: { ...detail, retryAt },
+    } };
+    const projection = { run: { runId: 'run:retry', status: 'running' }, providerAttempts: [
+      { runId: 'run:retry', purpose: 'agent', attempt: 1, phase: 'retryWaiting', error },
+    ] };
+    const html = renderToStaticMarkup(createElement(ProviderRetryStatus, { projection, language }));
+    assert.ok(html.includes(expected));
+    assert.ok(html.includes(new Date(retryAt).toLocaleTimeString(language)));
+  }
+});
+
 test('terminal status names the provider failure and reserves Loop failure for internal errors', async t => {
   const { RunFailureDetails } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
   const provider = (details, extra = {}) => ({ code: 'provider_error', message: 'Original upstream detail', diagnostics: {
@@ -127,4 +147,17 @@ test('GUI projection accepts continued reconnects while rejecting invalid attemp
     invalid.providerAttempts[0].attempt = attempt;
     await assert.rejects(decodeGuiProjection(invalid), /conversation_projection_invalid/);
   }
+});
+
+test('GUI decodes the scheduled successor and shows its persisted deadline', async t => {
+  const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
+  const { RunFailureDetails } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
+  const projection = projectSession(emptySessionState('session:continued'));
+  projection.run = { runId: 'run:successor', status: 'running', profileId: 'profile:test', workspaceBindings: [],
+    continuation: { runId: 'run:failed', providerRequestId: 'request:old', retryAt: Date.now() + 60_000 } };
+  const decoded = await decodeGuiProjection(projection);
+  const html = renderToStaticMarkup(createElement(RunFailureDetails, { projection: decoded, language: 'zh-CN', onError() {} }));
+  assert.match(html, /已安排/);
+  projection.run.continuation.retryAt = -1;
+  await assert.rejects(decodeGuiProjection(projection), /conversation_projection_invalid/);
 });

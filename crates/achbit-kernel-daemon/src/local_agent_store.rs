@@ -1,4 +1,5 @@
 use crate::local_agent_permissions::KernelPermissionModel;
+use achbit_kernel_abi::{valid_logical_path, valid_media_type, valid_plugin_uri};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -2439,8 +2440,20 @@ fn validate_new_event(
             exact_object(
                 payload,
                 &["inputMessageId", "workspaceBindings", "runtimeSnapshot"],
-                &["contextStart"],
+                &["contextStart", "continuation"],
             )?;
+            if let Some(source) = payload.get("continuation") {
+                exact_object(source, &["runId", "providerRequestId", "retryAt"], &[])?;
+                for key in ["runId", "providerRequestId"] {
+                    validate_id(key, required_string(source, key)?)?;
+                }
+                if required_u64(source, "retryAt")? > 8_640_000_000_000_000 {
+                    return Err(LocalAgentStoreError::new(
+                        "provider_retry_time_invalid",
+                        "模型等待时间无效。",
+                    ));
+                }
+            }
             if let Some(start) = payload.get("contextStart") {
                 exact_object(start, &["historyThroughSequence", "previousProfileId"], &[])?;
                 if required_u64(start, "historyThroughSequence")? == 0 {
@@ -3661,6 +3674,7 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
         "context.focus",
         "message.feedback.set",
         "run.cancel",
+        "provider.continue",
         "tool.cancel",
         "run.host.rebind",
         "interaction.respond",
@@ -3695,6 +3709,14 @@ fn validate_command(command: &Value) -> Result<(), LocalAgentStoreError> {
             &[],
         )?;
         validate_workspace_bindings(&command["workspaceBindings"])?;
+    }
+    if command_type == "provider.continue" {
+        exact_object(
+            command,
+            &["schemaVersion", "type", "commandId", "sessionId", "runId"],
+            &[],
+        )?;
+        validate_id("runId", required_string(command, "runId")?)?;
     }
     if command_type == "run.host.rebind" {
         exact_object(
@@ -5148,34 +5170,6 @@ fn validate_filesystem_references(
     Ok(())
 }
 
-fn valid_logical_path(value: &str) -> bool {
-    if value.is_empty() || value.len() > 4_096 || value.contains('\0') || value.contains('\\') {
-        return false;
-    }
-    value == "."
-        || !value.starts_with('/')
-            && !value.ends_with('/')
-            && value
-                .split('/')
-                .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."))
-}
-
-fn valid_media_type(value: &str) -> bool {
-    let Some((kind, subtype)) = value.split_once('/') else {
-        return false;
-    };
-    !kind.is_empty()
-        && !subtype.is_empty()
-        && value.len() <= 128
-        && kind.chars().chain(subtype.chars()).all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(
-                    character,
-                    '!' | '#' | '$' | '&' | '^' | '_' | '.' | '+' | '-'
-                )
-        })
-}
-
 fn validate_plugin_selection_list(selections: &Value) -> Result<(), LocalAgentStoreError> {
     let selections = selections.as_array().ok_or_else(|| {
         LocalAgentStoreError::new("plugin_selection_invalid", "pluginSelections 必须是数组。")
@@ -5203,21 +5197,6 @@ fn validate_plugin_selection_list(selections: &Value) -> Result<(), LocalAgentSt
         }
     }
     Ok(())
-}
-
-fn valid_plugin_uri(value: &str) -> bool {
-    let Some(identity) = value.strip_prefix("plugin://") else {
-        return false;
-    };
-    let Some((name, source)) = identity.split_once('@') else {
-        return false;
-    };
-    !name.is_empty()
-        && !source.is_empty()
-        && !name.contains('@')
-        && name.chars().chain(source.chars()).all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
-        })
 }
 
 fn run_provider_runtime_from_connection(

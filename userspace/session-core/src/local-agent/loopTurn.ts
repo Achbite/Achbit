@@ -22,7 +22,7 @@ import { scheduledContextCompaction, pendingContextCompaction } from './compacti
 import { modelContextEvents } from './modelContext.js';
 import { boundaryCompactionEvent, performContextCompaction } from './loopContext.js';
 import { reviewPendingPlan } from './loopTools.js';
-import { pendingControlWait, controlWait } from './sessionWake.js';
+import { pendingControlWait, controlWait, inputAfter, pendingWakeups } from './sessionWake.js';
 
 export async function settleProviderTurn(
   initial: LoopSnapshot, turn: ProviderTurn, receipt: ContextCompositionReceipt, runtime: RunRuntimeSnapshot,
@@ -368,6 +368,26 @@ export async function prepareControlTurn(
     const wait = controlWait(waiting.payload.result)!;
     if (waiting.type === 'session.control.completed') {
       if (!deps.waitForInput) throw new Error('session_operations_unavailable');
+      await deps.activity?.sync();
+      // An indefinite wait with only unanswered questions is the same user-input
+      // boundary as ordinary answer settlement. Keep dependency/deadline waits
+      // and already queued facts on their existing event-driven path.
+      snapshot = await deps.commit(current => {
+        const state = current.state;
+        if (wait.deadline !== undefined || state.run?.runId !== runId
+          || state.run.status !== 'running'
+          || !state.interactions.some(item => item.runId === runId && item.status === 'pending')
+          || state.queuedInputs.some(item => item.runId === runId && item.status === 'queued')
+          || inputAfter(current.events, runId, wait.afterSequence)
+          || Object.values(state.processes).some(job => job.runId === runId && job.status === 'active')
+          || state.agentTasks.some(task => task.parentRunId === runId && task.status === 'running')
+          || pendingWakeups(current.events, runId).size) return [];
+        return [{ type: 'run.waiting', sessionId: state.sessionId, runId,
+          payload: { reason: 'userInput', detail: 'Independent work is complete; awaiting answers to open questions.' } }];
+      });
+      if (snapshot.state.run?.status === 'waiting' && snapshot.state.run.waitingReason === 'userInput') {
+        return { status: 'waiting', runId, reason: 'userInput' };
+      }
       await deps.waitForInput(runId, wait, signal);
     } else {
       if (!deps.agents) throw new Error('agent_manager_missing');

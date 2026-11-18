@@ -406,12 +406,12 @@ test('transcript scopes rich text by canonical row and opens repeated attachment
   const previousSelf = globalThis.self;
   globalThis.self = {};
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
-  const [{ ConversationTranscript }, { ConversationLayoutCache }, { MarkdownContent }] = await loadGuiModules(t, [
+  const [{ ConversationTranscript }, { ConversationLayoutCache }, { MarkdownContent }, { MessageAttachments }] = await loadGuiModules(t, [
     '/src/components/local-agent/ConversationTranscript.tsx', '/src/components/local-agent/conversationVirtualizer.ts',
-    '/src/components/local-agent/BufferedMarkdown.tsx',
+    '/src/components/local-agent/BufferedMarkdown.tsx', '/src/components/local-agent/MessageAttachments.tsx',
   ]);
   const references = ['a', 'b'].map(id => ({ referenceId: `reference:${id}`, workspaceId: `workspace:${id}`,
-    logicalPath: 'same.txt', displayName: 'same.txt', kind: 'file', byteLength: 1 }));
+    logicalPath: 'same.txt', displayName: 'same.txt', kind: 'file', mediaType: 'text/plain', byteLength: 1 }));
   const source = '```text\nsame\n```';
   const message = { messageId: 'message:source', role: 'user', runId: 'run:source', content: source, filesystemReferences: references };
   const opened = [];
@@ -433,8 +433,10 @@ test('transcript scopes rich text by canonical row and opens repeated attachment
   assert.deepEqual(JSON.parse(/data-ui-target="([^"]+)"/.exec(codeTag)[1].replaceAll('&quot;', '"')),
     { sessionId: 'session:source', rowKey: message.messageId, contentKey: 'body', blockKey: '0', nodeOffset: '0' });
   const round = findReactElement(tree, node => node.props.roundKey === message.runId);
+  const attachments = findReactElement(round.props.rows[0].content(), node => node.type === MessageAttachments);
+  const attachmentTree = MessageAttachments(attachments.props);
   for (const reference of [...references].reverse()) {
-    const button = findReactElement(round.props.rows[0].content(), node => node.props['data-ui-action'] === 'conversation.references.open'
+    const button = findReactElement(attachmentTree, node => node.props['data-ui-action'] === 'conversation.references.open'
       && JSON.parse(node.props['data-ui-target']).referenceId === reference.referenceId);
     assert.deepEqual(JSON.parse(button.props['data-ui-target']), { sessionId: 'session:source', messageId: message.messageId, referenceId: reference.referenceId });
     button.props.onClick();

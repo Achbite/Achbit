@@ -44,6 +44,8 @@ Read `docs/product/ui-plugins.md` and `docs/plugins/README.md` for the interface
 
 ## Reusable interaction lessons
 
+Review each newly introduced control, state or style in the changed code, including first-party previews. Look for an equivalent registered primitive or a composition, then describe the need for any distinct interaction. Mechanical checks enforce definite catalog and behavior contracts. Judge hierarchy, typography and novel compositions in the rendered layout. The GUI catalog README documents the incremental review and responsive browser commands.
+
 Use the [interaction-type review format](../SKILL.md#boundary-review-by-interaction-type) with the relevant lessons below. Fill in the starting state, boundary condition and expected behavior for the affected surface, then record the actual observation in the task.
 
 - **Focus and dismissal:** include portal roots in the interaction boundary. Give nested Escape handling a clear priority, return keyboard focus to the appropriate caller, and preserve editing and text selection during pointer cleanup.
@@ -51,7 +53,7 @@ Use the [interaction-type review format](../SKILL.md#boundary-review-by-interact
 - **Async ownership:** keep permission decisions and directory/model responses attached to the initiating owner as the user changes selection or Session. Resolve races at the producing store or operation.
 - **Shared viewers:** coordinate image, Mermaid and table behavior for fit, zoom/reset, close/reopen and overflow. Keep continued scrolling connected to the surrounding conversation.
 - **Combined states:** derive endpoints from actual capabilities and inspect meaningful combinations, such as highest effort with delegation on/off. Consider hit targets, contours and nearby controls together.
-- **Previews in context:** use isolated previews to explore a treatment and production components to understand integration. Keep the preview and the actual product change clearly identified.
+- **Previews in context:** use isolated previews to explore a treatment and production components to understand integration. Use the same shared controls in the preview’s own UI, including `DisclosureSummary` for expandable results. A preview of the current product imports the actual feature components and their styles. Supply fixture data and an isolated transport at their boundary. Keep an exploratory prototype and its proposed treatment identifiable.
 
 ## Maintaining the design direction
 

@@ -26,11 +26,19 @@
     <textarea required aria-label="${labels.comment}" placeholder="${labels.placeholder}"></textarea>
     <div class="actions"><button type="button" data-cancel>${labels.cancel}</button><button type="submit">${labels.save}</button></div>
   </form><div class="hint"></div>`;
-  document.documentElement.append(host);
+  // A root overlay is inert behind showModal(), regardless of z-index. Attach to
+  // the hit-tested top modal and lift the shield out of its clip/transform.
+  const modal = document.elementFromPoint(innerWidth / 2, innerHeight / 2)?.closest?.('dialog:modal')
+    ?? document.activeElement?.closest?.('dialog:modal');
+  (modal ?? document.documentElement).append(host);
+  if (typeof host.showPopover === 'function') {
+    host.popover = 'manual'; host.showPopover();
+  }
   const box = root.querySelector('.box'), editor = root.querySelector('.editor'), input = root.querySelector('textarea');
   const hint = root.querySelector('.hint');
   const events = new AbortController();
   let selected = null, origin = null, pending = null, dragging = false, editingId = null, pointerId = null;
+  modal?.addEventListener('close', () => dispose(), { once: true, signal: events.signal });
   const dragThreshold = 8;
   const state = { reviewId, active: true, pending: null, dispose, acknowledge };
   window.__achbitReview = state;

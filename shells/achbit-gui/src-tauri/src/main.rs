@@ -47,6 +47,12 @@ use achbit_host_connection::shell_lifecycle::OwnedHostChildren;
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 31246;
 const APP_ASSET_SCHEME: &str = "achbit-gui";
+// WebView2 exposes registered schemes through an HTTP origin. Use the address
+// the engine reports for initial navigation, reuse and subsequent navigation.
+#[cfg(windows)]
+const APP_ASSET_ORIGIN: &str = "http://achbit-gui.localhost/";
+#[cfg(not(windows))]
+const APP_ASSET_ORIGIN: &str = "achbit-gui://localhost/";
 const APP_ASSET_DIR: &str = "web-achbit-gui";
 
 struct RuntimeLocations {
@@ -999,9 +1005,9 @@ fn create_main_window(
     host_tokens: &HostConnectionTokens,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let geometry = app.state::<window_state::WindowState>().geometry();
-    let boot_url = format!("{APP_ASSET_SCHEME}://localhost/index.html");
+    let boot_url = bundled_app_url("index.html")?;
     let initialization_script = host_bootstrap_script(target, host_tokens, false);
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(boot_url.parse()?))
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(boot_url))
         .data_directory(ssh_gui::webview_directory(target))
         .initialization_script(initialization_script)
         .on_navigation(trusted_app_navigation)
@@ -1053,9 +1059,12 @@ fn host_bootstrap_script(
     format!("Object.defineProperty(window,'__ACHBIT_HOST_BOOT__',{{value:Object.freeze({bootstrap}),writable:false,configurable:true}});")
 }
 
+fn bundled_app_url(asset: &str) -> Result<tauri::Url, String> {
+    tauri::Url::parse(&format!("{APP_ASSET_ORIGIN}{asset}")).map_err(|error| error.to_string())
+}
+
 fn trusted_app_navigation(url: &tauri::Url) -> bool {
-    (url.scheme() == APP_ASSET_SCHEME && url.host_str() == Some("localhost"))
-        || (url.scheme() == "http" && url.host_str() == Some(concat!("achbit-gui", ".localhost")))
+    url.as_str().starts_with(APP_ASSET_ORIGIN)
         // WKWebView also reports navigation inside the sandboxed document iframe.
         || (url.scheme() == "about" && matches!(url.path(), "srcdoc" | "blank"))
 }

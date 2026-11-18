@@ -4,6 +4,11 @@ import type { AgentLoopDeps } from './loop.js';
 
 const PROVIDER_MAX_RETRY_DELAY_MS = 60_000;
 
+export async function waitForRetryAt(deadline: number, signal: AbortSignal): Promise<void> {
+  while (Date.now() < deadline) await waitForRetry(Math.min(deadline - Date.now(), 2_147_483_647), signal);
+  signal.throwIfAborted();
+}
+
 export function waitForRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(signal.reason); return; }
@@ -91,10 +96,15 @@ export async function withProviderAttempts<T>(
       if (completed || signal.aborted) throw classifyFailure(error);
       const diagnostic = failure.diagnostics;
       if (!(error instanceof ProviderReportedFailure) || diagnostic?.source !== 'providerTransport'
-        || diagnostic.category !== 'network' || !diagnostic.retryable) throw error;
-      const delay = Math.min(PROVIDER_MAX_RETRY_DELAY_MS, 1000 * 2 ** Math.min(attempt - 1, 6));
-      await record('retryWaiting', { error: failure, retryAt: String(Date.now() + delay) });
-      await waitForRetry(delay, signal);
+        || !diagnostic.retryable || diagnostic.secondary?.length
+        || diagnostic.providerError?.retryDirective === 'NO_MORE_RETRY') throw error;
+      const deadline = diagnostic.category === 'network'
+        ? Date.now() + Math.min(PROVIDER_MAX_RETRY_DELAY_MS, 1000 * 2 ** Math.min(attempt - 1, 6))
+        : diagnostic.category === 'provider' ? diagnostic.providerError?.retryAt : undefined;
+      if (deadline === undefined) throw error;
+      await record('retryWaiting', { error: failure, retryAt: String(deadline) });
+      if (diagnostic.category === 'network') await waitForRetry(Math.max(0, deadline - Date.now()), signal);
+      else await waitForRetryAt(deadline, signal);
       continue;
     }
     // Persistence failures after a successful generation must never resend it.

@@ -3,8 +3,7 @@ import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { QueuedInputProjection } from '@achbit/protocol';
 import type { UiLanguage } from '../../src/i18n';
-import { Button, UiIcon, type UiIconName } from '../../src/ui-components';
-import { UI_ICON_GLYPHS } from '../../src/icons/registry';
+import { Button, UiIcon, UI_ICON_NAMES } from '../../src/ui-components';
 import ProviderStageStatus from '../../src/components/local-agent/ProviderStageStatus';
 import { SessionRunStatus } from '../../src/components/local-agent/SessionRunStatus';
 import { ProviderRetryStatus } from '../../src/components/local-agent/RunFailureDetails';
@@ -77,7 +76,7 @@ function Preview() {
         </section>
         <section><h2>同类状态图标</h2><div className="fixture-session-statuses">{states.map(status => <SessionRunStatus key={status} language={language}
           run={{ runId: 'run:status', status, waitingReason: 'userInput' } as never} />)}</div></section>
-        <section><h2>共享图标＋文字控件</h2><div className="fixture-icons">{(Object.keys(UI_ICON_GLYPHS) as UiIconName[]).map(name => <Button key={name} data-fixture-icon={name}><UiIcon name={name} size={16} /><span>{language === 'zh-CN' ? '操作 ' : 'Action '}{name}</span></Button>)}</div></section>
+        <section><h2>共享图标＋文字控件</h2><div className="fixture-icons">{UI_ICON_NAMES.map(name => <Button key={name} data-fixture-icon={name}><UiIcon name={name} size={16} /><span>{language === 'zh-CN' ? '操作 ' : 'Action '}{name}</span></Button>)}</div></section>
       </main>
     </div>
   </>;

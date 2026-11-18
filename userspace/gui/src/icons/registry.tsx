@@ -60,6 +60,7 @@ export const UI_ICON_GLYPHS = {
 } as const;
 
 export type UiIconName = keyof typeof UI_ICON_GLYPHS;
+export const UI_ICON_NAMES = Object.freeze(Object.keys(UI_ICON_GLYPHS) as UiIconName[]);
 export const UI_ICON_ROLES = {
   settings: {
     workspace: 'folder', general: 'settings', appearance: 'appearance',

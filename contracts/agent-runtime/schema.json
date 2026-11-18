@@ -1681,6 +1681,14 @@
         }
       }
     },
+    "ProviderContinuation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runId", "providerRequestId", "retryAt"],
+      "properties": {
+        "runId": {"$ref": "#/$defs/Id"}, "providerRequestId": {"$ref": "#/$defs/Id"},
+        "retryAt": {"type": "integer", "minimum": 0, "maximum": 8640000000000000}
+      }
+    },
     "RunStartedPayload": {
       "type": "object",
       "additionalProperties": false,
@@ -1692,6 +1700,7 @@
           "items": { "$ref": "#/$defs/WorkspaceBinding" }
         },
         "runtimeSnapshot": { "$ref": "#/$defs/RunRuntimeSnapshot" },
+        "continuation": {"$ref": "#/$defs/ProviderContinuation"},
         "contextStart": {"type": "object", "additionalProperties": false,
           "required": ["historyThroughSequence", "previousProfileId"], "properties": {
             "historyThroughSequence": {"type": "integer", "minimum": 1},
@@ -2130,7 +2139,7 @@
           "required": ["schemaVersion", "type", "commandId", "sessionId", "runId"],
           "properties": {
             "schemaVersion": {"const": "achbit.command.v3"},
-            "type": {"const": "run.cancel"},
+            "type": {"enum": ["run.cancel", "provider.continue"]},
             "commandId": {"$ref": "#/$defs/Id"},
             "sessionId": {"$ref": "#/$defs/Id"},
             "runId": {"$ref": "#/$defs/Id"}
@@ -3660,6 +3669,7 @@
       "required": ["runId", "profileId", "status", "workspaceBindings"],
       "properties": {
         "mode": {"enum": ["minimal", "full"]},
+        "continuation": {"$ref": "#/$defs/ProviderContinuation"},
         "hostBinding": {"$ref": "#/$defs/HostWindowBinding"},
         "runId": {"$ref": "#/$defs/Id"},
         "profileId": {"$ref": "#/$defs/Id"},
@@ -3833,7 +3843,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [],
-          "properties": {"code": {"$ref": "#/$defs/Id"}, "type": {"$ref": "#/$defs/Id"}, "status": {"$ref": "#/$defs/Id"}, "httpStatus": {"type": "integer", "minimum": 100, "maximum": 599}, "retryDirective": {"$ref": "#/$defs/Id"}},
+          "properties": {"code": {"$ref": "#/$defs/Id"}, "type": {"$ref": "#/$defs/Id"}, "status": {"$ref": "#/$defs/Id"}, "httpStatus": {"type": "integer", "minimum": 100, "maximum": 599}, "retryDirective": {"$ref": "#/$defs/Id"}, "retryAt": {"type": "integer", "minimum": 0, "maximum": 8640000000000000}},
           "minProperties": 1
         },
         "secondary": {

@@ -425,14 +425,11 @@
 .plugin-manager__detail dd {margin:0;}
 /* Shared disclosure rhythm for plugin details and secondary settings. */
 .settings-disclosure { min-width:0; margin-block:4px; }
-.settings-disclosure > summary { display:flex; align-items:center; gap:10px; min-height:36px; padding:6px 8px; margin-inline:-8px; border-radius:var(--ac-radius-control,6px); cursor:pointer; list-style:none; color:var(--ac-muted); font:inherit; font-weight:500; }
-.settings-disclosure > summary::-webkit-details-marker { display:none; }
-.settings-disclosure > summary::marker { content:""; }
+.settings-disclosure > summary { --ac-disclosure-icon-size:14px; gap:10px; min-height:36px; padding:6px 8px; margin-inline:-8px; border-radius:var(--ac-radius-control,6px); color:var(--ac-muted); font:inherit; font-weight:500; }
 .settings-disclosure > summary:hover { background:var(--ac-surface-hover); color:var(--ac-foreground); }
 .settings-disclosure > summary:focus-visible { outline:2px solid var(--ac-accent); outline-offset:2px; }
-.settings-disclosure > summary > svg { order:1; margin-left:auto; flex:none; }
+.settings-disclosure > summary > .ac-disclosure-summary__chevron { margin-inline-start:auto; }
 .settings-disclosure[open] > summary { color:var(--ac-foreground); }
-.settings-disclosure[open] > summary > svg { transform:rotate(90deg); }
 .settings-disclosure > :not(summary) { margin-block:8px 12px; }
 .plugin-manager__service .settings-actions { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 12px; }
 .plugin-manager__service dd { min-width:0; }
@@ -470,9 +467,7 @@
 .plugin-manager__filters label { flex: 1; }
 .plugin-import { box-sizing: border-box; max-height: calc(100dvh - 64px); overflow: auto; }
 
-.settings-palette__summary { display: flex; align-items: center; gap: 8px; list-style: none; padding: 8px 0; cursor: pointer; font-size: calc(13px * var(--ac-ui-font-scale, 1)); font-weight: 560; }
-.settings-palette__summary::-webkit-details-marker { display: none; }
-.settings-palette[open] > summary > svg { transform: rotate(90deg); }
+.settings-palette__summary { --ac-disclosure-icon-size: 14px; gap: 8px; padding: 8px 0; font-size: calc(13px * var(--ac-ui-font-scale, 1)); font-weight: 560; }
 .settings-palette__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; }
 .settings-palette__tabs { display: inline-flex; padding: 3px; gap: 3px; border: 1px solid var(--ac-border); border-radius: 8px; background: var(--ac-surface-subtle); }
 .settings-palette__tabs button { border: 0; border-radius: 5px; padding: 5px 12px; background: transparent; color: var(--ac-muted); cursor: pointer; font-size: calc(12px * var(--ac-ui-font-scale, 1)); }

@@ -177,6 +177,57 @@ test('existing model choices persist independently and reuse confirmed state; ne
   assert.equal(writes.length, count, 'a new model is not created by editing one option');
 });
 
+test('Save changes activates for numeric-only or mixed drafts and submits the acknowledged profile once', async t => {
+  const [{ default: ModelEditor }, { useSettingsStore }, { Button }] = await loadGuiModules(t, [
+    '/src/components/settings-center/model-services/ModelEditor.tsx', '/src/state/settingsStore.ts', '/src/ui-components/index.ts',
+  ]);
+  settingsFixture(t, useSettingsStore);
+  const profile = { id: 'model:button', connectionId: 'connection:button', name: 'Saved', model: 'fixture', kind: 'responses',
+    enabled: true, providerFlavor: 'openai', contextWindowTokens: 128000, maxOutputTokens: 16000, temperature: 0.7 };
+  const writes = [];
+  installGuiFetch(t, (url, init) => {
+    assert.equal(url.pathname, '/api/llm/profiles'); assert.equal(init.method, 'PATCH');
+    const saved = JSON.parse(init.body).profile; writes.push(saved);
+    return Response.json({ ok: true, data: { profiles: [saved] } });
+  });
+  function edited(changes) {
+    let staged = false, tree;
+    function Drive() {
+      tree = ModelEditor({ profile, adapter: { id: 'custom', protocols: ['responses'], models: [] }, async onSaved() {} });
+      if (!staged) {
+        staged = true;
+        for (const [key, value] of changes) {
+          const field = elements(tree, node => node.props.name === key)[0];
+          if (field.props.onDraftChange) field.props.onDraftChange(value);
+          else field.props.onChange({ target: { value } });
+        }
+      }
+      return tree;
+    }
+    renderToStaticMarkup(createElement(Drive));
+    return { save: elements(tree, node => node.type === Button && node.props.children === 'Save changes')[0],
+      form: elements(tree, node => node.type === 'form')[0] };
+  }
+  const original = globalThis.HTMLInputElement;
+  class Input { constructor(valid) { this.valid = valid; } reportValidity() { return this.valid; } }
+  globalThis.HTMLInputElement = Input;
+  t.after(() => { if (original) globalThis.HTMLInputElement = original; else delete globalThis.HTMLInputElement; });
+  const event = valid => ({ preventDefault() {}, currentTarget: { elements: { namedItem: () => new Input(valid) } } });
+  assert.equal(edited([['maxOutputTokens', 10000], ['maxOutputTokens', 16000]]).save.props.disabled, true);
+  for (const changes of [[['maxOutputTokens', 24000]], [['name', 'New name']],
+    [['name', 'Together'], ['contextWindowTokens', 200000], ['maxOutputTokens', 150000], ['temperature', undefined]]]) {
+    const before = writes.length, { save, form } = edited(changes);
+    assert.equal(writes.length, before, 'typing does not write');
+    assert.equal(save.props.type, 'submit'); assert.equal(save.props.disabled, false);
+    save.props.onClick({ preventDefault() {}, currentTarget: { form: event(false).currentTarget } });
+    assert.equal(writes.length, before, 'explicit Save also honors field validity');
+    form.props.onSubmit(event(false)); assert.equal(writes.length, before, 'invalid inputs do not write');
+    form.props.onSubmit(event(true)); form.props.onSubmit(event(true)); await flush();
+    assert.equal(writes.length, before + 1);
+    assert.deepEqual(writes.at(-1), JSON.parse(JSON.stringify({ ...profile, ...Object.fromEntries(changes) })));
+  }
+});
+
 test('canonical field refresh preserves independent text edits and removes acknowledged optional fields', async t => {
   const { reconcileSettingFields, reconcileJsonSettingDraft } = await loadGuiModule(t, '/src/components/settings-center/settingDraft.ts');
   const previous = { name: 'Saved', enabled: true, temperature: 0.5 };

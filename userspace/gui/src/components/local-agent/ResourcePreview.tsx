@@ -2,7 +2,6 @@ import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { CloseButton, ResizeHandle } from '../../ui-components';
 import { usePaneWidth } from '../shared/usePaneWidth';
 import { PANE_GEOMETRY, boundedPaneWidth } from '../shared/paneGeometry';
-import { readDocumentText } from './documentResources';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { AgentConversationPage } from './AgentTasksPanel';
 import SshConnection from '../../achbit-gui/layout/SshConnection';
@@ -26,9 +25,11 @@ import {
   readConversationArtifact,
   type ConversationResourceReadResult,
 } from '../../services/localAgentApi';
-import { documentFormat, type DocumentFormat } from './documentResources';
-import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
+import { documentFormat, imageMediaType, readDocumentText, selectedFilePreview, type DocumentFormat } from './documentResources';
+import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, selectReaderTarget, identifyReaderFiles, isReaderFile, type ReaderFileTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
 import { NativeBrowserPreview } from './NativeBrowserPreview';
+import { browserAddressError } from './BrowserChrome';
+import { useUiLanguage } from '../../useUiLanguage';
 import {
   hasNativeBrowser,
   listenNativeActivation,
@@ -39,7 +40,7 @@ import {
   type NativeHostBinding,
   type NativePage,
 } from '../../services/nativeBrowser';
-import { useSettingsStore } from '../../state/settingsStore';
+import { openBoundResource } from './useConversationBodyLinks';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
 import './documentPreview.css';
@@ -75,7 +76,7 @@ export function readerPageName(url: string): string {
   }
 }
 function tabName(tab: ReaderTab, language: UiLanguage): string {
-  if (tab.page) return readerPageName(tab.page.url);
+  if (tab.page) return tab.page.navigation?.title.trim() || readerPageName(tab.page.url);
   if (tab.target.kind === 'agent') return t(language, 'agent.page.title');
   if (tab.target.kind === 'diff') return readerFilename(tab.target.file.path) + ' · diff';
   if (tab.target.kind === 'resource') return tab.target.name;
@@ -94,6 +95,7 @@ function tabName(tab: ReaderTab, language: UiLanguage): string {
 /** View state owns open tabs; a collapsed panel keeps their content and native pages mounted. */
 export function useResourcePreview(sessionId: string | null, navigation?: ReaderNavigation) {
   const host = useConversationHost();
+  const language = useUiLanguage();
   const [state, setState] = useState<ReaderViewState>(() => readReaderViewState(sessionId));
   useInterfaceReloadView('reader', { ...state, tabs: state.tabs.map(tab => tab.page ? { ...tab, target: { kind: 'browser', previewId: tab.page.previewId } } : tab) });
   const [treeVisible, setTreeVisible] = useState(() => readViewState('file-tree', true));
@@ -101,6 +103,11 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const [error, setError] = useState<string | null>(null);
   const [reviewEdit, setReviewEdit] = useState<(BrowserReviewEdit & { sessionId: string | null }) | null>(null);
   const bindings = useRef(new Map<string, NativeHostBinding>());
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const openSequence = useRef(0);
+  const openLifetime = useRef({});
+  useLayoutEffect(() => () => { openLifetime.current = {}; }, [sessionId]);
   const currentSession = useRef(sessionId);
   currentSession.current = sessionId;
   const live =
@@ -108,33 +115,32 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       ? state
       : { sessionId, tabs: [], activeId: null, visible: false, expanded: false };
   const selectTarget = useCallback(
-    (target: ResolvedReaderTarget) => {
+    (target: ResolvedReaderTarget, activate = true, restored?: Map<ReaderTarget, ReaderFileTarget>) => {
       if (!sessionId) return;
-      const key = targetKey(target);
-      setState((old) => {
-        const tabs = old.sessionId === sessionId ? old.tabs : [];
-        const existing = tabs.find(
-          (tab) =>
-            tab.id === key ||
-            (target.kind === 'browser' &&
-              target.previewId &&
-              tab.page?.previewId === target.previewId),
-        );
-        return {
-          sessionId,
-          tabs: existing ? tabs.map((tab) => tab === existing && (target.kind === 'workspace' || target.kind === 'agent') ? { ...tab, target } : tab) : [...tabs, { id: key, target }],
-          activeId: existing?.id ?? key,
-          visible: true,
-          expanded: old.sessionId === sessionId && old.expanded,
-        };
-      });
-      saveViewState(sessionId + ':selection', target);
-      setError(null);
+      setState(old => selectReaderTarget(old, sessionId, target, activate, restored));
+      if (activate) setError(null);
     },
     [sessionId],
   );
   const openTarget = useCallback((target: ReaderTarget) => {
     if (!sessionId) return;
+    const sequence = ++openSequence.current;
+    const lifetime = openLifetime.current;
+    if (isReaderFile(target)) {
+      const tabs = stateRef.current.sessionId === sessionId ? stateRef.current.tabs : [];
+      void identifyReaderFiles(sessionId, target, tabs, async (owner, file) => {
+        if (file.kind === 'file') return host.selectedFilePath(file.path);
+        const reference = file.kind === 'resource' ? file.resource : { workspaceId: file.workspaceId, logicalPath: file.logicalPath };
+        return (await host.resources.resolveResourceReference(owner, reference)).path;
+      }).then(({ located, restored }) => {
+        if (currentSession.current === sessionId && openLifetime.current === lifetime) selectTarget(located, sequence === openSequence.current, restored);
+      }).catch(reason => {
+        if (currentSession.current !== sessionId || openLifetime.current !== lifetime || sequence !== openSequence.current) return;
+        setState(old => old.sessionId === sessionId ? { ...old, visible: true } : old);
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+      return;
+    }
     if (target.kind !== 'browser') {
       selectTarget(target);
       return;
@@ -148,11 +154,11 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       if (!binding) throw new Error('Native browser requires the desktop GUI Host.');
       const page = await nativeBrowserCommand<NativePage>({ ...binding, sessionId }, target.selfPreview
         ? { action: 'openSelf' }
-        : { action: 'open', ...(target.filePath ? { filePath: target.filePath } : nativeNavigationInput(target.url ?? '')) });
+        : { action: 'open', viewport: { mode: 'adaptive' }, ...(target.filePath ? { filePath: target.filePath } : nativeNavigationInput(target.url ?? '')) });
       if (currentSession.current === sessionId) selectTarget({ kind: 'browser', previewId: page.previewId });
     };
-    void open().catch((reason) => { if (currentSession.current === sessionId) setError(String(reason)); });
-  }, [sessionId, selectTarget]);
+    void open().catch((reason) => { if (currentSession.current === sessionId) setError(browserAddressError(reason, language)); });
+  }, [sessionId, selectTarget, language, host]);
   useEffect(() => {
     bindings.current.clear();
     setState(current => current.sessionId === sessionId ? current : readReaderViewState(sessionId));
@@ -177,12 +183,16 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const request = navigation?.request;
   useEffect(() => {
     if (!request || request.location.sessionId !== sessionId) return;
+    openSequence.current++;
     const { target, visible, expanded } = request.location;
     if (target) selectTarget(target);
     else saveViewState(sessionId + ':selection', null);
     setState(old => ({ ...old, sessionId, activeId: target ? old.activeId : null, visible, expanded }));
   }, [request, sessionId, selectTarget]);
   const selectedTarget = live.tabs.find(tab => tab.id === live.activeId)?.target ?? null;
+  useEffect(() => {
+    if (selectedTarget && sessionId && state.sessionId === sessionId) saveViewState(sessionId + ':selection', selectedTarget);
+  }, [selectedTarget, sessionId, state.sessionId]);
   const onNavigationChange = navigation?.onChange;
   useEffect(() => {
     // Wait for this session's reader state to settle before reporting a location.
@@ -226,24 +236,10 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   }, []);
   const openWorkspaceResource = async (workspaceId: string, logicalPath: string, position?: SourcePosition) => {
     if (!sessionId) return;
-    const resource = await host.resolveResource(sessionId, workspaceId, logicalPath);
-    if (currentSession.current !== sessionId) return;
-    if (resource.kind === 'directory') {
-      if (!host.locatePath) throw new Error('Directory opening requires the desktop Host.');
-      await host.locatePath(resource.path);
-      return;
-    }
-    if (
-      useSettingsStore.getState().effectiveSettings['gui.defaultFileOpen'] === 'vscode' &&
-      !/\.(pdf|png|jpe?g|gif|webp|svg|bmp)$/i.test(logicalPath)
-    ) {
-      if (!host.openFile) throw new Error('Open in VS Code is unavailable in this Host.');
-      await host.openFile(resource.path, position);
-      return;
-    }
-    openTarget({ kind: 'workspace', workspaceId, logicalPath, line: position?.line, column: position?.column });
+    await openBoundResource(host, sessionId, workspaceId, logicalPath, position, () => currentSession.current === sessionId, openTarget);
   };
   const removeTab = (id: string) => {
+    openLifetime.current = {};
     navigation?.onTabClosed(sessionId, id);
     bindings.current.delete(id);
     setState((old) => {
@@ -285,7 +281,8 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const toggle = () =>
     setState((old) => ({ ...old, sessionId, visible: !old.visible, expanded: false }));
   const expand = () => setState((old) => ({ ...old, expanded: !old.expanded }));
-  const selectTab = (id: string) =>
+  const selectTab = (id: string) => {
+    openSequence.current++;
     setState((old) => {
       saveViewState(
         sessionId + ':selection',
@@ -293,7 +290,11 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       );
       return { ...old, activeId: id };
     });
-  const newPage = () => setState((old) => ({ ...old, activeId: null, visible: true }));
+  };
+  const newPage = () => {
+    openSequence.current++;
+    setState(old => ({ ...old, activeId: null, visible: true }));
+  };
   return {
     ...live,
     width,
@@ -509,7 +510,7 @@ export function ReaderControls({ sessionId, language, preview, disabled }: {
   const identity = useUiOwner('reader.controls', undefined, { sessionId });
   const chinese = language === 'zh-CN';
   const expandLabel = preview.expanded ? (chinese ? '返回并排' : 'Restore split view') : (chinese ? '铺满工作区' : 'Expand preview');
-  const sidebarLabel = chinese ? '浏览器与预览' : 'Browser and preview';
+  const sidebarLabel = t(language, 'agent.resource.preview');
   return <>
     {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" {...identity.action('toggle-tree', 'click')} className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><AchbitShellIcon name="folder" /></button>}
     {preview.visible && <button type="button" {...identity.action('toggle-expanded', 'click')} className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>
@@ -695,14 +696,8 @@ function ReaderDocument({
       if (target.kind === 'file') {
         if (!host.readLocalFile) throw new Error('Local file reading requires the desktop Host.');
         const blob = await host.readLocalFile(target.path);
-        if (documentFormat(path)) {
-          const header = await blob.slice(0, 5).text();
-          if (documentFormat(path) === 'pdf' && header !== '%PDF-') throw new Error('当前文件不是 PDF 文档。');
-          if (!controller.signal.aborted) setState({ status: 'document', blob, format: documentFormat(path)! });
-        } else {
-          const content = await readDocumentText(blob);
-          if (!controller.signal.aborted) setState({ status: 'source', content });
-        }
+        const result = await selectedFilePreview(path, blob);
+        if (!controller.signal.aborted) setState(result);
         return;
       }
       if (target.kind === 'artifact') {
@@ -727,7 +722,7 @@ function ReaderDocument({
         return;
       }
       const format = startByte === undefined && sourceLine === undefined ? documentFormat(path) : null;
-      if (startByte === undefined && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(path)) {
+      if (startByte === undefined && imageMediaType(path)) {
         const blob = await host.resources.readResourceBlob(sessionId, reference!, 'image', controller.signal);
         if (!controller.signal.aborted) setState({ status: 'document', blob, format: 'image' });
       } else if (format) {

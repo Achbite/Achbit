@@ -44,9 +44,10 @@ export function targetIdentity(target: DesktopPreviewTarget | BrowserPreviewTarg
     : `${target.windowId}:${target.generation}`;
 }
 
-/** Closed targets have no preview; a delta frame belongs only to its exact target. */
+/** Terminal targets have no live preview; their diagnostic response remains
+ * intact. A delta frame belongs only to its exact, still-active target. */
 export function acceptPreview<T extends DesktopPreviewTarget | BrowserPreviewTarget>(previous: ComputerPreview<T> | null, next: ComputerPreview<T>): ComputerPreview<T> | null {
-  if (next.state === 'closed') return null;
+  if (next.state === 'closed' || next.state === 'stopped') return null;
   if (next.pending) return previous ?? { state: 'starting' };
   if (next.state !== 'active' || !next.target) return { ...next, frame: undefined, pointer: undefined };
   const frame = next.frame ?? (!next.frameError && targetIdentity(previous?.target) === targetIdentity(next.target) ? previous?.frame : undefined);

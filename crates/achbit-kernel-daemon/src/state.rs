@@ -84,6 +84,7 @@ pub(crate) struct GuiState {
     pub(crate) ui_plugin_clients:
         HashMap<String, Option<Vec<crate::plugin_management::UiRuntimeEntry>>>,
     pub(crate) service_plugins: crate::service_plugins::ServicePlugins,
+    pub(crate) github_login: crate::github_plugin_account::Login,
     pub(crate) llm_profiles: LlmProfileStore,
     pub(crate) conversation_catalog: crate::conversation_catalog::ConversationCatalog,
     pub(crate) conversation_catalog_error: Option<String>,
@@ -142,6 +143,7 @@ impl GuiState {
             settings_changes: tokio::sync::watch::channel(()).0,
             ui_plugin_clients: HashMap::new(),
             service_plugins: crate::service_plugins::ServicePlugins::default(),
+            github_login: Default::default(),
             llm_profiles,
             conversation_catalog,
             conversation_catalog_error,

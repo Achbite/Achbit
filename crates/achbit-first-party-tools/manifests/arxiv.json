@@ -3,14 +3,15 @@
   "id": "arxiv",
   "uri": "plugin://arxiv@first-party",
   "displayName": "arXiv",
-  "shortDescription": "搜索论文，查看摘要与来源。",
+  "shortDescription": "搜索 arXiv 论文，按章节或页码阅读原文。",
   "activationMediaTypes": [],
   "providerRef": "tool-provider:first-party:arxiv",
   "capabilityRefs": [
     "arxiv:metadata-search",
-    "arxiv:paper-read"
+    "arxiv:paper-read",
+    "arxiv:full-text-read"
   ],
-  "capabilitySummary": "Provides arXiv-native metadata search and canonical paper record reads.",
+  "capabilitySummary": "Search arXiv papers by topic, author, category and date. Read paper metadata or versioned full text with sections, pages and source citations.",
   "tools": [
     {
       "remoteName": "search",
@@ -64,6 +65,22 @@
               "descending"
             ],
             "default": "descending"
+          },
+          "author": {
+            "type": "string",
+            "description": "Author name or phrase."
+          },
+          "category": {
+            "type": "string",
+            "description": "A single category, for example cs.LG."
+          },
+          "submittedFrom": {
+            "type": "string",
+            "description": "Inclusive submission date in YYYY-MM-DD format."
+          },
+          "submittedTo": {
+            "type": "string",
+            "description": "Inclusive submission date in YYYY-MM-DD format."
           }
         },
         "required": [
@@ -88,14 +105,40 @@
     {
       "remoteName": "read",
       "canonicalName": "arxiv.read",
-      "description": "Read one canonical arXiv paper metadata record by arXiv identifier.",
+      "description": "Read paper metadata or full text from an arXiv ID, abstract, HTML or PDF link. Full text uses official HTML sections or text extracted from PDF pages. Use next for a version-pinned continuation.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
             "minLength": 1,
-            "description": "Canonical arXiv identifier, optionally including a version."
+            "description": "Modern or archive-style arXiv ID, optionally versioned, or an official paper link."
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "metadata",
+              "fullText"
+            ],
+            "default": "metadata"
+          },
+          "section": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "UTF-8 byte position from a continuation."
+          },
+          "maxBytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 131072
           }
         },
         "required": [
@@ -111,9 +154,9 @@
       "toolContributionRef": "tool-contribution:first-party:arxiv.read",
       "promptContribution": {
         "contributionRef": "tool-prompt-contribution:first-party:arxiv.read",
-        "promptSnippet": "Read the canonical metadata record for a known arXiv identifier.",
+        "promptSnippet": "Read arXiv metadata, HTML sections or PDF pages.",
         "usageGuidelines": [
-          "Use an identifier returned by arXiv search when the full canonical paper record is needed."
+          "Use view=fullText for questions about methods, evidence and results. Pick a section from the table of contents or a PDF page, and follow next for remaining text. Cite the returned location and versioned source URL."
         ]
       }
     }

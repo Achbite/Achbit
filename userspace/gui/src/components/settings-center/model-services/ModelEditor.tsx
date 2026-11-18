@@ -1,4 +1,4 @@
-import { DisclosureSummary, NativeSelect, ToggleSwitch } from '../../../ui-components';
+import { Button, DisclosureSummary, NativeSelect, ToggleSwitch } from '../../../ui-components';
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';
 import { modelReasoningEfforts, modelThinkingModes } from '@achbit/protocol';
@@ -10,6 +10,8 @@ import { patchLlmProfiles, probeLlmProfile } from '../../../services/apiClient';
 import { reconcileSettingFields } from '../settingDraft';
 import { useModelLanguage, data, message, Hint } from './shared';
 
+const editableFields = ['name', 'model', 'contextWindowTokens', 'maxOutputTokens', 'temperature'] as const;
+
 // Applying a preset is an explicit action on a new, unsaved profile only.
 export function selectNewModelPreset(profile: LlmProviderProfile, adapter: ProviderAdapterDescriptor, model: string): LlmProviderProfile {
   const preset = adapter.models.find(item => item.model === model);
@@ -18,9 +20,9 @@ export function selectNewModelPreset(profile: LlmProviderProfile, adapter: Provi
   return { ...preset, id: profile.id, connectionId: profile.connectionId, name };
 }
 
-export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRemove, reveal = false }: {
+export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRemove, reveal = false, onBusyChange }: {
   profile: LlmProviderProfile; adapter: ProviderAdapterDescriptor; defaultId?: string;
-  onSaved(): Promise<void>; onRemove?(): void; reveal?: boolean;
+  onSaved(): Promise<void>; onRemove?(): void; reveal?: boolean; onBusyChange?(busy: boolean): void;
 }) {
   const { text, language } = useModelLanguage();
   const details = useRef<HTMLDetailsElement>(null);
@@ -34,6 +36,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
   const [confirmed, setConfirmed] = useState(profile);
   const baseline = useRef(profile);
   const [busy, setBusy] = useState(false);
+  const pending = useRef(false);
   const [feedback, setFeedback] = useState('');
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -42,14 +45,16 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
     setDraft(current => reconcileSettingFields(current, previous, profile));
   }, [profile]);
   useAutoDismiss(!failed && feedback, () => setFeedback(''));
-  const textDirty = draft.name !== confirmed.name || draft.model !== confirmed.model;
-  useInterfaceReloadGuard(!!onRemove || textDirty, confirmed.name, busy);
+  const changedFields = editableFields.filter(key => !Object.is(draft[key], confirmed[key]));
+  const dirty = changedFields.length > 0;
+  useInterfaceReloadGuard(!!onRemove || dirty, confirmed.name, busy);
   const set = <K extends keyof LlmProviderProfile>(key: K, value: LlmProviderProfile[K]) => setDraft(p => ({ ...p, [key]: value }));
   const perform = async (action: () => Promise<void>): Promise<boolean> => {
-    setBusy(true); setFeedback(''); setFailed(false);
+    if (pending.current) return false;
+    pending.current = true; setBusy(true); onBusyChange?.(true); setFeedback(''); setFailed(false);
     try { await action(); return true; }
     catch (error) { setFailed(true); setFeedback(message(error)); return false; }
-    finally { setBusy(false); }
+    finally { pending.current = false; setBusy(false); onBusyChange?.(false); }
   };
   const persist = async (next: LlmProviderProfile, keys: readonly (keyof LlmProviderProfile)[]) => {
     const result = data(await patchLlmProfiles({ profile: next }));
@@ -69,36 +74,62 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
   };
   const choose = async (patches: Partial<LlmProviderProfile>): Promise<boolean> => {
     if (onRemove) { setDraft(current => ({ ...current, ...patches })); return true; }
-    return perform(() => persist({ ...baseline.current, ...patches }, Object.keys(patches) as (keyof LlmProviderProfile)[]));
+    return perform(async () => {
+      await persist({ ...baseline.current, ...patches }, Object.keys(patches) as (keyof LlmProviderProfile)[]);
+      setFeedback(text('已保存', 'Saved'));
+    });
   };
   const selected = onRemove ? draft : confirmed;
   const efforts = modelReasoningEfforts(selected);
   const thinkingModes = modelThinkingModes(selected);
   const unsupportedEffort = selected.reasoningEffort !== undefined && !efforts.includes(selected.reasoningEffort);
   const unsupportedThinking = selected.thinking !== undefined && !thinkingModes.includes(selected.thinking);
+  const saveChanges = (keys: readonly (keyof LlmProviderProfile)[]) => perform(async () => {
+    const changes = Object.fromEntries(keys.map(key => [key, draft[key]]));
+    await persist(onRemove ? draft : { ...baseline.current, ...changes }, keys);
+    setFeedback(text('已保存', 'Saved'));
+  });
+  const submitChanges = (form: HTMLFormElement) => {
+    if (busy || !onRemove && !dirty) return;
+    if (onRemove) {
+      if (!form.reportValidity()) return;
+    } else {
+      // Partial edits validate only submitted fields. The Host checks the merged profile.
+      for (const key of changedFields) {
+        const input = form.elements.namedItem(key);
+        if (input instanceof HTMLInputElement && !input.reportValidity()) return;
+      }
+    }
+    void saveChanges(onRemove ? Object.keys(draft) as (keyof LlmProviderProfile)[] : changedFields);
+  };
   const numeric = (key: 'contextWindowTokens' | 'maxOutputTokens' | 'temperature', label: string, constraints: { min: number; max?: number; step?: number; required?: boolean }) =>
-    <ConfirmedNumberInput {...constraints} value={selected[key]} language={language} label={label} disabled={busy}
-      onCommit={value => choose({ [key]: value })}
-      {...(onRemove ? { onDraftChange: (value: number | undefined) => set(key, value) } : {})} />;
+    <ConfirmedNumberInput {...constraints} name={key} value={selected[key]} language={language} label={label} disabled={busy}
+      onCommit={value => choose({ [key]: value })} onDraftChange={value => set(key, value)} />;
   return <details ref={details} className="model-editor" data-profile-id={profile.id} open={onRemove || reveal ? true : undefined}>
     <DisclosureSummary><strong>{confirmed.name}</strong><span>{confirmed.model}{profile.id === defaultId ? ` · ${text('最近使用', 'Last used')}` : ''}</span></DisclosureSummary>
-    <form noValidate={!onRemove} onSubmit={event => {
+    <form noValidate={!onRemove} onKeyDown={event => {
+      const input = event.target as HTMLInputElement;
+      if (event.key !== 'Enter' || event.defaultPrevented || event.nativeEvent.isComposing || event.keyCode === 229 || event.repeat
+        || input.tagName !== 'INPUT' || input.type !== 'text') return;
       event.preventDefault();
-      if (!onRemove && !textDirty) return;
-      void perform(async () => {
-        await persist(onRemove ? draft : { ...baseline.current, name: draft.name, model: draft.model },
-          onRemove ? Object.keys(draft) as (keyof LlmProviderProfile)[] : ['name', 'model']);
-        setFeedback(text('已保存', 'Saved'));
-      });
+      if (busy) return;
+      if (onRemove) submitChanges(event.currentTarget);
+      else {
+        const textFields = changedFields.filter(key => key === 'name' || key === 'model');
+        if (textFields.length) void saveChanges(textFields);
+      }
+    }} onSubmit={event => {
+      event.preventDefault();
+      submitChanges(event.currentTarget);
     }}>
       <fieldset disabled={busy}>
         <div className="model-form-grid">
-          <label>{text('显示名称', 'Display name')}<input required value={draft.name} onChange={event => set('name', event.target.value)} /></label>
-          <label>{text('模型', 'Model')}<input required value={draft.model} list={`models-${profile.id}`} onChange={event => { const model = event.target.value; setDraft(current => onRemove ? selectNewModelPreset(current, adapter, model) : { ...current, model }); }} /><datalist id={`models-${profile.id}`}>{adapter.models.map(model => <option key={model.model} value={model.model} />)}</datalist></label>
+          <label>{text('显示名称', 'Display name')}<input name="name" required value={draft.name} onChange={event => set('name', event.target.value)} /></label>
+          <label>{text('模型', 'Model')}<input name="model" required value={draft.model} list={`models-${profile.id}`} onChange={event => { const model = event.target.value; setDraft(current => onRemove ? selectNewModelPreset(current, adapter, model) : { ...current, model }); }} /><datalist id={`models-${profile.id}`}>{adapter.models.map(model => <option key={model.model} value={model.model} />)}</datalist></label>
           <label className="model-wide">{text('API 协议', 'API protocol')}<NativeSelect value={selected.kind} onChange={event => void choose({ kind: event.target.value as LlmProviderProfile['kind'], hostedWebSearch: undefined,
             ...(event.target.value !== 'openaiCompatible' ? { fileInputMediaTypes: [] } : {}) })}>{adapter.protocols.map(kind => <option key={kind} value={kind}>{kind === 'responses' ? 'Responses API' : kind === 'openaiCompatible' ? 'Chat Completions' : kind === 'anthropic' ? 'Anthropic Messages' : 'Ollama'}</option>)}</NativeSelect></label>
           <label>{text('上下文窗口', 'Context window')}{numeric('contextWindowTokens', text('上下文窗口', 'Context window'), { min: 2, required: true })}</label>
-          <label>{text('最大输出', 'Maximum output')}{numeric('maxOutputTokens', text('最大输出', 'Maximum output'), { min: 1, max: (selected.contextWindowTokens ?? 2) - 1, required: true })}</label>
+          <label>{text('最大输出', 'Maximum output')}{numeric('maxOutputTokens', text('最大输出', 'Maximum output'), { min: 1, max: (draft.contextWindowTokens ?? 2) - 1, required: true })}</label>
           <label>{text('联网搜索', 'Web search')}<NativeSelect disabled={selected.kind !== 'responses'} title={selected.kind === 'responses' ? undefined : text('当前协议未接入服务原生搜索', 'Provider search is unavailable for this protocol')} value={selected.hostedWebSearch ?? ''} onChange={event => void choose({ hostedWebSearch: event.target.value ? 'web_search' : undefined })}><option value="">{text('关闭', 'Off')}</option><option value="web_search">{text('服务原生搜索', 'Provider search')}</option></NativeSelect></label>
           <label>{text('图片输入', 'Image input')}<NativeSelect value={selected.imageInput === undefined ? '' : String(selected.imageInput)} onChange={event => void choose({ imageInput: event.target.value === '' ? undefined : event.target.value === 'true' })}><option value="">{text('模型预设', 'Model preset')}</option><option value="true">{text('支持', 'Supported')}</option><option value="false">{text('不支持', 'Unsupported')}</option></NativeSelect></label>
           <label>{text('PDF 输入', 'PDF input')}<NativeSelect disabled={selected.kind !== 'openaiCompatible'}
@@ -116,13 +147,22 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
           {adapter.id === 'custom' && <label>{text('协议行为', 'Protocol behavior')}<NativeSelect value={selected.providerFlavor} onChange={event => void choose({ providerFlavor: event.target.value as LlmProviderProfile['providerFlavor'] })}>{['openai','deepseek','zhipu','moonshot'].map(value => <option key={value}>{value}</option>)}</NativeSelect></label>}
         </div></details>
         <div className="model-actions"><label className="model-check"><ToggleSwitch checked={selected.enabled} onChange={event => void choose({ enabled: event.target.checked })} />{text('启用', 'Enabled')}</label>
-          <button type="button" disabled={!!onRemove} onClick={() => void perform(async () => { const result = data(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</button><Hint>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</Hint>
-          {!onRemove && profile.id !== defaultId && <button type="button" disabled={!confirmed.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为最近使用', 'Use by default')}</button>}
-          <button className="model-danger" type="button" onClick={() => onRemove ? onRemove() : void perform(async () => { data(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{text('移除', 'Remove')}</button>
-          {(onRemove || textDirty) && <button className="model-primary model-push" type="submit">{onRemove ? text('添加模型', 'Add model') : text('保存文本', 'Save text')}</button>}
+          <Button variant="secondary" disabled={!!onRemove} onClick={() => void perform(async () => { const result = data(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</Button><Hint>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</Hint>
+          {!onRemove && profile.id !== defaultId && <Button variant="secondary" disabled={!confirmed.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为最近使用', 'Use by default')}</Button>}
+          <Button className="model-danger" onClick={() => onRemove ? onRemove() : void perform(async () => { data(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</Button>
+          <Button className="model-primary model-push" type={onRemove || dirty ? 'submit' : 'button'} disabled={busy || !onRemove && !dirty}
+            onClick={event => {
+              event.preventDefault();
+              if (event.currentTarget.form) submitChanges(event.currentTarget.form);
+            }}>
+            {onRemove ? text('添加模型', 'Add model') : text('保存修改', 'Save changes')}
+          </Button>
         </div>
       </fieldset>
-      {feedback && <div className={failed ? 'settings-error' : 'model-feedback'} role={failed ? 'alert' : 'status'}>{feedback}</div>}
+      <div className={failed ? 'settings-error' : !busy && !dirty && !onRemove ? 'model-feedback' : 'model-save-state'}
+        role={failed ? 'alert' : 'status'}>{busy ? text('正在处理…', 'Working…') : failed ? feedback
+          : dirty ? text('有未保存的修改', 'Unsaved changes')
+          : feedback || (!onRemove ? text('已保存', 'Saved') : '')}</div>
     </form>
   </details>;
 }

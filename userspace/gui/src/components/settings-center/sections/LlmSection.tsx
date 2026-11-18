@@ -13,6 +13,7 @@ import { useSettingsSearchEntries } from '../settingsSearch';
 import { useSettingsHelp } from '../SettingsHelp';
 import { AgentSettingsSection } from './CategorizedSettingsSections';
 import ModelEditor from '../model-services/ModelEditor';
+import ModelPickerDialog from '../model-services/ModelPickerDialog';
 import SubscriptionAuth from '../model-services/SubscriptionAuth';
 import UsageView from '../model-services/UsageView';
 import SubagentSettings from '../model-services/SubagentSettings';
@@ -104,7 +105,9 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
   const adapter = adapters.find(a => a.id === draft.adapterId)!;
   const [apiKey, setApiKey] = useState('');
   const [initialModel, setInitialModel] = useState(first.models[0]?.model ?? '');
-  const [newProfile, setNewProfile] = useState<LlmProviderProfile | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [modelAdded, setModelAdded] = useState(false);
+  useAutoDismiss(modelAdded, () => setModelAdded(false));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -149,9 +152,11 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
     {current && <>
       {current.credentialKind === 'oauth' && <SubscriptionAuth connection={current} onChanged={() => onSaved()} />}
       <UiSettingsContributions slot="settings.connection.detail" onConnectionChanged={() => onSaved()} input={{ kind: 'settings.connection', connection: current, locale: language, theme }} />
-      <div className="model-heading model-divider"><h3>{text('模型', 'Models')}</h3><button disabled={!!newProfile} onClick={() => setNewProfile(newModel(draft, adapter))}>{text('添加模型', 'Add model')}</button></div>
+      <div className="model-heading model-divider"><h3>{text('模型', 'Models')}</h3><button type="button" onClick={() => { setModelAdded(false); setPickerOpen(true); }}>{text('添加模型', 'Add model')}</button></div>
       {models.map(profile => <ModelEditor key={profile.id} profile={profile} adapter={adapter} defaultId={defaultId} reveal={targetProfileId === profile.id} onSaved={() => onSaved()} />)}
-      {newProfile && <ModelEditor key={newProfile.id} profile={newProfile} adapter={adapter} onSaved={async () => { await onSaved(); setNewProfile(null); }} onRemove={() => setNewProfile(null)} />}
+      {modelAdded && <p className="model-feedback" role="status">{text('模型已添加', 'Model added')}</p>}
+      {pickerOpen && <ModelPickerDialog connection={current} adapter={adapter} onClose={() => setPickerOpen(false)}
+        onSaved={async () => { await onSaved(); setModelAdded(true); setPickerOpen(false); }} />}
       <div className="model-actions model-divider"><button onClick={() => void onSaved()}>{text('重新加载', 'Reload')}</button><button className="model-danger model-push" disabled={busy || models.length > 0} onClick={async () => {
         setBusy(true); try { data(await patchModelConnections({ removeConnectionId: draft.id })); await onSaved(); onBack(); } catch (e) { setError(message(e)); } finally { setBusy(false); }
       }}>{text('移除连接', 'Remove connection')}</button>{models.length > 0 && <Hint>{text('先移除连接下的模型，再移除连接。', 'Remove the models before removing this connection.')}</Hint>}</div>

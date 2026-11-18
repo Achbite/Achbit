@@ -75,6 +75,14 @@ pub(crate) fn build_app(state: HostState) -> Router {
             "/api/user-settings/events",
             get(crate::settings_api::user_settings_events),
         )
+        .route(
+            "/api/host/plugins/github/account",
+            get(crate::github_plugin_account::get).delete(crate::github_plugin_account::disconnect),
+        )
+        .route(
+            "/api/host/plugins/github/login",
+            post(crate::github_plugin_account::start).delete(crate::github_plugin_account::cancel),
+        )
         .route("/api/plugin-services", get(crate::service_plugins::list))
         .route(
             "/api/plugin-services/events",

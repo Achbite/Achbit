@@ -1,4 +1,4 @@
-import { BrowserViewportControl } from './BrowserViewportControl';
+import { BrowserChrome } from './BrowserChrome';
 import { measureBrowserSurface } from './nativeBrowserLayout';
 import { NativeBrowserControl } from './NativeBrowserControl';
 import { t } from '../../i18n';
@@ -8,11 +8,9 @@ import {
   nativeBrowserCommand,
   nativeHostBinding,
   listenNativePages,
-  nativeNavigationInput,
   type NativeHostBinding,
   type NativePage,
 } from '../../services/nativeBrowser';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { type BrowserAnnotation, type BrowserReviewEdit } from './browserReview';
 
 export function NativeBrowserPreview({
@@ -40,10 +38,8 @@ export function NativeBrowserPreview({
   );
   const language = useUiLanguage();
   const [page, setPage] = useState<NativePage | null>(null);
-  const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [editingAddress, setEditingAddress] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [reviewOptions, setReviewOptions] = useState<{ annotation?: BrowserAnnotation }>({});
   const handledEdit = useRef<string | null>(null);
@@ -55,21 +51,9 @@ export function NativeBrowserPreview({
     setReviewOptions({ annotation: reviewEdit.annotation });
     setReviewing(true);
   }, [reviewEdit?.requestId, active, page?.status]);
-  const shortAddress = () => {
-    try {
-      const address = new URL(url);
-      return address.protocol === 'file:'
-        ? (decodeURIComponent(address.pathname).split('/').at(-1) ?? url)
-        : page?.kind === 'achbit'
-          ? 'Achbit'
-          : url;
-    } catch {
-      return url;
-    }
-  };
-  const command = async (input: Record<string, unknown>) => {
+  const command = async <T = NativePage,>(input: Record<string, unknown>) => {
     if (!owner.current) throw new Error('Browser page is not ready.');
-    return nativeBrowserCommand<NativePage>(owner.current.binding, {
+    return nativeBrowserCommand<T>(owner.current.binding, {
       previewId: owner.current.page.previewId,
       ...input,
     });
@@ -106,7 +90,6 @@ export function NativeBrowserPreview({
       }
       owner.current = { binding, page, sequence: 0 };
       setPage(page);
-      setUrl(page.url);
       callbacks.current.onReady(page, binding);
     };
     void create().catch((reason: unknown) => {
@@ -131,7 +114,6 @@ export function NativeBrowserPreview({
       if (ended || next.previewId !== owner.current?.page.previewId) return;
       owner.current.page = { ...next, surface: { ...next.surface, generation: owner.current.page.surface.generation } };
       setPage(next);
-      setUrl(next.url);
       if (next.status === 'closed') {
         owner.current = null;
         callbacks.current.onClose();
@@ -195,13 +177,14 @@ export function NativeBrowserPreview({
     try {
       const next = await command(action);
       setPage(next);
-      if (next.url) setUrl(next.url);
       if (owner.current) {
         owner.current.page = next;
         callbacks.current.onReady(next, owner.current.binding);
       }
+      return next;
     } catch (reason) {
       setError(String(reason));
+      return null;
     } finally {
       setBusy(false);
     }
@@ -254,60 +237,16 @@ export function NativeBrowserPreview({
   }, [reviewing, active, page?.previewId, page?.status, language, reviewOptions, updateLayout]);
   return (
     <section className="native-browser-preview">
-      <form
-        className="document-preview__toolbar native-browser-address"
-        onSubmit={(event) => {
-          event.preventDefault();
-          try { void act({ action: 'navigate', ...nativeNavigationInput(url) }); }
-          catch (reason) { setError(String(reason)); }
-        }}
-      >
-        <div className="native-browser-location"><input
-          aria-label={t(language, 'reader.address')}
-          title={url}
-          value={editingAddress ? url : shortAddress()}
-          onFocus={() => setEditingAddress(true)}
-          onBlur={() => setEditingAddress(false)}
-          readOnly={page?.kind === 'achbit'}
-          onChange={(event) => setUrl(event.target.value)}
-          placeholder="https://…"
-        />
-        {page?.control && owner.current && <NativeBrowserControl key={page.previewId}
-          binding={owner.current.binding} previewId={page.previewId} language={language} onError={setError} />}
-        </div>
-        <button disabled={!page || busy || page.kind === 'achbit'} type="submit">
-          {t(language, 'reader.open')}
-        </button>
-        <button
-          disabled={!page || busy}
-          type="button"
-          onClick={() => void act({ action: 'reload' })}
-          aria-label={t(language, 'reader.refresh')}
-          title={t(language, 'reader.refresh')}
-        >
-          <AchbitShellIcon name="refresh" />
-        </button>
-        {page && <BrowserViewportControl value={page.viewport} language={language} disabled={busy}
-          onChange={viewport => void act({ action: 'setViewport', viewport })} />}
-        {page?.status === 'loading' && <small role="status">{t(language, 'reader.loading')}</small>}
-        {reviewing ? <div className="native-browser-review-controls" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setReviewing(false); } }}>
-          <span title={t(language, 'reader.annotation.hint')}>{t(language, 'reader.annotation.gesture')}</span>
-          <kbd>esc</kbd><button type="button" aria-label={t(language, 'reader.annotation.exit')} onClick={() => setReviewing(false)}><AchbitShellIcon name="close" size={14} /></button>
-        </div> : <button
-          disabled={!page || page.status !== 'ready' || busy || !onReview}
-          type="button"
-          onClick={startReview}
-          title={t(language, 'reader.annotation.hint')}
-        >
-          <AchbitShellIcon name="compose" />
-          <span>{t(language, 'reader.annotation.annotation')}</span>
-        </button>}
-      </form>
-      {error && (
-        <p role="alert" className="local-agent__resource-error">
-          {error}
-        </p>
-      )}
+      <BrowserChrome page={page} active={active} busy={busy} language={language} reviewing={reviewing}
+        onAction={act} onError={setError} onReview={onReview ? startReview : undefined} onExitReview={() => setReviewing(false)}
+        onFind={(text, backwards) => command<{ found: boolean }>({ action: 'find', text, backwards })}
+        onEndFind={() => command({ action: 'endFind' })}
+        onFocusChrome={() => command({ action: 'focusChrome' })}
+        onFocusPage={() => { void command({ action: 'focus' }).catch(reason => setError(String(reason))); }}
+        onClose={async () => { await command({ action: 'close' }); callbacks.current.onClose(); }}
+        control={page?.control && owner.current ? <NativeBrowserControl key={page.previewId}
+          binding={owner.current.binding} previewId={page.previewId} language={language} onError={setError} /> : null} />
+      {(error || page?.loadError) && <p role="alert" className="local-agent__resource-error">{error || page?.loadError}</p>}
       <div
         className="native-browser-preview__surface"
         ref={surface}

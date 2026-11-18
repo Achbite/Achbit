@@ -14,7 +14,6 @@ import '../../src/theme/paletteBase.css';
 import '../../src/theme/builtinFonts.css';
 import '../../src/components/local-agent/localAgentPanel.css';
 import '../../src/components/shared/focus.css';
-import '../../src/ui-components/controls.css';
 
 installPaletteDefaults();
 const plan = { planId: 'plan:preview', revision: 1, title: '内置浏览器交互渲染测试页', steps: [], mutationManifest: [] };
