@@ -7,6 +7,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE,
     MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+    VK_OEM_MINUS, VK_OEM_PLUS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
@@ -58,6 +59,8 @@ pub fn parse_key(value: &str) -> Result<(Vec<u16>, Key), String> {
         "backspace" => (0x08, false),
         "delete" | "del" => (0x2E, true),
         "insert" => (0x2D, true),
+        "=" | "equal" => (VK_OEM_PLUS.0, false),
+        "-" | "minus" => (VK_OEM_MINUS.0, false),
         "left" => (0x25, true),
         "up" => (0x26, true),
         "right" => (0x27, true),
@@ -260,6 +263,23 @@ mod tests {
         );
         assert_eq!(parse_key("win+d").unwrap().0, vec![VK_LWIN]);
         assert_eq!(parse_key("F5").unwrap().1.code, 0x74);
+        for (shortcut, alias, code) in [
+            ("ctrl+=", "ctrl+equal", VK_OEM_PLUS.0),
+            ("ctrl+-", "ctrl+minus", VK_OEM_MINUS.0),
+        ] {
+            let parsed = parse_key(shortcut).unwrap();
+            assert_eq!(
+                parsed,
+                (
+                    vec![VK_CONTROL],
+                    Key {
+                        code,
+                        extended: false
+                    }
+                )
+            );
+            assert_eq!(parse_key(alias).unwrap(), parsed);
+        }
         assert!(parse_key("cmd+a").unwrap_err().contains("ctrl"));
         assert!(parse_key("F13").is_err());
         assert!(parse_key("ctrl+").is_err());
