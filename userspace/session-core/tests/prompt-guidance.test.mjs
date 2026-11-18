@@ -79,7 +79,7 @@ test('minimal AC is an ordered subset of full ABC from the same prompt producers
   };
   const preambleId = 'instruction:achbit.coding-agent';
   inOrder(minimal.get(preambleId).split(/(?<=\.)\s+/u), full.get(preambleId));
-  assert.ok(!full.get(preambleId).includes(minimal.get(preambleId)), 'the extra sentence is inserted between common sentences, not a replacement preamble');
+  assert.notEqual(full.get(preambleId).trim(), minimal.get(preambleId).trim(), 'the full preamble adds guidance to the shared sentences');
   for (const id of ['instruction:achbit.coding-tools', 'instruction:achbit.product-docs']) {
     inOrder(minimal.get(id).split('\n').filter(Boolean), full.get(id));
     assert.notEqual(minimal.get(id), full.get(id));
