@@ -1,7 +1,9 @@
 //! Shared GUI/CLI management over the existing installation, settings and runtime owners.
 use crate::prelude::*;
 use crate::{ApiResponse, AppState, ReadyState};
-use achbit_host_connection::plugin_artifact::{inspect_plugin, prepare_plugin};
+use achbit_host_connection::plugin_artifact::{
+    inspect_plugin, prepare_plugin, registered_ui_manifest_id,
+};
 
 const SOURCES: &[(&str, &str)] = &[
     ("cli", "plugins.sources"),
@@ -144,16 +146,40 @@ pub(crate) fn application(state: &AppState, plugin: &Value, enabled: bool) -> Va
     }
 }
 
+pub(crate) fn inspect_registration(kind: &str, source: &Value) -> Value {
+    let path = source["path"]
+        .as_str()
+        .expect("validated registration path");
+    let error = match inspect_plugin(path) {
+        Ok(plugin) if plugin["kind"] != kind => format!(
+            "Registered {kind} plugin contains a {} artifact",
+            plugin["kind"]
+        ),
+        Ok(plugin) if kind == "cli" && plugin["id"] != source["id"] => {
+            "Tool plugin id changed; remove it and import again".into()
+        }
+        Ok(plugin) if kind == "service" && plugin["id"] != source["id"] => {
+            "Service plugin id changed; remove it and import again".into()
+        }
+        Ok(mut plugin) => {
+            plugin["path"] = source["path"].clone();
+            return plugin;
+        }
+        Err(error) => error,
+    };
+    let id = if kind == "ui" {
+        json!(registered_ui_manifest_id(FsPath::new(path)))
+    } else {
+        source["id"].clone()
+    };
+    json!({"kind":kind,"id":id,"path":path,"error":error})
+}
+
 fn registrations(settings: &Value) -> Result<Vec<(String, Value)>, String> {
     let mut items = Vec::new();
     for (kind, key) in SOURCES {
         for source in crate::plugin_installation::source_list(settings, key)? {
-            let path = source["path"].as_str().ok_or("Plugin path missing")?;
-            let mut metadata = inspect_plugin(path).unwrap_or_else(|error| {
-                json!({
-                    "kind":kind,"id":source["id"],"path":path,"error":error
-                })
-            });
+            let mut metadata = inspect_registration(kind, &source);
             metadata["enabled"] = source["enabled"].clone();
             items.push(((*key).into(), metadata));
         }
@@ -248,6 +274,7 @@ fn manage_owned(state: &AppState, request: ManageRequest) -> Json<ApiResponse> {
                 path: candidate,
                 replace_path: Some(path),
             },
+            Some(&key),
         );
     }
     let mut sources = match crate::plugin_installation::source_list(&settings, &key) {

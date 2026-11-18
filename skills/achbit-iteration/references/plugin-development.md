@@ -12,3 +12,9 @@ Use `achbitCli` and `hostDataDirectory` from the `Achbit product resources` atta
 The source directory is an authoring location. The watcher observes the installed copy. Recompiling the source requires `plugins update`; it does not by itself hot-replace the installation. `plugins disable` withdraws task tools at the request boundary; `plugins remove` removes registration while retaining plugin data.
 
 The stable system prefix and historical messages remain unchanged during plugin refresh. New tool names and guidance are appended where possible; changed/removed tools are still represented accurately. A Provider may invalidate cache entries when actual tool schemas change. Use reported cache usage to measure the outcome rather than promising a fixed hit rate.
+
+## Repair a plugin from the current Session
+
+When the user asks to repair an installed plugin, run `plugins list` or `plugins status <target>` on the selected Host. Match the ID or exact installed path to the user's plugin. Keep the original error. A UI window reports module and rendering errors, a hosted service reports its process error and log path, and a CLI tool reports execution failures on the actual tool call. A pending UI client needs a connected window for verification.
+
+Use the author's workspace copy when available. If only the installation remains, copy its plugin files into the task workspace under the current permissions and edit that copy. Read the running Host's guide for the failing interface. Inspect the repaired artifact, update the same registered plugin through the CLI, then repeat the action that failed. For a UI plugin, check the affected view in a connected window; for a tool, activate it as needed and call it with a representative input. Report the observed result and any remaining error. An unresolved identity, denied Host action or unavailable runtime is a reason to report what remains unverified.

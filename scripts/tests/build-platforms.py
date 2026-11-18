@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Current build entrypoint and publisher behavior with disposable compiler outputs."""
+from contextlib import ExitStack
 import importlib.util
 import json
 import os
@@ -755,6 +756,76 @@ if name=='package-runtime.py' and sys.argv[1]=='assemble':
 
 
 class BridgeCleanupTests(unittest.TestCase):
+    def test_replaced_bridge_directory_retires_old_worker_without_claiming_new_requests(self):
+        with tempfile.TemporaryDirectory(prefix='achbit-bridge-replacement-') as directory, ExitStack() as cleanup:
+            root = Path(directory)
+            script = root / 'scripts/macos-build-bridge.py'
+            script.parent.mkdir()
+            shutil.copyfile(bridge.__file__, script)
+            channel = root / '.build-cache/macos-build-bridge'
+            channel.mkdir(parents=True)
+            docker = root / 'docker'
+            docker.write_text('#!/bin/sh\necho "$$" > "$WATCHER_PID_FILE"\nexec sleep 120\n')
+            docker.chmod(0o755)
+
+            def wait_for(predicate, description):
+                deadline = time.monotonic() + 5
+                while not predicate():
+                    if time.monotonic() >= deadline:
+                        self.fail(f'Timed out waiting for {description}')
+                    time.sleep(0.02)
+
+            def reap(process):
+                try:
+                    os.killpg(process.pid, signal.SIGCONT)
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=3)
+
+            def start_paused(name):
+                watcher = root / (name + '.pid')
+                env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'], WATCHER_PID_FILE=str(watcher))
+                process = subprocess.Popen([sys.executable, str(script), 'serve', '--container', 'same-container'],
+                                           env=env, start_new_session=True)
+                cleanup.callback(reap, process)
+                registry = channel / 'worker.json'
+                wait_for(lambda: registry.is_file() and watcher.is_file() and watcher.read_text().strip(),
+                         f'{name} registration and watcher')
+                identity = json.loads(registry.read_text())
+                self.assertEqual(identity['pid'], process.pid)
+                process.send_signal(signal.SIGSTOP)
+                _, status = os.waitpid(process.pid, os.WUNTRACED)
+                self.assertTrue(os.WIFSTOPPED(status))
+                return process, identity, int(watcher.read_text())
+
+            def probe(recipient):
+                request = Path(tempfile.mkdtemp(prefix='request-', dir=channel))
+                bridge.write_json(request / 'request.json', {'workerId': recipient, 'operation': 'probe'})
+                return request
+
+            old, previous, watcher_pid = start_paused('previous')
+            channel.rename(root / 'retired')
+            channel.mkdir()
+            replacement, current, _ = start_paused('replacement')
+            fresh = probe(current['workerId'])
+            old.send_signal(signal.SIGCONT)
+            wait_for(lambda: old.poll() is not None or (fresh / 'result.json').exists(), 'old worker retirement')
+            self.assertFalse((fresh / 'result.json').exists(), 'only the replacement can acknowledge its probe')
+            self.assertEqual(old.wait(timeout=2), 0)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(watcher_pid, 0)
+            self.assertEqual(json.loads((channel / 'worker.json').read_text())['workerId'], current['workerId'])
+            stale = probe(previous['workerId'])
+            replacement.send_signal(signal.SIGCONT)
+            for request, expected in [(fresh, 0), (stale, 1)]:
+                wait_for(lambda: (request / 'result.json').exists(), 'probe result')
+                self.assertEqual(json.loads((request / 'result.json').read_text())['exitCode'], expected)
+
     def test_runtime_request_transfers_current_resources_and_completes_its_transaction(self):
         with tempfile.TemporaryDirectory(prefix='achbit-runtime-request-') as directory:
             root = Path(directory).resolve()
