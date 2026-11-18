@@ -452,7 +452,7 @@ test('body link activation uses the owning Session, file preference, directory a
   useSettingsStore.setState({ effectiveSettings: { ...settings, 'gui.defaultFileOpen': 'reader' } });
   assert.equal(await click('child', 'file:///child/笔记%20A.md#L4C2'), null);
   assert.deepEqual(actions.pop(), ['reader', { sessionId: 'session:child', target: {
-    kind: 'workspace', workspaceId: 'child', logicalPath: '笔记 A.md', line: 4, column: 2,
+    kind: 'workspace', workspaceId: 'child', logicalPath: '笔记 A.md', canonicalPath: '/child/笔记 A.md', line: 4, column: 2,
   } }]);
   assert.match(await click('child', '/main/笔记%20A.md'), /No bound workspace/);
   assert.equal(actions.length, 0);
@@ -2046,6 +2046,10 @@ test('Markdown body file and folder links retain navigable paths and source posi
   }
   const target = parseLocalTarget('C:/Work/中文%20目录/README.md#L12');
   assert.equal(bindLocalTarget(target, [{ workspaceId: 'win', root: '\\\\?\\C:\\Work' }]).logicalPath, '中文 目录/README.md');
+  const canonical = parseLocalTarget('\\\\?\\C:\\Work\\x\\README.md#L3');
+  assert.equal(canonical.absolute, true);
+  assert.deepEqual(bindLocalTarget(canonical, [{ workspaceId: 'parent', root: '\\\\?\\C:\\Work' }, { workspaceId: 'nested', root: 'C:\\Work\\x' }]),
+    { workspaceId: 'nested', logicalPath: 'README.md', line: 3, column: 1 });
 });
 
 test('completed Markdown is reused across remounts while changed and streaming text stay current', async (t) => {

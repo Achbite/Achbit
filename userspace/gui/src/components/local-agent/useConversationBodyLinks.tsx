@@ -23,7 +23,7 @@ export async function openBoundResource(host: ConversationHost, sessionId: strin
     if (!host.openFile) throw new Error('Open in VS Code is unavailable in this Host.');
     return host.openFile(resource.path, position);
   }
-  openReader({ kind: 'workspace', workspaceId, logicalPath, line: position?.line, column: position?.column });
+  openReader({ kind: 'workspace', workspaceId, logicalPath, canonicalPath: resource.path, line: position?.line, column: position?.column });
 }
 
 export function useConversationBodyLinks(projection: SessionProjection | null, language: UiLanguage,

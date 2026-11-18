@@ -26,7 +26,7 @@ import {
   type ConversationResourceReadResult,
 } from '../../services/localAgentApi';
 import { documentFormat, imageMediaType, readDocumentText, selectedFilePreview, type DocumentFormat } from './documentResources';
-import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, selectReaderTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
+import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, selectReaderTarget, identifyReaderFiles, isReaderFile, type ReaderFileTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
 import { NativeBrowserPreview } from './NativeBrowserPreview';
 import { browserAddressError } from './BrowserChrome';
 import { useUiLanguage } from '../../useUiLanguage';
@@ -103,6 +103,11 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const [error, setError] = useState<string | null>(null);
   const [reviewEdit, setReviewEdit] = useState<(BrowserReviewEdit & { sessionId: string | null }) | null>(null);
   const bindings = useRef(new Map<string, NativeHostBinding>());
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const openSequence = useRef(0);
+  const openLifetime = useRef({});
+  useLayoutEffect(() => () => { openLifetime.current = {}; }, [sessionId]);
   const currentSession = useRef(sessionId);
   currentSession.current = sessionId;
   const live =
@@ -110,16 +115,32 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       ? state
       : { sessionId, tabs: [], activeId: null, visible: false, expanded: false };
   const selectTarget = useCallback(
-    (target: ResolvedReaderTarget) => {
+    (target: ResolvedReaderTarget, activate = true, restored?: Map<ReaderTarget, ReaderFileTarget>) => {
       if (!sessionId) return;
-      setState(old => selectReaderTarget(old, sessionId, target));
-      saveViewState(sessionId + ':selection', target);
-      setError(null);
+      setState(old => selectReaderTarget(old, sessionId, target, activate, restored));
+      if (activate) setError(null);
     },
     [sessionId],
   );
   const openTarget = useCallback((target: ReaderTarget) => {
     if (!sessionId) return;
+    const sequence = ++openSequence.current;
+    const lifetime = openLifetime.current;
+    if (isReaderFile(target)) {
+      const tabs = stateRef.current.sessionId === sessionId ? stateRef.current.tabs : [];
+      void identifyReaderFiles(sessionId, target, tabs, async (owner, file) => {
+        if (file.kind === 'file') return host.selectedFilePath(file.path);
+        const reference = file.kind === 'resource' ? file.resource : { workspaceId: file.workspaceId, logicalPath: file.logicalPath };
+        return (await host.resources.resolveResourceReference(owner, reference)).path;
+      }).then(({ located, restored }) => {
+        if (currentSession.current === sessionId && openLifetime.current === lifetime) selectTarget(located, sequence === openSequence.current, restored);
+      }).catch(reason => {
+        if (currentSession.current !== sessionId || openLifetime.current !== lifetime || sequence !== openSequence.current) return;
+        setState(old => old.sessionId === sessionId ? { ...old, visible: true } : old);
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+      return;
+    }
     if (target.kind !== 'browser') {
       selectTarget(target);
       return;
@@ -137,7 +158,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       if (currentSession.current === sessionId) selectTarget({ kind: 'browser', previewId: page.previewId });
     };
     void open().catch((reason) => { if (currentSession.current === sessionId) setError(browserAddressError(reason, language)); });
-  }, [sessionId, selectTarget, language]);
+  }, [sessionId, selectTarget, language, host]);
   useEffect(() => {
     bindings.current.clear();
     setState(current => current.sessionId === sessionId ? current : readReaderViewState(sessionId));
@@ -162,12 +183,16 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const request = navigation?.request;
   useEffect(() => {
     if (!request || request.location.sessionId !== sessionId) return;
+    openSequence.current++;
     const { target, visible, expanded } = request.location;
     if (target) selectTarget(target);
     else saveViewState(sessionId + ':selection', null);
     setState(old => ({ ...old, sessionId, activeId: target ? old.activeId : null, visible, expanded }));
   }, [request, sessionId, selectTarget]);
   const selectedTarget = live.tabs.find(tab => tab.id === live.activeId)?.target ?? null;
+  useEffect(() => {
+    if (selectedTarget && sessionId && state.sessionId === sessionId) saveViewState(sessionId + ':selection', selectedTarget);
+  }, [selectedTarget, sessionId, state.sessionId]);
   const onNavigationChange = navigation?.onChange;
   useEffect(() => {
     // Wait for this session's reader state to settle before reporting a location.
@@ -214,6 +239,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     await openBoundResource(host, sessionId, workspaceId, logicalPath, position, () => currentSession.current === sessionId, openTarget);
   };
   const removeTab = (id: string) => {
+    openLifetime.current = {};
     navigation?.onTabClosed(sessionId, id);
     bindings.current.delete(id);
     setState((old) => {
@@ -255,7 +281,8 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const toggle = () =>
     setState((old) => ({ ...old, sessionId, visible: !old.visible, expanded: false }));
   const expand = () => setState((old) => ({ ...old, expanded: !old.expanded }));
-  const selectTab = (id: string) =>
+  const selectTab = (id: string) => {
+    openSequence.current++;
     setState((old) => {
       saveViewState(
         sessionId + ':selection',
@@ -263,7 +290,11 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       );
       return { ...old, activeId: id };
     });
-  const newPage = () => setState((old) => ({ ...old, activeId: null, visible: true }));
+  };
+  const newPage = () => {
+    openSequence.current++;
+    setState(old => ({ ...old, activeId: null, visible: true }));
+  };
   return {
     ...live,
     width,

@@ -4,10 +4,10 @@ import type { ArtifactProjection } from '@achbit/protocol';
 import type { SourcePosition } from './resourceLinks';
 import type { NativePage } from '../../services/nativeBrowser';
 export type AgentReaderTarget = { kind: 'agent'; parentSessionId: string; agentSessionId?: string; entryId?: string };
-export type ReaderTarget = (({ kind: 'workspace'; workspaceId: string; logicalPath: string } & SourcePosition)
+export type ReaderFileTarget = (({ kind: 'workspace'; workspaceId: string; logicalPath: string } & SourcePosition)
   | { kind: 'resource'; resource: ResourceReference; name: string }
-  | { kind: 'diff'; file: ChangedFile }
-  | { kind: 'file'; path: string }
+  | { kind: 'file'; path: string }) & { canonicalPath?: string; sourceSessionId?: string };
+export type ReaderTarget = ReaderFileTarget | ({ kind: 'diff'; file: ChangedFile }
   | { kind: 'artifact'; artifact: ArtifactProjection; interactive?: boolean }
   | AgentReaderTarget) & { sourceSessionId?: string }
   | { kind: 'browser'; previewId?: string; url?: string; filePath?: string; selfPreview?: boolean };
@@ -68,16 +68,67 @@ export function artifactReaderTarget(artifact: ArtifactProjection): ResolvedRead
     : { kind: 'artifact', artifact };
 }
 
-export function selectReaderTarget(state: ReaderViewState, sessionId: string, target: ResolvedReaderTarget): ReaderViewState {
+export function isReaderFile(target: ReaderTarget): target is ReaderFileTarget {
+  return target.kind === 'workspace' || target.kind === 'resource' || target.kind === 'file';
+}
+
+function canonicalFileKey(path: string): string {
+  // The Host resolves the actual file. Preserve filename case on case-sensitive volumes.
+  if (/^(?:[a-z]:[\\/]|\\\\)/i.test(path)) {
+    return path.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\(?=[a-z]:[\\/])/i, '')
+      .replace(/\\/g, '/').replace(/^[a-z]:/i, drive => drive.toUpperCase());
+  }
+  return path;
+}
+
+type IdentifyReaderFile = (ownerSessionId: string, target: ReaderFileTarget) => Promise<string>;
+
+export async function identifyReaderFiles(sessionId: string, target: ReaderFileTarget, tabs: ReaderTab[], identify: IdentifyReaderFile) {
+  const owner = target.sourceSessionId ?? sessionId;
+  const located = { ...target, canonicalPath: target.canonicalPath ?? await identify(owner, target) };
+  // Recover the physical identity of tabs restored from an earlier interface or package.
+  const restored = new Map<ReaderTarget, ReaderFileTarget>();
+  await Promise.all(tabs.map(async tab => {
+    const previous = tab.target;
+    if (!isReaderFile(previous) || previous.canonicalPath || (previous.sourceSessionId ?? sessionId) !== owner) return;
+    try {
+      const path = await identify(owner, previous);
+      restored.set(previous, { ...previous, canonicalPath: path });
+    } catch {
+      // An unrelated missing or revoked restored file has no confirmed alias.
+    }
+  }));
+  return { located, restored };
+}
+
+export function selectReaderTarget(state: ReaderViewState, sessionId: string, target: ResolvedReaderTarget,
+  activate = true, restored?: Map<ReaderTarget, ReaderFileTarget>): ReaderViewState {
   const key = readerTargetKey(target);
-  const tabs = state.sessionId === sessionId ? state.tabs : [];
-  const existing = tabs.find(tab => tab.id === key
-    || target.kind === 'browser' && tab.page?.previewId === target.previewId);
-  return { sessionId,
-    tabs: existing ? tabs.map(tab => tab === existing && (target.kind === 'workspace' || target.kind === 'agent')
-      ? { ...tab, target } : tab) : [...tabs, { id: key, target }],
-    activeId: existing?.id ?? key, visible: true,
-    expanded: state.sessionId === sessionId && state.expanded };
+  const before = state.sessionId === sessionId ? state.tabs : [];
+  const tabs = restored?.size ? before.map(tab => restored.has(tab.target) ? { ...tab, target: restored.get(tab.target)! } : tab) : before;
+  const matches = tabs.filter(tab => {
+    const other = tab.target;
+    if (isReaderFile(target) && isReaderFile(other)) {
+      if ((target.sourceSessionId ?? sessionId) !== (other.sourceSessionId ?? sessionId)) return false;
+      if (target.canonicalPath && other.canonicalPath) return canonicalFileKey(target.canonicalPath) === canonicalFileKey(other.canonicalPath);
+      return readerResourceKey(other) === readerResourceKey(target);
+    }
+    return tab.id === key || target.kind === 'browser' && tab.page?.previewId === target.previewId;
+  });
+  const existing = matches.find(tab => tab.id === state.activeId) ?? matches[0];
+  // A slower earlier click may open a different tab in the background, but cannot overwrite a newer location.
+  if (!activate && existing) return state;
+  let nextTabs: ReaderTab[];
+  if (existing) {
+    const update = target.kind === 'workspace' || target.kind === 'agent'
+      || target.kind === 'resource' && existing.target.kind === 'file';
+    const selected = target.kind === 'workspace' && target.line === undefined && existing.target.kind === 'workspace' && existing.target.line !== undefined
+      ? { ...target, line: existing.target.line, column: existing.target.column } : target;
+    nextTabs = tabs.filter(tab => tab === existing || !matches.includes(tab))
+      .map(tab => tab === existing && update ? { ...tab, target: selected } : tab);
+  } else nextTabs = [...tabs, { id: key, target }];
+  return { sessionId, tabs: nextTabs, activeId: activate ? existing?.id ?? key : state.activeId,
+    visible: activate || state.visible, expanded: state.sessionId === sessionId && state.expanded };
 }
 
 export const READER_OPEN_EVENT = 'achbit:reader-open';
@@ -97,7 +148,7 @@ export function saveViewState(key: string, value: unknown): void {
 }
 
 export function readerTargetKey(target: ReaderTarget): string {
-  const key = readerResourceKey(target);
+  const key = isReaderFile(target) && target.canonicalPath ? 'file:' + canonicalFileKey(target.canonicalPath) : readerResourceKey(target);
   return target.kind !== 'browser' && target.kind !== 'agent' && target.sourceSessionId ? JSON.stringify([target.sourceSessionId, key]) : key;
 }
 

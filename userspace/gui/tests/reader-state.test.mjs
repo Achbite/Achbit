@@ -96,6 +96,63 @@ test('file routing distinguishes workspaces and paths while archive-only and exp
     'an explicitly requested interactive component is not converted into a static file view');
 });
 
+test('the Reader reuses one physical file across manual picks, tree, body links and overlapping workspaces', async t => {
+  const { readReaderViewState, selectReaderTarget, identifyReaderFiles } = await setup(t);
+  const session = 'session:main', canonical = '/private/tmp/project/notes/a.txt';
+  const picked = { kind: 'file', path: '/tmp/project/notes/a.txt' };
+  const tree = { kind: 'resource', name: 'a.txt', resource: { workspaceId: 'root', logicalPath: 'notes/a.txt' } };
+  const body = { kind: 'workspace', workspaceId: 'nested', logicalPath: 'a.txt', line: 4, column: 3 };
+  const ownerIds = [];
+  const identify = async (owner, target) => {
+    ownerIds.push(owner);
+    return target.kind === 'workspace' && target.workspaceId === 'other-folder' ? '/elsewhere/a.txt' : canonical;
+  };
+  async function open(state, target) {
+    const { located, restored } = await identifyReaderFiles(session, target, state.tabs, identify);
+    return selectReaderTarget(state, session, located, true, restored);
+  }
+  for (const order of [[picked, tree, body], [body, tree, picked], [tree, picked, body]]) {
+    let state = readReaderViewState(session);
+    for (const target of order) state = await open(state, target);
+    assert.equal(state.tabs.length, 1);
+    const first = state.activeId;
+    state = await open(state, { ...body, line: 9, column: 2 });
+    assert.equal(state.activeId, first);
+    assert.deepEqual([state.tabs[0].target.line, state.tabs[0].target.column], [9, 2]);
+    state = await open(state, picked);
+    assert.equal(state.activeId, first);
+    assert.equal(state.tabs[0].target.kind, 'workspace', 'reuse keeps the existing bound read');
+    state = await open(state, { ...body, workspaceId: 'other-folder' });
+    assert.equal(state.tabs.length, 2, 'distinct files with the same name remain separate');
+    state = await open(state, { ...body, sourceSessionId: 'session:child' });
+    assert.equal(state.tabs.length, 3, 'even the same physical file retains its owning Session');
+  }
+  assert.ok(ownerIds.includes('session:child'));
+});
+
+test('concurrent opens retain the latest position, and restored paths resolve before tab reuse', async t => {
+  const { readReaderViewState, selectReaderTarget, identifyReaderFiles, saveViewState } = await setup(t);
+  const session = 'session:restore';
+  const legacy = { kind: 'file', path: '/tmp/习题/a.ts' };
+  const link = { kind: 'workspace', workspaceId: 'root', logicalPath: '习题/a.ts', line: 8, column: 2 };
+  const canonical = '/private/tmp/习题/a.ts';
+  saveViewState(session + ':selection', legacy);
+  let state = readReaderViewState(session);
+  const { located, restored } = await identifyReaderFiles(session, link, state.tabs, async () => canonical);
+  state = selectReaderTarget(state, session, located, true, restored);
+  const current = state.activeId;
+  const older = { ...located, line: 2, column: 1 };
+  state = selectReaderTarget(state, session, older, false);
+  assert.equal(state.tabs.length, 1);
+  assert.equal(state.activeId, current);
+  assert.equal(state.tabs[0].target.line, 8);
+  state = selectReaderTarget(state, session, { ...older, canonicalPath: '/different/a.ts' }, false);
+  assert.equal(state.tabs.length, 2, 'a different, slower open still gets its own tab');
+  assert.equal(state.activeId, current);
+  const original = new Error('Host denied the requested file');
+  await assert.rejects(identifyReaderFiles(session, link, state.tabs, async () => { throw original; }), error => error === original);
+});
+
 test('reopening a file selects its existing tab and preserves unrelated tabs and layout', async t => {
   const { selectReaderTarget, readerTargetKey } = await setup(t);
   const file = { kind: 'workspace', workspaceId: 'workspace:a', logicalPath: 'A.md' };

@@ -16,6 +16,7 @@ export function parseLocalTarget(href: string, allowRelative = true): LocalTarge
     }
   } else {
     try { path = decodeURIComponent(path); } catch { return null; }
+    path = path.replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, '');
   }
   const absolute = /^(?:\/(?!\/)|[A-Za-z]:[\\/])/u.test(path);
   const location = /(?::([1-9]\d*)(?::([1-9]\d*))?|#L([1-9]\d*)(?:C([1-9]\d*))?)$/u.exec(path);
@@ -50,8 +51,9 @@ export function bindLocalTarget(target: LocalTarget, roots: { workspaceId: strin
     return bindLocalTarget({ ...target, absolute: true, path: `${roots[0].root}/${target.path}` }, roots);
   }
   const path = normalizedPath(target.path);
-  for (const binding of [...roots].sort((a, b) => b.root.length - a.root.length)) {
-    const root = normalizedPath(binding.root), prefix = root.endsWith('/') ? root : root + '/';
+  const sorted = roots.map(binding => ({ ...binding, root: normalizedPath(binding.root) })).sort((a, b) => b.root.length - a.root.length);
+  for (const binding of sorted) {
+    const root = binding.root, prefix = root.endsWith('/') ? root : root + '/';
     const fold = (text: string) => /^[A-Za-z]:/.test(root) ? text.toLowerCase() : text;
     if (fold(path) === fold(root) || fold(path).startsWith(fold(prefix))) {
       return { workspaceId: binding.workspaceId, logicalPath: fold(path) === fold(root) ? '.' : path.slice(prefix.length) || '.', line: target.line, column: target.column };
