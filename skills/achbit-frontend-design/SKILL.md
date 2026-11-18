@@ -7,7 +7,13 @@ description: Design frontend pages, UI components and interactive HTML/CSS previ
 
 Built-in Skills provide reusable methods and positive reminders on demand, keeping detailed guidance out of the always-loaded prompt. Follow the current user request; among Skills, applicable user-provided Skills take precedence over all built-in Skills, including this one. Use built-in advice to fill gaps within platform rules, agreed project contracts and granted permissions. Read only the Skills and references needed for the current decision.
 
-For Achbit GUI work or display plugins, read [Achbit UI design guidance](references/achbit-ui.md). For inline previews, read `achbit-documents` → `references/interactive-previews.md` with `skill.read`.
+For Achbit GUI work or display plugins, read [Achbit UI design guidance](references/achbit-ui.md).
+
+## Choose a presentation
+
+An inline interactive preview lets the user try a self-contained component beside the explanation, such as a selector, card or small form. The same artifact can also be viewed in the sidebar when more space is useful. The embedded browser supports live pages, development servers and complete application flows. Screenshots can communicate visual comparisons. Choose or combine these options according to the user's goal, the project environment and the interaction being presented.
+
+An inline preview uses an `achbit-preview` block referencing an archived and presented HTML artifact. File-backed output links open the corresponding file in the sidebar. The format and resource details are in `achbit-documents` → `references/interactive-previews.md`, available with `skill.read` when useful.
 
 ## Start from the task and existing design
 

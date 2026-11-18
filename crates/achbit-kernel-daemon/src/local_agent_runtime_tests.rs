@@ -25,12 +25,12 @@ impl Fixture {
                 .replace(':', "-"),
         );
         let mut gui = GuiState::open_at(&root).unwrap();
-        let mut profiles = crate::model_connections::document(&gui).unwrap();
-        profiles["connections"][0]["credentialRef"] = json!("local-secret:deepseek-api");
+        let mut profiles = crate::llm_profiles::fixture_profiles();
+        profiles["connections"][0]["credentialRef"] = json!("local-secret:fixture-key");
         crate::model_connections::store(
             &mut gui,
             profiles,
-            Some(json!({"deepseek-api":"fixture-key"})),
+            Some(json!({"fixture-key":"fixture-key"})),
         )
         .unwrap();
         let gui = Arc::new(Mutex::new(gui));

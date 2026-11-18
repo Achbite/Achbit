@@ -1,10 +1,10 @@
 # Interactive component previews
 
-Use an inline preview for a small frontend component, interactive explanation or design review that belongs between paragraphs of the reply. Use the existing sidebar browser for complete applications, development servers and multi-page sites.
+An inline preview can place a self-contained component, interactive explanation or design review between paragraphs of a reply. The sidebar can give the same artifact more room. The embedded browser supports complete applications, development servers and multi-page flows. Choose the presentation that fits the task; Frontend Design describes the options.
 
-Create a self-contained HTML file in the task workspace, with its CSS, JavaScript and assets embedded. HTML/CSS/JavaScript runs in an isolated frame; it has no Achbit Host APIs. For React or other compiled components, use the project's existing build tools to bundle the preview first. Relative assets and imports need bundling; do not require a new preview server for a component.
+## Inline reference
 
-Archive the finished file with `artifact.prepare`, deliver it with `artifact.present`, and place its returned artifact URI alone in an `achbit-preview` fence at the intended position:
+An `achbit-preview` fence renders an archived HTML artifact interactively. Use the actual artifact URI returned by the existing archive and delivery tools:
 
 ````markdown
 Here is the component:
@@ -16,8 +16,12 @@ artifact://<the returned artifact ID>
 Continue the explanation here.
 ````
 
-Copy the real returned URI; never invent an ID. Ordinary HTML code fences show source, and ordinary artifact links open the document reader. Only an explicit preview fence renders an archived HTML artifact interactively.
+The preview block contains the reference; the artifact holds the HTML. File-backed output links open the corresponding file in the file sidebar, while an ordinary HTML code fence displays source.
 
-The GUI exposes source, reload and open-in-sidebar controls. Each placement owns temporary interaction state; the four most recently used preview rows stay mounted while scrolling in the current conversation. Reopening a released view starts the archived version again. Updating a file requires preparing and presenting a new artifact version; an earlier reply retains its original version.
+## Content and versions
 
-Keep the reply's preview block to the reference, rather than repeating the full HTML. GUI interactions do not call the model or rewrite Session history. Read this guide on demand; do not insert generated preview content into system instructions or change tool declarations for each preview.
+Self-contained HTML with embedded CSS, JavaScript and assets can run directly in the isolated preview frame. Compiled components and relative resources can be bundled with the project's existing build tools. The frame provides page interaction, with Achbit Host operations remaining in their existing tools.
+
+`artifact.prepare` archives an existing file and `artifact.present` registers its delivery. A renderer that already returns an artifact ID supplies the archive step itself. Prepare changed content as a new version and present that version; earlier inline-preview references retain their original bytes.
+
+In the conversation, a component keeps its natural size when it fits. Wider content can use spare pane space; when constrained it reflows first, and a fixed-width component scales down only when its minimum width cannot fit. Tall flow content scrolls rather than shrinking all its text. Viewport-filling apps reflow at the available pane width without reloading. Hover or focus the inline card for More preview actions (source, save image and reload) or Open in sidebar. The controls are visible without hovering on touch devices. Each placement owns temporary interaction state; the four most recently used preview rows stay mounted while scrolling in the current conversation. Reopening a released view starts the archived version again. Preview interactions are local to the view, separate from model calls and Session history.

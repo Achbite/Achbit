@@ -98,6 +98,10 @@ test('minimal AC is an ordered subset of full ABC from the same prompt producers
   }
   const rich = compose(false, ['achbit.rich-replies']);
   assert.match(rich.get('instruction:achbit.rich-replies'), /Mermaid/u);
+  // TCR: .task-artifacts/browser-interaction-20261117/TCR.md.
+  assert.match(rich.get('instruction:achbit.rich-replies'), /Standalone components can be previewed interactively[\s\S]*Frontend Design/u);
+  assert.doesNotMatch(rich.get('instruction:achbit.rich-replies'), /artifact\.prepare|artifact\.present|browser\.open/u,
+    'the product slice discovers the capability; workflow details remain on demand');
   assert.deepEqual([...rich].filter(([id]) => id !== 'instruction:achbit.rich-replies'), [...minimal],
     'opting into one component inserts only its slice, without selecting the full prompt');
 });
