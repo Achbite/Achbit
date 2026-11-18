@@ -1,5 +1,5 @@
 // Isolated review fixture: actual registered controls, no backend or Session writes.
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button, CloseButton, DisclosureSummary, IconButton, ModalDialog, NativeSelect, PanelHeader, ToggleSwitch, UI_COMPONENTS, UI_REGION_SLOTS } from '../../src/ui-components';
 import { installPaletteDefaults } from '../../src/theme/palette';
@@ -11,6 +11,7 @@ installPaletteDefaults();
 const english = new URLSearchParams(location.search).get('language') === 'en-US';
 
 function Catalog() {
+  const compactClose = useRef<HTMLButtonElement>(null);
   const [modal, setModal] = useState(false);
   const [panel, setPanel] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -32,7 +33,8 @@ function Catalog() {
         <Button disabled={busy} variant="primary" type="submit">提交表单</Button>
         <Button disabled={busy} variant="danger" onClick={() => record('danger')}>危险操作</Button>
         <IconButton disabled={busy} icon="plus" aria-label="新增" onClick={() => record('new')} />
-        <CloseButton disabled={busy} aria-label="紧凑关闭" size="compact" onClick={() => record('compact-close')} />
+        <CloseButton ref={compactClose} disabled={busy} aria-label="紧凑关闭" size="compact"
+          onClick={event => record(event.currentTarget === compactClose.current ? 'compact-close' : 'incorrect-close-target')} />
         <CloseButton disabled={busy} aria-label="标准关闭" onClick={() => record('standard-close')} />
         <CloseButton disabled={busy} aria-label="大号关闭" size="large" onClick={() => record('large-close')} />
       </form>

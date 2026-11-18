@@ -222,8 +222,13 @@ test('catalog loading and failure never masquerade as an empty history', async t
   assert.equal(store.getState().catalogStatus, 'ready');
   const ready = render();
   assert.doesNotMatch(ready, /No projects yet|No chats yet|Loading conversations|Unable to load conversations/);
-  assert.equal((ready.match(/class="achbit-gui-sidebar-empty"/g) ?? []).length, 2,
-    'loaded empty groups keep their spacing containers without placeholder copy');
+  assert.match(ready, />Projects</);
+  assert.match(ready, />Chats</);
+  for (const name of ['New project', 'New chat']) {
+    const actions = [...ready.matchAll(/<button\b[^>]*>/g)].map(match => match[0]);
+    assert.ok(actions.some(tag => tag.includes(`aria-label="${name}"`) && !/\bdisabled=/.test(tag)),
+      `the empty sidebar keeps the ${name} action available`);
+  }
 });
 
 test('plugin discovery failure does not invalidate a successfully loaded catalog', async t => {

@@ -19,6 +19,7 @@ export default defineConfig({
       imageReview: fileURLToPath(new URL('./image-review.html', import.meta.url)),
       followModel: fileURLToPath(new URL('./follow-model.html', import.meta.url)),
       usageWidget: fileURLToPath(new URL('./usage-widget.html', import.meta.url)),
+      previewLayout: fileURLToPath(new URL('./preview-layout.html', import.meta.url)),
       viewport: fileURLToPath(new URL('./viewport.html', import.meta.url)),
       messages: fileURLToPath(new URL('./messages.html', import.meta.url)),
       statusReminders: fileURLToPath(new URL('./status-reminders.html', import.meta.url)),

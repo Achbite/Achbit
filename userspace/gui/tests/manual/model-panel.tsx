@@ -15,7 +15,6 @@ import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/achbit-gui/achbitGui.css';
 import '../../src/achbit-gui/styles/achbitShell.css';
 import '../../src/components/settings-center/settingsCenter.css';
-import '../../src/ui-components/controls.css';
 import '../../src/components/shared/focus.css';
 installPaletteDefaults();
 const connection = { id: 'connection:fixture', name: 'Fixture', adapterId: 'custom', billingMode: 'metered' as const,

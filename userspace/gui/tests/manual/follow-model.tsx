@@ -20,7 +20,6 @@ import '../../src/achbit-gui/styles/achbitShell.css';
 import '../../src/components/local-agent/localAgentPanel.css';
 import '../../src/components/local-agent/richContent.css';
 import '../../src/components/local-agent/documentPreview.css';
-import '../../src/ui-components/controls.css';
 import '../../src/components/shared/focus.css';
 
 installPaletteDefaults();

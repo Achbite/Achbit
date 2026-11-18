@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join, relative, resolve, dirname } from 'node:path';
-import ts from 'typescript';
+import { resolve } from 'node:path';
+import { reviewSource, sourceFiles } from '../scripts/ui-review.mjs';
 import { loadGuiModules, loadGuiModule } from './gui-projection-contract.mjs';
 
 test('the catalog and imports expose the same stable implementations, including existing controls', async t => {
@@ -15,6 +15,11 @@ test('the catalog and imports expose the same stable implementations, including 
     '/src/components/shared/ResizeHandle.tsx', '/src/icons/registry.tsx', '/src/components/shared/AchbitShellIcon.tsx',
   ]);
   assert.ok(Object.isFrozen(ui.UI_COMPONENTS));
+  for (const [name, component] of Object.entries(ui)) {
+    if (typeof component === 'function' && /^[A-Z]/.test(name)) {
+      assert.equal(ui.UI_COMPONENTS[name]?.component, component, `public control ${name} must be registered`);
+    }
+  }
   for (const [name, entry] of Object.entries(ui.UI_COMPONENTS)) {
     assert.equal(ui[name], entry.component, `${name} must not get a registration wrapper`);
     assert.ok(entry.purpose);
@@ -27,6 +32,7 @@ test('the catalog and imports expose the same stable implementations, including 
   assert.equal(ui.UiIcon, icons.default);
   assert.equal(shellIcons.default, ui.UiIcon);
   assert.equal(ui.UI_ICON_ROLES, icons.UI_ICON_ROLES);
+  assert.deepEqual(ui.UI_ICON_NAMES, Object.keys(icons.UI_ICON_GLYPHS));
 });
 
 test('Button preserves refs, native submission, events and owner identity without adding a wrapper', async t => {
@@ -52,24 +58,13 @@ test('Button preserves refs, native submission, events and owner identity withou
   assert.match(disabled, /form="save"/);
 });
 
-test('CloseButton composes the registered bases and keeps accessible labels and callback ownership', async t => {
-  const { CloseButton, IconButton, Button } = await loadGuiModule(t, '/src/ui-components/index.ts');
+test('CloseButton exposes one native action with its accessible name, icon and owner', async t => {
+  const { CloseButton, IconButton } = await loadGuiModule(t, '/src/ui-components/index.ts');
   const ref = { current: null };
   let closed = 0;
   const onClick = () => { closed++; };
   const props = { ref, onClick, disabled: true, size: 'compact', 'aria-label': 'Close plan', title: 'Cancel the plan',
     'data-ui-owner': 'composer.question', 'data-ui-action': 'composer.question.close', 'data-ui-part': 'close' };
-  const icon = CloseButton(props);
-  assert.equal(icon.type, IconButton);
-  const base = IconButton(icon.props);
-  assert.equal(base.type, Button);
-  const native = Button(base.props);
-  assert.equal(native.type, 'button');
-  assert.equal(native.props.ref, ref);
-  assert.equal(native.props.disabled, true);
-  assert.equal(native.props.onClick, onClick);
-  assert.equal(native.props['data-ui-action'], props['data-ui-action']);
-  assert.equal(closed, 0, 'composition does not perform business actions');
   const html = renderToStaticMarkup(createElement(CloseButton, props));
   assert.match(html, /^<button\b/);
   assert.equal((html.match(/<button\b/g) ?? []).length, 1);
@@ -79,6 +74,9 @@ test('CloseButton composes the registered bases and keeps accessible labels and 
   assert.match(html, /data-ui-icon="close"/);
   assert.match(html, /disabled=""/);
   assert.match(html, /data-ui-owner="composer.question"/);
+  assert.match(html, /data-ui-action="composer.question.close"/);
+  assert.match(html, /data-ui-part="close"/);
+  assert.equal(closed, 0, 'rendering a control does not invoke its action');
   assert.equal(IconButton({ icon: 'plus', 'aria-label': 'New tab' }).props.title, 'New tab');
 });
 
@@ -111,6 +109,9 @@ test('DisclosureSummary preserves native semantics, refs and owner events with a
   assert.doesNotMatch(html, /<button\b/);
   assert.match(html, /data-ui-icon="chevronRight"/);
   assert.match(html, /<svg[^>]*aria-hidden="true"/);
+  const leading = renderToStaticMarkup(createElement(DisclosureSummary, { chevronPosition: 'leading' }, '字体组合'));
+  assert.match(leading, /data-chevron-position="leading"/);
+  assert.equal((leading.match(/data-ui-icon="chevronRight"/g) ?? []).length, 1);
 });
 
 test('PanelHeader preserves caller headings and action nodes in one semantic header', async t => {
@@ -148,30 +149,34 @@ test('region declarations drive built-ins while external selection replaces only
 });
 
 test('feature imports and re-exports use the catalog rather than private shared-control implementations', async () => {
-  const root = fileURLToPath(new URL('../src', import.meta.url));
-  const privateControls = new Set(['ModalDialog', 'ToggleSwitch', 'NativeSelect', 'ResizeHandle']);
+  const gui = fileURLToPath(new URL('..', import.meta.url));
   const violations = [];
-  async function walk(directory) {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) { await walk(path); continue; }
-      if (!/\.tsx?$/.test(path)) continue;
-      const local = relative(root, path).split('\\').join('/');
-      if (local.startsWith('ui-components/')) continue;
-      const file = ts.createSourceFile(path, await readFile(path, 'utf8'), ts.ScriptTarget.Latest, true);
-      for (const node of file.statements) {
-        if ((!ts.isImportDeclaration(node) && !ts.isExportDeclaration(node))
-          || !node.moduleSpecifier || !ts.isStringLiteral(node.moduleSpecifier)) continue;
-        const specifier = node.moduleSpecifier.text;
-        const target = relative(root, resolve(dirname(path), specifier)).split('\\').join('/').replace(/\.tsx?$/, '');
-        if (target === 'icons/registry') violations.push(`${local}: use the public UiIcon and icon metadata exports`);
-        if (target.startsWith('ui-components/')) violations.push(`${local}: use the public ui-components entrypoint`);
-        if (target.startsWith('components/shared/') && privateControls.has(target.slice('components/shared/'.length))) {
-          violations.push(`${local}: ${specifier}`);
-        }
+  for (const dir of ['src', 'tests/manual']) {
+    for (const file of await sourceFiles(resolve(gui, dir))) {
+      if (!/\.[cm]?[jt]sx?$/.test(file)) continue;
+      const source = await readFile(file, 'utf8');
+      for (const row of reviewSource(file, source, [[1, source.split('\n').length]])) {
+        if (row.kind === 'error') violations.push({ file, ...row });
       }
     }
   }
-  await walk(root);
   assert.deepEqual(violations, []);
+});
+
+
+test('incremental review identifies individual controls and styles without rejecting a specialized interaction', () => {
+  const file = fileURLToPath(new URL('../src/components/Example.tsx', import.meta.url));
+  const source = [
+    'const previous = <button>existing</button>;',
+    'const menu = <summary aria-haspopup="menu">Actions</summary>;',
+    "const load = () => import('../ui-components/Button');",
+    "export { Button } from '../ui-components';",
+    "export { IconButton } from '../ui-components/index.ts';",
+  ].join('\n');
+  const hits = reviewSource(file, source, [[2, 5]]);
+  assert.deepEqual(hits.map(h => [h.line, h.kind]), [[2, 'control'], [3, 'error']]);
+  assert.match(hits[0].detail, /DisclosureSummary/);
+  const css = '.old { padding: 4px; }\n.menu {\n  gap: 8px;\n}';
+  assert.deepEqual(reviewSource(file + '.css', css, [[3, 3]]), [{ line: 3, kind: 'style', detail: '.menu' }]);
+  assert.equal(reviewSource(file + '.html', '<main><summary>Details</summary></main>', [[1, 1]])[0].kind, 'control');
 });
