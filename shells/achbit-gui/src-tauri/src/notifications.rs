@@ -45,16 +45,7 @@ fn completion_delivery(foreground: bool, foreground_sound: bool) -> (bool, bool)
 }
 
 fn reminder_url(reminder: &Reminder) -> Result<tauri::Url, String> {
-    // WebView2 rewrites custom protocols only during creation, not navigate().
-    // Use the same navigable origin for the first and subsequent reminders.
-    let origin = if cfg!(windows) {
-        format!("http://{}.localhost", crate::APP_ASSET_SCHEME)
-    } else {
-        format!("{}://localhost", crate::APP_ASSET_SCHEME)
-    };
-    let mut url = format!("{origin}/completion.html")
-        .parse::<tauri::Url>()
-        .map_err(|error| error.to_string())?;
+    let mut url = crate::bundled_app_url("completion.html")?;
     url.query_pairs_mut().extend_pairs([
         ("session", &reminder.session_id),
         ("title", &reminder.title),

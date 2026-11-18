@@ -22,6 +22,9 @@ test('browser addresses normalize user navigation without turning text or unsupp
   for (const [input, expected] of [
     [' https://example.com/path?q=1 ', { url: 'https://example.com/path?q=1' }],
     ['example.com', { url: 'https://example.com/' }],
+    ['LOCALHOST/path', { url: 'http://localhost/path' }],
+    ['localhost.example.com', { url: 'https://localhost.example.com/' }],
+    ['127.example.com', { url: 'https://127.example.com/' }],
     ['localhost:5173/app', { url: 'http://localhost:5173/app' }],
     ['127.0.0.1:8080', { url: 'http://127.0.0.1:8080/' }],
     ['[::1]:5173', { url: 'http://[::1]:5173/' }],

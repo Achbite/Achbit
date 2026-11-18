@@ -23,7 +23,7 @@ export function nativeNavigationInput(address: string): { url: string } | { file
     const host = /^(localhost(?:\.[\w-]+)*|(?:[\w-]+\.)+[\w-]+|\[[\da-f:]+\]|[\w-]+:\d+)(?::\d+)?(?:[/?#].*)?$/i.exec(value);
     if (!host || /\s/.test(value)) throw new Error(/^[a-z][\w+.-]*:/i.test(value) ? 'browser_address_scheme' : 'browser_address_invalid');
     const authority = value.split(/[/?#]/, 1)[0];
-    const local = /^(?:localhost|127\.|0\.0\.0\.0|\[::1\])/.test(authority) || /:\d+$/.test(authority);
+    const local = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])$/i.test(authority) || /:\d+$/.test(authority);
     candidate = `${local ? 'http' : 'https'}://${value}`;
   }
   let url: URL;

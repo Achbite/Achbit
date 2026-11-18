@@ -120,7 +120,8 @@ pub(super) fn operate(
     id: &str,
 ) -> Result<Snapshot, String> {
     unsafe {
-        let view = native.inner().cast::<AnyObject>();
+        let webview = super::super::macos_webview(native);
+        let view = Retained::as_ptr(&webview).cast_mut().cast::<AnyObject>();
         let key = (&OWNER_KEY as *const u8).cast::<c_void>();
         match action {
             "install" => {

@@ -65,16 +65,16 @@ pub(super) fn failed(app: &tauri::AppHandle, id: &str, message: String) {
 
 /// Called inside the page-creation main-thread callback. Pinned Tauri dispatches
 /// with_webview inline there, before navigation events can leave that callback.
-pub(super) fn install(view: &tauri::Webview) -> Result<(), String> {
+pub(super) fn configure(view: &tauri::Webview, action: &'static str) -> Result<(), String> {
     let app = view.app_handle().clone();
     let id = view.label().to_string();
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |native| {
-        let _ = tx.send(platform::operate(native, "install", &app, &id));
+        let _ = tx.send(platform::operate(native, action, &app, &id));
     })
     .map_err(|error| error.to_string())?;
     rx.try_recv()
-        .map_err(|_| "native_browser_install_requires_main_thread".to_string())??;
+        .map_err(|_| "native_browser_configuration_requires_main_thread".to_string())??;
     Ok(())
 }
 

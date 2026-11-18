@@ -240,11 +240,11 @@ fn query_metrics(records: Vec<Value>, input: &Value) -> Result<Value, String> {
 async fn dispatch(view: tauri::Webview, request: Value) -> Result<Value, String> {
     use objc2::{msg_send, runtime::AnyObject, MainThreadOnly};
     use objc2_foundation::{NSError, NSString};
-    use objc2_web_kit::{WKContentWorld, WKWebView};
+    use objc2_web_kit::WKContentWorld;
     let script = dispatch_script(&request);
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
-        let webview = &*(platform.inner() as *const WKWebView);
+        let webview = super::macos_webview(platform);
         let completion = block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
             let result = if let Some(error) = error.as_ref() {
                 Err(error.localizedDescription().to_string())

@@ -23,6 +23,21 @@ mod viewport;
 use control_indicator::{ControlIndicator, ControlState};
 use viewport::Viewport;
 
+/// tauri-runtime-wry 2.11 passes three +1 Objective-C references via into_raw in
+/// WithWebview on macOS. PlatformWebview is a bundle of raw pointers without Drop.
+/// Balance every callback, including observations of the main Debug webview.
+#[cfg(target_os = "macos")]
+fn macos_webview(
+    platform: tauri::webview::PlatformWebview,
+) -> objc2::rc::Retained<objc2_web_kit::WKWebView> {
+    use objc2::{rc::Retained, runtime::AnyObject};
+    unsafe {
+        let _controller = Retained::<AnyObject>::from_raw(platform.controller().cast());
+        let _window = Retained::<AnyObject>::from_raw(platform.ns_window().cast());
+        Retained::from_raw(platform.inner().cast()).expect("Tauri supplies the live WKWebView")
+    }
+}
+
 static PAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 fn resource_id(binding: &HostBinding, kind: &str) -> String {
@@ -353,9 +368,7 @@ fn browser_navigation(app: &tauri::AppHandle, id: &str, url: &tauri::Url, self_p
         }
         return false;
     }
-    !self_page
-        || (url.scheme() == "achbit-gui" && url.host_str() == Some("localhost"))
-        || (url.scheme() == "about" && matches!(url.path(), "srcdoc" | "blank"))
+    !self_page || crate::trusted_app_navigation(url)
 }
 
 fn open_link(app: tauri::AppHandle, source: String, url: tauri::Url) {
@@ -645,8 +658,7 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         let opening = state.opening.lock().await;
         let service_id = input["serviceId"].as_str().map(str::to_string);
         let url = if action == "openSelf" {
-            tauri::Url::parse("achbit-gui://localhost/index.html")
-                .map_err(|error| error.to_string())?
+            crate::bundled_app_url("index.html")?
         } else if let Some(service_id) = service_id.as_deref() {
             let state = app.state::<NativeBrowser>();
             let services = state
@@ -731,18 +743,22 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
             #[cfg(windows)]
             control: ControlState::default(),
         };
-        app.state::<NativeBrowser>()
-            .pages
-            .lock()
-            .map_err(|_| "native_browser_state_unavailable")?
-            .insert(id.clone(), page.clone());
         let app_for_create = app.clone();
         let id_for_create = id.clone();
         let self_bootstrap =
             (action == "openSelf").then(|| app.state::<NativeBrowser>().self_bootstrap.clone());
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let (tx, rx) = tokio::sync::oneshot::channel();
         app.run_on_main_thread(move || {
+            if tx.is_closed() {
+                return;
+            }
+            let state = app_for_create.state::<NativeBrowser>();
             let outcome = (|| {
+                state
+                    .pages
+                    .lock()
+                    .map_err(|_| "native_browser_state_unavailable")?
+                    .insert(id_for_create.clone(), page);
                 let window = app_for_create
                     .get_window(&binding.window_label)
                     .ok_or("native_browser_window_closed")?;
@@ -793,33 +809,48 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                         tauri::LogicalSize::<f64>::from(viewport.initial_size()),
                     )
                     .map_err(|error| error.to_string())?;
-                if let Err(error) = navigation::install(&view) {
+                let initialized = view
+                    .hide()
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| navigation::configure(&view, "install"));
+                if let Err(error) = initialized {
                     let closed = view.close().map_err(|reason| reason.to_string());
                     return Err(match closed {
                         Ok(()) => error,
                         Err(close) => format!("{error}; page cleanup: {close}"),
                     });
                 }
-                view.hide().map_err(|error| error.to_string())?;
-                Ok::<_, String>(())
+                Ok::<_, String>(view)
             })();
-            let _ = tx.send(outcome);
+            // Only an acknowledged open owns a page. A caller can time out
+            // while the native thread is creating its view.
+            let failure = match outcome {
+                Ok(view) => {
+                    if tx.send(Ok(())).is_ok() {
+                        return;
+                    }
+                    let _ = navigation::configure(&view, "dispose");
+                    if let Err(error) = view.close() {
+                        navigation::failed(&app_for_create, &id_for_create, error.to_string());
+                        return;
+                    }
+                    None
+                }
+                Err(error) => Some((tx, error)),
+            };
+            if let Ok(mut pages) = state.pages.lock() {
+                pages.remove(&id_for_create);
+            }
+            state.page_changed.notify_all();
+            if let Some((reply, error)) = failure {
+                let _ = reply.send(Err(error));
+            }
         })
         .map_err(|error| error.to_string())?;
-        let created = tauri::async_runtime::spawn_blocking(move || {
-            rx.recv_timeout(Duration::from_secs(15))
-                .map_err(|error| error.to_string())?
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-        if let Err(error) = created {
-            app.state::<NativeBrowser>()
-                .pages
-                .lock()
-                .map_err(|_| "native_browser_state_unavailable")?
-                .remove(&id);
-            return Err(error);
-        }
+        tokio::time::timeout(Duration::from_secs(15), rx)
+            .await
+            .map_err(|_| "native_browser_creation_timeout".to_string())?
+            .map_err(|error| error.to_string())??;
         let page = page_state(&app, &id)?;
         bind_preview_target(&app, &id, preview_run_id.as_deref())?;
         #[cfg(windows)]
@@ -994,11 +1025,15 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                 .set_focus()
                 .map_err(|error| error.to_string())?;
         }
-        "navigate" => {
-            if page.kind == "achbit" {
-                return Err("The Achbit preview remains connected to its original Host; open a separate page to navigate.".into());
-            }
-            let url = page_url(&input)?;
+        "navigate" | "reload" => {
+            let url = if action == "navigate" {
+                if page.kind == "achbit" {
+                    return Err("The Achbit preview remains connected to its original Host; open a separate page to navigate.".into());
+                }
+                Some(page_url(&input)?)
+            } else {
+                None
+            };
             {
                 let state = app.state::<NativeBrowser>();
                 let mut pages = state
@@ -1006,24 +1041,21 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
                     .lock()
                     .map_err(|_| "native_browser_state_unavailable")?;
                 let current = pages.get_mut(id).ok_or("native_browser_page_closed")?;
-                current.url = url.to_string();
+                if let Some(url) = &url {
+                    current.url = url.to_string();
+                }
                 current.status = "loading".into();
                 current.load_error = None;
             }
-            view.navigate(url).map_err(|error| error.to_string())?;
-        }
-        "reload" => {
-            {
-                let state = app.state::<NativeBrowser>();
-                let mut pages = state
-                    .pages
-                    .lock()
-                    .map_err(|_| "native_browser_state_unavailable")?;
-                let current = pages.get_mut(id).ok_or("native_browser_page_closed")?;
-                current.status = "loading".into();
-                current.load_error = None;
+            let result = match url {
+                Some(url) => view.navigate(url),
+                None => view.reload(),
+            };
+            if let Err(error) = result {
+                let message = error.to_string();
+                navigation::failed(&app, id, message.clone());
+                return Err(message);
             }
-            view.reload().map_err(|error| error.to_string())?;
         }
         "layout" => {
             if tool_request {
@@ -1436,10 +1468,10 @@ async fn capture_macos(
     use objc2::{AnyThread, MainThreadOnly};
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
     use objc2_foundation::{NSDictionary, NSError, NSNumber, NSPoint, NSRect, NSSize};
-    use objc2_web_kit::{WKSnapshotConfiguration, WKWebView};
+    use objc2_web_kit::WKSnapshotConfiguration;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     view.with_webview(move |platform| unsafe {
-        let webview = &*(platform.inner() as *const WKWebView);
+        let webview = macos_webview(platform);
         let completion = block2::RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
             let outcome = (|| {
                 if let Some(error) = error.as_ref() {
