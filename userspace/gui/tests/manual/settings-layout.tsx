@@ -16,7 +16,16 @@ import '../../src/components/settings-center/settingsCenter.css';
 installPaletteDefaults();
 const handlers = new Map<string, (event: { payload: unknown }) => void>();
 const calls: string[] = [];
-const marketplace = { requests: 0, externalUrls: [] as string[], installations: [] as string[] };
+const largeMarket = new URLSearchParams(location.search).has('largeMarket');
+const echoManifest = { id: 'Echo Demonstration', kind: 'guidance', path: '/fixture/installed/echo' };
+const inventory = [{ id: echoManifest.id, kind: 'ui', path: '/fixture/other' }];
+if (largeMarket) inventory.push({ id: 'quiet-theme', kind: 'ui', path: '/fixture/plugin' });
+type InstallResult = 'success' | 'reject' | 'activation-failed';
+const marketplace = {
+  requests: 0, externalUrls: [] as string[], installations: [] as string[], commands: [] as unknown[],
+  installElsewhere: () => inventory.push(echoManifest),
+  holdNext: false, finish: undefined as ((result: InstallResult) => void) | undefined,
+};
 Object.assign(window, { marketplaceFixture: marketplace });
 const repository = 'https://github.com/example/achbit-market-fixture';
 const commit = 'a'.repeat(40);
@@ -25,10 +34,16 @@ const artifact = (id: string, kind: string, author: string, name: string) => ({
   sourceCommit: commit, sourceUrl: `${repository}/tree/${commit}`, licenseUrl: `${repository}/blob/${commit}/LICENSE`,
   downloadUrl: `${repository}/releases/download/1.0.0/${id}.zip`,
 });
+const more = largeMarket ? Array.from({ length: 13 }, (_, index) => ({
+  ...artifact('extra-' + index, index === 0 ? 'service' : 'cli', 'Operations', 'Tool ' + (index + 1)), licenseName: 'MIT', licenseKind: 'open-source',
+})) : [];
 const marketplaceIndex = { schemaVersion: 1, plugins: [
-  { ...artifact('echo', 'guidance', 'Anya', 'Echo Tools'), licenseName: 'MIT', licenseKind: 'open-source',
+  { ...artifact('echo', 'guidance', 'Anya', 'Echo Tools'), description: 'Return supplied text in a consistent format.', descriptionZhCN: '按原格式返回输入文本。', install: { sha256: 'b'.repeat(64), manifestId: echoManifest.id },
+    licenseName: 'MIT', licenseKind: 'open-source',
     verification: { kind: 'installation', version: '1.0.0', platform: 'macos-arm64' } },
-  { ...artifact('theme', 'ui', 'Lee', 'Quiet Theme'), licenseName: 'Fixture Community License', licenseKind: 'source-available' },
+  { ...artifact('theme', 'ui', 'Lee', 'Quiet Theme'), description: 'A low-contrast color palette for the workbench.', descriptionZhCN: '为工作台提供柔和的配色。', install: { sha256: 'c'.repeat(64), manifestId: 'quiet-theme' },
+    licenseName: 'Fixture Community License', licenseKind: 'source-available' },
+  ...more,
 ] };
 let status: ProductUpdateStatus = { phase: 'idle', currentVersion: 'preview', version: null, downloaded: 0, total: null, reason: null, error: null };
 function publish(phase: string) {
@@ -62,9 +77,28 @@ window.fetch = async (input, init) => {
     return marketplace.requests === 1 ? new Response(null, { status: 503 }) : Response.json(marketplaceIndex);
   }
   if (path.endsWith('/host/plugins/install') || path.endsWith('/host/plugins/manage')) marketplace.installations.push(path);
-  if (path.endsWith('/conversation/plugins')) return Response.json({ ok: true, data: { revision: 'fixture', plugins: [] } });
+  if (path.endsWith('/host/plugins')) return Response.json({ ok: true, data: { plugins: inventory } });
+  if (path.endsWith('/host/plugins/install')) {
+    marketplace.commands.push(JSON.parse(String(init?.body)));
+    if (inventory.includes(echoManifest)) return Response.json({ ok: false, error: 'already_installed', message: 'Plugin already registered' });
+    const outcome = marketplace.holdNext ? await new Promise<InstallResult>(resolve => { marketplace.finish = resolve; }) : 'success';
+    marketplace.finish = undefined;
+    marketplace.holdNext = false;
+    if (outcome === 'reject') return Response.json({ ok: false, error: 'fixture_rejected', message: 'Archive checksum mismatch' });
+    inventory.push(echoManifest);
+    const application = outcome === 'activation-failed' ? { status: 'failed', error: 'Fixture startup failed' } : { status: 'available' };
+    return Response.json({ ok: true, data: { plugin: echoManifest, application } });
+  }
+  if (path.endsWith('/conversation/plugins')) {
+    const plugins = inventory.includes(echoManifest) ? [{
+      uri: 'plugin://echo@fixture', displayName: 'Echo Tools', shortDescription: 'Echo sample.', activationMediaTypes: [],
+      enabled: true, available: true, source: 'mounted', category: 'reference', contributionKind: 'skill', discovery: 'searchOnly',
+      management: { key: 'skills.mounts', id: 'mount-fixture', path: echoManifest.path },
+    }] : [];
+    return Response.json({ ok: true, data: { revision: 'fixture', plugins } });
+  }
   if (path.endsWith('/host/plugins/inspect')) return Response.json({ ok: true, data: {
-    kind: 'ui', path: '/fixture/plugin', id: 'layout', name: 'Layout preview plugin', description: 'An isolated display plugin.', manifestPath: '/fixture/plugin/achbit-ui.json',
+    kind: 'ui', path: '/fixture/plugin', id: 'quiet-theme', name: 'Layout preview plugin', description: 'An isolated display plugin.', manifestPath: '/fixture/plugin/achbit-ui.json',
   } });
   if (path.endsWith('/plugin-services')) return Response.json({ ok: true, data: { services: [] } });
   if (path.endsWith('/plugin-services/events')) return new Response(new ReadableStream({ start(controller) {
@@ -73,7 +107,7 @@ window.fetch = async (input, init) => {
   } }), { headers: { 'Content-Type': 'text/event-stream' } });
   throw new Error(`Unexpected fixture request: ${path}`);
 };
-useSettingsStore.setState({ loading: false, storePath: '/fixture/settings.json',
+useSettingsStore.setState({ loadUserSettings: async () => {}, loading: false, storePath: '/fixture/settings.json',
   effectiveSettings: { ...DEFAULT_USER_SETTINGS, 'workbench.language': 'zh-CN',
     'workbench.uiPlugins': JSON.stringify([{ path: '/fixture/plugin', enabled: false }]) },
   patchUserSetting: async (key, value) => {

@@ -188,7 +188,7 @@ try {
   await evaluate('document.querySelector(".settings-disclosure > summary").focus()'); await key('Enter');
   const plugin = await evaluate(`(()=>{const s=document.activeElement;return {control:s.dataset.uiComponent,open:s.parentElement.open,arrows:s.querySelectorAll('svg').length}})()`);
   await record('plugin-disclosure', plugin, plugin.control==='DisclosureSummary' && plugin.open && plugin.arrows===1);
-  await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, type, selectFixture, record });
+  await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, key, type, selectFixture, record });
   await checkPreviewLayout({ navigate, evaluate, cmd, until, frame, click, key, record });
   assert.ok(results.every(result => result.pass), 'see the retained browser result for failed invariants');
   await call('Browser.close');

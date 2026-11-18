@@ -117,3 +117,43 @@ test('both unresponsive origins are bounded and the failure retains their separa
     assert.equal(count, 2);
   } finally { t.mock.timers.reset(); }
 });
+
+test('a pinned ZIP can install in-app while older directory entries remain downloadable', async t => {
+  const { decodePluginMarketplace, installMarketplacePlugin } = await loadGuiModule(t, '/src/services/pluginMarketplace.ts');
+  const install = { manifestId: 'Text Echo', sha256: 'af'.repeat(32) };
+  const listed = { ...plugin, descriptionZhCN: '原样返回文本', install };
+  const [candidate, older] = decodePluginMarketplace(index(listed, { ...plugin, id: 'old' }));
+  assert.deepEqual(candidate, listed);
+  for (const broken of [{ ...install, sha256: 'bad' }, { ...install, manifestId: '' }]) {
+    assert.throws(() => decodePluginMarketplace(index({ ...listed, install: broken })));
+  }
+  const saved = { plugin: { kind: 'guidance', id: 'Text Echo', path: '/managed/echo/SKILL.md' },
+    application: { status: 'failed', error: 'activation error from Host' } };
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(new URL(url).pathname, '/api/host/plugins/install');
+    assert.equal(init.method, 'POST');
+    assert.deepEqual(JSON.parse(init.body), { marketplace: { id: plugin.id, version: plugin.version, kind: plugin.kind, ...install } });
+    return Response.json({ ok: true, data: saved });
+  });
+  await assert.rejects(installMarketplacePlugin(older), /download only/);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.deepEqual(await installMarketplacePlugin(candidate), saved);
+  assert.equal(fetch.mock.callCount(), 1);
+  fetch.mock.mockImplementation(() => Response.json({ ok: false, error: 'plugin_install_failed', message: 'ZIP digest changed' }));
+  await assert.rejects(installMarketplacePlugin(candidate), /ZIP digest changed/);
+});
+
+test('marketplace inventory uses installed manifest identities and skips unresolved Skill identities', async t => {
+  const { fetchInstalledMarketplacePlugins } = await loadGuiModule(t, '/src/services/pluginMarketplace.ts');
+  const saved = { id: 'Text Echo', kind: 'guidance', path: '/managed/echo/SKILL.md' };
+  const mock = t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.equal(new URL(url).pathname, '/api/host/plugins');
+    return Response.json({ ok: true, data: { plugins: [
+      { ...saved, enabled: false }, { kind: 'ui', id: null, error: 'manifest missing', path: '/bad' },
+      { kind: 'guidance', id: 'mount-id', error: 'Skill missing', path: '/bad-skill' },
+    ] } });
+  });
+  assert.deepEqual(await fetchInstalledMarketplacePlugins(), [saved]);
+  mock.mock.mockImplementation(() => Response.json({ ok: false, message: 'Host is starting' }));
+  await assert.rejects(fetchInstalledMarketplacePlugins(), /Host is starting/);
+});

@@ -22,9 +22,11 @@ Managed Shell activity, containers and plugin activation have their own resource
 
 ## Marketplace
 
-Open **Settings → Plugins → Marketplace** to search by plugin, author or type. Expand a result to inspect its version, exact source commit and license. The license distinguishes open-source projects from projects with source available under an author's terms. An optional badge identifies a verified publisher or a specific version and platform with an installation record.
+Open **Settings → Plugins → Marketplace**. Browse by category or search for a name, author or description. Each row shows what the plugin does and the action available. Its details link to the fixed source revision, the author's license and any verification record. Publisher verification and installation verification have different scopes. An installation record names the tested version and platform.
 
-**Download from author** opens the author's version-specific distribution in your browser. After saving the package, go to **Installed → Add…** to inspect it and confirm installation. Maintainers submit metadata through the [public plugin index](https://github.com/Achbite/achbit-plugins). Authors host their source, license and downloads. A failed directory request can be retried from Marketplace while installed plugins remain available.
+**Install & enable** downloads the selected ZIP on the connected Host. The Host compares the package digest and manifest identity with the directory entry before applying the same installation process used for local packages. **Manage** takes you to installed plugins to disable, update or remove a registration. Existing registrations with the same kind and manifest ID keep their installed copy.
+
+**Download from author** opens the version-specific distribution in your browser. For listings that provide only an author download, save the package and use **Installed → Add…**. Authors submit a bilingual Markdown entry with a description, source, license and asset link in the appropriate directory category. For direct installation, include the ZIP SHA-256 and the manifest ID reported by Achbit. The directory generates the category tables and the machine-readable index from those pages. [Plugin contribution guide](https://github.com/Achbite/achbit-plugins/blob/main/CONTRIBUTING.md)
 
 ## Artifacts and import
 

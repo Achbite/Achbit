@@ -74,6 +74,7 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
     [revision, setRevision] = useState(0),
     [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'enabled'>('all');
+  const [managePath, setManagePath] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null),
     [choosing, setChoosing] = useState(false);
   const [candidate, setCandidate] = useState<LocalPluginInspection | null>(null);
@@ -222,6 +223,19 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
         .toLowerCase()
         .includes(search.trim().toLowerCase()),
   );
+  useEffect(() => {
+    if (view !== 'installed' || !managePath) return;
+    const item = items.find(item => item.path === managePath);
+    if (!item) return;
+    setExpanded(item.id);
+    setManagePath(null);
+    document.getElementById('setting-plugin-' + item.id)?.scrollIntoView({ block: 'nearest' });
+  }, [view, managePath, items]);
+  const refreshInstallation = async () => {
+    await useSettingsStore.getState().loadUserSettings();
+    setRevision(value => value + 1);
+    void useLocalAgentStore.getState().refreshPluginCatalog();
+  };
   const save = async (item: Item, enabled: boolean, remove = false, replacement?: Source) => {
     setBusy(true);
     setItemErrors((old) => {
@@ -289,12 +303,10 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
     setError(null);
     try {
       await installLocalPlugin(candidate.manifestPath, updating?.path);
-      await useSettingsStore.getState().loadUserSettings();
+      await refreshInstallation();
       setUpdating(null);
       setCandidate(null);
       setManualPath('');
-      setRevision((value) => value + 1);
-      void useLocalAgentStore.getState().refreshPluginCatalog();
     } catch (reason) {
       setError(errorText(reason));
     } finally {
@@ -341,7 +353,12 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
           </Button>
         )}
       </div>
-      {view === 'discover' && <PluginMarketplace language={language} />}
+      <PluginMarketplace active={view === 'discover'} language={language} onInstalled={() => void refreshInstallation()} onManage={path => {
+        setFilter('all');
+        setSearch('');
+        setManagePath(path);
+        setView('installed');
+      }} />
       <div hidden={view !== 'installed'}>
       <div className="plugin-manager__filters">
         <div role="group" aria-label={t(language, 'settings.plugins.filter')}>
