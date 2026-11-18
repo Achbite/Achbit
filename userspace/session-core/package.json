@@ -1,6 +1,6 @@
 {
   "name": "@achbit/session-core",
-  "version": "0.8.83",
+  "version": "0.7.83",
   "license": "MIT",
   "private": true,
   "type": "module",
