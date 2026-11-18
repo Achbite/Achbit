@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { resolve, join, extname } from 'node:path';
+import { resolve, join, extname, relative, isAbsolute, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -16,8 +16,9 @@ await mkdir(out, { recursive: true });
 const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.svg': 'image/svg+xml' };
 const server = createServer(async (req, res) => {
   try {
-    const path = resolve(preview, '.' + new URL(req.url, 'http://localhost').pathname);
-    assert.ok(path.startsWith(preview + '/'));
+    const path = resolve(preview, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
+    const child = relative(preview, path);
+    assert.ok(child && !isAbsolute(child) && child !== '..' && !child.startsWith('..' + sep));
     const data = await readFile(path); res.writeHead(200, { 'content-type': mime[extname(path)] ?? 'application/octet-stream' }); res.end(data);
   } catch (error) { res.writeHead(404); res.end(String(error)); }
 });
@@ -26,7 +27,9 @@ const base = `http://127.0.0.1:${server.address().port}`, profile = await mkdtem
 let browser, ws, id = 0;
 const pending = new Map(), listeners = new Map(), results = [];
 try {
-  browser = spawn('chromium', ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--remote-debugging-port=0', '--user-data-dir=' + profile, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  // Chromium needs --no-sandbox for the root-owned Linux container, not the Windows host.
+  const containerFlags = process.platform === 'linux' && process.getuid() === 0 ? ['--no-sandbox', '--disable-dev-shm-usage'] : [];
+  browser = spawn(process.env.CHROMIUM_BIN || 'chromium', ['--headless=new', ...containerFlags, '--remote-debugging-port=0', '--user-data-dir=' + profile, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   let logs = '';
   const endpoint = await new Promise((done, reject) => {
     browser.stderr.on('data', data => { logs += data; const match = /DevTools listening on (ws:\/\/[^\s]+)/.exec(logs); if (match) done(match[1]); });
@@ -189,6 +192,9 @@ try {
   await call('Browser.close');
 } finally {
   ws?.close();
-  if (browser && browser.exitCode === null) { browser.kill('SIGTERM'); await once(browser, 'exit'); }
-  await new Promise(done => server.close(done)); await rm(profile, { recursive: true, force: true });
+  if (browser?.pid && browser.exitCode === null && browser.signalCode === null) {
+    const closed = once(browser, 'close'); browser.kill(); await closed;
+  }
+  await new Promise(done => server.close(done));
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
