@@ -1,4 +1,4 @@
-import { modelReasoningEfforts } from '@achbit/protocol';
+import { connectedModelReasoningEfforts } from '@achbit/protocol';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import type { ContextCompositionProjection, ContextUsageProjection, LlmProviderProfile, ModelConnection, LlmReasoningEffort } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
@@ -67,7 +67,7 @@ export default function SessionModelSelector({ language, profiles, connections =
   const subagentLabel = t(language, subagentsEnabled ? 'settings.subagents.disable' : 'settings.subagents.enable');
   const subagentHelp = useSettingsHelp(open && !choosingModel
     ? `${subagentLabel} · ${t(language, 'settings.subagents.activation')}` : undefined, { compact: true });
-  const efforts = modelReasoningEfforts(candidate);
+  const efforts = connectedModelReasoningEfforts(candidate, connections);
   const toggleSubagents = async () => {
     if (subagentBusy || defaultsLoading) return;
     setActionError(null); setSubagentBusy(true);
@@ -81,7 +81,7 @@ export default function SessionModelSelector({ language, profiles, connections =
   const title = (selected?.name ?? selectedProfileId ?? (chinese ? '选择模型' : 'Choose model')) + (selectedProfileId && !selected?.enabled ? ` · ${t(language, selected ? 'agent.profile.disabled' : 'agent.profile.missing')}` : '');
   const effortLabel = selected?.thinking === 'disabled'
     ? (chinese ? '不适用' : 'Not applicable')
-    : effectiveEffort ? t(language, `settings.llm.effort.${effectiveEffort}`) : modelReasoningEfforts(selected).length === 0 ? t(language, 'settings.llm.serviceDefault') : (chinese ? '选择强度' : 'Choose level');
+    : effectiveEffort ? t(language, `settings.llm.effort.${effectiveEffort}`) : connectedModelReasoningEfforts(selected, connections).length === 0 ? t(language, 'settings.llm.serviceDefault') : (chinese ? '选择强度' : 'Choose level');
   const close = () => { setOpen(false); returnFocusTo(triggerRef.current, interaction, menuRef.current); };
   useEffect(() => {
     const panel = menuRef.current;
@@ -147,7 +147,7 @@ export default function SessionModelSelector({ language, profiles, connections =
                 if (busy) return;
                 setCandidateId(profile.id);
                 setChoosingModel(false);
-                const fixedEffort = modelReasoningEfforts(profile).length === 0;
+                const fixedEffort = connectedModelReasoningEfforts(profile, connections).length === 0;
                 if (profile.id !== selectedProfileId && (profile.thinking === 'disabled' || fixedEffort || profile.reasoningEffort)) {
                   void choose(profile.thinking === 'disabled' || fixedEffort ? null : profile.reasoningEffort!, profile);
                 }
@@ -162,7 +162,7 @@ export default function SessionModelSelector({ language, profiles, connections =
             {subagentHelp.help}
             <button {...identity.action('models', 'click')} type="button" className="achbit-session-model__current" aria-haspopup="menu" onClick={() => setChoosingModel(true)}>
               <strong>{candidate?.thinking === 'disabled' ? t(language, 'agent.profile.thinkingDisabled')
-                : candidateEffort ? t(language, `settings.llm.effort.${candidateEffort}`) : modelReasoningEfforts(candidate).length === 0 ? t(language, 'settings.llm.serviceDefault') : (chinese ? '选择强度' : 'Choose level')}</strong>
+                : candidateEffort ? t(language, `settings.llm.effort.${candidateEffort}`) : connectedModelReasoningEfforts(candidate, connections).length === 0 ? t(language, 'settings.llm.serviceDefault') : (chinese ? '选择强度' : 'Choose level')}</strong>
               <span><b>{candidate?.name ?? title}</b><AchbitShellIcon name="chevronRight" size={14} /></span>
             </button>
             <IconButton {...identity.action('settings', 'click')} icon="settings" className="achbit-session-model__settings"

@@ -1381,6 +1381,8 @@ pub(crate) async fn local_agent_models_get(
         let resolved = binding.profile();
         let efforts: &[&str] = if snapshot.thinking.as_deref() == Some("disabled") {
             &[]
+        } else if let Some(efforts) = crate::llm_protocol::qwen4_chat_efforts(&resolved) {
+            efforts
         } else if profile["providerFlavor"].as_str() == Some("deepseek") {
             &["low", "high", "max"]
         } else {

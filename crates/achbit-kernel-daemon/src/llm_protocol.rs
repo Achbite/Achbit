@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ThinkingPolicies {
+    gemini_chat_efforts: std::collections::BTreeMap<String, Vec<String>>,
     anthropic_adaptive: Vec<ThinkingPolicy>,
     anthropic_manual: Vec<ThinkingPolicy>,
     ollama_efforts: Vec<String>,
@@ -28,11 +29,24 @@ enum DisableThinking {
     Never,
 }
 
-fn thinking_policies() -> ThinkingPolicies {
-    serde_json::from_str(include_str!(
-        "../../../userspace/protocol/src/modelThinkingPolicies.json"
-    ))
-    .expect("bundled model thinking policies")
+fn thinking_policies() -> &'static ThinkingPolicies {
+    static POLICIES: std::sync::LazyLock<ThinkingPolicies> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!(
+            "../../../userspace/protocol/src/modelThinkingPolicies.json"
+        ))
+        .expect("bundled model thinking policies")
+    });
+    &POLICIES
+}
+
+pub(crate) fn gemini_chat_efforts(profile: &ResolvedLlmProfile) -> Option<&'static [String]> {
+    if profile.kind != "openaiCompatible" || profile.connection.adapter_id != "gemini" {
+        return None;
+    }
+    thinking_policies()
+        .gemini_chat_efforts
+        .get(&profile.model)
+        .map(Vec::as_slice)
 }
 
 fn cannot_disable(rule: &ThinkingPolicy, effort: Option<&str>) -> bool {
@@ -40,7 +54,17 @@ fn cannot_disable(rule: &ThinkingPolicy, effort: Option<&str>) -> bool {
         || rule.disable == DisableThinking::ThroughHigh && matches!(effort, Some("xhigh" | "max"))
 }
 
+pub(crate) fn qwen4_chat_efforts(profile: &ResolvedLlmProfile) -> Option<&'static [&'static str]> {
+    (profile.connection.adapter_id == "dashscope"
+        && profile.kind == "openaiCompatible"
+        && profile.model == "qwen4-max")
+        .then_some(&["low", "high", "xhigh"])
+}
+
 pub(crate) fn thinking_required(profile: &ResolvedLlmProfile) -> bool {
+    if gemini_chat_efforts(profile).is_some() {
+        return true;
+    }
     let rules = thinking_policies();
     if profile.kind == "ollama" {
         return rules

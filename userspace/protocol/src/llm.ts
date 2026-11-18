@@ -18,11 +18,24 @@ function anthropicThinkingPolicy(profile?: ModelThinkingProfile) {
   return thinkingPolicies.anthropicAdaptive.find(rule => profile.model?.startsWith(rule.prefix))
     ?? thinkingPolicies.anthropicManual.find(rule => profile.model?.startsWith(rule.prefix));
 }
-export function modelReasoningEfforts(profile?: ModelThinkingProfile): readonly LlmReasoningEffort[] {
+function geminiEfforts(profile?: ModelThinkingProfile, adapterId?: string): readonly string[] | undefined {
+  if (adapterId !== 'gemini' || profile?.kind !== 'openaiCompatible' || !profile.model) return undefined;
+  const efforts: Record<string, readonly string[]> = thinkingPolicies.geminiChatEfforts;
+  return Object.hasOwn(efforts, profile.model) ? efforts[profile.model] : undefined;
+}
+export function connectedModelReasoningEfforts(
+  profile: LlmProviderProfile | undefined, connections: readonly import('./modelServices.js').ModelConnection[],
+): readonly LlmReasoningEffort[] {
+  return modelReasoningEfforts(profile, connections.find(connection => connection.id === profile?.connectionId)?.adapterId);
+}
+export function modelReasoningEfforts(profile?: ModelThinkingProfile, adapterId?: string): readonly LlmReasoningEffort[] {
   const model = profile?.model ?? '';
+  if (adapterId === 'dashscope' && profile?.kind === 'openaiCompatible' && model === 'qwen4-max') {
+    return ['low', 'high', 'xhigh'];
+  }
   const declared = profile?.kind === 'ollama'
     ? (thinkingPolicies.ollamaAlwaysThinking.includes(model.split(':')[0]!) ? thinkingPolicies.ollamaEfforts : [])
-    : anthropicThinkingPolicy(profile)?.efforts;
+    : geminiEfforts(profile, adapterId) ?? anthropicThinkingPolicy(profile)?.efforts;
   if (declared) return declared.map(value => {
     if (!isLlmReasoningEffort(value)) throw new Error('model_thinking_policy_invalid');
     return value;
@@ -36,15 +49,15 @@ export function modelReasoningEfforts(profile?: ModelThinkingProfile): readonly 
   return LLM_REASONING_EFFORTS;
 }
 export type LlmThinkingMode = 'enabled' | 'disabled';
-export function modelThinkingModes(profile?: ModelThinkingProfile): readonly LlmThinkingMode[] {
+export function modelThinkingModes(profile?: ModelThinkingProfile, adapterId?: string): readonly LlmThinkingMode[] {
   const model = profile?.model ?? '';
   const adaptive = anthropicThinkingPolicy(profile);
-  const declaredRequired = adaptive?.disable === 'never'
+  const declaredRequired = !!geminiEfforts(profile, adapterId) || adaptive?.disable === 'never'
     || adaptive?.disable === 'throughHigh' && ['xhigh', 'max'].includes(profile?.reasoningEffort ?? '')
     || profile?.kind === 'ollama' && thinkingPolicies.ollamaAlwaysThinking.includes(model.split(':')[0]);
   const required = declaredRequired || profile?.providerFlavor === 'zhipu' && model === 'glm-5.3'
     || profile?.providerFlavor === 'moonshot' && (model.startsWith('kimi-k3') || ['k3.1-pro', 'k3.1-pro-highspeed'].includes(model))
-    || profile?.providerFlavor === 'openai' && ['gpt-6-astra', 'gpt-6.1-sol', 'MiniMax-M3.1-Flash'].includes(model);
+    || profile?.providerFlavor === 'openai' && ['gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6-astra', 'gpt-6.1-sol', 'MiniMax-M3.1-Flash'].includes(model);
   return required ? ['enabled'] : ['enabled', 'disabled'];
 }
 export type LlmHostedWebSearch = 'web_search';

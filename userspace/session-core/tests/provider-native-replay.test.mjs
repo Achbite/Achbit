@@ -10,6 +10,17 @@ import { assertRuntimeContract } from './support/runtimeContract.mjs';
 import { fakeRunPreparation, createSession, workspaceBinding, emptyKernel, completedExecutionReply, failedExecutionReply,
   providerEvent, messageCommand, waitForProjection, readEvents } from './local-agent-fixtures.mjs';
 
+test('Google Gemini 4 exposes only supported effort for the actual connection', () => {
+  const profile = { kind: 'openaiCompatible', providerFlavor: 'openai', model: 'gemini-4-carbon' };
+  for (const model of ['gemini-4-carbon', 'gemini-4-argon']) {
+    assert.deepEqual(modelReasoningEfforts({ ...profile, model }, 'gemini'), ['low', 'medium', 'high']);
+    assert.deepEqual(modelThinkingModes({ ...profile, model }, 'gemini'), ['enabled']);
+  }
+  assert.deepEqual(modelReasoningEfforts({ ...profile, model: 'gemini-4-hydrogen' }, 'gemini'), ['low', 'medium', 'high', 'xhigh']);
+  assert.deepEqual(modelThinkingModes(profile, 'custom'), ['enabled', 'disabled']);
+  assert.ok(modelReasoningEfforts(profile, 'custom').includes('max'));
+});
+
 const native = { apiSurface: 'anthropicMessages', content: [
   { type: 'thinking', thinking: 'first', signature: 'opaque-a' },
   { type: 'text', text: 'Inspect both files.' },
@@ -20,6 +31,15 @@ const native = { apiSurface: 'anthropicMessages', content: [
 ] };
 
 test('shared model policy exposes only supported effort and disable choices', () => {
+  for (const model of ['gpt-6.2-astra', 'gpt-6.2-sol']) {
+    const openai = { kind: 'responses', providerFlavor: 'openai', model };
+    assert.deepEqual(modelThinkingModes(openai), ['enabled']);
+    assert.deepEqual(modelReasoningEfforts(openai), ['low', 'medium', 'high', 'xhigh', 'max']);
+  }
+  const qwen = { kind: 'openaiCompatible', providerFlavor: 'openai', model: 'qwen4-max' };
+  assert.deepEqual(modelReasoningEfforts(qwen, 'dashscope'), ['low', 'high', 'xhigh']);
+  assert.deepEqual(modelThinkingModes(qwen, 'dashscope'), ['enabled', 'disabled']);
+  assert.deepEqual(modelReasoningEfforts(qwen, 'custom'), ['low', 'medium', 'high', 'xhigh', 'max']);
   const profile={kind:'anthropic',providerFlavor:'openai',model:'claude-opus-4-7'};
   assert.deepEqual(modelReasoningEfforts(profile),['low','medium','high','xhigh','max']);
   assert.deepEqual(modelReasoningEfforts({...profile,model:'claude-sonnet-4-6'}),['low','medium','high','max']);

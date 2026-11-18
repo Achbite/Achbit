@@ -231,40 +231,55 @@ pub(crate) fn adapter_descriptors() -> Value {
     // Model capacities are presets; account/plan limits may be lower.
     // Sources: OpenAI model catalog, GLM-5.3 guide, Kimi Code model configuration,
     // and MiniMax text-generation guide (see docs/product/model-services.md).
-    let openai_models: Vec<Value> = [
-        ("GPT-6 Astra", "gpt-6-astra"),
-        ("GPT-6.1 Sol", "gpt-6.1-sol"),
-        ("GPT-6.1 Terra", "gpt-6.1-terra"),
-        ("GPT-6 Luna", "gpt-6-luna"),
-    ]
-    .into_iter()
-    .map(|(name, id)| {
-        let mut preset = model(name, id, "responses", "openai", 1_050_000, 128_000);
+    let astra = ("GPT-6.2 Astra", "gpt-6.2-astra", 272_000);
+    let openai_catalog = [
+        astra,
+        ("GPT-6.2 Sol", "gpt-6.2-sol", 500_000),
+        ("GPT-6.1 Terra", "gpt-6.1-terra", 1_050_000),
+        ("GPT-6 Luna", "gpt-6-luna", 1_050_000),
+        ("GPT-6 Astra", "gpt-6-astra", 1_050_000),
+        ("GPT-6.1 Sol", "gpt-6.1-sol", 500_000),
+    ];
+    let openai_preset = |name, id, context, effort| {
+        let mut preset = model(name, id, "responses", "openai", context, 128_000);
         preset["imageInput"] = json!(true);
         preset["thinking"] = json!("enabled");
-        preset["reasoningEffort"] = json!("medium");
-        preset["hostedWebSearch"] = json!("web_search");
+        preset["reasoningEffort"] = json!(effort);
         preset
-    })
-    .collect();
-    let mut codex_models = openai_models.clone();
-    // Codex / ChatGPT Work currently defaults Sol to 500K context.
-    codex_models[1]["contextWindowTokens"] = json!(500_000);
-    let mut custom_astra = openai_models[0].clone();
-    custom_astra
-        .as_object_mut()
-        .unwrap()
-        .remove("hostedWebSearch");
-    let mut deepseek = model(
-        "DeepSeek Flash",
-        "deepseek-flash",
-        "responses",
-        "deepseek",
-        1_000_000,
-        384_000,
-    );
-    deepseek["thinking"] = json!("enabled");
-    deepseek["reasoningEffort"] = json!("max");
+    };
+    let openai_models: Vec<Value> = openai_catalog
+        .iter()
+        .map(|&(name, id, _)| {
+            let mut preset = openai_preset(name, id, 1_050_000, "medium");
+            preset["hostedWebSearch"] = json!("web_search");
+            preset
+        })
+        .collect();
+    // The Codex subscription catalog supplies its own default context and effort.
+    let codex_models: Vec<Value> = openai_catalog
+        .iter()
+        .map(|&(name, id, context)| {
+            let effort = if matches!(id, "gpt-6.2-astra" | "gpt-6.2-sol") {
+                "low"
+            } else {
+                "medium"
+            };
+            let mut preset = openai_preset(name, id, context, effort);
+            preset["hostedWebSearch"] = json!("web_search");
+            preset
+        })
+        .collect();
+    let custom_astra = openai_preset(astra.0, astra.1, 1_050_000, "medium");
+    let deepseek_models = [
+        ("DeepSeek Flash", "deepseek-flash", "max"),
+        ("DeepSeek V4 Pro", "deepseek-v4-pro", "high"),
+    ]
+    .map(|(name, id, effort)| {
+        let mut preset = model(name, id, "responses", "deepseek", 1_000_000, 384_000);
+        preset["thinking"] = json!("enabled");
+        preset["reasoningEffort"] = json!(effort);
+        preset
+    });
     let mut glm = model(
         "GLM 5.3",
         "glm-5.3",
@@ -275,17 +290,18 @@ pub(crate) fn adapter_descriptors() -> Value {
     );
     glm["thinking"] = json!("enabled");
     glm["reasoningEffort"] = json!("max");
-    let mut kimi_api = model(
-        "Kimi K3",
-        "kimi-k3",
-        "openaiCompatible",
-        "moonshot",
-        1_048_576,
-        32_768,
-    );
-    kimi_api["imageInput"] = json!(true);
-    kimi_api["thinking"] = json!("enabled");
-    kimi_api["reasoningEffort"] = json!("max");
+    let kimi_api_models = [
+        ("Kimi K3.1 Pro", "kimi-k3.1-pro"),
+        ("Kimi K3.1 Pro Highspeed", "kimi-k3.1-pro-highspeed"),
+        ("Kimi K3", "kimi-k3"),
+    ]
+    .map(|(name, id)| {
+        let mut preset = model(name, id, "openaiCompatible", "moonshot", 1_048_576, 32_768);
+        preset["imageInput"] = json!(true);
+        preset["thinking"] = json!("enabled");
+        preset["reasoningEffort"] = json!("max");
+        preset
+    });
     let kimi_models: Vec<Value> = [
         ("Kimi K3.1 Pro", "k3.1-pro", 1_048_576, Some("high")),
         (
@@ -336,9 +352,9 @@ pub(crate) fn adapter_descriptors() -> Value {
     let mut adapters = json!([
         {"id":"openai","name":"OpenAI","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible"],"defaultBaseUrl":"https://api.openai.com/v1","models":openai_models,"pricing":true,"quota":false,"source":"builtin"},
         {"id":"openai-codex","name":"OpenAI · Codex","billingModes":["subscription"],"authMethods":["browser","deviceCode"],"protocols":["responses"],"defaultBaseUrl":"https://chatgpt.com/backend-api/codex","models":codex_models,"pricing":false,"quota":true,"source":"builtin"},
-        {"id":"deepseek","name":"DeepSeek","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible","anthropic"],"defaultBaseUrl":"https://api.deepseek.com","models":[deepseek],"pricing":true,"quota":false,"source":"builtin"},
+        {"id":"deepseek","name":"DeepSeek","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible","anthropic"],"defaultBaseUrl":"https://api.deepseek.com","models":deepseek_models,"pricing":true,"quota":false,"source":"builtin"},
         {"id":"zhipu","name":"GLM API","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["openaiCompatible"],"defaultBaseUrl":"https://open.bigmodel.cn/api/paas/v4","models":[glm],"pricing":false,"quota":false,"source":"builtin"},
-        {"id":"moonshot","name":"Kimi","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["openaiCompatible"],"defaultBaseUrl":"https://api.moonshot.ai/v1","models":[kimi_api],"pricing":false,"quota":false,"source":"builtin"},
+        {"id":"moonshot","name":"Kimi","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["openaiCompatible"],"defaultBaseUrl":"https://api.moonshot.ai/v1","models":kimi_api_models,"pricing":false,"quota":false,"source":"builtin"},
         {"id":"custom","name":"自定义 API","billingModes":["metered"],"authMethods":["apiKey"],"protocols":["responses","openaiCompatible","anthropic"],"defaultBaseUrl":"https://api.openai.com/v1","models":[custom_astra],"pricing":false,"quota":false,"source":"builtin"},
         {"id":"ollama","name":"Ollama","billingModes":["metered"],"authMethods":["none"],"protocols":["ollama"],"defaultBaseUrl":"http://127.0.0.1:11434","models":[],"pricing":false,"quota":false,"source":"builtin"}
     ]);
@@ -536,10 +552,58 @@ pub(crate) fn adapter_descriptors() -> Value {
         ),
     ] {
         let models = match id {
+            "anthropic" => [
+                ("Claude Opus 5.5", "claude-opus-5-5", "medium"),
+                ("Claude Fable 5.2", "claude-fable-5-2", "high"),
+                ("Claude Sonnet 5.5", "claude-sonnet-5-5", "high"),
+                ("Claude Haiku 5.5", "claude-haiku-5-5", "medium"),
+            ]
+            .into_iter()
+            .map(|(name, id, effort)| {
+                let mut preset = model(name, id, protocol, flavor, 1_000_000, 128_000);
+                preset["imageInput"] = json!(true);
+                preset["thinking"] = json!("enabled");
+                preset["reasoningEffort"] = json!(effort);
+                preset
+            })
+            .collect(),
+            "gemini" => [
+                ("Gemini 4 Carbon", "gemini-4-carbon", "medium"),
+                ("Gemini 4 Argon", "gemini-4-argon", "medium"),
+                ("Gemini 4 Hydrogen", "gemini-4-hydrogen", "high"),
+            ]
+            .into_iter()
+            .map(|(name, id, effort)| {
+                let mut preset = model(name, id, protocol, flavor, 1_048_576, 65_536);
+                preset["reasoningEffort"] = json!(effort);
+                preset["imageInput"] = json!(true);
+                preset["thinking"] = json!("enabled");
+                preset
+            })
+            .chain([model(model_id, model_id, protocol, flavor, 128_000, 16_000)])
+            .collect(),
             "zai" | "glm-coding" | "zai-coding" => vec![glm.clone()],
             "kimi-coding" | "kimi-coding-global" => kimi_models.clone(),
             "minimax" | "minimax-cn" | "minimax-coding" | "minimax-coding-cn" => {
                 minimax_models.clone()
+            }
+            "dashscope" => {
+                // 131,072 is supported with thinking both enabled and disabled.
+                let mut qwen = model(
+                    "Qwen4-Max",
+                    "qwen4-max",
+                    protocol,
+                    flavor,
+                    1_000_000,
+                    131_072,
+                );
+                qwen["imageInput"] = json!(true);
+                qwen["thinking"] = json!("enabled");
+                qwen["reasoningEffort"] = json!("high");
+                vec![
+                    qwen,
+                    model(model_id, model_id, protocol, flavor, 128_000, 16_000),
+                ]
             }
             _ if model_id.is_empty() => Vec::new(),
             _ => vec![model(model_id, model_id, protocol, flavor, 128_000, 16_000)],
@@ -777,12 +841,6 @@ mod tests {
                 } else {
                     assert!(model.get("hostedWebSearch").is_none());
                 }
-                if adapter["id"] == "deepseek" {
-                    assert_eq!(model["model"], "deepseek-flash");
-                    assert_eq!(model["thinking"], "enabled");
-                    assert_eq!(model["reasoningEffort"], "max");
-                    assert_eq!(model["imageInput"], true);
-                }
             }
         }
         let root = std::env::temp_dir().join(
@@ -792,13 +850,33 @@ mod tests {
         );
         let mut gui = GuiState::open_at(&root).unwrap();
         assert_eq!(document(&gui).unwrap()["profiles"], json!([]));
-        let mut template = descriptors
+        let models = descriptors
             .as_array()
             .unwrap()
             .iter()
             .find(|adapter| adapter["id"] == "deepseek")
-            .unwrap()["models"][0]
+            .unwrap()["models"]
+            .as_array()
+            .unwrap();
+        let mut template = models
+            .iter()
+            .find(|model| model["model"] == "deepseek-flash")
+            .unwrap()
             .clone();
+        assert_eq!(template["model"], "deepseek-flash");
+        assert_eq!(template["thinking"], "enabled");
+        assert_eq!(template["reasoningEffort"], "max");
+        assert_eq!(template["imageInput"], true);
+        let pro = models
+            .iter()
+            .find(|model| model["model"] == "deepseek-v4-pro")
+            .unwrap();
+        assert_eq!(pro["thinking"], "enabled");
+        assert_eq!(pro["reasoningEffort"], "high");
+        assert_eq!(pro["imageInput"], false);
+        assert_eq!(pro["kind"], "responses");
+        assert_eq!(pro["contextWindowTokens"], 1_000_000);
+        assert_eq!(pro["maxOutputTokens"], 384_000);
         template["id"] = json!("model:deepseek-test");
         template["connectionId"] = json!("connection:deepseek-test");
         apply_edit(
@@ -881,6 +959,29 @@ mod tests {
             assert_ne!(find(api)["defaultBaseUrl"], find(plan)["defaultBaseUrl"]);
             assert_eq!(find(plan)["authMethods"], json!(["apiKey"]));
             assert_eq!(find(plan)["quota"], false);
+        }
+    }
+
+    #[test]
+    fn metered_kimi_presets_keep_the_public_api_ids_and_protocol() {
+        let adapters = adapter_descriptors();
+        let metered = adapters
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == "moonshot")
+            .unwrap();
+        for id in ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3"] {
+            let preset = metered["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["model"] == id)
+                .unwrap();
+            assert_eq!(preset["kind"], "openaiCompatible", "{id}");
+            assert_eq!(preset["imageInput"], true, "{id}");
+            assert_eq!(preset["contextWindowTokens"], 1_048_576, "{id}");
+            assert_eq!(preset["reasoningEffort"], "max", "{id}");
         }
     }
 
