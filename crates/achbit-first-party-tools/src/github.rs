@@ -3,6 +3,7 @@ use crate::{
     response_text, ToolError, ToolResult,
 };
 use base64::Engine as _;
+mod resources;
 use reqwest::header::{HeaderName, HeaderValue, ACCEPT, AUTHORIZATION};
 use serde_json::{json, Value};
 
@@ -10,18 +11,47 @@ const API_ROOT: &str = "https://api.github.com";
 const API_VERSION: &str = "2026-03-10";
 const MAX_CONTENTS_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
-pub(crate) fn call(name: &str, input: &Value) -> ToolResult<Value> {
+pub(crate) fn call(name: &str, input: &Value, context: Option<&Value>) -> ToolResult<Value> {
+    let token = crate::github_account::access_token(context)?;
+    let token = token.as_deref();
     match name {
-        "search" => search(input),
-        "read" => read(input),
+        "search" => search(input, token),
+        "read" if input.get("url").is_some() => resources::read(input, token),
+        "read" => read(input, token),
         _ => Err(ToolError::new(
             "tool_not_found",
             format!("GitHub plugin does not provide {name}"),
         )),
     }
+    .map_err(|mut e| {
+        let (code, advice) = match e.http_status {
+            Some(401) => (
+                "github_auth_required",
+                "Reconnect the account in GitHub plugin settings.",
+            ),
+            Some(403 | 429)
+                if e.message.to_ascii_lowercase().contains("rate limit")
+                    || e.http_status == Some(429) =>
+            {
+                ("github_rate_limited", "GitHub's rate limit was reached.")
+            }
+            Some(403) => (
+                "github_access_denied",
+                "Check the account's repository access and the organization's OAuth or SSO policy.",
+            ),
+            Some(404) => (
+                "github_not_found_or_private",
+                "Check the URL and that the connected account can access the resource.",
+            ),
+            _ => return e,
+        };
+        e.code = code;
+        e.message = format!("{} {advice}", e.message);
+        e
+    })
 }
 
-fn search(input: &Value) -> ToolResult<Value> {
+fn search(input: &Value, token: Option<&str>) -> ToolResult<Value> {
     let object = input_object(input, &["query", "kind", "page", "limit"])?;
     let query = required_string(object, "query")?;
     let kind = optional_string(object, "kind")?.unwrap_or_else(|| "repositories".to_string());
@@ -42,7 +72,7 @@ fn search(input: &Value) -> ToolResult<Value> {
         .append_pair("q", &query)
         .append_pair("page", &page.to_string())
         .append_pair("per_page", &limit.to_string());
-    let response = http_get(url, 2 * 1024 * 1024, github_headers(kind == "code")?)?;
+    let response = http_get(url, 2 * 1024 * 1024, github_headers(token, kind == "code")?)?;
     let body: Value = serde_json::from_str(response_text(&response)?)
         .map_err(|error| ToolError::new("github_response_invalid", error.to_string()))?;
     let items = body.get("items").and_then(Value::as_array).ok_or_else(|| {
@@ -71,13 +101,12 @@ fn search(input: &Value) -> ToolResult<Value> {
                 "search response requires incomplete_results",
             )
         })?;
-    let has_more = page < 100 && page.saturating_mul(limit) < total_count;
     Ok(json!({
         "backendId": "github",
         "query": query,
         "kind": kind,
         "page": page,
-        "nextPage": has_more.then_some(page + 1),
+        "nextPage": next_page(&response, page, 100),
         "totalCount": total_count,
         "incomplete": incomplete,
         "results": results,
@@ -87,7 +116,7 @@ fn search(input: &Value) -> ToolResult<Value> {
     }))
 }
 
-fn read(input: &Value) -> ToolResult<Value> {
+fn read(input: &Value, token: Option<&str>) -> ToolResult<Value> {
     let object = input_object(input, &["repository", "path", "ref", "maxBytes"])?;
     let repository = required_string(object, "repository")?;
     let mut repository_parts = repository.split('/');
@@ -125,7 +154,11 @@ fn read(input: &Value) -> ToolResult<Value> {
     if let Some(reference) = reference.as_deref() {
         url.query_pairs_mut().append_pair("ref", reference);
     }
-    let response = http_get(url, MAX_CONTENTS_RESPONSE_BYTES, github_headers(false)?)?;
+    let response = http_get(
+        url,
+        MAX_CONTENTS_RESPONSE_BYTES,
+        github_headers(token, false)?,
+    )?;
     let body: Value = serde_json::from_str(response_text(&response)?)
         .map_err(|error| ToolError::new("github_response_invalid", error.to_string()))?;
     let mut output = json!({
@@ -164,59 +197,62 @@ fn read(input: &Value) -> ToolResult<Value> {
         ));
     }
     output["type"] = json!(kind);
-    for (source, target) in [
-        ("sha", "sha"),
-        ("html_url", "htmlUrl"),
-        ("download_url", "downloadUrl"),
-    ] {
+    for (source, target) in [("sha", "sha"), ("html_url", "htmlUrl")] {
         if let Some(value) = record.get(source).and_then(Value::as_str) {
             output[target] = json!(value);
         }
     }
+    if let Some(url) = stable_download_url(record.get("download_url")) {
+        output["downloadUrl"] = json!(url);
+    }
     if let Some(size) = record.get("size").and_then(Value::as_u64) {
         output["sizeBytes"] = json!(size);
     }
-    if kind == "file" {
-        if record.get("encoding").and_then(Value::as_str) != Some("base64") {
-            return Err(ToolError::new(
-                "github_content_encoding_unsupported",
-                "GitHub file content is not base64 encoded",
-            ));
-        }
-        let encoded = record
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ToolError::new("github_response_invalid", "file response requires content")
-            })?;
-        let compact = encoded
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(compact)
-            .map_err(|error| ToolError::new("github_content_invalid", error.to_string()))?;
-        let decoded = std::str::from_utf8(&decoded).map_err(|_| {
-            ToolError::new(
-                "github_content_not_utf8",
-                "GitHub file is not UTF-8 text; use its download URL as a binary source",
-            )
-        })?;
-        let (content, truncated) = limit_text(decoded, max_bytes);
-        output["content"] = json!(content);
-        output["truncated"] = json!(truncated);
-    }
+    let text = decode_file_content(&body)?;
+    let (content, truncated) = limit_text(&text, max_bytes);
+    output["content"] = json!(content);
+    output["truncated"] = json!(truncated);
     Ok(output)
 }
 
-fn github_headers(authentication_required: bool) -> ToolResult<Vec<(HeaderName, HeaderValue)>> {
-    let token = std::env::var("ACHBIT_GITHUB_TOKEN")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
+fn decode_file_content(record: &Value) -> ToolResult<String> {
+    if record["encoding"] != "base64" {
+        return Err(ToolError::new(
+            "github_content_encoding_unsupported",
+            "GitHub file content is not base64 encoded",
+        ));
+    }
+    let content = record["content"].as_str().ok_or_else(|| {
+        ToolError::new(
+            "github_response_invalid",
+            "GitHub file response requires content",
+        )
+    })?;
+    let compact = content.split_ascii_whitespace().collect::<String>();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(compact)
+        .map_err(|error| ToolError::new("github_content_invalid", error.to_string()))?;
+    String::from_utf8(decoded)
+        .map_err(|_| ToolError::new("github_content_not_utf8", "GitHub file is not UTF-8 text"))
+}
+
+fn next_page(response: &crate::HttpResponse, page: u64, maximum: u64) -> Option<u64> {
+    (page < maximum
+        && response
+            .headers
+            .get("link")
+            .is_some_and(|links| links.contains("rel=\"next\"")))
+    .then_some(page + 1)
+}
+
+fn github_headers(
+    token: Option<&str>,
+    authentication_required: bool,
+) -> ToolResult<Vec<(HeaderName, HeaderValue)>> {
     if authentication_required && token.is_none() {
         return Err(ToolError::new(
             "github_code_search_auth_required",
-            "GitHub code search requires ACHBIT_GITHUB_TOKEN in the plugin process",
+            "GitHub code search requires authentication. Connect your account in GitHub plugin settings.",
         ));
     }
     let mut headers = vec![
@@ -339,8 +375,18 @@ fn directory_entry(item: &Value) -> ToolResult<Value> {
         "sizeBytes": object.get("size").and_then(Value::as_u64),
         "sha": object.get("sha").and_then(Value::as_str),
         "htmlUrl": object.get("html_url").and_then(Value::as_str),
-        "downloadUrl": object.get("download_url").and_then(Value::as_str)
+        "downloadUrl": stable_download_url(object.get("download_url"))
     }))
+}
+
+fn stable_download_url(value: Option<&Value>) -> Option<&str> {
+    let source = value?.as_str()?;
+    let parsed = reqwest::Url::parse(source).ok()?;
+    (parsed.scheme() == "https"
+        && parsed.query().is_none()
+        && parsed.username().is_empty()
+        && parsed.password().is_none())
+    .then_some(source)
 }
 
 fn rate_limit(headers: &std::collections::BTreeMap<String, String>) -> Value {
@@ -378,6 +424,47 @@ fn response_required_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_continuations_respect_upstream_and_tool_page_limits() {
+        let mut response = crate::HttpResponse {
+            body: Vec::new(),
+            headers: Default::default(),
+            final_url: String::new(),
+        };
+        assert_eq!(next_page(&response, 1, 100), None);
+        response.headers.insert(
+            "link".into(),
+            "<https://api.github.com/items?page=2>; rel=\"next\"".into(),
+        );
+        assert_eq!(next_page(&response, 1, 100), Some(2));
+        assert_eq!(next_page(&response, 100, 100), None);
+    }
+
+    #[test]
+    fn file_reads_decode_wrapped_text_and_report_distinct_failures() {
+        assert_eq!(
+            decode_file_content(&json!({"encoding":"base64", "content":"5L2g\n5aW9"})).unwrap(),
+            "你好"
+        );
+        for (record, error) in [
+            (
+                json!({"encoding":"none"}),
+                "github_content_encoding_unsupported",
+            ),
+            (json!({"encoding":"base64"}), "github_response_invalid"),
+            (
+                json!({"encoding":"base64", "content":"!"}),
+                "github_content_invalid",
+            ),
+            (
+                json!({"encoding":"base64", "content":"/w=="}),
+                "github_content_not_utf8",
+            ),
+        ] {
+            assert_eq!(decode_file_content(&record).unwrap_err().code, error);
+        }
+    }
 
     #[test]
     fn repository_search_result_requires_github_identity_fields() {

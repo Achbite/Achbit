@@ -1,3 +1,4 @@
+import GitHubPluginAccount from './GitHubPluginAccount';
 import { manageLocalPlugin } from '../../../services/pluginManagement';
 import { watchServicePlugins, type ServicePluginStatus } from '../../../services/servicePlugins';
 import { openExternalUrl } from '../../../services/runtimeAdapter';
@@ -460,6 +461,7 @@ export default function PluginsSection() {
                     </div>
                   </details>
                 )}
+                {item.id === 'plugin://github@first-party' && item.enabled && <GitHubPluginAccount chinese={chinese} />}
                 {item.key === 'mcp.servers' && item.source && (
                   <PluginConnectionForm
                     source={item.source}

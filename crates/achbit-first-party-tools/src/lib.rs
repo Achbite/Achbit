@@ -1,6 +1,7 @@
 mod arxiv;
 pub mod documents;
 mod github;
+pub mod github_account;
 mod pdf;
 
 use reqwest::blocking::Client;
@@ -31,8 +32,8 @@ impl PluginKind {
 
     fn call(self, name: &str, arguments: &Value, metadata: Option<&Value>) -> ToolResult<Value> {
         match self {
-            Self::Github => github::call(name, arguments),
-            Self::Arxiv => arxiv::call(name, arguments),
+            Self::Github => github::call(name, arguments, metadata),
+            Self::Arxiv => arxiv::call(name, arguments, metadata),
             Self::Pdf => pdf::call(name, arguments, metadata),
         }
     }
@@ -42,6 +43,7 @@ impl PluginKind {
 pub struct ToolError {
     pub code: &'static str,
     pub message: String,
+    pub(crate) http_status: Option<u16>,
 }
 
 impl ToolError {
@@ -49,6 +51,7 @@ impl ToolError {
         Self {
             code,
             message: message.into(),
+            http_status: None,
         }
     }
 }
@@ -188,10 +191,12 @@ pub(crate) fn http_get(
     if !status.is_success() {
         body.truncate(read_limit);
         let detail = String::from_utf8_lossy(&body);
-        return Err(ToolError::new(
+        let mut error = ToolError::new(
             "network_response_failed",
             format!("HTTP {} from {final_url}: {detail}", status.as_u16()),
-        ));
+        );
+        error.http_status = Some(status.as_u16());
+        return Err(error);
     }
     if body.len() > max_bytes {
         return Err(ToolError::new(

@@ -111,7 +111,7 @@ impl McpTool {
                 arguments.entry("background").or_insert(json!(true));
             }
         }
-        let metadata = match &self.binding_requirement {
+        let mut metadata = match &self.binding_requirement {
             McpToolBindingRequirement::None => None,
             McpToolBindingRequirement::WorkspacePath { .. } => {
                 let workspace_id = context.workspace_id.as_deref().ok_or_else(|| {
@@ -128,6 +128,19 @@ impl McpTool {
                 }))
             }
         };
+        if self.plugin_uri == "plugin://github@first-party" || self.instance.paper_cache.is_some() {
+            let dirs = achbit_host_connection::UserDirectories::resolve()
+                .map_err(|e| McpRuntimeError::new("plugin_directory_unavailable", e.to_string()))?;
+            let private = metadata.get_or_insert_with(|| json!({}));
+            if let Some(cache) = &self.instance.paper_cache {
+                private["achbit"]["arxivPaperCache"] = json!(cache.path());
+                private["achbit"]["arxivRateDirectory"] = json!(dirs.cache_dir.join("arxiv"));
+            } else {
+                private["achbit"]["githubAccountFile"] = json!(
+                    achbit_first_party_tools::github_account::binding_path(&dirs.config_dir)
+                );
+            }
+        }
         let mut result = match &self.instance.client {
             ToolClient::Mcp(client) => {
                 client.call_tool(&self.remote_name, input, metadata, &context.cancellation)
@@ -147,6 +160,12 @@ impl McpTool {
     }
 
     pub(crate) fn logical_targets(&self, input: &Value) -> Result<Vec<String>, McpRuntimeError> {
+        if self.plugin_uri == "plugin://arxiv@first-party"
+            && self.remote_name == "read"
+            && input["view"] == "fullText"
+        {
+            return Ok(vec!["https://arxiv.org".to_owned()]);
+        }
         match &self.binding_requirement {
             McpToolBindingRequirement::None => Ok(Vec::new()),
             McpToolBindingRequirement::WorkspacePath { argument } => {
@@ -204,6 +223,7 @@ pub(crate) fn session_workdir_for_run(
 #[derive(Debug)]
 struct ToolInstance {
     client: ToolClient,
+    paper_cache: Option<tempfile::TempDir>,
     views: AtomicUsize,
 }
 
@@ -462,8 +482,13 @@ impl McpRuntime {
                 .get(&server.descriptor.uri)
                 .expect("selected server has a plugin instance")
                 .clone();
+            let paper_cache = (server.descriptor.uri == "plugin://arxiv@first-party")
+                .then(|| tempfile::tempdir())
+                .transpose()
+                .map_err(|e| McpRuntimeError::new("arxiv_cache_unavailable", e.to_string()))?;
             let instance = Arc::new(ToolInstance {
                 client,
+                paper_cache,
                 views: AtomicUsize::new(0),
             });
             append_tools(

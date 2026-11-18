@@ -470,6 +470,8 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("POST", ["api", "host", "plugins", "install" | "manage" | "ui-runtime"])
         | ("GET", ["api", "host", "plugins"])
         | ("GET", ["api", "host", "plugins", "capabilities"])
+        | ("GET" | "DELETE", ["api", "host", "plugins", "github", "account"])
+        | ("POST" | "DELETE", ["api", "host", "plugins", "github", "login"])
         | ("GET", ["api", "user-settings", "events"])
         | ("POST", ["api", "host", "computer-preview"])
         | ("POST", ["api", "host", "computer-preview", "activate"])

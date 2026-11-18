@@ -13,6 +13,7 @@ mod conversation_resources;
 mod debug_control;
 #[cfg(feature = "debug-control")]
 mod debug_tools;
+mod github_plugin_account;
 mod host_connection;
 mod host_inspection;
 mod host_lifecycle;

@@ -18,6 +18,7 @@ import { errorFact, LoopFailure } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
+import { linkedReaderUris } from './pluginActivation.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
 import { appendResourceBindings, directoryBindingEvents, validLogicalPath } from './workspaceBindings.js';
 import type {
@@ -974,14 +975,17 @@ export class SessionActor {
       && event.payload.runtimeSnapshot.toolSelection?.plugins !== false);
     const pluginView = pluginRun?.type === 'run.started'
       ? before.state.runToolViews[pluginRun.runId] ?? pluginRun.payload.runtimeSnapshot : undefined;
+    const readerSelections = recipe.tools?.plugins === false ? [] : [...new Set([
+      ...(pluginView?.selectedPlugins.plugins.map(plugin => plugin.uri) ?? []), ...linkedReaderUris(submittedText, recipe),
+    ])];
     const prepared = await this.prepareRun({
       sessionId: this.sessionId,
       runId,
       workspaceBindingIds: runWorkspaceBindings.map(binding => binding.workspaceId),
       previousProviderToolAliases: previousView?.providerToolAliases,
-      ...(recipe.tools?.plugins !== false && pluginView?.selectedPlugins.plugins.length ? {
-        inheritedPluginSelections: pluginView.selectedPlugins.plugins.map(plugin => ({
-          selectionId: this.#nextId('plugin-selection'), uri: plugin.uri, label: plugin.uri.slice(0, 160),
+      ...(readerSelections.length ? {
+        inheritedPluginSelections: readerSelections.map(uri => ({
+          selectionId: this.#nextId('plugin-selection'), uri, label: uri.slice(0, 160),
         })),
       } : {}),
       environment: savedSessionEnvironment(before.events),
@@ -1463,9 +1467,11 @@ export class SessionActor {
             const initialSelections = recoveryPluginSelection(current, runId, runtime).pluginSelections ?? [];
             const selections = [...new Map([...initialSelections, ...queued.flatMap((input) => input.pluginSelections)]
               .map((selection) => [selection.uri, selection])).values()];
-            return { queued, runtime, activeView, selections };
+            const recipe = recipeForMode(current.state.recipe, current.state.mode);
+            const linked = [...new Set(queued.flatMap(input => linkedReaderUris(input.text, recipe)))];
+            return { queued, runtime, activeView, selections, linked };
           });
-          const { runtime, activeView, selections } = captured;
+          const { runtime, activeView, selections, linked } = captured;
           signal.throwIfAborted();
           // Preparation owns run resources. Drain admitted I/O before cancellation
           // releases the run; never hold the Actor write queue while it is pending.
@@ -1476,6 +1482,9 @@ export class SessionActor {
               environment: runtime.environment,
               ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
               pluginSelections: selections,
+              ...(linked.length ? { inheritedPluginSelections: linked.map(uri => ({
+                selectionId: this.#nextId('plugin-selection'), uri, label: uri.slice(0, 160),
+              })) } : {}),
               previousProviderToolAliases: activeView.providerToolAliases,
               refreshPlugins: !captured.queued.some(input => input.pluginSelections.length),
             }) : undefined;

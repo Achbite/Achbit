@@ -11,6 +11,7 @@ description = "Achbit Kernel daemon that owns runtime, provider transport, and l
 debug-control = ["achbit-host-connection/debug-control"]
 
 [dependencies]
+tempfile = "3"
 axum.workspace = true
 achbit-kernel-abi.workspace = true
 achbit-host-connection.workspace = true

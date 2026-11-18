@@ -1,15 +1,17 @@
 use crate::{
-    http_get, input_object, now_millis, optional_string, optional_u64, required_string,
-    response_text, ToolError, ToolResult,
+    input_object, now_millis, optional_string, optional_u64, required_string, response_text,
+    ToolError, ToolResult,
 };
 use serde_json::{json, Value};
 
+mod full_text;
+mod source;
 const API_ROOT: &str = "https://export.arxiv.org/api/query";
 
-pub(crate) fn call(name: &str, input: &Value) -> ToolResult<Value> {
+pub(crate) fn call(name: &str, input: &Value, context: Option<&Value>) -> ToolResult<Value> {
     match name {
-        "search" => search(input),
-        "read" => read(input),
+        "search" => search(input, context),
+        "read" => read(input, context),
         _ => Err(ToolError::new(
             "tool_not_found",
             format!("arXiv plugin does not provide {name}"),
@@ -17,10 +19,21 @@ pub(crate) fn call(name: &str, input: &Value) -> ToolResult<Value> {
     }
 }
 
-fn search(input: &Value) -> ToolResult<Value> {
+fn search(input: &Value, context: Option<&Value>) -> ToolResult<Value> {
     let object = input_object(
         input,
-        &["query", "field", "start", "limit", "sortBy", "sortOrder"],
+        &[
+            "query",
+            "field",
+            "start",
+            "limit",
+            "sortBy",
+            "sortOrder",
+            "author",
+            "category",
+            "submittedFrom",
+            "submittedTo",
+        ],
     )?;
     let query = required_string(object, "query")?;
     let field = optional_string(object, "field")?.unwrap_or_else(|| "all".to_string());
@@ -61,14 +74,18 @@ fn search(input: &Value) -> ToolResult<Value> {
     let mut url = reqwest::Url::parse(API_ROOT)
         .map_err(|error| ToolError::new("arxiv_url_invalid", error.to_string()))?;
     url.query_pairs_mut()
-        .append_pair("search_query", &format!("{field}:{query}"))
+        .append_pair(
+            "search_query",
+            &source::query_expression(object, field, &query)?,
+        )
         .append_pair("start", &start.to_string())
         .append_pair("max_results", &limit.to_string())
         .append_pair("sortBy", &sort_by)
         .append_pair("sortOrder", &sort_order);
-    let response = http_get(url, 512 * 1024, Vec::new())?;
+    let response = source::atom_get(url, 512 * 1024, context)?;
     let feed = parse_feed(response_text(&response)?)?;
-    let has_more = start.saturating_add(feed.entries.len() as u64) < feed.total_results;
+    let has_more = !feed.entries.is_empty()
+        && start.saturating_add(feed.entries.len() as u64) < feed.total_results;
     let next_start = start.saturating_add(feed.entries.len() as u64);
     Ok(json!({
         "backendId": "arxiv",
@@ -82,15 +99,39 @@ fn search(input: &Value) -> ToolResult<Value> {
     }))
 }
 
-fn read(input: &Value) -> ToolResult<Value> {
-    let object = input_object(input, &["id"])?;
-    let id = required_string(object, "id")?;
+fn read(input: &Value, context: Option<&Value>) -> ToolResult<Value> {
+    let object = input_object(
+        input,
+        &["id", "view", "section", "page", "offset", "maxBytes"],
+    )?;
+    let id = source::identifier(&required_string(object, "id")?)?;
+    let view = optional_string(object, "view")?.unwrap_or_else(|| "metadata".into());
+    if view == "fullText" {
+        return full_text::read(&id, object, context);
+    }
+    if view != "metadata"
+        || ["section", "page", "offset", "maxBytes"]
+            .iter()
+            .any(|key| object.contains_key(*key))
+    {
+        return Err(ToolError::new(
+            "tool_input_invalid",
+            "Section, page, offset and byte limit apply to fullText reads",
+        ));
+    }
+    let (paper, source_url) = lookup(&id, context)?;
+    Ok(
+        json!({"backendId":"arxiv","paper":paper,"retrievedAtMs":now_millis()?,"sourceUrl":source_url}),
+    )
+}
+
+fn lookup(id: &str, context: Option<&Value>) -> ToolResult<(Value, String)> {
     let mut url = reqwest::Url::parse(API_ROOT)
         .map_err(|error| ToolError::new("arxiv_url_invalid", error.to_string()))?;
     url.query_pairs_mut()
-        .append_pair("id_list", &id)
+        .append_pair("id_list", id)
         .append_pair("max_results", "1");
-    let response = http_get(url, 256 * 1024, Vec::new())?;
+    let response = source::atom_get(url, 256 * 1024, context)?;
     let mut feed = parse_feed(response_text(&response)?)?;
     let paper = feed.entries.pop().ok_or_else(|| {
         ToolError::new(
@@ -98,12 +139,21 @@ fn read(input: &Value) -> ToolResult<Value> {
             "arXiv did not return the requested paper",
         )
     })?;
-    Ok(json!({
-        "backendId": "arxiv",
-        "paper": paper,
-        "retrievedAtMs": now_millis()?,
-        "sourceUrl": response.final_url
-    }))
+    let found = paper["arxivId"]
+        .as_str()
+        .ok_or_else(|| ToolError::new("arxiv_response_invalid", "Missing paper identifier"))?;
+    if found != id
+        && (source::versioned(id)
+            || !found.strip_prefix(id).is_some_and(|tail| {
+                tail.starts_with('v') && tail[1..].bytes().all(|c| c.is_ascii_digit())
+            }))
+    {
+        return Err(ToolError::new(
+            "arxiv_response_invalid",
+            format!("Requested {id}, arXiv returned {found}"),
+        ));
+    }
+    Ok((paper, response.final_url))
 }
 
 struct ArxivFeed {
@@ -136,12 +186,8 @@ fn parse_feed(body: &str) -> ToolResult<ArxivFeed> {
 fn entry(entry: roxmltree::Node<'_, '_>) -> ToolResult<Value> {
     let id_url = child_text(entry, "id")
         .ok_or_else(|| ToolError::new("arxiv_response_invalid", "entry requires id"))?;
-    let arxiv_id = id_url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(id_url.as_str())
-        .to_string();
+    let arxiv_id = source::identifier(&id_url)
+        .map_err(|e| ToolError::new("arxiv_response_invalid", e.message))?;
     let authors = entry
         .children()
         .filter(|node| node.is_element() && node.tag_name().name() == "author")
