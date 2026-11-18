@@ -3,10 +3,11 @@ import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { DEFAULT_USER_SETTINGS } from '@achbit/protocol';
 import { GuiSettingsSection } from '../../src/components/settings-center/sections/CategorizedSettingsSections';
-import PluginsSection from '../../src/components/settings-center/sections/PluginsSection';
+import PluginsSection, { type PluginsView } from '../../src/components/settings-center/sections/PluginsSection';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { installProductUpdateMonitor, type ProductUpdateStatus } from '../../src/services/productUpdates';
 import { installPaletteDefaults } from '../../src/theme/palette';
+import { PLUGIN_MARKETPLACE_INDEX_URL } from '../../src/services/pluginMarketplace';
 import type { UiLanguage } from '../../src/i18n';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
@@ -15,6 +16,20 @@ import '../../src/components/settings-center/settingsCenter.css';
 installPaletteDefaults();
 const handlers = new Map<string, (event: { payload: unknown }) => void>();
 const calls: string[] = [];
+const marketplace = { requests: 0, externalUrls: [] as string[], installations: [] as string[] };
+Object.assign(window, { marketplaceFixture: marketplace });
+const repository = 'https://github.com/example/achbit-market-fixture';
+const commit = 'a'.repeat(40);
+const artifact = (id: string, kind: string, author: string, name: string) => ({
+  id, kind, author, name, version: '1.0.0', description: 'Isolated marketplace example.', repositoryUrl: repository,
+  sourceCommit: commit, sourceUrl: `${repository}/tree/${commit}`, licenseUrl: `${repository}/blob/${commit}/LICENSE`,
+  downloadUrl: `${repository}/releases/download/1.0.0/${id}.zip`,
+});
+const marketplaceIndex = { schemaVersion: 1, plugins: [
+  { ...artifact('echo', 'guidance', 'Anya', 'Echo Tools'), licenseName: 'MIT', licenseKind: 'open-source',
+    verification: { kind: 'installation', version: '1.0.0', platform: 'macos-arm64' } },
+  { ...artifact('theme', 'ui', 'Lee', 'Quiet Theme'), licenseName: 'Fixture Community License', licenseKind: 'source-available' },
+] };
 let status: ProductUpdateStatus = { phase: 'idle', currentVersion: 'preview', version: null, downloaded: 0, total: null, reason: null, error: null };
 function publish(phase: string) {
   status = { ...status, phase, version: phase === 'waiting' ? '0.0.0-preview.with-a-long-version' : null,
@@ -25,8 +40,9 @@ const originalTauri = window.__TAURI__, originalFetch = window.fetch, originalPr
 // Exercise desktop-only controls against our stub, even in Achbit's browser preview.
 window.__ACHBIT_BROWSER_PREVIEW__ = false;
 window.__TAURI__ = {
-  core: { async invoke<T>(command: string): Promise<T> {
+  core: { async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     calls.push(command);
+    if (command === 'achbit_open_external_url') marketplace.externalUrls.push(String(args?.url));
     if (command === 'achbit_update_status') return status as T;
     if (command === 'achbit_update_check') publish('current');
     if (command === 'achbit_completion_sound') return { path: '/fixture/completion.wav', custom: true } as T;
@@ -39,7 +55,13 @@ window.__TAURI__ = {
   } },
 };
 window.fetch = async (input, init) => {
-  const path = new URL(String(input), location.href).pathname;
+  const url = new URL(String(input), location.href);
+  const path = url.pathname;
+  if (url.href === PLUGIN_MARKETPLACE_INDEX_URL) {
+    marketplace.requests++;
+    return marketplace.requests === 1 ? new Response(null, { status: 503 }) : Response.json(marketplaceIndex);
+  }
+  if (path.endsWith('/host/plugins/install') || path.endsWith('/host/plugins/manage')) marketplace.installations.push(path);
   if (path.endsWith('/conversation/plugins')) return Response.json({ ok: true, data: { revision: 'fixture', plugins: [] } });
   if (path.endsWith('/host/plugins/inspect')) return Response.json({ ok: true, data: {
     kind: 'ui', path: '/fixture/plugin', id: 'layout', name: 'Layout preview plugin', description: 'An isolated display plugin.', manifestPath: '/fixture/plugin/achbit-ui.json',
@@ -96,6 +118,7 @@ function geometry() {
 type Page = 'about' | 'appearance' | 'general' | 'plugins';
 function Fixture() {
   const [page, setPage] = useState<Page>('about');
+  const [pluginsView, setPluginsView] = useState<PluginsView>('installed');
   const [width, setWidth] = useState(900);
   const [scale, setScale] = useState(1);
   const [language, setLanguage] = useState<UiLanguage>('zh-CN');
@@ -162,7 +185,7 @@ function Fixture() {
       <button onClick={() => setResult(JSON.stringify(geometry(), null, 2))}>Measure current page</button>
     </nav>
     <div className="fixture-panel" style={{ width }}><div className="settings-center"><section className="settings-body"><div className="settings-page">
-      {page === 'plugins' ? <PluginsSection /> : <GuiSettingsSection category={page} apiStatus="connected" serverVersion="preview" />}
+      {page === 'plugins' ? <PluginsSection view={pluginsView} setView={setPluginsView} /> : <GuiSettingsSection category={page} apiStatus="connected" serverVersion="preview" />}
     </div></section></div></div>
     <pre id="layout-result" className="fixture-result">{result}</pre>
   </>;

@@ -20,6 +20,12 @@ Task composition selects the callable tools before the model request. A read-onl
 
 Managed Shell activity, containers and plugin activation have their own resource owners. Completion reaches Session through events; the parent model need not repeatedly ask whether a child has finished. Closing a Reader releases its subscription, not the child task. Removing an optional capability must leave the core Loop and remaining tools usable.
 
+## Marketplace
+
+Open **Settings → Plugins → Marketplace** to search by plugin, author or type. Expand a result to inspect its version, exact source commit and license. The license distinguishes open-source projects from projects with source available under an author's terms. An optional badge identifies a verified publisher or a specific version and platform with an installation record.
+
+**Download from author** opens the author's version-specific distribution in your browser. After saving the package, go to **Installed → Add…** to inspect it and confirm installation. Maintainers submit metadata through the [public plugin index](https://github.com/Achbite/achbit-plugins). Authors host their source, license and downloads. A failed directory request can be retried from Marketplace while installed plugins remain available.
+
 ## Artifacts and import
 
 Prepare a plugin directory containing its manifest and runtime files. In **Settings → Plugins → Add**, select a ZIP, the directory or the exact manifest file. Inspection reads metadata and validates the entry; it does not execute plugin code. A directory with multiple recognized manifests requires choosing the specific file. You may also select a ZIP directly for installation or update. A ZIP contains one plugin with its manifest at the archive root or inside one enclosing directory. The Host extracts it temporarily, validates the same manifest/entry contract, then installs its own copy; preview/cancel/failure leaves no extracted installation. ZIPs support stored/Deflate entries, up to 512 MiB unpacked, with regular files/directories only. Ambiguous manifests, invalid entries and extraction errors remain explicit failures.

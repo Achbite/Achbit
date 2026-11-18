@@ -13,7 +13,7 @@ import {
 } from './sections/CategorizedSettingsSections';
 import LlmSection from './sections/LlmSection';
 import type { ModelSettingsTarget } from './modelSettingsNavigation';
-import PluginsSection from './sections/PluginsSection';
+import PluginsSection, { type PluginsView } from './sections/PluginsSection';
 import AchbitShellIcon, { type AchbitShellIconName } from '../shared/AchbitShellIcon';
 import './settingsCenter.css';
 import { createInteractionFocus, InteractionFocusContext, useInteractionFocus } from '../shared/interactionFocus';
@@ -48,6 +48,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   const targets = useRef(new Map<string, HTMLElement>());
   const pendingTarget = useRef<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [pluginsView, setPluginsView] = useState<PluginsView>('installed');
   const [visited, setVisited] = useState<SettingsKey[]>([activeKey]);
   useInterfaceReloadView('settingsPage', activeKey);
   const language = normalizeUiLanguage(
@@ -78,6 +79,9 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   const navigate = (key: SettingsKey, target?: string) => {
     interaction.clearReveal();
     pendingTarget.current = target ?? null;
+    if (key === 'plugins' && target?.startsWith('plugin-')) {
+      setPluginsView(target === 'plugin-marketplace' ? 'discover' : 'installed');
+    }
     if (key !== activeKey && scrollRef.current) scrollRef.current.scrollTop = 0;
     setActiveKey(key); setSearchQuery('');
     setVisited((current) => current.includes(key) ? current : [...current, key]);
@@ -110,7 +114,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
       case 'llm':
         return <LlmSection active={!searching && activeKey === 'llm'} initialModelTarget={initialModelTarget} />;
       case 'plugins':
-        return <PluginsSection />;
+        return <PluginsSection view={pluginsView} setView={setPluginsView} />;
     }
   };
 

@@ -1,8 +1,9 @@
+import PluginMarketplace from './PluginMarketplace';
 import GitHubPluginAccount from './GitHubPluginAccount';
 import { manageLocalPlugin } from '../../../services/pluginManagement';
 import { watchServicePlugins, type ServicePluginStatus } from '../../../services/servicePlugins';
 import { openExternalUrl } from '../../../services/runtimeAdapter';
-import { DisclosureSummary, ModalDialog, ToggleSwitch } from '../../../ui-components';
+import { Button, DisclosureSummary, ModalDialog, ToggleSwitch } from '../../../ui-components';
 import { localizePlugin } from '../../../pluginLocalization';
 import { useUiLanguage } from '../../../useUiLanguage';
 import { useSettingsSearchEntries } from '../settingsSearch';
@@ -54,7 +55,9 @@ function sourceList(value: unknown): Source[] {
 const filename = (path: string) => path.split(/[\\/]/u).filter(Boolean).at(-1) ?? path;
 
 /** Inventory reads the existing settings owners and live display registry; saving does not invent runtime state. */
-export default function PluginsSection() {
+export type PluginsView = 'installed' | 'discover';
+
+export default function PluginsSection({ view, setView }: { view: PluginsView; setView(view: PluginsView): void }) {
   const settings = useSettingsStore((state) => state.effectiveSettings);
   const patch = useSettingsStore((state) => state.patchUserSetting);
   const language = normalizeUiLanguage(settings['workbench.language']),
@@ -208,7 +211,10 @@ export default function PluginsSection() {
         : service.enabled ? (chinese ? '已停止' : 'Stopped') : t(language, 'settings.plugins.disabled'),
     });
   }
-  useSettingsSearchEntries('plugins', items.map((item) => ({ id: `plugin-${item.id}`, title: item.name, keywords: item.description, category: 'plugins' })));
+  useSettingsSearchEntries('plugins', [
+    { id: 'plugin-marketplace', title: t(language, 'settings.plugins.market.discover'), category: 'plugins' },
+    ...items.map(item => ({ id: `plugin-${item.id}`, title: item.name, keywords: item.description, category: 'plugins' })),
+  ]);
   const shown = items.filter(
     (item) =>
       (filter === 'all' || item.enabled) &&
@@ -318,7 +324,7 @@ export default function PluginsSection() {
         <div>
           <h2 className="settings-title">{chinese ? '插件' : 'Plugins'}</h2>
         </div>
-        <button
+        {view === 'installed' && <button
           className="settings-button plugin-manager__add"
           ref={addButton}
           disabled={busy}
@@ -326,8 +332,17 @@ export default function PluginsSection() {
         >
           <AchbitShellIcon name="plus" />
           {chinese ? '添加…' : 'Add…'}
-        </button>
+        </button>}
       </header>
+      <div className="plugin-manager__nav" role="group" aria-label={t(language, 'settings.plugins.market.sections')}>
+        {(['installed', 'discover'] as const).map(key =>
+          <Button key={key} id={key === 'discover' ? 'setting-plugin-marketplace' : undefined} aria-pressed={view === key} onClick={() => setView(key)}>
+            {t(language, 'settings.plugins.market.' + key)}
+          </Button>
+        )}
+      </div>
+      {view === 'discover' && <PluginMarketplace language={language} />}
+      <div hidden={view !== 'installed'}>
       <div className="plugin-manager__filters">
         <div role="group" aria-label={t(language, 'settings.plugins.filter')}>
           {(['all', 'enabled'] as const).map((key) => (
@@ -599,6 +614,7 @@ export default function PluginsSection() {
           onSelect={(path) => void inspect(path)}
         />
       )}
+      </div>
     </div>
   );
 }

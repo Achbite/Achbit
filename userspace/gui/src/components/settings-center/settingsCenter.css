@@ -403,6 +403,22 @@
 .plugin-manager {max-width:900px;margin:0 auto;font-size:calc(13px * var(--ac-ui-font-scale, 1));}
 .plugin-manager__heading {display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;}
 .plugin-manager__heading p {margin:6px 0 0;color:var(--ac-muted,var(--text-muted));font-size:calc(13px * var(--ac-ui-font-scale, 1));}
+.plugin-manager__nav { display:flex; align-items:center; gap:6px; margin:-8px 0 18px; padding-bottom:6px; border-bottom:1px solid var(--ac-border); }
+.plugin-manager__nav [aria-pressed=true] { color:var(--ac-foreground-strong); background:var(--ac-accent-soft); }
+.plugin-market__tools { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 14px; }
+.plugin-market__search { display:flex; align-items:center; gap:6px; flex:1 1 180px; min-width:0; padding:6px 9px; border:1px solid var(--ac-border); border-radius:6px; background:var(--ac-surface-subtle); }
+.plugin-market__search input { min-width:0; width:100%; font:inherit; color:inherit; background:transparent; border:0; }
+.plugin-market__verified { display:inline-flex; align-items:center; gap:5px; }
+.plugin-market__summary { min-height:48px; padding:8px 0; }
+.plugin-market__identity { flex:1; min-width:0; overflow-wrap:anywhere; }
+.plugin-market__identity strong,.plugin-market__identity small { display:block; }
+.plugin-market__identity small,.plugin-market__facts { color:var(--ac-muted); }
+.plugin-market__verification { color:var(--ac-foreground); font-size:0.9em; }
+.plugin-market__detail { margin:0 0 14px; padding:0 0 0 8px; overflow-wrap:anywhere; }
+.plugin-market__detail dl { display:grid; grid-template-columns:auto minmax(0,1fr); gap:6px 12px; }
+.plugin-market__detail dd { margin:0; }
+.plugin-market__link { color:var(--ac-accent); text-underline-offset:2px; }
+.plugin-market__tools a { margin-inline-start:auto; }
 .plugin-manager__filters {display:flex;align-items:center;gap:8px;margin-bottom:18px;}
 .plugin-manager__filters [role=group] {display:flex;gap:4px;}
 .plugin-manager__filters [role=group] button {border:0;border-radius:6px;padding:6px 10px;color:inherit;background:transparent;cursor:pointer;font:inherit;white-space:nowrap;}
