@@ -8,9 +8,11 @@ type Props = Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'value' | 'def
   language: UiLanguage;
   label: string;
   onCommit(value: number | undefined): Promise<boolean | void>;
-  /** New-object forms collect drafts locally until their explicit create action. */
+  /** Forms can submit the current numeric draft without first pressing Enter. */
   onDraftChange?(value: number | undefined): void;
 };
+
+const sameNumber = (text: string, saved: string) => text === saved || text !== '' && saved !== '' && Number(text) === Number(saved);
 
 export default function ConfirmedNumberInput({ value, language, label, onCommit, onDraftChange, disabled, ...props }: Props) {
   const saved = value === undefined || !Number.isFinite(value) ? '' : String(value);
@@ -18,17 +20,20 @@ export default function ConfirmedNumberInput({ value, language, label, onCommit,
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setDraft(current => reconcileSettingDraft(current, saved)), [saved]);
-  useInterfaceReloadGuard(draft.text !== saved, label, saving);
+  useEffect(() => setDraft(current => current.saved !== saved && sameNumber(current.text, saved)
+    ? { saved, text: saved } : reconcileSettingDraft(current, saved)), [saved]);
+  useInterfaceReloadGuard(!sameNumber(draft.text, saved), label, saving);
   return <>
     <input {...props} type="number" value={draft.text} disabled={disabled || saving}
       title={props.title ?? t(language, 'settings.edit.confirmNumber')}
       onChange={event => {
-        setDraft(current => ({ ...current, text: event.target.value })); setError(null);
-        onDraftChange?.(event.target.value === '' ? undefined : event.target.valueAsNumber);
+        const input = event.target, text = input.value;
+        setDraft(current => ({ ...current, text })); setError(null);
+        // Native number inputs can expose an empty value for incomplete, invalid input.
+        onDraftChange?.(text === '' && !input.validity.badInput ? undefined : input.valueAsNumber);
       }}
       onKeyDown={async event => {
-        if (event.nativeEvent.isComposing || event.repeat) return;
+        if (event.nativeEvent.isComposing || event.keyCode === 229 || event.repeat) return;
         if (event.key === 'Escape') {
           event.preventDefault(); event.stopPropagation();
           setDraft({ saved, text: saved }); setError(null); onDraftChange?.(value); return;

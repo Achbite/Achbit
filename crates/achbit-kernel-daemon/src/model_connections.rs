@@ -791,6 +791,25 @@ mod tests {
                 .replace(':', "-"),
         );
         let mut gui = GuiState::open_at(&root).unwrap();
+        assert_eq!(document(&gui).unwrap()["profiles"], json!([]));
+        let mut template = descriptors
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|adapter| adapter["id"] == "deepseek")
+            .unwrap()["models"][0]
+            .clone();
+        template["id"] = json!("model:deepseek-test");
+        template["connectionId"] = json!("connection:deepseek-test");
+        apply_edit(
+            &mut gui,
+            serde_json::from_value(json!({"connection":{
+            "id":"connection:deepseek-test", "name":"DeepSeek test", "adapterId":"deepseek",
+            "billingMode":"metered", "baseUrl":"https://api.deepseek.com", "credentialKind":"apiKey"
+        }, "profile":template}))
+            .unwrap(),
+        )
+        .unwrap();
         let initial = document(&gui).unwrap();
         let flash = &initial["profiles"][0];
         assert_eq!(flash["model"], "deepseek-flash");

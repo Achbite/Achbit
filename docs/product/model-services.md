@@ -2,7 +2,7 @@
 
 ## Configure a model
 
-Settings → Models & services contains API connections and Coding Plans. A connection owns the endpoint and credential; profiles select its model, context window, output budget and capabilities. Text edits/new entries need Save/Create; switches save immediately and numeric fields commit with Enter. A run keeps its captured configuration.
+Settings → Models & services contains API connections and Coding Plans. A connection owns the endpoint and credential; profiles select its model, context window, output budget and capabilities. In a connection, **Add model** opens its searchable provider catalog. Select a row and confirm, or choose **Custom model** and enter a model ID and display name. Adding a model does not change the last-used selection. **Save changes** saves pending text and numeric edits together. Enter in a numeric field saves that field; Enter in a text field saves the text edits. Switches and selectors still save immediately without submitting other drafts. A run keeps its captured configuration.
 
 The last profile used for a submitted task becomes the new-conversation default. Reasoning effort is selected in the conversation picker and remembered per model. The execution approval model has separate settings; an empty selection uses the run's model in an independent review context. It reviews an execution request, not a Plan or user question.
 
