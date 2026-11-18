@@ -10,6 +10,7 @@ dependencies = [
  "achbit-kernel-abi",
  "base64 0.22.1",
  "block2",
+ "dunce",
  "flate2",
  "getrandom 0.3.4",
  "gtk",
