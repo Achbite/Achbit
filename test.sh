@@ -99,6 +99,7 @@ run_workspace_shell() {
 
 run_cli_e2e() {
   python3 -I -S ./scripts/tests/owned-daemon.py
+  python3 -I -S ./scripts/tests/plugin-repair-cli.py
   if [ "$profile" = full ]; then
     printf '[test] 本地 Agent 真实链路与共享投影壳\n'
   fi

@@ -163,6 +163,24 @@ pub fn inspect_plugin(path: &str) -> Result<serde_json::Value, String> {
     Ok(inspection)
 }
 
+/// UI registrations store their path; a readable manifest identifies a broken module.
+pub fn registered_ui_manifest_id(path: &Path) -> Option<String> {
+    let name = "achbit-ui.json";
+    let manifest = if path.is_dir() {
+        path.join(name)
+    } else if path.file_name()? == name {
+        path.to_owned()
+    } else {
+        return None;
+    };
+    #[derive(Deserialize)]
+    struct Identity {
+        id: String,
+    }
+    let identity: Identity = serde_json::from_str(&read_utf8(&manifest, 64 * 1024).ok()?).ok()?;
+    (!identity.id.trim().is_empty()).then_some(identity.id)
+}
+
 fn inspect_directory(path: &str) -> Result<serde_json::Value, String> {
     use serde_json::json;
     let chosen = std::fs::canonicalize(path).map_err(|error| format!("{path}: {error}"))?;

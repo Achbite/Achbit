@@ -1,7 +1,7 @@
 //! Host-owned artifact installation. Settings remain the only installed selection.
 use crate::prelude::*;
 use crate::{ApiResponse, AppState, ReadyState};
-use achbit_host_connection::plugin_artifact::{copy_plugin, inspect_plugin, prepare_plugin};
+use achbit_host_connection::plugin_artifact::{copy_plugin, prepare_plugin};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,10 +26,14 @@ fn install_owned(state: AppState, request: InstallRequest) -> Json<ApiResponse> 
         Ok(guard) => guard,
         Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
     };
-    install_locked(&state, request)
+    install_locked(&state, request, None)
 }
 
-pub(crate) fn install_locked(state: &AppState, request: InstallRequest) -> Json<ApiResponse> {
+pub(crate) fn install_locked(
+    state: &AppState,
+    request: InstallRequest,
+    registered_key: Option<&str>,
+) -> Json<ApiResponse> {
     let (settings, data) = {
         let gui = state.gui.lock().expect("gui state lock");
         (
@@ -40,7 +44,12 @@ pub(crate) fn install_locked(state: &AppState, request: InstallRequest) -> Json<
     let result = (|| -> Result<_, String> {
         let prepared = prepare_plugin(&request.path)?;
         let candidate = &prepared.inspection;
-        let key = settings_key(candidate)?;
+        let kind = candidate["kind"].as_str().ok_or("Plugin kind missing")?;
+        let key = settings_key(kind)?;
+        if registered_key.is_some_and(|registered| key != registered) {
+            return Err("The update must have the same plugin kind and id".into());
+        }
+        let id = candidate["id"].as_str().ok_or("Plugin ID missing")?;
         let mut sources = source_list(&settings, key)?;
         let replacement = match &request.replace_path {
             Some(path) => {
@@ -48,26 +57,16 @@ pub(crate) fn install_locked(state: &AppState, request: InstallRequest) -> Json<
                     .iter()
                     .position(|source| source["path"].as_str() == Some(path.as_str()))
                     .ok_or("The plugin to update is no longer installed")?;
-                let installed = inspect_plugin(path)?;
-                if candidate["kind"] != installed["kind"] || candidate["id"] != installed["id"] {
+                if installed_plugin_id(kind, &sources[index])? != id {
                     return Err("The update must have the same plugin kind and id".into());
                 }
                 Some(index)
             }
             None => {
-                for source in &sources {
-                    let same_id = matches!(key, "plugins.services" | "plugins.sources")
-                        && source["id"] == candidate["id"];
-                    let same_artifact = source["path"]
-                        .as_str()
-                        .and_then(|path| inspect_plugin(path).ok())
-                        .is_some_and(|installed| {
-                            installed["kind"] == candidate["kind"]
-                                && installed["id"] == candidate["id"]
-                        });
-                    if same_id || same_artifact {
-                        return Err("Plugin is already installed; use Update".into());
-                    }
+                if sources.iter().any(|source| {
+                    installed_plugin_id(kind, source).is_ok_and(|installed| installed == id)
+                }) {
+                    return Err("Plugin is already installed; use Update".into());
                 }
                 None
             }
@@ -158,12 +157,33 @@ pub(crate) fn install_locked(state: &AppState, request: InstallRequest) -> Json<
     response
 }
 
-fn settings_key(candidate: &Value) -> Result<&'static str, String> {
-    match candidate["kind"].as_str() {
-        Some("service") => Ok("plugins.services"),
-        Some("cli") => Ok("plugins.sources"),
-        Some("ui") => Ok("workbench.uiPlugins"),
-        Some("guidance") => Ok("skills.mounts"),
+fn installed_plugin_id(kind: &str, source: &Value) -> Result<String, String> {
+    if matches!(kind, "cli" | "service") {
+        return source["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| "Registered plugin ID missing".into());
+    }
+    let plugin = crate::plugin_management::inspect_registration(kind, source);
+    if let Some(error) = plugin["error"].as_str() {
+        // A failed Skill's displayed ID locates its mount, not its artifact.
+        if kind == "guidance" || plugin["id"].is_null() {
+            return Err(error.into());
+        }
+    }
+    plugin["id"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "Plugin ID missing".into())
+}
+
+fn settings_key(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "service" => Ok("plugins.services"),
+        "cli" => Ok("plugins.sources"),
+        "ui" => Ok("workbench.uiPlugins"),
+        "guidance" => Ok("skills.mounts"),
         _ => Err("Unsupported plugin artifact".into()),
     }
 }

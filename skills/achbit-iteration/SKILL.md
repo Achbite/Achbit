@@ -1,6 +1,6 @@
 ---
 name: achbit-iteration
-description: Change Achbit itself; locate the responsible layer, select the update path and use direct Debug control for focused verification.
+description: Develop or repair Achbit plugins and tools from a Session, or change the product and verify it through Debug control.
 ---
 
 # Achbit iteration
@@ -15,7 +15,7 @@ Preserve the requested scope: analysis, implementation, Debug verification or re
 
 - To control a Debug product, read `debug-control.md` under the `productDocsPath` supplied by the Shell tool description. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
 - For UI design or interaction changes, discover and read the Frontend Design Skill and its Achbit UI reference. Start from the existing design and production components; use the user's request and applicable user Skills to identify intended changes.
-- To develop, install or update a plugin, read [references/plugin-development.md](references/plugin-development.md). Use the current Host CLI for discovery and management.
+- To create, diagnose, repair or update a plugin, read [references/plugin-development.md](references/plugin-development.md). Use the current Host CLI for discovery and management.
 - To locate code for a change, read [references/implementation-map.md](references/implementation-map.md), then inspect the relevant producer and consumer.
 - To load edited code, use [references/update-modes.md](references/update-modes.md). A successful build does not update an existing process.
 
