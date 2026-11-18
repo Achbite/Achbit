@@ -7,7 +7,6 @@ import { previewImage } from './previewImage';
 import React, { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ArtifactProjection, SessionProjection } from '@achbit/protocol';
 import { useUiLanguage } from '../../useUiLanguage';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useConversationHost } from './ConversationHost';
 import { useConversationRowState, useRetainConversationPreview } from './ConversationVirtualRow';
 import { readDocumentText } from './documentResources';
@@ -57,9 +56,10 @@ export function ArtifactInteractivePreview({ sessionId, artifact, inline = false
   const [page, setPage] = useConversationRowState(`preview:${artifact.artifactId}:viewportPage`, false);
   const [widths, setWidths] = useConversationRowState(`preview:${artifact.artifactId}:widths`, { preferred: 0, minimum: 0 });
   const surface = useRef<HTMLDivElement>(null);
-  const available = usePreviewSurfaceSize(surface, inline && !page && !showSource && widths.minimum > 0);
-  const scale = inline && !page && available.width > 0 && widths.minimum > available.width ? available.width / widths.minimum : 1;
+  const available = usePreviewSurfaceSize(surface, !page && !showSource && widths.minimum > 0);
+  const scale = !page && available.width > 0 && widths.minimum > available.width ? available.width / widths.minimum : 1;
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [frameFocused, setFrameFocused] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null), tools = useRef<HTMLDivElement>(null);
   const toolsId = useId(), interaction = useInteractionFocus();
   useDismissibleLayer({ open: toolsOpen, roots: [trigger, tools], trigger, onDismiss: () => setToolsOpen(false) });
@@ -76,7 +76,7 @@ export function ArtifactInteractivePreview({ sessionId, artifact, inline = false
   const title = artifact.label.split(/[\\/]/u).at(-1) || (chinese ? '交互预览' : 'Interactive preview');
   useEffect(() => {
     const controller = new AbortController();
-    setContent(null); setError(null); setReady(false);
+    setContent(null); setError(null); setReady(false); setFrameFocused(false);
     void host.readArtifact(sessionId, artifact.artifactId, controller.signal).then(readDocumentText).then(text => {
       if (!controller.signal.aborted) setContent(text);
     }).catch(reason => { if (!controller.signal.aborted) setError(String(reason)); });
@@ -87,7 +87,7 @@ export function ArtifactInteractivePreview({ sessionId, artifact, inline = false
     const receive = (event: MessageEvent) => {
       if (!frame.current || event.source !== frame.current.contentWindow || event.data?.type !== 'achbit:preview') return;
       const data = event.data;
-      if (data.kind === 'resize' && inline && Number.isFinite(data.height) && data.height >= 0) {
+      if (data.kind === 'resize' && Number.isFinite(data.height) && data.height >= 0) {
         setPage(data.viewport === true);
         const preferred = Number.isFinite(data.preferredWidth) && data.preferredWidth > 0 ? data.preferredWidth : 0;
         const minimum = Number.isFinite(data.minimumWidth) && data.minimumWidth > 0 ? Math.min(preferred, data.minimumWidth) : 0;
@@ -97,6 +97,8 @@ export function ArtifactInteractivePreview({ sessionId, artifact, inline = false
         if (data.viewport !== true && data.height > 0 && data.height !== data.viewportHeight) setHeight(data.height);
       } else if (data.kind === 'ready') {
         setReady(true); setPreviouslyLoaded(true); retain();
+      } else if (data.kind === 'focus' && inline) {
+        setFrameFocused(data.focused === true && frame.current.ownerDocument.activeElement === frame.current);
       } else if (data.kind === 'interaction') {
         retain(); setReloaded(false); setToolsOpen(false);
       } else if (data.kind === 'error' && typeof data.message === 'string') setError(data.message);
@@ -109,35 +111,38 @@ export function ArtifactInteractivePreview({ sessionId, artifact, inline = false
   const openLabel = chinese ? '在侧栏打开' : 'Open in sidebar';
   const moreLabel = chinese ? '更多预览操作' : 'More preview actions';
   const actions = <>
-      <button {...identity.action('toggle-source', 'click')} type="button" className="reader-icon-button" title={sourceLabel} aria-label={sourceLabel} aria-pressed={showSource}
-        disabled={content === null} onClick={() => { setShowSource(value => !value); retain(); finishTool(); }}><AchbitShellIcon name="code" /></button>
+      <IconButton {...identity.action('toggle-source', 'click')} icon="code" size={inline ? 'compact' : 'standard'}
+        aria-label={sourceLabel} aria-pressed={showSource} disabled={content === null}
+        onClick={() => { setShowSource(value => !value); retain(); finishTool(); }} />
       <ContentImageSave {...identity.action('save', 'click')} disabled={!ready || showSource}
         createImage={signal => previewImage(frame.current?.contentWindow ?? null, title, signal)} />
-      <button {...identity.action('reload', 'click')} type="button" className="reader-icon-button" title={reloadLabel} aria-label={reloadLabel}
-        onClick={() => { setRevision(value => value + 1); setReloaded(false); retain(); finishTool(); }}><AchbitShellIcon name="refresh" /></button>
+      <IconButton {...identity.action('reload', 'click')} icon="refresh" size={inline ? 'compact' : 'standard'} aria-label={reloadLabel}
+        onClick={() => { setRevision(value => value + 1); setReloaded(false); retain(); finishTool(); }} />
   </>;
-  return <section {...identity.part('frame')} aria-label={title} data-preview-ready={ready} data-preview-revision={revision}
+  return <section {...identity.part('frame')} aria-label={title} tabIndex={inline ? 0 : undefined}
+    data-frame-focused={inline && frameFocused || undefined} data-preview-ready={ready} data-preview-revision={revision}
     className={`interactive-preview interactive-preview${inline ? '--inline' : '--reader'}`} data-preview-artifact={artifact.artifactId}
-    style={inline && !page && !showSource && widths.preferred > 0 ? { '--preview-ideal-width': `${widths.preferred + 2}px` } as React.CSSProperties : undefined}
-    data-compact-tools={inline && !page && !showSource && height !== null && height * scale < 64 || undefined}
+    style={!page && !showSource && widths.preferred > 0 ? { '--preview-ideal-width': `${widths.preferred + (inline ? 2 : 0)}px` } as React.CSSProperties : undefined}
     data-viewport-page={inline && page || undefined} data-show-source={showSource || undefined}>
-    {inline ? <div className="interactive-preview__controls" role="group" aria-label={title} data-open={toolsOpen}>
+    {inline ? <div className="interactive-preview__controls" role="group" aria-label={title}>
+      <div ref={tools} id={toolsId} className="interactive-preview__options" role="group" aria-label={moreLabel} tabIndex={-1} hidden={!toolsOpen}>{actions}</div>
       <IconButton {...identity.action('more', 'click')} ref={trigger} icon="more" size="compact" aria-label={moreLabel}
         aria-expanded={toolsOpen} aria-controls={toolsId} onClick={() => setToolsOpen(open => !open)} />
-      <div ref={tools} id={toolsId} className="interactive-preview__options" role="group" aria-label={moreLabel} tabIndex={-1} hidden={!toolsOpen}>{actions}</div>
       <IconButton {...identity.action('open-reader', 'click')} icon="expand" size="compact" aria-label={openLabel}
         onClick={() => { setToolsOpen(false); requestReader(sessionId, { kind: 'artifact', artifact, interactive: true }); }} />
     </div> : <header className="interactive-preview__toolbar"><strong>{title}</strong>{actions}</header>}
-    {error && <p className="interactive-preview__status" role="alert">{error}</p>}
-    {!error && !ready && <p className="interactive-preview__status" role="status">{chinese ? '正在加载预览…' : 'Loading preview…'}</p>}
-    {reloaded && ready && <small className="interactive-preview__status" role="status">{chinese ? '预览已重新载入' : 'Preview reloaded'}</small>}
-    <div className="interactive-preview__source" hidden={!showSource}>{showSource && content !== null && <RichContentScope.Provider value={{ ...target, contentKey: 'preview-source' }}><CodeContent code={content} language="html" /></RichContentScope.Provider>}</div>
-    <div ref={surface} className="interactive-preview__surface" hidden={showSource || document === undefined}
-      data-preview-layout={inline ? page ? 'adaptive' : 'flow' : 'reader'}
-      style={inline && !page && height !== null ? { '--preview-flow-height': `${height * scale}px` } as React.CSSProperties : undefined}>
-      {document !== undefined && <iframe ref={frame} key={revision} className="interactive-preview__frame" title={title} sandbox="allow-scripts"
-        srcDoc={document} style={scale < 1 ? { position: 'absolute', inset: '0 auto auto 0', width: widths.minimum,
-          height: `${100 / scale}%`, transformOrigin: 'top left', transform: `scale(${scale})` } : undefined} />}
+    <div className="interactive-preview__body">
+      {error && <p className="interactive-preview__status" role="alert">{error}</p>}
+      {!error && !ready && <p className="interactive-preview__status" role="status">{chinese ? '正在加载预览…' : 'Loading preview…'}</p>}
+      {reloaded && ready && <small className="interactive-preview__status" role="status">{chinese ? '预览已重新载入' : 'Preview reloaded'}</small>}
+      <div className="interactive-preview__source" hidden={!showSource}>{showSource && content !== null && <RichContentScope.Provider value={{ ...target, contentKey: 'preview-source' }}><CodeContent code={content} language="html" /></RichContentScope.Provider>}</div>
+      <div ref={surface} className="interactive-preview__surface" hidden={showSource || document === undefined}
+        data-preview-layout={page ? 'adaptive' : 'flow'}
+        style={!page && height !== null ? { '--preview-flow-height': `${height * scale}px` } as React.CSSProperties : undefined}>
+        {document !== undefined && <iframe ref={frame} key={revision} className="interactive-preview__frame" aria-label={title} sandbox="allow-scripts"
+          srcDoc={document} style={scale < 1 ? { position: 'absolute', inset: '0 auto auto 0', width: widths.minimum,
+            height: `${100 / scale}%`, transformOrigin: 'top left', transform: `scale(${scale})` } : undefined} />}
+      </div>
     </div>
   </section>;
 }

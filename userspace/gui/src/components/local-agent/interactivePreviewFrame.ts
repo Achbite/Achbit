@@ -15,6 +15,11 @@ function installPreviewBridge(exportElement: typeof renderElementPng, toSvg: typ
     void exportElement(document.body, toSvg, rasterize).then(blob => send({ kind: 'export', requestId, blob }))
       .catch(error => send({ kind: 'export', requestId, error: error instanceof Error ? error.message : String(error) }));
   });
+  // Focus inside this sandboxed document does not match :focus-within on the host card.
+  if (inline) {
+    addEventListener('focus', () => send({ kind: 'focus', focused: true }));
+    addEventListener('blur', () => send({ kind: 'focus', focused: false }));
+  }
   let scheduled = 0, previous = '';
   let lastViewport = 0, lastNatural = 0, preferredWidth = 0;
   // scrollWidth includes the live viewport floor. Ask CSS for the actual
@@ -46,7 +51,7 @@ function installPreviewBridge(exportElement: typeof renderElementPng, toSvg: typ
     const extent = Math.max(body.scrollHeight, root.scrollHeight);
     const height = Math.max(box, extent > innerHeight + 1 ? extent : 0);
     let minimumWidth = 0;
-    if (inline && !viewport) {
+    if (!viewport) {
       const { natural, minimum } = intrinsicWidths(root);
       // A viewport-dependent length is not an intrinsic cap. Avoid feeding
       // shrinking vw units or breakpoint changes back into the same layout.

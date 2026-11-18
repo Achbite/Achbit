@@ -38,7 +38,11 @@ test('the shipped frame bridge measures flow but does not mistake a viewport she
   t.after(() => { if (original) globalThis.DOMParser = original; else delete globalThis.DOMParser; });
   interactivePreviewDocument('<main>Fixture</main>');
   const messages = [];
-  const root = { get scrollHeight() { return Math.max(extent, 420); } };
+  const root = {
+    style: { getPropertyValue: () => '', getPropertyPriority: () => '', setProperty() {}, removeProperty() {} },
+    clientWidth: 700, getBoundingClientRect: () => ({ width: 200 }),
+    get scrollHeight() { return Math.max(extent, 420); },
+  };
   const page = { readyState: 'complete', documentElement: root, addEventListener() {}, body: {
     getBoundingClientRect: () => ({ height }), get scrollHeight() { return Math.max(height, extent); } } };
   const context = { document: page, parent: { postMessage(value) { messages.push(value); } }, innerWidth: 700, innerHeight: 420,
@@ -46,6 +50,7 @@ test('the shipped frame bridge measures flow but does not mistake a viewport she
     requestAnimationFrame(fn) { scheduled = fn; return 1; }, ResizeObserver: class { constructor(f) { measured = f; } observe() {} } };
   context.window = context;
   vm.runInNewContext(script, context); scheduled();
+  assert.equal(messages.at(-1).preferredWidth, 200, 'the Reader receives the intrinsic width for centering flow content');
   assert.equal(messages.at(-1).height, 84, 'short content does not inherit the document viewport floor');
   extent = 980; measured(); scheduled(); assert.equal(messages.at(-1).height, 980);
   height = 420; extent = 420; overflowY = 'hidden'; measured(); scheduled();

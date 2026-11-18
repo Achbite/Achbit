@@ -89,7 +89,7 @@
           options: element instanceof HTMLSelectElement ? [...element.options].map(option => ({ value: option.value, text: option.text, selected: option.selected })) : undefined,
           bounds: { x: r.x, y: r.y, width: r.width, height: r.height } };
       }), elementLimit: 512,
-    frames: frames().map((frame, index) => ({ index, title: frame.title, src: frame.src, selector: selectorFor(frame), visible: visible(frame) })),
+    frames: frames().map((frame, index) => ({ index, title: frame.title || frame.getAttribute('aria-label') || '', src: frame.src, selector: selectorFor(frame), visible: visible(frame) })),
     components: window.__ACHBIT_DEBUG_UI__?.list() ?? [],
     ownershipOverlay: window.__ACHBIT_DEBUG_UI__?.overlayStatus?.() ?? { enabled: false, coverage: 'unavailable' },
     };
