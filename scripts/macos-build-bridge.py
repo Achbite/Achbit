@@ -153,7 +153,22 @@ def finish_process(directory, request, child, log, code=None, message=''):
 
 
 def serve(container_id):
-    with (BRIDGE / 'worker.lock').open('a') as lock:
+    # Pin all worker-side queue operations to the directory we locked, even if it is moved.
+    previous = os.open('.', os.O_RDONLY)
+    try:
+        os.chdir(BRIDGE)
+        serve_requests(container_id)
+    finally:
+        try:
+            os.fchdir(previous)
+        finally:
+            os.close(previous)
+
+
+def serve_requests(container_id):
+    channel = Path('.')
+    registration = channel / 'worker.json'
+    with (channel / 'worker.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         worker_id = uuid.uuid4().hex
         watcher = subprocess.Popen(['docker', 'wait', container_id], stdout=subprocess.DEVNULL)
@@ -165,14 +180,24 @@ def serve(container_id):
         active = None
         stop_requests = []
         try:
-            write_json(WORKER, worker)
+            write_json(registration, worker)
             while not stopping and watcher.poll() is None:
                 if active:
                     directory, request, child, log = active
                     if (directory / 'cancel').exists() or child.poll() is not None:
                         active = None
                         finish_process(directory, request, child, log)
-                for pending in sorted(BRIDGE.glob('request-*/request.json')):
+                try:
+                    current = channel.samefile(BRIDGE)
+                except FileNotFoundError:
+                    current = False
+                if not current:
+                    if not active:
+                        break
+                    # Finish work already accepted in this directory before retiring.
+                    time.sleep(0.2)
+                    continue
+                for pending in sorted(channel.glob('request-*/request.json')):
                     directory = pending.parent
                     pending.rename(directory / 'running.json')
                     request = json.loads((directory / 'running.json').read_text())
@@ -235,7 +260,7 @@ def serve(container_id):
                         watcher.terminate()
                     watcher.wait()
                 finally:
-                    WORKER.unlink(missing_ok=True)
+                    registration.unlink(missing_ok=True)
     # A stop reply means the worker has released its process lock as well.
     for directory, request in stop_requests:
         finish(directory, request, 0)
@@ -267,7 +292,7 @@ def ensure(container, workdir):
                 worker = json.loads(WORKER.read_text())
                 # Only the host checks its process lock. Container readiness uses a fresh reply.
                 if request_host('probe', timeout=3) != 0:
-                    raise RuntimeError('Mac build bridge did not respond.')
+                    raise RuntimeError('Mac build bridge readiness probe failed.')
                 if worker['containerId'] == container_id:
                     return
                 if request_host('stop', timeout=3) != 0:
@@ -286,7 +311,7 @@ def ensure(container, workdir):
                 raise RuntimeError(f'Mac build bridge did not start; see {BRIDGE / "worker.log"}')
             time.sleep(0.1)
         if request_host('probe', timeout=3) != 0:
-            raise RuntimeError('Mac build bridge did not respond.')
+            raise RuntimeError('Mac build bridge readiness probe failed.')
 
 
 def stop():
