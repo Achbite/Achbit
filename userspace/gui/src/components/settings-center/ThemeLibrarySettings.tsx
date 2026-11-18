@@ -4,10 +4,9 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { normalizeGuiAccentColor, type GuiResolvedTheme } from '../../theme/achbitGuiTheme';
 import { PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, paletteColor } from '../../theme/palette';
 import { THEME_LIBRARY_SETTING, applyThemePalette, builtinThemes, decodeThemeLibrary, importTheme, selectedThemeId, themeOverrides, type ThemeDocument, type SavedTheme } from '../../theme/themeLibrary';
-import { ModalDialog } from '../../ui-components';
+import { DisclosureSummary, ModalDialog } from '../../ui-components';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import ThemePicker, { ThemeBadge } from './ThemePicker';
-import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from './settingsSearch';
 import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 
@@ -75,7 +74,7 @@ export default function ThemeLibrarySettings({ language }: { language: UiLanguag
     } catch (reason) { setError(String(reason)); }
   };
   return <details className="settings-card appearance-config-box appearance-theme-library">
-    <summary ref={target} className="settings-card__title">{t(language, 'settings.themes.title')}<AchbitShellIcon name="chevronRight" size={14} /></summary>
+    <DisclosureSummary ref={target} className="settings-card__title">{t(language, 'settings.themes.title')}</DisclosureSummary>
     <div className="appearance-config-box__body">
       {!configError && (['light', 'dark'] as const).map((mode) => {
         const selected = selectedThemeId(allThemes, colors, mode);

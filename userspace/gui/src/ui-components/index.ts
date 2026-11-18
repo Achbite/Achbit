@@ -43,5 +43,5 @@ export type { CloseButtonProps } from './CloseButton';
 export type { PanelHeaderProps } from './PanelHeader';
 export type { DisclosureSummaryProps } from './DisclosureSummary';
 export type { UiIconName, UiIconProps } from '../icons/registry';
-export { UI_ICON_ROLES } from '../icons/registry';
+export { UI_ICON_NAMES, UI_ICON_ROLES } from '../icons/registry';
 export { UI_REGION_SLOTS } from '../ui-plugins/slots';

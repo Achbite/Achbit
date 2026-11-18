@@ -37,7 +37,7 @@ export default function ModelPickerDialog({ connection, adapter, onClose, onSave
     } catch (reason) { setError(message(reason)); }
     finally { pending.current = false; setBusy(false); }
   };
-  return <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-label={text('添加模型', 'Add model')} busy={busy} onClose={onClose}>
+  return <ModalDialog className="achbit-gui-text-dialog-backdrop model-picker-backdrop" aria-label={text('添加模型', 'Add model')} busy={busy} onClose={onClose}>
     <section {...owner.part('dialog')} className="achbit-gui-text-dialog model-picker-dialog">
       <PanelHeader><h2>{text('添加模型', 'Add model')}</h2><CloseButton {...owner.action('close', 'click')} aria-label={text('关闭', 'Close')} disabled={busy} onClick={onClose} /></PanelHeader>
       <div className="model-picker-context">{connection.name}{connection.name !== adapter.name && <span>{adapter.name}</span>}</div>

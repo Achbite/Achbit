@@ -1,4 +1,4 @@
-import { DisclosureSummary, NativeSelect, ToggleSwitch } from '../../../ui-components';
+import { Button, DisclosureSummary, NativeSelect, ToggleSwitch } from '../../../ui-components';
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import ConfirmedNumberInput from '../../shared/ConfirmedNumberInput';
 import { modelReasoningEfforts, modelThinkingModes } from '@achbit/protocol';
@@ -89,6 +89,19 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
     await persist(onRemove ? draft : { ...baseline.current, ...changes }, keys);
     setFeedback(text('已保存', 'Saved'));
   });
+  const submitChanges = (form: HTMLFormElement) => {
+    if (busy || !onRemove && !dirty) return;
+    if (onRemove) {
+      if (!form.reportValidity()) return;
+    } else {
+      // Partial edits validate only submitted fields. The Host checks the merged profile.
+      for (const key of changedFields) {
+        const input = form.elements.namedItem(key);
+        if (input instanceof HTMLInputElement && !input.reportValidity()) return;
+      }
+    }
+    void saveChanges(onRemove ? Object.keys(draft) as (keyof LlmProviderProfile)[] : changedFields);
+  };
   const numeric = (key: 'contextWindowTokens' | 'maxOutputTokens' | 'temperature', label: string, constraints: { min: number; max?: number; step?: number; required?: boolean }) =>
     <ConfirmedNumberInput {...constraints} name={key} value={selected[key]} language={language} label={label} disabled={busy}
       onCommit={value => choose({ [key]: value })} onDraftChange={value => set(key, value)} />;
@@ -100,21 +113,14 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
         || input.tagName !== 'INPUT' || input.type !== 'text') return;
       event.preventDefault();
       if (busy) return;
-      if (onRemove) event.currentTarget.requestSubmit();
+      if (onRemove) submitChanges(event.currentTarget);
       else {
         const textFields = changedFields.filter(key => key === 'name' || key === 'model');
         if (textFields.length) void saveChanges(textFields);
       }
     }} onSubmit={event => {
       event.preventDefault();
-      if (busy || !onRemove && !dirty) return;
-      // Check native numeric constraints on the submitted fields. The Host
-      // validates the merged profile, including relationships between fields.
-      for (const key of changedFields) {
-        const input = event.currentTarget.elements.namedItem(key);
-        if (input instanceof HTMLInputElement && !input.reportValidity()) return;
-      }
-      void saveChanges(onRemove ? Object.keys(draft) as (keyof LlmProviderProfile)[] : changedFields);
+      submitChanges(event.currentTarget);
     }}>
       <fieldset disabled={busy}>
         <div className="model-form-grid">
@@ -141,12 +147,16 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
           {adapter.id === 'custom' && <label>{text('协议行为', 'Protocol behavior')}<NativeSelect value={selected.providerFlavor} onChange={event => void choose({ providerFlavor: event.target.value as LlmProviderProfile['providerFlavor'] })}>{['openai','deepseek','zhipu','moonshot'].map(value => <option key={value}>{value}</option>)}</NativeSelect></label>}
         </div></details>
         <div className="model-actions"><label className="model-check"><ToggleSwitch checked={selected.enabled} onChange={event => void choose({ enabled: event.target.checked })} />{text('启用', 'Enabled')}</label>
-          <button type="button" disabled={!!onRemove} onClick={() => void perform(async () => { const result = data(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</button><Hint>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</Hint>
-          {!onRemove && profile.id !== defaultId && <button type="button" disabled={!confirmed.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为最近使用', 'Use by default')}</button>}
-          <button className="model-danger" type="button" onClick={() => onRemove ? onRemove() : void perform(async () => { data(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</button>
-          <button className="model-primary model-push" type={onRemove || dirty ? 'submit' : 'button'} disabled={busy || !onRemove && !dirty}>
+          <Button variant="secondary" disabled={!!onRemove} onClick={() => void perform(async () => { const result = data(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</Button><Hint>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</Hint>
+          {!onRemove && profile.id !== defaultId && <Button variant="secondary" disabled={!confirmed.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为最近使用', 'Use by default')}</Button>}
+          <Button className="model-danger" onClick={() => onRemove ? onRemove() : void perform(async () => { data(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</Button>
+          <Button className="model-primary model-push" type={onRemove || dirty ? 'submit' : 'button'} disabled={busy || !onRemove && !dirty}
+            onClick={event => {
+              event.preventDefault();
+              if (event.currentTarget.form) submitChanges(event.currentTarget.form);
+            }}>
             {onRemove ? text('添加模型', 'Add model') : text('保存修改', 'Save changes')}
-          </button>
+          </Button>
         </div>
       </fieldset>
       <div className={failed ? 'settings-error' : !busy && !dirty && !onRemove ? 'model-feedback' : 'model-save-state'}

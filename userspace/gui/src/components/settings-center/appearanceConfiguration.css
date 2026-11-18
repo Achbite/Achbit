@@ -32,10 +32,7 @@
 .appearance-font-preview__interface { font: calc(12px * var(--ac-ui-font-scale))/1.5 var(--ac-font-ui); color: var(--ac-muted); }
 .appearance-font-preview__content { margin: 0; font: var(--ac-font-reading-size)/1.72 var(--ac-font-reading); }
 .appearance-font-preview__code { font: var(--ac-font-code-size)/1.6 var(--ac-font-code); color: var(--ac-muted); }
-.appearance-font-details > summary { display: flex; align-items: center; gap: 9px; width: fit-content; padding: 8px 0; color: var(--ac-muted); cursor: pointer; list-style: none; font-size: var(--ac-font-caption); }
-.appearance-font-details > summary::-webkit-details-marker { display: none; }
-.appearance-font-details > summary > svg { transition: transform 140ms ease; }
-.appearance-font-details[open] > summary > svg { transform: rotate(90deg); }
+.appearance-font-details > summary { --ac-disclosure-icon-size: 14px; gap: 9px; width: fit-content; padding: 8px 0; color: var(--ac-muted); font-size: var(--ac-font-caption); }
 .appearance-font-details > summary:hover { color: var(--ac-foreground); }
 .appearance-font-groups { display: grid; gap: 20px; padding: 12px 0; }
 .appearance-font-group { min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -46,7 +43,6 @@
 .appearance-font-group__sample { padding: 7px 0 9px; line-height: 1.7; overflow-wrap: anywhere; }
 .appearance-font-group__sample code { font: inherit; }
 @media (max-width: 680px) { .appearance-font-group__controls { grid-template-columns: minmax(0,1fr); } }
-@media (prefers-reduced-motion: reduce) { .appearance-font-details > summary > svg { transition: none; } }
 .theme-picker { position: relative; display: grid; grid-template-columns: minmax(0,1fr) minmax(160px,240px); min-height: var(--ac-settings-row-height,52px); align-items: center; gap: 12px; font-size: var(--ac-font-label); }
 .theme-picker__trigger { display: flex; align-items: center; gap: 9px; min-width: 0; width: 100%; border: 1px solid transparent; border-radius: var(--ac-radius-control); padding: 5px 8px; background: transparent; color: var(--ac-foreground); font: inherit; cursor: pointer; text-align: left; }
 .theme-picker__trigger > span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -70,7 +66,5 @@ dialog.appearance-import-overlay { display: grid; place-items: center; padding: 
 .theme-picker__trigger:hover:not(:disabled) { background:var(--ac-surface-hover); }
 
 .appearance-config-box__actions .settings-button:not(.settings-button--primary) { border-color:transparent; background:transparent; }
-.appearance-theme-library > summary { cursor:pointer; padding:12px 18px; }
-.appearance-theme-library > summary > svg { margin-left:auto; color:var(--ac-muted); transition:transform 140ms ease; }
-.appearance-theme-library[open] > summary > svg { transform:rotate(90deg); }
-.appearance-theme-library > summary::-webkit-details-marker { display:none; }
+.appearance-theme-library > summary { --ac-disclosure-icon-size:14px; padding:12px 18px; }
+.appearance-theme-library .ac-disclosure-summary__chevron { margin-inline-start:auto; color:var(--ac-muted); }

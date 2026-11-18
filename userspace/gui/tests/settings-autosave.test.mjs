@@ -178,8 +178,8 @@ test('existing model choices persist independently and reuse confirmed state; ne
 });
 
 test('Save changes activates for numeric-only or mixed drafts and submits the acknowledged profile once', async t => {
-  const [{ default: ModelEditor }, { useSettingsStore }] = await loadGuiModules(t, [
-    '/src/components/settings-center/model-services/ModelEditor.tsx', '/src/state/settingsStore.ts',
+  const [{ default: ModelEditor }, { useSettingsStore }, { Button }] = await loadGuiModules(t, [
+    '/src/components/settings-center/model-services/ModelEditor.tsx', '/src/state/settingsStore.ts', '/src/ui-components/index.ts',
   ]);
   settingsFixture(t, useSettingsStore);
   const profile = { id: 'model:button', connectionId: 'connection:button', name: 'Saved', model: 'fixture', kind: 'responses',
@@ -205,7 +205,7 @@ test('Save changes activates for numeric-only or mixed drafts and submits the ac
       return tree;
     }
     renderToStaticMarkup(createElement(Drive));
-    return { save: elements(tree, node => node.type === 'button' && node.props.children === 'Save changes')[0],
+    return { save: elements(tree, node => node.type === Button && node.props.children === 'Save changes')[0],
       form: elements(tree, node => node.type === 'form')[0] };
   }
   const original = globalThis.HTMLInputElement;
@@ -219,6 +219,8 @@ test('Save changes activates for numeric-only or mixed drafts and submits the ac
     const before = writes.length, { save, form } = edited(changes);
     assert.equal(writes.length, before, 'typing does not write');
     assert.equal(save.props.type, 'submit'); assert.equal(save.props.disabled, false);
+    save.props.onClick({ preventDefault() {}, currentTarget: { form: event(false).currentTarget } });
+    assert.equal(writes.length, before, 'explicit Save also honors field validity');
     form.props.onSubmit(event(false)); assert.equal(writes.length, before, 'invalid inputs do not write');
     form.props.onSubmit(event(true)); form.props.onSubmit(event(true)); await flush();
     assert.equal(writes.length, before + 1);

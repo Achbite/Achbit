@@ -61,5 +61,6 @@
 .ac-disclosure-summary::-webkit-details-marker { display: none; }
 .ac-disclosure-summary::marker { content: ''; }
 .ac-disclosure-summary > .ac-disclosure-summary__chevron { flex: none; width: var(--ac-disclosure-icon-size, 12px); height: var(--ac-disclosure-icon-size, 12px); transition: transform var(--ac-motion-reveal, 200ms) var(--ac-ease-out, ease-out); }
+.ac-disclosure-summary[data-chevron-position='leading'] > .ac-disclosure-summary__chevron { order: -1; }
 details[open] > .ac-disclosure-summary > .ac-disclosure-summary__chevron { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .ac-button, .ac-disclosure-summary__chevron { transition: none; } }

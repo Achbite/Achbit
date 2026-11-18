@@ -1,4 +1,4 @@
-import { UiIcon } from '../../ui-components';
+import { DisclosureSummary } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
@@ -30,7 +30,7 @@ export function ReasoningDetails({ sessionId, requestId, live = false, summary }
     return () => { controller.abort(); clearTimeout(timer); };
   }, [readConversation, sessionId, requestId, live, open, offset]);
   return <details className="conversation-reasoning" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary {...identity.action('toggle', 'click')}>{summary ?? t(language, live ? 'agent.reasoning.running' : 'agent.reasoning.view')}<UiIcon name="chevronDown" size={14} className="conversation-disclosure-chevron" /></summary>
+    <DisclosureSummary {...identity.action('toggle', 'click')}>{summary ?? t(language, live ? 'agent.reasoning.running' : 'agent.reasoning.view')}</DisclosureSummary>
     {open && <div className="conversation-reasoning-body" tabIndex={0}>{error ? <p role="alert">{error}</p> : !page ? <span>{t(language, 'agent.reasoning.loading')}</span> : <>
       {Array.isArray(page.parts) && page.parts.map((part, index) => part && typeof part === 'object' && !Array.isArray(part)
         ? <section key={index}><small>{t(language, part.kind === 'summary' ? 'agent.reasoning.summary' : 'agent.reasoning.text')}</small><pre>{String(part.content)}</pre></section> : null)}

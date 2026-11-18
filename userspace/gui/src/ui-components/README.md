@@ -26,11 +26,13 @@ Labels and tooltips arrive localized from the owner. Icon-only controls require 
 
 A close glyph does not decide what closing means. The owning feature retains view dismissal, tab closure, plan cancellation, question skipping, resource cleanup and error handling. `ModalDialog` continues to own modal focus containment, return focus and busy dismissal rules. Primitives add no Session mutations or independent keyboard-dismissal layer.
 
+Review each new or changed operation, including changes within existing files and author-controlled preview sources. Match its behavior to the catalog, compose existing controls where only their layout differs, and keep domain-specific state with its feature. Record the concrete reason for a distinct interaction when a reusable control does not cover it. A new reusable family has one typed entry in this catalog.
+
 ## Appearance
 
 `controls.css` owns primitive geometry and states. `achbitDesignTokens.css` owns control size, icon size, spacing and radius variables; colors continue to come from the existing `config/ui/palette.json` semantics. Feature classes position controls and headers, but must not redefine their hit targets, glyphs or hover/focus/disabled chrome. Native window controls and content-specific image controls remain separate from ordinary panel actions.
 
-`DisclosureSummary` renders a native `summary` with the shared decorative chevron for ordinary content disclosures. Its parent `details` retains open state and native keyboard/toggle behavior; refs, events, localized children and owner/action attributes pass through. Feature styles retain placement and surrounding layout. Menus, tree navigation and already specialized disclosure controls keep their existing interaction policies.
+`DisclosureSummary` renders a native `summary` with the shared decorative chevron for ordinary content disclosures. Its parent `details` retains open state and native keyboard/toggle behavior; refs, events, localized children and owner/action attributes pass through. Use `chevronPosition="leading"` when a compact settings label leads with the arrow. The default places it after the label. Feature styles retain placement and surrounding layout. Menus, tree navigation and already specialized disclosure controls keep their existing interaction policies.
 
 ## Regions and ownership
 
@@ -77,4 +79,8 @@ For a new transient surface, check outside clicks (including stopped propagation
 
 ## Validation
 
-`tests/ui-components.test.mjs` verifies registration identity, composition, native attributes, accessible labels, owner callbacks and region selection. It also rejects feature imports and re-exports that bypass the catalog for registered shared controls or icons. Run the existing GUI tests and typechecks in the development container; migrated controls retain their feature-level behavior tests. `tests/manual/ui-components.html` is a backend-free catalog fixture using the registered production components for desktop/narrow layout, button states, form submission, modal dismissal and focus return.
+`tests/ui-components.test.mjs` verifies registration identity, composition, native attributes, accessible labels, owner callbacks and region selection. It also rejects feature imports and re-exports that bypass the catalog for registered shared controls or icons. The same import rule covers first-party manual fixtures. Run the existing GUI tests and typechecks in the development container; migrated controls retain their feature-level behavior tests. `tests/manual/ui-components.html` is a backend-free catalog fixture using the registered production components for desktop/narrow layout, button states, form submission, modal dismissal and focus return.
+
+From the checkout in the development container, `pnpm --filter @achbit/client review:ui` lists changed controls, styles and nearby state changes against HEAD, including untracked GUI sources. Pass `--base <commit>` to review a branch delta and repeat `--source <absolute-source-file-or-directory>` to include author-controlled standalone previews. Each entry has a file and line for individual review. A catalog bypass fails the command. The remaining entries are design review prompts. Inspect the diff for deletion-only or nonliteral rendering changes.
+
+Run `pnpm --filter @achbit/client test:ui-design` for the Chromium fixture suite. It exercises shared disclosure placement and native keyboard behavior, model drafts, and the inline/Reader preview at several pane widths, font sizes and zoom levels. Set `UI_EVIDENCE_DIR` to retain geometry and screenshots at a chosen path. Compare against the affected interaction’s contract and use the screenshots to judge hierarchy, type and spacing.
