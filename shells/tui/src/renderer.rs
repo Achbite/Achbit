@@ -594,9 +594,17 @@ pub(crate) fn tool_details(
     text
 }
 
-fn multiline_text(lines: Vec<Line<'_>>) -> Text<'static> {
-    let mut result = Vec::new();
+fn multiline_text(lines: Vec<Line<'static>>) -> Text<'static> {
+    let has_newline = |line: &Line<'_>| line.spans.iter().any(|span| span.content.contains('\n'));
+    if !lines.iter().any(has_newline) {
+        return Text::from(lines);
+    }
+    let mut result = Vec::with_capacity(lines.len());
     for line in lines {
+        if !has_newline(&line) {
+            result.push(line);
+            continue;
+        }
         let mut current = Line::default().style(line.style);
         for span in line.spans {
             for (index, part) in span.content.split('\n').enumerate() {
@@ -867,7 +875,9 @@ impl Renderer {
             ])
             .split(area);
         self.draw_header(frame, rows[0], app);
-        if app.context_open() {
+        if let Some(message) = app.startup_message.as_deref() {
+            frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), rows[1]);
+        } else if app.context_open() {
             self.draw_context(frame, rows[1], app);
         } else if app.resource_preview().is_some() || app.detail_preview().is_some() {
             self.draw_resource(frame, rows[1], app);
@@ -896,7 +906,7 @@ impl Renderer {
             );
         }
         self.draw_input(frame, rows[4], app);
-        if app.command_picker_open() {
+        if app.initialized() && app.command_picker_open() {
             self.draw_command_picker(frame, rows[1], app);
         }
         if app.plugin_picker_open() {
@@ -1091,8 +1101,8 @@ impl Renderer {
         }
         if app.session_picker_open() {
             output.push_str(&format!("{}\n", app.language().text("tui.sessionsTitle")));
-            let entries = app.session_picker_entries();
-            if entries.is_empty() {
+            let entries = app.session_picker_entries(usize::MAX);
+            if entries.len() == 0 {
                 output.push_str(app.language().text("tui.sessionsEmpty"));
                 output.push('\n');
             }
@@ -1633,7 +1643,14 @@ impl Renderer {
                 &[format!("{}", selected_plugins.join(", "))],
             ));
         }
-        let title = clipped(&title, area.width.saturating_sub(2));
+        let title = if app.initialized() {
+            clipped(&title, area.width.saturating_sub(2))
+        } else {
+            clipped(
+                language.text("tui.startupDraft"),
+                area.width.saturating_sub(2),
+            )
+        };
         let block = Block::default()
             .borders(Borders::TOP)
             // Preserve the editor's wrap width and cursor geometry without an enclosing box.
@@ -1750,21 +1767,13 @@ impl Renderer {
     }
 
     fn draw_session_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-        let entries = app.session_picker_entries();
         let visible = usize::from(area.height.saturating_sub(2)).max(1);
-        let selected = entries
-            .iter()
-            .position(|(_, selected)| *selected)
-            .unwrap_or(0);
-        let start = selected.saturating_sub(visible - 1);
-        let mut lines: Vec<Line<'_>> = entries
-            .iter()
-            .skip(start)
-            .take(visible)
+        let mut lines: Vec<Line<'_>> = app
+            .session_picker_entries(visible)
             .map(|(label, selected)| {
                 Line::from(Span::styled(
-                    format!("{} {label}", if *selected { ">" } else { " " }),
-                    picker_style(*selected),
+                    format!("{} {label}", if selected { ">" } else { " " }),
+                    picker_style(selected),
                 ))
             })
             .collect();

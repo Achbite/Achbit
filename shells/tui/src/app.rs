@@ -122,6 +122,8 @@ type ProjectionRead = Pin<
     Box<dyn Future<Output = achbit_kernel_client::KernelClientResult<SessionProjection>> + Send>,
 >;
 
+pub type StartupData = (Option<SessionProjection>, PluginCatalogProjection);
+
 pub struct TuiApp {
     client: HttpKernelClient,
     renderer: Renderer,
@@ -133,6 +135,7 @@ pub struct TuiApp {
     command_picker: Option<usize>,
     recent_commands: VecDeque<&'static str>,
     initialized: bool,
+    pub startup_message: Option<String>,
     status: String,
     connection_error: Option<String>,
     next_message_profile_id: Option<String>,
@@ -176,6 +179,7 @@ impl TuiApp {
             command_picker: None,
             recent_commands: VecDeque::new(),
             initialized: false,
+            startup_message: None,
             next_message_profile_id: None,
             model_connections: None,
             model_profiles: Vec::new(),
@@ -202,32 +206,93 @@ impl TuiApp {
         }
     }
 
-    pub async fn bootstrap(&mut self) -> Result<(), String> {
+    pub fn load_startup(
+        &mut self,
+    ) -> Result<impl Future<Output = Result<StartupData, String>> + use<>, String> {
+        let language = self.host.language;
         if let Some(path) = self.host.workspace_path.as_mut() {
             *path = path.canonicalize().map_err(|error| {
-                self.host
-                    .language
-                    .format("tui.workspaceUnavailable", &[error.to_string()])
+                language.format("tui.workspaceUnavailable", &[error.to_string()])
             })?;
         }
-        if self.host.session_id.is_some() {
-            self.ensure_session().await?;
+        let session = self.host.session_id.clone();
+        let client = self.client.clone();
+        Ok(async move {
+            let projection = if let Some(id) = session {
+                Some(client.conversation_projection(&id).await.map_err(|error| {
+                    language.format("tui.sessionInitializationFailed", &[error.to_string()])
+                })?)
+            } else {
+                None
+            };
+            let catalog = client
+                .conversation_plugin_catalog()
+                .await
+                .map_err(|error| {
+                    language.format("tui.pluginCatalogLoadFailed", &[error.to_string()])
+                })?;
+            Ok((projection, catalog))
+        })
+    }
+
+    pub fn startup_message_read(&self) -> impl Future<Output = Option<(u64, String)>> + use<> {
+        let session = self.host.session_id.clone();
+        let language = self.host.language;
+        let client = self.client.clone();
+        async move {
+            let session = session?;
+            let result = client
+                .conversation_read(&session, &json!({"view":"messages","limit":4}))
+                .await
+                .ok()?;
+            let revision = result["revision"]
+                .as_u64()
+                .filter(|revision| *revision > 0)?;
+            let mut latest = None;
+            for item in result["items"].as_array()? {
+                if item["type"] != "message.committed" {
+                    continue;
+                }
+                let label = match item["role"].as_str() {
+                    Some("user") => language.text("tui.kind.user"),
+                    Some("assistant") => language.text("tui.kind.assistant"),
+                    _ => continue,
+                };
+                let id = item["messageId"].as_str()?;
+                if id.is_empty() || id.trim() != id {
+                    return None;
+                }
+                latest = Some((
+                    label,
+                    item["content"].as_str()?,
+                    item["truncated"].as_bool()?,
+                ));
+            }
+            let (label, content, truncated) = latest?;
+            let suffix = if truncated {
+                language.text("tui.truncated")
+            } else {
+                ""
+            };
+            Some((revision, format!("{label}{suffix}\n{content}")))
         }
-        let catalog = self
-            .client
-            .conversation_plugin_catalog()
-            .await
-            .map_err(|error| {
-                self.host
-                    .language
-                    .format("tui.pluginCatalogLoadFailed", &[error.to_string()])
-            })?;
+    }
+
+    pub fn finish_startup(&mut self, (projection, catalog): StartupData) -> Result<(), String> {
         self.selected_plugins =
             plugin_selections_from_uris(self.host.language, &catalog, &self.host.plugin_uris)?;
         self.plugin_catalog = Some(catalog);
+        self.replace_projection(projection);
+        self.startup_message = None;
         self.initialized = true;
         self.status = self.host.language.text("tui.ready").to_string();
+        self.sync_input_pickers();
         Ok(())
+    }
+
+    pub async fn bootstrap(&mut self) -> Result<(), String> {
+        let data = self.load_startup()?.await?;
+        self.finish_startup(data)
     }
 
     // Opening the shell is a local draft. Persist a Session only for an explicit
@@ -787,22 +852,31 @@ impl TuiApp {
     pub fn close_session_picker(&mut self) {
         self.session_picker = None;
     }
-    pub fn session_picker_entries(&self) -> Vec<(String, bool)> {
+    pub fn session_picker_entries(
+        &self,
+        visible: usize,
+    ) -> impl ExactSizeIterator<Item = (String, bool)> + '_ {
+        let start = self
+            .session_picker
+            .unwrap_or(0)
+            .saturating_sub(visible.saturating_sub(1));
         let current = self
             .projection
             .as_ref()
             .map(|projection| projection.session_id.as_str());
         self.session_list
+            .as_deref()
+            .unwrap_or_default()
             .iter()
-            .flatten()
             .enumerate()
-            .map(|(index, session)| {
+            .skip(start)
+            .take(visible)
+            .map(move |(index, session)| {
                 (
                     crate::session_navigation::session_label(index + 1, session, current),
                     self.session_picker == Some(index),
                 )
             })
-            .collect()
     }
     pub fn session_picker_move(&mut self, delta: isize) {
         let count = self.session_list.as_ref().map_or(0, Vec::len);
@@ -2442,6 +2516,7 @@ mod input_tests {
         use ratatui::{backend::TestBackend, Terminal};
         for language in [Language::ZhCn, Language::EnUs] {
             let mut app = test_app();
+            app.initialized = true;
             app.host.language = language;
             app.push_input('/');
             assert!(app.command_completion_key(KeyCode::Up));
@@ -2629,10 +2704,12 @@ mod input_tests {
         );
         app.session_picker = Some(0);
         app.session_picker_move(-1);
-        assert!(app.session_picker_entries()[11].1);
+        let last_rows = app.session_picker_entries(2).collect::<Vec<_>>();
+        assert!(last_rows[0].0.contains("11. Title 11"));
+        assert!(last_rows[1].0.contains("12. Title 12") && last_rows[1].1);
         assert!(app.renderer().render_plain(&app).contains("12. Title 12"));
         app.session_picker_move(1);
-        assert!(app.session_picker_entries()[0].1);
+        assert!(app.session_picker_entries(2).next().unwrap().1);
         app.close_session_picker();
         assert!(!app.session_picker_open());
         assert_eq!(
@@ -2679,6 +2756,7 @@ mod input_tests {
         use ratatui::{backend::TestBackend, Terminal};
         for (field, decision, _, _, _) in pending_decisions() {
             let mut app = test_app();
+            app.initialized = true;
             app.projection = Some(waiting_projection(field, decision));
             app.next_message_profile_id = Some("profile:next".into());
             app.push_input_text("中文输入最后一行");
@@ -2835,6 +2913,7 @@ mod input_tests {
     #[test]
     fn picker_wheel_navigation_keeps_the_hidden_document_in_place() {
         let mut app = test_app();
+        app.initialized = true;
         app.detail_preview = Some(
             (0..80)
                 .map(|i| format!("line {i}"))

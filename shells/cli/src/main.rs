@@ -369,7 +369,7 @@ impl Args {
             Some("show") => Command::Show,
             Some("read") => {
                 if positional.len() != 1 || session_id.is_none() {
-                    return Err("用法：read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50]".into());
+                    return Err("用法：read --session <id> [--view summary|messages|tools|plans|context|reasoning|images] [--before <sequence>] [--limit 1..50]".into());
                 }
                 Command::Read {
                     query: Value::Object(read_query.clone()),
@@ -1550,7 +1550,7 @@ Achbit 本地编码 Agent
   achbit-cli new [-C <workspace>]
   achbit-cli resume <完整 session: ID>
   achbit-cli show --session <id>
-  achbit-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
+  achbit-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning|images] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
   achbit-cli cancel-plan --session <id>
   achbit-cli cancel --session <id> <run-id>
   achbit-cli attach-directory --session <id> <path>

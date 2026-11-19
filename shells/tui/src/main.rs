@@ -297,22 +297,54 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
     terminal.draw(|frame| app.renderer().draw(frame, &app))?;
     let mut input_task = spawn_terminal_event_task();
     let initialization = {
-        let initialize = app.bootstrap();
-        tokio::pin!(initialize);
+        let startup_error =
+            |error: String| io::Error::other(language.format("tui.initializationFailed", &[error]));
+        let message = app.startup_message_read();
+        let initialize = app.load_startup().map_err(startup_error)?;
+        tokio::pin!(message, initialize);
+        let mut read_message = true;
+        let mut preview_revision = 0;
+        let mut retried = false;
         loop {
             tokio::select! {
-                result = &mut initialize => break result.map(|_| true).map_err(|error| {
-                    io::Error::other(language.format("tui.initializationFailed", &[error]))
-                }),
+                result = &mut message, if read_message => {
+                    read_message = false;
+                    if let Some((revision, content)) = result {
+                        preview_revision = revision;
+                        app.startup_message = Some(content);
+                        terminal.draw(|frame| app.renderer().draw(frame, &app))?;
+                    }
+                }
+                result = &mut initialize => {
+                    if let Ok((Some(projection), _)) = &result {
+                        if projection.revision < preview_revision {
+                            if retried {
+                                break Err(startup_error(language.format("tui.staleStartupProjection",
+                                    &[projection.revision.to_string(), preview_revision.to_string()])));
+                            }
+                            retried = true;
+                            initialize.set(app.load_startup().map_err(startup_error)?);
+                            continue;
+                        }
+                    }
+                    break result.and_then(|data| app.finish_startup(data)).map(|_| true).map_err(startup_error);
+                }
                 result = &mut input_task => {
                     input_task = spawn_terminal_event_task();
                     match terminal_event_result(language, result) {
-                        Ok(Some(CrosstermEvent::Key(key))) if key.kind == KeyEventKind::Press
-                            && key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(false),
+                        Ok(Some(CrosstermEvent::Key(key))) if key.kind == KeyEventKind::Press => match key.code {
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(false),
+                            KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => app.push_input(c),
+                            KeyCode::Backspace => app.backspace_input(),
+                            KeyCode::Esc => app.clear_input(),
+                            _ => continue,
+                        },
+                        Ok(Some(CrosstermEvent::Paste(text))) => app.push_input_text(&text.replace("\r\n", "\n").replace('\r', "\n")),
+                        Ok(Some(CrosstermEvent::Resize(..))) => {}
                         Err(error) => break Err(error),
-                        _ => {}
+                        _ => continue,
                     }
+                    terminal.draw(|frame| app.renderer().draw(frame, &app))?;
                 }
             }
         }

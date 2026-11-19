@@ -88,9 +88,12 @@ impl Writer {
             }
             if !part.is_empty() {
                 self.begin_line();
-                self.current
-                    .spans
-                    .push(Span::styled(part.replace('\t', "    "), self.style()));
+                let span = Span::styled(part.replace('\t', "    "), self.style());
+                if self.current.spans.is_empty() {
+                    self.current.spans = vec![span];
+                } else {
+                    self.current.spans.push(span);
+                }
             }
         }
     }
