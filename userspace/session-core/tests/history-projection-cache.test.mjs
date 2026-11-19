@@ -38,3 +38,96 @@ test('a failed history read is not cached and later explicit reads retain normal
   failed = false;
   assert.equal((await service.snapshot(sessionId)).sessionId,sessionId);
 });
+
+test('versioned history follows committed facts, isolates callers and expires unused projections', async t => {
+  const journal = new InMemoryCommandJournal();
+  const ids = ['session:one', 'session:two', 'session:three'];
+  for (const id of ids) await createSession(journal, id);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let generation = 1;
+  let unavailable = false;
+  let creationTitle = 'First title';
+  let malformed = false;
+  const reads = new Map();
+  const original = journal.read.bind(journal);
+  journal.historyVersion = async () => {
+    if (unavailable) throw new Error('journal_version_unavailable');
+    return String(generation);
+  };
+  journal.read = async function* (id, ...args) {
+    reads.set(id, (reads.get(id) ?? 0) + 1);
+    for await (const event of original(id, ...args)) {
+      if (event.type === 'session.created') event.payload.displayTitle = creationTitle;
+      if (malformed) event.sequence++;
+      yield event;
+    }
+  };
+  const service = new SessionService(journal, {async create() { throw new Error('unexpected_actor'); }});
+  t.after(() => service.dispose());
+  const [left, right] = await Promise.all([service.snapshot(ids[0]), service.snapshot(ids[0])]);
+  left.display.creationTitle = 'edited by caller';
+  assert.equal(right.display.creationTitle, creationTitle);
+  await service.snapshot(ids[1]);
+  assert.equal((await service.snapshot(ids[0])).display.creationTitle, creationTitle);
+  assert.equal(reads.get(ids[0]), 1, 'switching back to recent history reuses its projection');
+  await service.snapshot(ids[2]);
+  await service.snapshot(ids[1]);
+  assert.equal(reads.get(ids[1]), 2, 'third history evicts least recently visited view');
+  creationTitle = 'Committed replacement';
+  generation++;
+  const changed = await service.snapshot(ids[0]);
+  assert.equal(changed.revision, right.revision);
+  assert.equal(changed.display.creationTitle, creationTitle);
+  unavailable = true;
+  await assert.rejects(service.snapshot(ids[0]), /journal_version_unavailable/);
+  unavailable = false;
+  malformed = true;
+  generation++;
+  await assert.rejects(service.snapshot(ids[0]), /session_event_sequence/);
+  malformed = false;
+  await service.snapshot(ids[0]);
+  const beforeIdle = reads.get(ids[0]);
+  t.mock.timers.tick(7_250);
+  await service.snapshot(ids[0]);
+  assert.equal(reads.get(ids[0]), beforeIdle, 'a brief absence retains the view');
+  t.mock.timers.tick(30_001);
+  await service.snapshot(ids[0]);
+  assert.equal(reads.get(ids[0]), beforeIdle + 1);
+  await journal.deleteSession(ids[0]);
+  generation++;
+  await assert.rejects(service.snapshot(ids[0]), /session_not_found/);
+});
+
+test('a write during slow replay cannot bind the previous view to a later journal version', async t => {
+  const journal = new InMemoryCommandJournal();
+  const id = 'session:concurrent-version';
+  await createSession(journal, id);
+  let version = 1;
+  journal.historyVersion = async () => String(version);
+  const original = journal.read.bind(journal);
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let reads = 0;
+  journal.read = async function* (...args) {
+    const which = ++reads;
+    const rows = [];
+    for await (const event of original(...args)) rows.push(event);
+    if (which === 1) { started.resolve(); await release.promise; }
+    yield* rows;
+  };
+  const service = new SessionService(journal, {async create() { throw new Error('unexpected_actor'); }});
+  t.after(() => service.dispose());
+  const slow = service.snapshot(id);
+  await started.promise;
+  await journal.append({type:'message.committed',sessionId:id,payload:{messageId:'message:concurrent',role:'user',content:'new committed tail'}});
+  version++;
+  const latest = service.snapshot(id);
+  await new Promise(resolve => setImmediate(resolve));
+  const readsBeforeRelease = reads;
+  release.resolve();
+  assert.equal((await latest).messages.at(-1)?.content, 'new committed tail');
+  assert.equal(readsBeforeRelease, 2, 'new version reads independently while previous read is held');
+  assert.equal((await slow).messages.length, 0);
+  assert.equal((await service.snapshot(id)).messages.at(-1).content, 'new committed tail');
+  assert.equal(reads, 2);
+});

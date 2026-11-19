@@ -44,13 +44,25 @@ export async function readSessionEvents(journal: CommandJournalPort, sessionId: 
 }
 
 export async function readConversation(journal: CommandJournalPort, query: ConversationReadQuery): Promise<ConversationReadResult> {
-  const allEvents = await readSessionEvents(journal, query.sessionId);
-  if (query.throughSequence !== undefined && query.throughSequence > allEvents.at(-1)!.sequence) throw new Error('conversation_read_boundary_unavailable');
+  const selected = query.view === 'messages' ? await journal.readMessageHistory?.(query.sessionId) : undefined;
+  const allEvents = selected?.events ?? await readSessionEvents(journal, query.sessionId);
+  const revision = selected?.revision ?? allEvents.at(-1)!.sequence;
+  if (selected) {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('session_event_sequence_gap');
+    let previous = 0;
+    for (const event of allEvents) {
+      if (event.sessionId !== query.sessionId) throw new Error('session_event_identity_mismatch');
+      if (!Number.isSafeInteger(event.sequence) || event.sequence <= previous || event.sequence > revision) throw new Error('session_event_sequence_gap');
+      previous = event.sequence;
+    }
+    if (allEvents[0]?.type !== 'session.created' || allEvents[0].sequence !== 1) throw new Error('session_creation_event_missing');
+  }
+  if (query.throughSequence !== undefined && query.throughSequence > revision) throw new Error('conversation_read_boundary_unavailable');
   const journalEvents = query.throughSequence === undefined ? allEvents : allEvents.filter(event => event.sequence <= query.throughSequence!);
   const events = activeConversationEvents(journalEvents);
   const view = query.view ?? 'summary';
   const result: ConversationReadResult = {
-    sessionId: query.sessionId, revision: journalEvents.at(-1)!.sequence, view, items: [], nextBefore: null,
+    sessionId: query.sessionId, revision: query.throughSequence ?? revision, view, items: [], nextBefore: null,
   };
   if (view === 'images') {
     const images = query.imageIds !== undefined ? readImageReferences(events, query.imageIds)

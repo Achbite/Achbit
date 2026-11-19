@@ -1,3 +1,4 @@
+import { deserialize, serialize } from 'node:v8';
 import type { SessionObservationSink } from './observation.js';
 import { decodeAgentRecipe } from '@achbit/protocol';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
@@ -16,6 +17,8 @@ import type {
   ConversationSessionStatus,
   SessionProjection,
   SessionResourceProjection,
+  RunLifecycleCursor,
+  RunLifecycleRead,
   PendingAgentDecision,
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
@@ -84,14 +87,22 @@ export class SessionDeletionError extends AggregateError {
   }
 }
 
+type StatusState = { revision: number; lifecycle: RunLifecycleState };
+
+// Retain only public projections for switching between two recently viewed sessions.
+const historyLimit = 2;
+const historyByteLimit = 8 * 1024 * 1024;
+const historyIdleMs = 30_000;
+
 export class SessionService implements ConversationPort {
   readonly #actors = new Map<string, Promise<SessionActor>>();
   readonly #openingActors = new Set<string>();
   readonly #actorUsers = new Map<string, number>();
   readonly #retirements = new Map<string, Promise<void>>();
   readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  readonly #statusStates = new Map<string, { revision: number; lifecycle: RunLifecycleState }>();
-  readonly #historyReads = new Map<string, Promise<SessionProjection>>();
+  readonly #statusStates = new Map<string, StatusState>();
+  readonly #historyReads = new Map<string, { version: string | undefined; result: Promise<SessionProjection> }>();
+  readonly #historyViews = new Map<string, { version: string; data: Buffer; timer: NodeJS.Timeout }>();
   readonly #resourceReads = new Map<string, Promise<SessionResourceProjection>>();
   readonly #deletingSessionIds = new Set<string>();
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
@@ -232,6 +243,7 @@ export class SessionService implements ConversationPort {
         this.assertOpen();
         await this.journal.deleteSession(id);
         this.#statusStates.delete(id);
+        this.dropHistory(id);
         deletedSessionIds.push(id);
       }
       return { deletedSessionIds };
@@ -329,18 +341,54 @@ export class SessionService implements ConversationPort {
     if (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
     const live = this.#actors.get(sessionId);
     if (live) return await this.withActor(sessionId, actor => actor.snapshot());
+    const version = await this.journal.historyVersion?.();
+    const cached = this.#historyViews.get(sessionId);
+    if (cached && cached.version === version) {
+      this.#historyViews.delete(sessionId);
+      this.#historyViews.set(sessionId, cached);
+      cached.timer.refresh();
+      return deserialize(cached.data) as SessionProjection;
+    }
+    if (cached) this.dropHistory(sessionId);
+
     let pending = this.#historyReads.get(sessionId);
-    if (!pending) {
-      pending = (async () => {
-        // Coalesce overlapping Reader roots/watch/read requests only. Once this
-        // read finishes the next request returns to the journal, preserving read
-        // errors and malformed-history diagnostics rather than trusting old data.
-        return projectSession(recoverSession(sessionId, await readSessionEvents(this.journal, sessionId)));
-      })();
+    if (!pending || pending.version !== version) {
+      const result = readSessionEvents(this.journal, sessionId).then(async events => {
+        const projection = projectSession(recoverSession(sessionId, events));
+        // A commit during replay must never bind an older projection to a newer
+        // version. Ignore a read that another version or disposal superseded.
+        if (version !== undefined && await this.journal.historyVersion?.() === version
+          && this.#historyReads.get(sessionId)?.result === result && !this.#lifetime.signal.aborted) {
+          this.rememberHistory(sessionId, version, projection);
+        }
+        return projection;
+      });
+      pending = { version, result };
       this.#historyReads.set(sessionId, pending);
     }
-    try { return structuredClone(await pending); }
-    finally { if (this.#historyReads.get(sessionId) === pending) this.#historyReads.delete(sessionId); }
+    try {
+      return structuredClone(await pending.result);
+    } finally {
+      if (this.#historyReads.get(sessionId) === pending) this.#historyReads.delete(sessionId);
+    }
+  }
+
+  private rememberHistory(id: string, version: string, projection: SessionProjection): void {
+    const data = serialize(projection);
+    if (data.byteLength > historyByteLimit) return;
+    this.dropHistory(id);
+    if (this.#historyViews.size >= historyLimit) this.dropHistory(this.#historyViews.keys().next().value!);
+    const timer = setTimeout(() => this.dropHistory(id), historyIdleMs);
+    timer.unref();
+    this.#historyViews.set(id, { version, data, timer });
+  }
+
+  private dropHistory(id: string): void {
+    const cached = this.#historyViews.get(id);
+    if (cached) {
+      clearTimeout(cached.timer);
+      this.#historyViews.delete(id);
+    }
   }
 
   private async agentDecisionRoutes(parent: Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks'>): Promise<PendingAgentDecision[]> {
@@ -379,21 +427,53 @@ export class SessionService implements ConversationPort {
   }
 
   async statuses(sessionIds: readonly string[]): Promise<ConversationSessionStatus[]> {
-    return await Promise.all(sessionIds.map(async (sessionId) => {
-      const { revision, lifecycle } = await this.readRunLifecycle(sessionId);
-      return { sessionId, revision, run: lifecycle.run ? { ...lifecycle.run } : null };
-    }));
+    const statuses: ConversationSessionStatus[] = [];
+    for (let start = 0; start < sessionIds.length; start += 256) {
+      const ids = sessionIds.slice(start, start + 256);
+      const states = await this.lifecycleStates(ids);
+      states.forEach(({ revision, lifecycle }, i) => statuses.push({
+        sessionId: ids[i], revision, run: lifecycle.run ? { ...lifecycle.run } : null,
+      }));
+    }
+    return statuses;
   }
 
-  private async readRunLifecycle(sessionId: string): Promise<{ revision: number; lifecycle: RunLifecycleState }> {
-    // The cache accelerates journal reads; callers use the lifecycle returned by their own read.
-    const previous = this.#statusStates.get(sessionId);
-    let read = await this.journal.readRunLifecycle(sessionId, previous?.revision ?? 0);
-    let lifecycle = previous?.lifecycle ?? emptyRunLifecycle();
-    if (read.events.some(event => event.type === 'conversation.revised')) {
-      if (previous) read = await this.journal.readRunLifecycle(sessionId);
-      lifecycle = emptyRunLifecycle();
+  private async fetchLifecycles(cursors: RunLifecycleCursor[]): Promise<RunLifecycleRead[]> {
+    const batch = await this.journal.readRunLifecycles?.(cursors);
+    if (batch !== undefined) {
+      if (!Array.isArray(batch) || batch.length !== cursors.length
+        || batch.some((read, i) => !read || read.sessionId !== cursors[i].sessionId)) throw new Error('session_event_identity_mismatch');
+      return batch;
     }
+    const reads: RunLifecycleRead[] = [];
+    for (let start = 0; start < cursors.length; start += 16) {
+      reads.push(...await Promise.all(cursors.slice(start, start + 16).map(({ sessionId, after }) =>
+        this.journal.readRunLifecycle(sessionId, after))));
+    }
+    return reads;
+  }
+
+  private async lifecycleStates(ids: readonly string[]): Promise<StatusState[]> {
+    const previous = ids.map(id => this.#statusStates.get(id));
+    const reads = await this.fetchLifecycles(ids.map((sessionId, i) => ({ sessionId, after: previous[i]?.revision ?? 0 })));
+    const edited: number[] = [];
+    for (let i = 0; i < reads.length; i++) {
+      if (previous[i] && reads[i].events.some(event => event.type === 'conversation.revised')) edited.push(i);
+    }
+    if (edited.length) {
+      const restored = await this.fetchLifecycles(edited.map(i => ({ sessionId: ids[i], after: 0 })));
+      edited.forEach((i, k) => { reads[i] = restored[k]; previous[i] = undefined; });
+    }
+    return reads.map((read, i) => this.applyLifecycle(ids[i], previous[i], read));
+  }
+
+  private async readRunLifecycle(sessionId: string): Promise<StatusState> {
+    return (await this.lifecycleStates([sessionId]))[0];
+  }
+
+  private applyLifecycle(sessionId: string, previous: StatusState | undefined, read: RunLifecycleRead): StatusState {
+    // Return the requesting caller's snapshot even if a later concurrent read is already cached.
+    let lifecycle = previous?.lifecycle ?? emptyRunLifecycle();
     if (read.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
     for (const event of activeConversationEvents(read.events)) {
       if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
@@ -432,6 +512,8 @@ export class SessionService implements ConversationPort {
     this.#lifetime.abort(new Error('session_service_disposed'));
     for (const timer of this.#idleTimers.values()) clearTimeout(timer);
     this.#idleTimers.clear();
+    this.#historyReads.clear();
+    for (const id of this.#historyViews.keys()) this.dropHistory(id);
     this.#disposeTask = this.disposeActors(cancelActiveRuns);
     return this.#disposeTask;
   }

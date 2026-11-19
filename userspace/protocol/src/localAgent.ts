@@ -2493,6 +2493,8 @@ export type RunLifecycleEvent =
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.permissions.updated' }>>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'conversation.revised' }>, 'fromSequence' | 'throughSequence'>;
 
+export interface RunLifecycleCursor { sessionId: string; after: number }
+
 export interface RunLifecycleRead {
   sessionId: string;
   /** Latest journal sequence, including events omitted from the field projection. */
@@ -2565,6 +2567,7 @@ export interface JournalPort {
   appendBatch(events: readonly NewSessionEvent[]): Promise<SessionEvent[]>;
   read(sessionId: string, afterSequence?: number): AsyncIterable<SessionEvent>;
   readRunLifecycle(sessionId: string, afterSequence?: number): Promise<RunLifecycleRead>;
+  readRunLifecycles?(cursors: readonly RunLifecycleCursor[]): Promise<RunLifecycleRead[] | undefined>;
   readAgentLifecycle(sessionId: string): Promise<AgentLifecycleRead>;
   readProviderUsage(sessionId: string): Promise<ProviderUsageRead>;
   readResources(sessionId: string, recordIds?: readonly string[]): Promise<ResourceJournalRead>;
@@ -2586,6 +2589,10 @@ export interface SessionCreationInput {
 
 /** Session journal owns atomic command admission; it is not a second state machine. */
 export interface CommandJournalPort extends JournalPort {
+  /** Opaque identity of the journal connection and its committed data. A change can invalidate any history view. */
+  historyVersion?(): Promise<string | undefined>;
+  /** Ordered facts used by the public messages view, with the revision of the complete validated history. */
+  readMessageHistory?(sessionId: string): Promise<{ revision: number; events: SessionEvent[] } | undefined>;
   /** Kernel policy publications; callback is synchronous and never writes facts. */
   subscribePermissions(sessionId: string, publish: (settings: RunRuntimeSnapshot['permissions']) => void): () => void;
   createSession(input: SessionCreationInput): Promise<SessionEvent>;

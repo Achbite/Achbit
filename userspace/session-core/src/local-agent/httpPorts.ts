@@ -9,6 +9,7 @@ import type {
   AgentContext,
   SessionProjection,
   CommandJournalPort,
+  RunLifecycleCursor,
   RunLifecycleRead,
   CommandReply,
   ConversationCommand,
@@ -46,6 +47,7 @@ import {
 } from '@achbit/protocol';
 import { createProviderToolAliases } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
+import { readJournalSequence, type JournalPermissions, type JournalPublication } from './journalSequence.js';
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
 import { environmentInstruction } from './sessionEnvironment.js';
@@ -88,10 +90,9 @@ class LocalAgentHttpPort {
       : postLocalStream(url, headers, body, signal);
   }
 
-  async json<T>(path: string, init: RequestInit = {}): Promise<T> {
-    let response: Response;
+  protected async request(path: string, init: RequestInit = {}): Promise<Response> {
     try {
-      response = await this.fetchImpl(`${this.apiBase}${path}`, {
+      return await this.fetchImpl(`${this.apiBase}${path}`, {
         ...init,
         headers: {
           'x-achbit-session-service-token': this.serviceToken,
@@ -103,12 +104,19 @@ class LocalAgentHttpPort {
       throw new LoopFailure('local_agent_transport_failed',
         `${init.method ?? 'GET'} ${path} headers: ${transportErrorMessage(error)}`);
     }
+  }
+
+  async json<T>(path: string, init: RequestInit = {}): Promise<T> {
+    return this.decodeJson(await this.request(path, init), path, init.method);
+  }
+
+  protected async decodeJson<T>(response: Response, path: string, method = 'GET'): Promise<T> {
     let envelope: unknown;
     try {
       envelope = await response.json();
     } catch (error) {
       throw new LoopFailure('local_agent_http_json_invalid',
-        `${init.method ?? 'GET'} ${path} body (HTTP ${response.status}): ${transportErrorMessage(error)}`);
+        `${method} ${path} body (HTTP ${response.status}): ${transportErrorMessage(error)}`);
     }
     if (!isRecord(envelope) || typeof envelope.ok !== 'boolean') {
       throw new Error('local_agent_http_envelope_invalid');
@@ -147,15 +155,31 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     return () => { listeners.delete(publish); if (!listeners.size) this.#permissionListeners.delete(sessionId); };
   }
 
+  async historyVersion(): Promise<string | undefined> {
+    const path = '/api/local-agent/journal/history-version';
+    const response = await this.request(path);
+    if (response.status === 404) { // Older hosts have no version capability.
+      await response.body?.cancel();
+      return undefined;
+    }
+    const version = await this.decodeJson<unknown>(response, path);
+    if (typeof version !== 'string' || !version) throw new Error('session_history_version_invalid');
+    return version;
+  }
+
   private async publication<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const result = await this.json<{ value: T; permissions: Record<string, { revision: number; settings: RunRuntimeSnapshot['permissions'] }> }>(path, init);
-    for (const [id, view] of Object.entries(result.permissions)) {
+    const result = await this.json<JournalPublication<T>>(path, init);
+    this.publishPermissions(result.permissions);
+    return result.value;
+  }
+
+  private publishPermissions(permissions: JournalPermissions): void {
+    for (const [id, view] of Object.entries(permissions)) {
       if ((this.#permissions.get(id)?.revision ?? -1) >= view.revision) continue;
       const settings = permissionSettings(view.settings);
       this.#permissions.set(id, { revision: view.revision, settings });
       for (const publish of this.#permissionListeners.get(id) ?? []) publish(settings);
     }
-    return result.value;
   }
 
   async createSession(input: SessionCreationInput): Promise<SessionEvent> {
@@ -187,10 +211,40 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
   }
 
   async *read(sessionId: string, afterSequence = 0): AsyncIterable<SessionEvent> {
-    const events = await this.publication<SessionEvent[]>(
-      `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`,
-    );
-    for (const event of events) yield event;
+    const path = `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`;
+    const response = await this.request(path, { headers: { accept: 'application/json-seq' } });
+    const result = await this.decodeEvents(response, path);
+    this.publishPermissions(result.permissions);
+    yield* result.value;
+  }
+
+  async readMessageHistory(sessionId: string): Promise<{ revision: number; events: SessionEvent[] } | undefined> {
+    const path = `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/message-history`;
+    const response = await this.request(path, { headers: { accept: 'application/json-seq' } });
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const result = await this.decodeEvents(response, path);
+    if (!Number.isSafeInteger(result.revision) || result.revision === undefined || result.revision < 1) throw new Error('message_history_revision_missing');
+    this.publishPermissions(result.permissions);
+    return { revision: result.revision, events: result.value };
+  }
+
+  private async decodeEvents(response: Response, path: string): Promise<JournalPublication<SessionEvent[]>> {
+    const sequence = response.headers.get('content-type')?.split(';', 1)[0].trim() === 'application/json-seq';
+    return response.ok && sequence ? await readJournalSequence(response.body)
+      : await this.decodeJson<JournalPublication<SessionEvent[]>>(response, path);
+  }
+
+  async readRunLifecycles(cursors: readonly RunLifecycleCursor[]): Promise<RunLifecycleRead[] | undefined> {
+    const path = '/api/local-agent/journal/run-lifecycles';
+    const response = await this.request(path, { method: 'POST', body: JSON.stringify({ cursors }) });
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    return this.decodeJson<RunLifecycleRead[]>(response, path, 'POST');
   }
 
   async readRunLifecycle(sessionId: string, afterSequence = 0): Promise<RunLifecycleRead> {

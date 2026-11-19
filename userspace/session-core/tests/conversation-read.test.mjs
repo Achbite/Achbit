@@ -130,3 +130,33 @@ test('one oversized context detail cannot bypass the page budget and small exact
   assert.ok(listing.items.every(item => item.reviewInput === undefined));
   assert.ok(encoder.encode(JSON.stringify(listing)).byteLength <= 48 * 1024);
 });
+
+test('selected message facts preserve the original visible revision, edits, references, pagination and historical boundaries', async () => {
+  const {events,journal:complete} = fixture([
+    {type:'message.committed',payload:{role:'user',messageId:'message:old',content:'removed'}},
+    {type:'narrative.committed',payload:{narrativeId:'narrative:old',content:'also removed'}},
+    {type:'conversation.revised',payload:{fromSequence:2,throughSequence:3}},
+    {type:'message.committed',payload:{role:'user',messageId:'message:new',content:'新'.repeat(14_000),
+      filesystemReferences:[{path:'README.md'}],guidanceReferences:[{name:'guide'}],pluginSelections:[]}},
+    {type:'narrative.committed',payload:{narrativeId:'narrative:current',content:'current narrative'}},
+    {type:'session.model-settings.updated',payload:{settings:{}}},
+  ]);
+  const sparse = events.filter(event => event.type !== 'session.model-settings.updated');
+  let reads=0;
+  const journal = {
+    async readMessageHistory(id) { assert.equal(id,sessionId);reads++;return {revision:7,events:sparse}; },
+    async *read() { throw new Error('unexpected_full_journal_read'); },
+  };
+  for (const options of [{limit:1},{limit:3},{throughSequence:3},{throughSequence:4},{throughSequence:7},
+    {before:6,limit:1},{messageId:'message:new',offset:10}]) {
+    const query={sessionId,view:'messages',...options};
+    assert.deepEqual(await readConversation(journal,query),await readConversation(complete,query));
+  }
+  assert.equal(reads,7);
+  await assert.rejects(readConversation(journal,{sessionId,view:'messages',messageId:'message:old'}),/message_not_found/);
+  await assert.rejects(readConversation(journal,{sessionId,view:'messages',throughSequence:8}),/conversation_read_boundary_unavailable/);
+  const fallback={...complete,async readMessageHistory(){return undefined;}};
+  assert.deepEqual(await readConversation(fallback,{sessionId,view:'messages'}),await readConversation(complete,{sessionId,view:'messages'}));
+  sparse[3]={...sparse[3],payload:{fromSequence:0,throughSequence:3}};
+  await assert.rejects(readConversation(journal,{sessionId,view:'messages'}),/conversation_revision_range_invalid/);
+});
