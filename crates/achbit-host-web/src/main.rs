@@ -524,6 +524,7 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("DELETE", ["api", "conversation", "sessions", _])
         | ("POST", ["api", "conversation", "sessions", _, "directory-indexes"])
         | ("POST", ["api", "conversation", "sessions", _, "filesystem-references", "resolve"])
+        | ("POST", ["api", "conversation", "input-resources", "prepare-image"])
         | ("POST", ["api", "conversation", "sessions", _, "input-resources", _])
         | ("POST", ["api", "conversation", "sessions", _, "changes", "read"])
         | ("DELETE", ["api", "conversation", "sessions", _, "directory-indexes", _])
@@ -539,6 +540,14 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_image_preparation_is_one_explicit_post_route() {
+        let path = "/api/conversation/input-resources/prepare-image";
+        assert!(host_proxy_path_allowed("POST", path));
+        assert!(!host_proxy_path_allowed("GET", path));
+        assert!(!host_proxy_path_allowed("POST", "/api/conversation/input-resources/other"));
+    }
 
     #[test]
     fn plugin_installation_has_one_explicit_host_proxy_route() {

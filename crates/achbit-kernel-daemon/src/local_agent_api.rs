@@ -1999,7 +1999,9 @@ pub(crate) async fn local_agent_provider_stream(
         &body.session_id,
         &mut request_envelope.messages,
         runtime.profile().image_input,
-    ) {
+    )
+    .await
+    {
         return local_provider_error(&request_id, "provider_image_input_failed", &error);
     }
     if let Err(error) = crate::conversation_api::resolve_provider_files(

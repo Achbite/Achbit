@@ -243,6 +243,12 @@ pub(crate) fn build_app(state: HostState) -> Router {
             post(conversation_directory_index_attach),
         )
         .route(
+            "/api/conversation/input-resources/prepare-image",
+            post(crate::attachment_image::draft_preview).layer(DefaultBodyLimit::max(
+                crate::attachment_image::MAX_SOURCE_BYTES,
+            )),
+        )
+        .route(
             "/api/conversation/sessions/:session_id/input-resources/:input_id",
             post(conversation_input_upload).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )

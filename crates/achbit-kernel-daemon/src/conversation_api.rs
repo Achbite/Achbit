@@ -347,7 +347,7 @@ pub(crate) async fn conversation_resource_read(
             )
             .into_response();
         }
-        return match read_reader_image(&target) {
+        return match read_reader_image(&target).await {
             Ok((media_type, bytes)) => {
                 ([(axum::http::header::CONTENT_TYPE, media_type)], bytes).into_response()
             }
@@ -518,23 +518,24 @@ fn read_image_bytes(path: &StdPath) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn read_reader_image(path: &StdPath) -> Result<(&'static str, Vec<u8>), String> {
-    let bytes = read_image_bytes(path)?;
-    let media =
-        if let Some(media) = achbit_kernel_tools::file_content::image_type_from_header(&bytes) {
-            media
-        } else if bytes.starts_with(b"BM") {
-            "image/bmp"
-        } else if path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
-        {
-            // SVG is XML and has no fixed magic bytes. The Reader's image element
-            // handles its encoding and reports a decode error for invalid documents.
-            "image/svg+xml"
-        } else {
-            return Err("当前资源不是支持的图片。".into());
-        };
+async fn read_reader_image(path: &StdPath) -> Result<(&'static str, bytes::Bytes), String> {
+    let bytes = crate::attachment_image::read_source(path.to_owned()).await?;
+    if let Some(media) = achbit_kernel_tools::file_content::image_type_from_header(&bytes) {
+        return crate::attachment_image::prepare(bytes, media).await;
+    }
+    check_image_size(&bytes)?; // Display-only formats keep their previous bounds.
+    let media = if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+    {
+        // SVG is XML and has no fixed magic bytes. The Reader's image element
+        // handles its encoding and reports a decode error for invalid documents.
+        "image/svg+xml"
+    } else {
+        return Err("当前资源不是支持的图片。".into());
+    };
     Ok((media, bytes))
 }
 
@@ -560,7 +561,7 @@ pub(crate) fn image_media_type(bytes: &[u8]) -> Result<&'static str, String> {
     provider_image_type(bytes)
 }
 
-pub(crate) fn resolve_provider_images(
+pub(crate) async fn resolve_provider_images(
     state: &AppState,
     session_id: &str,
     messages: &mut [crate::local_agent_api::LocalProviderMessage],
@@ -644,10 +645,9 @@ pub(crate) fn resolve_provider_images(
                 &image.logical_path,
             )
             .map_err(|error| error.message)?;
-            let (media, bytes) = read_image_resource(&path)?;
-            if media != image.media_type {
-                return Err("图片内容与附件格式不一致。".into());
-            }
+            let source = crate::attachment_image::read_source(path).await?;
+            let (media, bytes) =
+                crate::attachment_image::prepare(source, &image.media_type).await?;
             message
                 .image_data
                 .push(crate::local_agent_api::LocalProviderImage {
@@ -2088,7 +2088,12 @@ pub(crate) async fn conversation_input_upload(
         .unwrap_or("text/plain")
         .trim();
     let saved = if media_type.starts_with("image/") {
-        save_input_image(&state, &session_id, &input_id, &body, media_type)
+        match crate::attachment_image::prepare(body, media_type).await {
+            Ok((prepared_type, bytes)) => {
+                save_input_image(&state, &session_id, &input_id, &bytes, prepared_type)
+            }
+            Err(error) => Err(error),
+        }
     } else {
         let content = match std::str::from_utf8(&body) {
             Ok(content) => content,
@@ -3704,8 +3709,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reader_serves_display_images_without_changing_provider_formats() {
+    #[tokio::test]
+    async fn reader_serves_display_images_without_changing_provider_formats() {
         let dir = tempfile::tempdir().unwrap();
         let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>"#;
         let mut bmp = vec![0; 58]; // One padded 24-bit pixel.
@@ -3723,7 +3728,10 @@ mod tests {
         ] {
             let path = dir.path().join(name);
             fs::write(&path, bytes).unwrap();
-            assert_eq!(read_reader_image(&path).unwrap(), (media, bytes.to_vec()));
+            assert_eq!(
+                read_reader_image(&path).await.unwrap(),
+                (media, bytes::Bytes::copy_from_slice(bytes))
+            );
             assert!(read_image_resource(&path).is_err());
         }
     }
