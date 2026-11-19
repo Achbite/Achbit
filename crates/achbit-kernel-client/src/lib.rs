@@ -246,7 +246,7 @@ impl HttpKernelClient {
             .error_for_status()?
             .json::<Value>()
             .await?;
-        decode_projection(value)
+        decode_projection(value, request.session_id.as_deref())
     }
 
     pub async fn conversation_plugin_catalog(&self) -> KernelClientResult<PluginCatalogProjection> {
@@ -373,7 +373,17 @@ impl HttpKernelClient {
             .error_for_status()?
             .json::<Value>()
             .await?;
-        decode_api_data(value)
+        let page = api_data(value)?;
+        let view = query
+            .get("view")
+            .and_then(Value::as_str)
+            .unwrap_or("summary");
+        if page["sessionId"].as_str() != Some(session_id) || page["view"].as_str() != Some(view) {
+            return Err(KernelClientError::Api(
+                "conversation_read_identity_mismatch".into(),
+            ));
+        }
+        Ok(page)
     }
 
     pub async fn conversation_projection(
@@ -390,7 +400,7 @@ impl HttpKernelClient {
             .error_for_status()?
             .json::<Value>()
             .await?;
-        decode_projection(value)
+        decode_projection(value, Some(session_id))
     }
 
     pub async fn conversation_change_read(
@@ -497,7 +507,7 @@ impl HttpKernelClient {
             .error_for_status()?
             .json::<Value>()
             .await?;
-        decode_projection(value)
+        decode_projection(value, Some(session_id))
     }
 
     pub async fn resolve_conversation_filesystem_references(
@@ -540,7 +550,7 @@ impl HttpKernelClient {
             .error_for_status()?
             .json::<Value>()
             .await?;
-        decode_projection(value)
+        decode_projection(value, Some(session_id))
     }
 
     fn url(&self, path: &str) -> String {
@@ -563,9 +573,17 @@ fn decode_health(value: Value) -> KernelClientResult<DaemonStatus> {
     })
 }
 
-fn decode_projection(value: Value) -> KernelClientResult<SessionProjection> {
+fn decode_projection(
+    value: Value,
+    expected_session: Option<&str>,
+) -> KernelClientResult<SessionProjection> {
     let projection: SessionProjection = decode_api_data(value)?;
     projection.validate().map_err(KernelClientError::Api)?;
+    if expected_session.is_some_and(|id| id != projection.session_id) {
+        return Err(KernelClientError::Api(
+            "session_projection_identity_mismatch".into(),
+        ));
+    }
     Ok(projection)
 }
 
