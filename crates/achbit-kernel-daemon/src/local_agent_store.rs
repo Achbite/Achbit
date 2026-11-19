@@ -27,6 +27,7 @@ impl LocalAgentStoreError {
 
 #[derive(Clone)]
 pub(crate) struct LocalAgentJournal {
+    connection_id: Arc<str>,
     connection: Arc<Mutex<Connection>>,
     permissions: Arc<RwLock<KernelPermissionModel>>,
 }
@@ -40,14 +41,43 @@ impl SessionCatalogReader {
         Ok(Self(Arc::new(Mutex::new(open_session_store(path)?))))
     }
 
-    pub(crate) fn agent_context(
+    pub(crate) fn visible_sessions(
         &self,
-        session_id: &str,
-    ) -> Result<Option<Value>, LocalAgentStoreError> {
+        ids: &[&str],
+    ) -> Result<Vec<String>, LocalAgentStoreError> {
         let connection = self.0.lock().map_err(|_| {
             LocalAgentStoreError::new("session_store_lock_failed", "Session Store 锁已损坏。")
         })?;
-        read_agent_context(&connection, session_id)
+        let requested = serde_json::to_string(ids).map_err(|e| {
+            LocalAgentStoreError::new("session_creation_read_failed", e.to_string())
+        })?;
+        let mut statement = connection
+            .prepare(
+                "SELECT requested.value, (SELECT payload_json FROM session_events
+             WHERE session_id=requested.value AND event_type='session.created')
+             FROM json_each(?1) AS requested ORDER BY requested.key",
+            )
+            .map_err(sql_error("session_creation_read_failed"))?;
+        let mut rows = statement
+            .query([requested])
+            .map_err(sql_error("session_creation_read_failed"))?;
+        let mut visible = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(sql_error("session_creation_read_failed"))?
+        {
+            let id: String = row
+                .get(0)
+                .map_err(sql_error("session_creation_read_failed"))?;
+            validate_id("sessionId", &id)?;
+            let payload = row
+                .get::<_, Option<String>>(1)
+                .map_err(sql_error("session_creation_read_failed"))?;
+            if creation_agent_context(&id, payload)?.is_none() {
+                visible.push(id);
+            }
+        }
+        Ok(visible)
     }
 }
 
@@ -85,8 +115,17 @@ fn read_agent_context(
     let encoded = connection.query_row(
             "SELECT payload_json FROM session_events WHERE session_id=?1 AND event_type='session.created'",
             [session_id], |row| row.get::<_, String>(0),
-        ).optional().map_err(sql_error("session_creation_read_failed"))?
-            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session creation fact 不存在。"))?;
+        ).optional().map_err(sql_error("session_creation_read_failed"))?;
+    creation_agent_context(session_id, encoded)
+}
+
+fn creation_agent_context(
+    session_id: &str,
+    encoded: Option<String>,
+) -> Result<Option<Value>, LocalAgentStoreError> {
+    let encoded = encoded.ok_or_else(|| {
+        LocalAgentStoreError::new("session_not_found", "Session creation fact 不存在。")
+    })?;
     let payload = decode_json(&encoded, "session_creation_corrupt")?;
     let context = payload.get("agentContext").cloned();
     if let Some(context) = context.as_ref() {
@@ -97,6 +136,13 @@ fn read_agent_context(
 
 #[derive(Debug)]
 struct ValidatedNewEvent<'a>(&'a Value);
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RunLifecycleCursor {
+    pub(crate) session_id: String,
+    pub(crate) after: u64,
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,8 +163,10 @@ pub(crate) struct JournalEvent<Payload> {
 
 #[derive(serde::Serialize)]
 pub(crate) struct JournalEventPublication {
-    value: Vec<JournalEvent<Box<serde_json::value::RawValue>>>,
-    permissions: Value,
+    pub(crate) value: Vec<JournalEvent<Box<serde_json::value::RawValue>>>,
+    pub(crate) permissions: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) revision: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,7 +223,11 @@ impl LocalAgentJournal {
                 }
             }
         }
+        // Replay validates and applies every fact in order. Derived grant lookups
+        // first become visible when this fully recovered Journal is returned.
+        permissions.finish_restore();
         Ok(Self {
+            connection_id: random_id("journal")?.into(),
             connection: Arc::new(Mutex::new(connection)),
             permissions: Arc::new(RwLock::new(permissions)),
         })
@@ -405,6 +457,19 @@ impl LocalAgentJournal {
         })
     }
 
+    pub(crate) fn history_version(&self) -> Result<String, LocalAgentStoreError> {
+        // data_version observes commits from other connections; total_changes
+        // covers this connection's writes. Both counters are connection-local.
+        self.lock()?
+            .query_row(
+                "SELECT data_version, total_changes() FROM pragma_data_version",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map(|(external, local)| format!("{}:{external}:{local}", self.connection_id))
+            .map_err(sql_error("session_read_failed"))
+    }
+
     pub(crate) fn read_events_publication(
         &self,
         session_id: &str,
@@ -414,7 +479,65 @@ impl LocalAgentJournal {
         // them directly, without constructing and re-encoding a second tree.
         let value = self.read_event_rows(session_id, after)?;
         let permissions = self.permission_model()?.publication(session_id, true);
-        Ok(JournalEventPublication { value, permissions })
+        Ok(JournalEventPublication {
+            value,
+            permissions,
+            revision: None,
+        })
+    }
+
+    pub(crate) fn read_message_history(
+        &self,
+        session_id: &str,
+    ) -> Result<JournalEventPublication, LocalAgentStoreError> {
+        let mut value = Vec::new();
+        let mut revision = 0;
+        let mut gap = false;
+        let mut created = false;
+        // Validate every original payload with the same decoder, including rows
+        // outside the selected view. Keep syntax errors ahead of replay errors.
+        self.visit_event_rows(
+            session_id,
+            0,
+            |event: JournalEvent<Box<serde_json::value::RawValue>>| {
+                revision += 1;
+                gap |= event.sequence != revision;
+                if revision == 1 {
+                    created = event.event_type == "session.created";
+                }
+                // Session owns editing and approval visibility in activeConversationEvents.
+                if matches!(
+                    event.event_type.as_str(),
+                    "session.created"
+                        | "conversation.revised"
+                        | "message.committed"
+                        | "narrative.committed"
+                        | "approval.requested"
+                        | "approval.resolved"
+                        | "approval.revoked"
+                ) {
+                    value.push(event);
+                }
+            },
+        )?;
+        let failure = if gap {
+            Some("session_event_sequence_gap")
+        } else if revision == 0 {
+            Some("session_not_found")
+        } else if !created {
+            Some("session_creation_event_missing")
+        } else {
+            None
+        };
+        if let Some(code) = failure {
+            return Err(LocalAgentStoreError::new(code, code));
+        }
+        let permissions = self.permission_model()?.publication(session_id, true);
+        Ok(JournalEventPublication {
+            value,
+            permissions,
+            revision: Some(revision),
+        })
     }
 
     fn read_event_rows<Payload: serde::de::DeserializeOwned>(
@@ -422,6 +545,17 @@ impl LocalAgentJournal {
         session_id: &str,
         after: u64,
     ) -> Result<Vec<JournalEvent<Payload>>, LocalAgentStoreError> {
+        let mut events = Vec::new();
+        self.visit_event_rows(session_id, after, |event| events.push(event))?;
+        Ok(events)
+    }
+
+    fn visit_event_rows<Payload: serde::de::DeserializeOwned>(
+        &self,
+        session_id: &str,
+        after: u64,
+        mut visit: impl FnMut(JournalEvent<Payload>),
+    ) -> Result<(), LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         let connection = self.lock()?;
         let exists: bool = connection
@@ -458,11 +592,10 @@ impl LocalAgentJournal {
                 ))
             })
             .map_err(sql_error("session_event_read_failed"))?;
-        let mut events = Vec::new();
         for row in rows {
             let (sequence, event_id, event_type, occurred_at, run_id, call_id, payload) =
                 row.map_err(sql_error("session_event_read_failed"))?;
-            events.push(JournalEvent {
+            visit(JournalEvent {
                 schema_version: EVENT_VERSION,
                 event_id,
                 session_id: session_id.to_owned(),
@@ -486,7 +619,7 @@ impl LocalAgentJournal {
                 })?,
             });
         }
-        Ok(events)
+        Ok(())
     }
 
     /// Resource field projection only. Membership, grants and edited visibility
@@ -639,22 +772,42 @@ impl LocalAgentJournal {
         session_id: &str,
         after: u64,
     ) -> Result<Value, LocalAgentStoreError> {
-        validate_id("sessionId", session_id)?;
+        let cursor = RunLifecycleCursor {
+            session_id: session_id.to_owned(),
+            after,
+        };
+        let mut reads = self.read_run_lifecycles(&[cursor])?;
+        Ok(reads.pop().expect("one lifecycle cursor"))
+    }
+
+    pub(crate) fn read_run_lifecycles(
+        &self,
+        cursors: &[RunLifecycleCursor],
+    ) -> Result<Vec<Value>, LocalAgentStoreError> {
+        if cursors.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut parameters = Vec::with_capacity(cursors.len());
+        for cursor in cursors {
+            validate_id("sessionId", &cursor.session_id)?;
+            parameters.push(json!([
+                cursor.session_id,
+                i64::try_from(cursor.after).unwrap_or(i64::MAX)
+            ]));
+        }
+        let bound = encode_json(&json!(parameters), "session_lifecycle_read_failed")?;
         let connection = self.lock()?;
-        let revision: i64 = connection
-            .query_row(
-                "SELECT (SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id=?1)
-                 FROM sessions WHERE session_id=?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql_error("session_read_failed"))?
-            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
-        // Extract before materialization: runtime snapshots, messages, tool results
-        // and display text are never decoded or returned by this read path.
+        // The snapshot covers both current revisions and the events after each
+        // caller's cursor. An empty event range still returns its session/revision.
         let mut statement = connection.prepare(
-            "SELECT sequence, event_type, run_id, call_id,
+            "WITH requested AS (
+               SELECT key AS slot, json_extract(value,'$[0]') AS id, json_extract(value,'$[1]') AS cursor FROM json_each(?1)
+             ), targets AS MATERIALIZED (
+               SELECT r.*,s.session_id AS present,
+                 (SELECT COALESCE(MAX(sequence),0) FROM session_events WHERE session_id=r.id) AS revision
+               FROM requested r LEFT JOIN sessions s ON s.session_id=r.id
+             )
+             SELECT t.slot,t.present,t.revision,e.sequence,e.event_type,e.run_id,e.call_id,
              CASE
                WHEN event_type='run.waiting' THEN json_object('reason', json_extract(payload_json, '$.reason'))
                WHEN event_type='run.settled' THEN json_object('outcome', json_extract(payload_json, '$.outcome'))
@@ -675,39 +828,49 @@ impl LocalAgentJournal {
                WHEN event_type='conversation.revised' THEN json_object('fromSequence', json_extract(payload_json, '$.fromSequence'), 'throughSequence', json_extract(payload_json, '$.throughSequence'))
                ELSE '{}'
              END
-             FROM session_events WHERE session_id=?1 AND sequence>?2 AND sequence<=?3
+             FROM targets t LEFT JOIN session_events e ON e.session_id=t.id AND e.sequence>t.cursor AND e.sequence<=t.revision
              AND event_type IN ('run.started','run.waiting','run.finishing','run.runtime.release_failed','run.runtime.released','run.settled',
                'interaction.requested','interaction.resolved','plan.published','plan.review.requested','plan.confirmed','plan.revision.requested','plan.cancelled','plan.invalidated',
                'approval.requested','approval.resolved','approval.revoked','tool.completed','tool.input-rejected','tool.not-executed','session.permissions.updated','conversation.revised')
-             ORDER BY sequence ASC",
+             ORDER BY t.slot,e.sequence",
         ).map_err(sql_error("session_lifecycle_read_prepare_failed"))?;
-        let after = i64::try_from(after).unwrap_or(i64::MAX);
         let rows = statement
-            .query_map(params![session_id, after, revision], |row| {
+            .query_map([bound], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             })
             .map_err(sql_error("session_lifecycle_read_failed"))?;
-        let mut events = Vec::new();
+        let mut groups: Vec<(i64, Vec<Value>)> = cursors.iter().map(|_| (0, Vec::new())).collect();
         for row in rows {
-            let (sequence, event_type, run_id, call_id, payload) =
+            let (slot, present, revision, sequence, kind, run_id, call_id, payload) =
                 row.map_err(sql_error("session_lifecycle_read_failed"))?;
-            let mut event = json!({"sessionId":session_id, "sequence":sequence,
-                "type":event_type, "payload":decode_json(&payload, "session_event_corrupt")?});
-            if let Some(run_id) = run_id {
-                event["runId"] = json!(run_id);
+            let session_id = present.ok_or_else(|| {
+                LocalAgentStoreError::new("session_not_found", "Session 不存在。")
+            })?;
+            let (current, events) = &mut groups[slot as usize];
+            *current = revision;
+            if let Some(sequence) = sequence {
+                let mut event = json!({"sessionId":session_id, "sequence":sequence,
+                    "type":kind, "payload":decode_json(&payload, "session_event_corrupt")?});
+                if let Some(run_id) = run_id {
+                    event["runId"] = json!(run_id);
+                }
+                if let Some(call_id) = call_id {
+                    event["callId"] = json!(call_id);
+                }
+                events.push(event);
             }
-            if let Some(call_id) = call_id {
-                event["callId"] = json!(call_id);
-            }
-            events.push(event);
         }
-        Ok(json!({"sessionId":session_id, "revision":revision, "events":events}))
+        Ok(groups.into_iter().zip(cursors).map(|((revision, events), cursor)|
+            json!({"sessionId":cursor.session_id, "revision":revision, "events":events})).collect())
     }
 
     /// Read compact Provider receipts only; Session owns aggregation and cache coverage.
@@ -6247,6 +6410,139 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lifecycle_batch_preserves_individual_revisions_duplicates_cursors_and_missing_errors() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        let a = "session:lifecycle-a";
+        let b = "session:lifecycle-b";
+        journal
+            .create_session(a, "A", &json!([]), None, None)
+            .unwrap();
+        journal
+            .create_session(b, "B", &json!([]), None, None)
+            .unwrap();
+        journal.append(&json!({"type":"run.started","sessionId":a,"runId":"run:first",
+            "payload":{"inputMessageId":"message:start","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
+        let cursor = |id: &str, after| RunLifecycleCursor {
+            session_id: id.into(),
+            after,
+        };
+        let reads = journal
+            .read_run_lifecycles(&[cursor(b, 0), cursor(a, 1), cursor(a, u64::MAX)])
+            .unwrap();
+        assert_eq!(reads[0], json!({"sessionId":b,"revision":1,"events":[]}));
+        assert_eq!(
+            reads[1],
+            json!({"sessionId":a,"revision":2,"events":[{
+            "type":"run.started","sessionId":a,"sequence":2,"runId":"run:first","payload":{}}]})
+        );
+        assert_eq!(reads[2], json!({"sessionId":a,"revision":2,"events":[]}));
+        assert!(journal.read_run_lifecycles(&[]).unwrap().is_empty());
+        assert_eq!(
+            journal
+                .read_run_lifecycles(&[cursor(a, 0), cursor("session:missing", 0)])
+                .unwrap_err()
+                .code,
+            "session_not_found"
+        );
+        journal.lock().unwrap().execute_batch(
+            "PRAGMA ignore_check_constraints=ON; UPDATE session_events SET event_type='run.waiting',payload_json='{' WHERE sequence=2;"
+        ).unwrap();
+        assert_eq!(
+            journal
+                .read_run_lifecycles(&[cursor(b, 0), cursor(a, 0)])
+                .unwrap_err()
+                .code,
+            "session_lifecycle_read_failed"
+        );
+    }
+
+    #[test]
+    fn message_history_selects_real_facts_and_keeps_original_corruption_and_revision_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.sqlite3");
+        let journal = LocalAgentJournal::open(&path).unwrap();
+        let id = "session:message-window";
+        assert_eq!(
+            journal.read_message_history(id).err().unwrap().code,
+            "session_not_found"
+        );
+        journal
+            .create_session(id, "Initial", &json!([]), None, None)
+            .unwrap();
+        journal
+            .append(
+                &json!({"type":"message.committed","sessionId":id,"payload":{
+            "role":"user","messageId":"message:original","content":"original"}}),
+            )
+            .unwrap();
+        journal.append(&json!({"type":"session.model-settings.updated","sessionId":id,
+            "payload":{"commandId":"command:model","settings":{"profileId":"profile:one","reasoningEffortOverride":null}}})).unwrap();
+        let selected = serde_json::to_value(journal.read_message_history(id).unwrap()).unwrap();
+        let complete =
+            serde_json::to_value(journal.read_events_publication(id, 0).unwrap()).unwrap();
+        assert_eq!(selected["revision"], 3);
+        assert_eq!(
+            selected["value"],
+            json!([complete["value"][0], complete["value"][1]])
+        );
+        assert_eq!(selected["permissions"], complete["permissions"]);
+
+        let external = Connection::open(path).unwrap();
+        external.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE session_events SET sequence=4,payload_json='{' WHERE sequence=3;").unwrap();
+        let original = journal.read_events_publication(id, 0).err().unwrap();
+        let failure = journal.read_message_history(id).err().unwrap();
+        assert_eq!(
+            (failure.code, failure.message),
+            (original.code, original.message)
+        );
+        external
+            .execute_batch("UPDATE session_events SET payload_json='{}' WHERE sequence=4;")
+            .unwrap();
+        assert_eq!(
+            journal.read_message_history(id).err().unwrap().code,
+            "session_event_sequence_gap"
+        );
+        external.execute_batch("DELETE FROM session_events WHERE sequence=4; UPDATE session_events SET event_type='narrative.committed' WHERE sequence=1;").unwrap();
+        assert_eq!(
+            journal.read_message_history(id).err().unwrap().code,
+            "session_creation_event_missing"
+        );
+        external
+            .execute_batch("DELETE FROM session_events;")
+            .unwrap();
+        assert_eq!(
+            journal.read_message_history(id).err().unwrap().code,
+            "session_not_found"
+        );
+    }
+
+    #[test]
+    fn history_version_tracks_same_sequence_external_edits_local_writes_and_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("session.sqlite3");
+        let journal = LocalAgentJournal::open(&path).unwrap();
+        let id = "session:history-version";
+        let empty = journal.history_version().unwrap();
+        journal
+            .create_session(id, "Original", &json!([]), None, None)
+            .unwrap();
+        let created = journal.history_version().unwrap();
+        assert_ne!(created, empty);
+        assert_eq!(journal.read_events(id, 0).unwrap()[0]["sequence"], 1);
+        assert_eq!(journal.clone().history_version().unwrap(), created);
+        let external = Connection::open(&path).unwrap();
+        external.execute("UPDATE session_events SET payload_json=json_set(payload_json,'$.displayTitle','Replaced') WHERE session_id=?1 AND sequence=1", [id]).unwrap();
+        let replaced = journal.history_version().unwrap();
+        assert_ne!(replaced, created);
+        let facts = journal.read_events(id, 0).unwrap();
+        assert_eq!(facts[0]["sequence"], 1);
+        assert_eq!(facts[0]["payload"]["displayTitle"], "Replaced");
+        drop(journal);
+        let reopened = LocalAgentJournal::open(&path).unwrap();
+        assert_ne!(reopened.history_version().unwrap(), replaced);
+    }
+
+    #[test]
     fn input_token_calibration_key_is_validated_and_preserved_in_the_run_journal() {
         let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
         journal
@@ -6330,7 +6626,10 @@ mod tests {
         let store = Store::new();
         let reader = SessionCatalogReader::open(&store.path()).unwrap();
         assert_eq!(
-            reader.agent_context("session:missing").unwrap_err().code,
+            reader
+                .visible_sessions(&["session:missing"])
+                .unwrap_err()
+                .code,
             "session_not_found"
         );
         let journal = LocalAgentJournal::open(&store.path()).unwrap();
@@ -6343,13 +6642,16 @@ mod tests {
         journal
             .create_session("session:child", "Child", &json!([]), None, Some(&context))
             .unwrap();
+        assert_eq!(journal.agent_context("session:parent").unwrap(), None);
         assert_eq!(
-            reader.agent_context("session:parent").unwrap(),
-            journal.agent_context("session:parent").unwrap()
+            journal.agent_context("session:child").unwrap(),
+            Some(context)
         );
         assert_eq!(
-            reader.agent_context("session:child").unwrap(),
-            Some(context)
+            reader
+                .visible_sessions(&["session:child", "session:parent"])
+                .unwrap(),
+            ["session:parent"]
         );
         let event = journal
             .append(
@@ -6367,13 +6669,16 @@ mod tests {
                 [event["eventId"].as_str().unwrap()],
             )
             .unwrap();
-        assert_eq!(reader.agent_context("session:parent").unwrap(), None);
+        assert_eq!(
+            reader.visible_sessions(&["session:parent"]).unwrap(),
+            ["session:parent"]
+        );
         assert_eq!(
             LocalAgentJournal::open(&store.path()).err().unwrap().code,
             "permission_model_restore_failed"
         );
         connection.execute("UPDATE session_events SET payload_json='{' WHERE session_id='session:child' AND event_type='session.created'", []).unwrap();
-        let error = reader.agent_context("session:child").unwrap_err();
+        let error = reader.visible_sessions(&["session:child"]).unwrap_err();
         assert_eq!(error.code, "session_creation_corrupt");
         assert_eq!(
             error.message,
@@ -8123,7 +8428,8 @@ mod tests {
 
     #[test]
     fn revised_conversation_excludes_browser_grants_but_keeps_journal_facts() {
-        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
         journal
             .create_session(
                 "session:loop",
@@ -8155,6 +8461,15 @@ mod tests {
                 .as_deref(),
             Some("call:after")
         );
+        let reopened = LocalAgentJournal::open(&store.path()).unwrap();
+        assert_eq!(
+            reopened
+                .session_browser_authority("session:loop")
+                .unwrap()
+                .as_deref(),
+            Some("call:after")
+        );
+        drop(reopened);
         let before = journal.read_events("session:loop", 0).unwrap();
         let edit_command = json!({"schemaVersion":COMMAND_VERSION,"type":"message.edit","sessionId":"session:loop",
             "commandId":"command:edit","messageId":"message:edit","expectedRevision":before.last().unwrap()["sequence"],"text":"Revised message"});
@@ -8192,6 +8507,68 @@ mod tests {
             journal.session_browser_authority("session:loop").unwrap(),
             None
         );
+        drop(journal);
+        let reopened = LocalAgentJournal::open(&store.path()).unwrap();
+        assert_eq!(
+            reopened.session_browser_authority("session:loop").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn restored_file_grants_preserve_allowed_paths_revocation_and_journal_errors() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let id = "session:loop";
+        let run = "run:loop";
+        let call = "call:files";
+        journal
+            .create_session(id, "Loop", &json!([]), None, None)
+            .unwrap();
+        append_model_settings_and_rejected_call(&journal);
+        let environment = json!({"workspaceId":"workspace:test"});
+        let paths = json!({"read":["/fixture/read"],"write":["/fixture/write"]});
+        journal.append(&json!({"type":"tool.requested","sessionId":id,"runId":run,"callId":call,
+            "payload":{"providerCallId":"provider:files","attemptId":"attempt:files","toolName":"fs.read","input":{}}})).unwrap();
+        journal.append(&json!({"type":"approval.requested","sessionId":id,"runId":run,"callId":call,
+            "payload":{"approvalId":call,"preview":{"summary":"Fixture paths","effects":["read","write"],"logicalTargets":["fixture"],
+            "authorizationScopes":["sessionFiles"],"authorizationContext":{"fileEnvironment":environment,"fileAccess":paths}}}})).unwrap();
+        journal.append(&json!({"type":"approval.resolved","sessionId":id,"runId":run,"callId":call,
+            "payload":{"approvalId":call,"commandId":call,"authorityId":call,"decision":"allow","authorizationScope":"sessionFiles"}})).unwrap();
+        assert_eq!(
+            journal.file_authorizations(id, run, &environment).unwrap(),
+            [paths.clone()]
+        );
+        drop(journal);
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        assert_eq!(
+            journal.file_authorizations(id, run, &environment).unwrap(),
+            [paths]
+        );
+        journal
+            .append(
+                &json!({"type":"approval.revoked","sessionId":id,"runId":run,
+            "payload":{"authorityId":call,"commandId":"command:revoke"}}),
+            )
+            .unwrap();
+        assert!(journal
+            .file_authorizations(id, run, &environment)
+            .unwrap()
+            .is_empty());
+        drop(journal);
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        assert!(journal
+            .file_authorizations(id, run, &environment)
+            .unwrap()
+            .is_empty());
+        drop(journal);
+        let corrupt = Connection::open(store.path()).unwrap();
+        corrupt.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE session_events SET payload_json='{' WHERE event_type='approval.resolved' AND call_id='call:files';").unwrap();
+        drop(corrupt);
+        let error = LocalAgentJournal::open(&store.path())
+            .err()
+            .expect("corrupt middle event must fail recovery");
+        assert_eq!(error.code, "permission_model_restore_failed");
     }
 
     #[test]

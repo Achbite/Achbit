@@ -71,15 +71,7 @@ impl KernelPermissionModel {
     }
 
     pub(crate) fn apply(&mut self, event: &Value) -> Result<(), LocalAgentStoreError> {
-        self.apply_event(event, true)
-    }
-
-    pub(crate) fn restore(&mut self, event: &Value) -> Result<(), LocalAgentStoreError> {
-        self.apply_event(event, false)
-    }
-
-    fn apply_event(&mut self, event: &Value, admit_new: bool) -> Result<(), LocalAgentStoreError> {
-        self.apply_permissions_event(event, admit_new)?;
+        self.apply_permissions_event(event, true)?;
         self.authorities.apply(event);
         if matches!(
             event["type"].as_str(),
@@ -98,21 +90,31 @@ impl KernelPermissionModel {
                 event["type"].as_str(),
                 Some("session.created" | "run.started" | "session.permissions.updated")
             );
-            let sessions = &self.sessions;
-            self.authorities.publish_grants(
-                if all {
-                    None
-                } else {
-                    event["sessionId"].as_str()
-                },
-                |id, grant| {
-                    sessions
-                        .get(id)
-                        .is_some_and(|session| session.revoked.contains(grant))
-                },
-            );
+            self.publish_grants(if all {
+                None
+            } else {
+                event["sessionId"].as_str()
+            });
         }
         Ok(())
+    }
+    pub(crate) fn restore(&mut self, event: &Value) -> Result<(), LocalAgentStoreError> {
+        self.apply_permissions_event(event, false)?;
+        self.authorities.apply(event);
+        Ok(())
+    }
+
+    pub(crate) fn finish_restore(&mut self) {
+        self.publish_grants(None);
+    }
+
+    fn publish_grants(&mut self, session_id: Option<&str>) {
+        let sessions = &self.sessions;
+        self.authorities.publish_grants(session_id, |id, grant| {
+            sessions
+                .get(id)
+                .is_some_and(|session| session.revoked.contains(grant))
+        });
     }
     fn apply_permissions_event(
         &mut self,
@@ -455,12 +457,7 @@ impl KernelPermissionModel {
         for child in children {
             self.refresh_subtree(&child)?;
         }
-        let sessions = &self.sessions;
-        self.authorities.publish_grants(None, |id, grant| {
-            sessions
-                .get(id)
-                .is_some_and(|session| session.revoked.contains(grant))
-        });
+        self.publish_grants(None);
         Ok(())
     }
 

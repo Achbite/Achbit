@@ -2,6 +2,8 @@ PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = DELETE;
 PRAGMA synchronous = FULL;
 
+BEGIN IMMEDIATE;
+
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY NOT NULL CHECK(length(session_id) > 0),
     display_title TEXT NOT NULL CHECK(length(display_title) > 0),
@@ -57,3 +59,5 @@ CREATE INDEX IF NOT EXISTS session_events_run_idx
 
 CREATE INDEX IF NOT EXISTS session_events_call_idx
     ON session_events(session_id, call_id, sequence);
+
+COMMIT;

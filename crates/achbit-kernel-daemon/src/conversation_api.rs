@@ -133,23 +133,22 @@ pub(crate) async fn conversation_read(
 
 fn visible_session_ids(
     catalog: &ConversationCatalog,
-    journal: &crate::local_agent_store::LocalAgentJournal,
+    reader: &crate::local_agent_store::SessionCatalogReader,
 ) -> Result<Vec<String>, crate::local_agent_store::LocalAgentStoreError> {
-    let mut session_ids = Vec::new();
-    for session in &catalog.sessions {
-        if journal.agent_context(&session.id)?.is_none() {
-            session_ids.push(session.id.clone());
-        }
-    }
-    Ok(session_ids)
+    let ids: Vec<_> = catalog
+        .sessions
+        .iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    reader.visible_sessions(&ids)
 }
 
 fn visible_catalog_response(
     gui: &GuiState,
-    journal: &crate::local_agent_store::LocalAgentJournal,
+    reader: &crate::local_agent_store::SessionCatalogReader,
     management: bool,
 ) -> Json<ApiResponse> {
-    let visible = match visible_session_ids(&gui.conversation_catalog, journal) {
+    let visible = match visible_session_ids(&gui.conversation_catalog, reader) {
         Ok(ids) => ids.into_iter().collect::<HashSet<_>>(),
         Err(error) => return ApiResponse::error(error.code, error.message),
     };
@@ -170,28 +169,7 @@ pub(crate) async fn conversation_catalog_get(State(state): State<HostState>) -> 
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
         return ApiResponse::error("conversation_catalog_unavailable", error);
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_catalog_events(State(state): State<HostState>) -> Response {
@@ -228,7 +206,7 @@ pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> 
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error);
         }
-        match visible_session_ids(&gui.conversation_catalog, &state.local_agent.journal) {
+        match visible_session_ids(&gui.conversation_catalog, &state.catalog_reader) {
             Ok(ids) => ids,
             Err(error) => return ApiResponse::error(error.code, error.message),
         }
@@ -1036,7 +1014,7 @@ pub(crate) async fn conversation_catalog_management_get(
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
         return ApiResponse::error("conversation_catalog_unavailable", error);
     }
-    visible_catalog_response(&gui, &state.local_agent.journal, true)
+    visible_catalog_response(&gui, &state.catalog_reader, true)
 }
 
 pub(crate) async fn conversation_project_create(
@@ -1078,28 +1056,7 @@ pub(crate) async fn conversation_project_create(
     if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_project_update(
@@ -1163,28 +1120,7 @@ pub(crate) async fn conversation_project_update(
         }
     }
     let gui = state.gui.lock().expect("gui state lock");
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 /// Project metadata selects roots; each Session commits its own effective bindings.
@@ -1273,28 +1209,7 @@ pub(crate) async fn conversation_project_delete(
     {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_session_create(
@@ -1705,28 +1620,7 @@ pub(crate) async fn conversation_session_update(
             task.abort();
         }
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_session_delete(
@@ -1844,28 +1738,7 @@ async fn delete_conversation_session(
         );
     }
     let gui = state.gui.lock().expect("gui state lock");
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 fn deletion_cleanup_ids(
