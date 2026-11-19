@@ -13,7 +13,7 @@ Preserve the requested scope: analysis, implementation, Debug verification or re
 
 ## Choose the entrypoint
 
-- To control a Debug product, read `debug-control.md` under the `productDocsPath` supplied by the Shell tool description. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
+- To control a Debug product, read `debug-control.md` under the `productDocsPath` in the Achbit product resources attached to the selection message, plugin activation or Skill read result. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
 - For UI design or interaction changes, discover and read the Frontend Design Skill and its Achbit UI reference. Start from the existing design and production components; use the user's request and applicable user Skills to identify intended changes.
 - To create, diagnose, repair or update a plugin, read [references/plugin-development.md](references/plugin-development.md). Use the current Host CLI for discovery and management.
 - To locate code for a change, read [references/implementation-map.md](references/implementation-map.md), then inspect the relevant producer and consumer.

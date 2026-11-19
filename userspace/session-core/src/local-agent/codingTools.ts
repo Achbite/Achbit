@@ -11,9 +11,6 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
   const ordered = [...codingToolNames.keys()].flatMap(name => active.filter(tool => tool.origin === 'coreBuiltin' && tool.name === name));
   const descriptions: string[] = [], rules = new Set<string>();
   const shell = ordered.find(tool => tool.name === 'bash' || tool.name === 'powershell');
-  if (shell && aliases.has(shell.name)) {
-    for (const rule of codingToolGuidance(shell.name, aliases.get(shell.name)!)!.guidelines) rules.add(rule);
-  }
   // Optional tools retain their declaration-owned guidance; activation must not rewrite this prefix.
   for (const tool of ordered) {
     const name = aliases.get(tool.name);
@@ -24,14 +21,13 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
     if (expanded) for (const rule of guidance.additionalGuidelines ?? []) rules.add(rule);
   }
   if (!descriptions.length) return;
-  if (expanded) rules.add('Use declared tool names and arguments; availability grants no additional access.');
+  if (expanded) rules.add('Honor declared tool permissions.');
   if (shell && active.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'process')) {
     rules.add('Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.');
     rules.add('Use dependency waiting when the next step needs a managed result, and status only for a current snapshot. A wait deadline leaves the command running; cancellation targets the returned job handle.');
   }
-  if (expanded && shell) rules.add('Track commands through completion; check exit status before using outputs. Preserve the target exit status through pipelines and diagnostics. Bound interactive validation runs; keep ownership of test processes until they exit or are explicitly stopped. Clean up only resources this task is authorized to manage.');
-  rules.add('Be concise in your responses');
-  rules.add('Show file paths clearly when working with files');
+  if (expanded && shell) rules.add('Preserve the target exit status in pipelines and diagnostics. Check it before using output. Bound runs and keep ownership of test processes until they exit. Clean up only resources this task is authorized to manage.');
+  rules.add('Reply concisely with clear file paths.');
   return { id: 'achbit.coding-tools', text: [
     '<tools>', ...descriptions, 'Additional tools may be available.', '</tools>', '',
     '<rules>', ...[...rules].map(rule => `- ${rule}`), '</rules>',
@@ -42,19 +38,20 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
 export function codingToolGuidance(canonical: string, name: string): { snippet: string; guidelines: string[]; additionalGuidelines?: string[] } | undefined {
   switch (canonical) {
     case 'fs.read': return {
-      snippet: 'Read file or directory contents', guidelines: [`Use ${name} to examine files instead of cat or sed.`],
+      snippet: 'Read file or directory contents', guidelines: [
+        `Use ${name} to examine files instead of cat or sed.`,
+        'Read paths observed in listings, user input or source directly. Resolve project-root references (such as res://) from their project and file-relative paths from the referring file.',
+        'For a symbol or uncertain filename, search the workspace or list the nearest known directory. Distinguish same-name matches by reference or declaration.',
+        'After NotFound, check the parent or reference for a verified path.',
+      ],
       additionalGuidelines: [
-        'Use paths observed in listings, tool results or user input; do not guess generated filenames.',
-        'Read generated output after its producing command has completed. For missing paths, check the producer result and directory before retrying.',
-        'Follow returned cursors or full-output paths for truncated content; excerpts do not establish a full review.',
+        'Read generated output after its producing command has completed.',
+        'Follow returned cursors or full-output paths when truncated.',
       ],
     };
     case 'bash': case 'powershell': return {
-      snippet: canonical === 'bash' ? 'Execute bash commands (ls, grep, find, etc.)' : 'Execute PowerShell commands',
-      guidelines: [canonical === 'bash' ? `Use ${name} for file operations like ls, rg, find`
-        : `Use ${name} for file operations like listing, searching, and finding files`],
-      additionalGuidelines: [canonical === 'bash' ? 'Run project commands.'
-        : 'Use Get-ChildItem and Select-String for inspection and the Shell for project commands.'],
+      snippet: canonical === 'bash' ? 'Run project commands' : 'Execute PowerShell commands',
+      guidelines: [`For unknown paths, use ${name} with ${canonical === 'bash' ? 'ls, rg or find' : 'Get-ChildItem or Select-String'}.`],
     };
     case 'fs.edit': return {
       snippet: 'Make precise file edits with exact text replacement, including multiple disjoint edits in one call',
@@ -157,6 +154,7 @@ export function codingToolText(call: ToolExecutionRecord): string | undefined {
     return;
   }
   if (call.outcome === 'failed' && 'error' in call && call.error) {
+    if (call.toolName === 'fs.read' && record(out.details)) return;
     if (out.saved || out.patched || (Array.isArray(out.fileChanges) && out.fileChanges.length)) return;
     return call.error.message;
   }

@@ -479,33 +479,37 @@ impl LocalAgentRuntime {
             let facts = environment.as_object_mut().expect("prepared environment");
             facts.remove("primaryWorkspaceDirectory");
             facts.remove("sessionWorkdirId");
-            if coding_context {
-                let catalog = &gui.conversation_catalog;
-                let bindings = catalog
-                    .session(&request.session_id)
-                    .map_or(&[][..], |session| session.workspace_bindings.as_slice());
-                let workdir = catalog.session_workdir(&request.session_id);
-                if let Some(implicit) = workdir.filter(|dir| {
-                    !bindings
-                        .iter()
-                        .any(|binding| binding.workspace_id == dir.workspace_id)
-                }) {
-                    environment["sessionWorkdirId"] = json!(implicit.workspace_id);
-                }
-                let primary = bindings
-                    .first()
-                    .and_then(|binding| catalog.workspace(&binding.workspace_id))
-                    .or(workdir);
-                if let Some(workspace) =
-                    primary.filter(|_| environment["executionTarget"]["kind"] == "native")
-                {
-                    let path = achbit_kernel_runtime::file_access::process_visible_path(
-                        std::path::Path::new(&workspace.canonical_root),
-                    );
-                    environment["primaryWorkspaceDirectory"] = json!({
-                        "workspaceId": workspace.workspace_id, "path": path,
-                    });
-                }
+            let catalog = &gui.conversation_catalog;
+            let bindings = catalog
+                .session(&request.session_id)
+                .map_or(&[][..], |session| session.workspace_bindings.as_slice());
+            // Full context exposes an explicitly bound native directory. Only coding
+            // context also describes an implicit session workdir.
+            let workdir = if coding_context {
+                catalog.session_workdir(&request.session_id)
+            } else {
+                None
+            };
+            if let Some(implicit) = workdir.filter(|dir| {
+                !bindings
+                    .iter()
+                    .any(|binding| binding.workspace_id == dir.workspace_id)
+            }) {
+                environment["sessionWorkdirId"] = json!(implicit.workspace_id);
+            }
+            let primary = bindings
+                .first()
+                .and_then(|binding| catalog.workspace(&binding.workspace_id))
+                .or(workdir);
+            if let Some(workspace) =
+                primary.filter(|_| environment["executionTarget"]["kind"] == "native")
+            {
+                let path = achbit_kernel_runtime::file_access::process_visible_path(
+                    std::path::Path::new(&workspace.canonical_root),
+                );
+                environment["primaryWorkspaceDirectory"] = json!({
+                    "workspaceId": workspace.workspace_id, "path": path,
+                });
             }
         }
         executor_config.sandbox_backend =

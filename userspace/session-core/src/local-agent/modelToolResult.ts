@@ -140,7 +140,7 @@ function outputForModel(record: ToolExecutionRecord, out: unknown, handles: Hand
       if (typeof out.content === 'string') return out.truncated
         ? { content: out.content, ...fields(out, 'nextByte', 'nextStartLine') } : out.content;
       if (Array.isArray(out.artifacts)) return { artifacts: resourceList(out.artifacts) };
-      if (record.outcome !== 'completed') return fields(out, 'details');
+      if (record.outcome !== 'completed') return fields(out, 'stage', 'details');
       throw new LoopFailure('file_read_result_invalid', 'File read returned neither text, directory entries nor a resource.');
     case 'fs.write': case 'fs.edit': case 'fs.delete': return fileResult(record, out);
     case 'bash': case 'powershell': return shellOutput(out, record.outcome !== 'completed');

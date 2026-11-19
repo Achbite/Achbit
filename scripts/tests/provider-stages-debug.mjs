@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -27,6 +27,7 @@ assert.equal(typeof runFailureKind, 'function');
 await mkdir(root); // Refuse to reuse another test's state or receipts.
 const stateRoot = join(root, 'state'), workspace = join(root, 'workspace');
 await mkdir(workspace);
+const expectedCwd = (await realpath(workspace)).replaceAll('\\', '/');
 const windows = process.platform === 'win32';
 const cli = join(executables, windows ? 'achbit-cli.exe' : 'achbit-cli');
 const env = { ...process.env, ACHBIT_RUNTIME_DIR: runtime,
@@ -89,6 +90,10 @@ const server = createServer(async (req, res) => {
         } })}\n\n`);
       }
       return;
+    }
+    if (requests.length === 0) {
+      assert.ok(body.input.some(item => ['system', 'developer'].includes(item.role) && typeof item.content === 'string'
+        && item.content.includes(`<cwd>\n${expectedCwd}\n</cwd>`)), 'The full agent receives the bound native working directory');
     }
     const functions = tools.filter(tool => tool.type === 'function');
     const hosted = tools.filter(tool => tool.type === 'web_search');
