@@ -237,8 +237,9 @@
 .resource-tree__filter { display:flex; align-items:center; gap:5px; margin:8px 12px; padding:7px 8px; border:0; border-radius:var(--ac-radius-control,8px); background:var(--ac-surface); }
 .resource-tree svg { flex:none; width:14px; height:14px; color:var(--ac-muted); }
 .resource-tree__filter input { min-width:0; width:100%; border:0; outline:none; background:transparent; color:inherit; font:inherit; }
-.resource-tree__items { flex:1; min-height:0; overflow:auto; padding:4px 12px; }
-.resource-tree .resource-tree__item { position:relative; display:flex; align-items:center; gap:6px; width:100%; min-height:30px; padding:5px 8px; padding-left:calc(8px + var(--resource-tree-depth) * 12px); border:0; border-radius:var(--ac-radius-control,8px); text-align:left; background:transparent; color:inherit; font:inherit; cursor:pointer; transition:background-color 140ms ease; }
+.resource-tree__items { --resource-tree-group-gap:10px; flex:1; min-height:0; overflow:auto; padding:4px 12px; }
+.resource-tree__rows { position:relative; }
+.resource-tree .resource-tree__item { position:absolute; box-sizing:border-box; display:flex; align-items:center; gap:6px; width:100%; min-height:30px; padding:5px 8px; padding-left:calc(8px + var(--resource-tree-depth) * 12px); border:0; border-radius:var(--ac-radius-control,8px); text-align:left; background:transparent; color:inherit; font:inherit; cursor:pointer; transition:background-color 140ms ease; }
 /* Keep the current branch readable at rest; reveal ancestor guides while exploring. */
 .resource-tree__item::before { content:''; position:absolute; inset-block:0; left:14px; width:calc(var(--resource-tree-depth) * 12px); background:repeating-linear-gradient(90deg,var(--ac-border) 0 .5px,transparent .5px 12px); opacity:0; pointer-events:none; }
 .resource-tree__item[data-current-branch]::after { content:''; position:absolute; inset-block:0; left:calc(14px + (var(--resource-tree-active-depth) - 1) * 12px); width:.5px; background:var(--ac-border-strong); pointer-events:none; }
@@ -248,7 +249,7 @@
 .resource-tree .resource-tree__item:hover { background:color-mix(in srgb,var(--ac-selection,var(--ac-surface-active)) 50%,var(--reader-tree-surface)); }
 .resource-tree .resource-tree__item.is-selected { background:var(--ac-selection,var(--ac-surface-active)); color:var(--ac-foreground-strong); }
 .resource-tree .resource-tree__item.is-selected svg { color:var(--ac-muted); }
-.resource-tree .resource-tree__item.is-root { margin-top:10px; font-weight:550; }
+.resource-tree .resource-tree__item.is-root { font-weight:550; }
 .resource-tree p.local-agent__resource-error { padding:8px; overflow-wrap:anywhere; }
 
 .resource-tree[hidden] { display:none; }

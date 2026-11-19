@@ -4,20 +4,42 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModules, loadGuiModelStore, installGuiFetch, decodeGuiProjection } from './gui-projection-contract.mjs';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
-import { workspaceBinding, actorWith, createSession, fakeRunPreparation, emptyKernel, completedExecutionReply, providerEvent, messageCommand, waitForProjection, waitUntil } from '../../session-core/tests/local-agent-fixtures.mjs';
-import { emptySessionState, projectSession } from '../../session-core/dist/index.js';
+import { workspaceBinding, actorWith, createSession, fakeRunPreparation, emptyKernel, completedExecutionReply, providerEvent, messageCommand, readEvents, waitForProjection, waitUntil } from '../../session-core/tests/local-agent-fixtures.mjs';
+import { readConversation } from '../../session-core/dist/local-agent/conversationRead.js';
+import { emptySessionState, loopSnapshot, projectSession } from '../../session-core/dist/index.js';
+
+async function historyJournal(ids) {
+  const journal = new InMemoryCommandJournal();
+  for (const id of ids) await createSession(journal, id);
+  return journal;
+}
+
+async function historyResponse(journal, url, init) {
+  const id = decodeURIComponent(url.pathname.split('/').at(-2));
+  if (init.method === 'POST' && url.pathname.endsWith('/read')) {
+    const page = await readConversation(journal, { ...JSON.parse(init.body), sessionId: id });
+    return Response.json({ ok: true, data: page });
+  }
+  if ((init.method ?? 'GET') === 'GET' && url.pathname.endsWith('/projection')) {
+    const events = await readEvents(journal, id);
+    if (!events.length) throw new Error(`Unknown session: ${id}`);
+    return Response.json({ ok: true, data: projectSession(loopSnapshot(id, events).state) });
+  }
+  throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+}
 
 test('history navigation is usable before plugin/model discovery settles and late startup cannot rewind it', async t => {
   let release;
   const held = new Promise(resolve => { release = resolve; });
   t.after(release);
-  const sessionId = 'session:early-history', projection = projectSession(emptySessionState(sessionId));
-  installGuiFetch(t, async url => {
+  const sessionId = 'session:early-history';
+  const journal = await historyJournal([sessionId]);
+  installGuiFetch(t, async (url, init) => {
     if (url.pathname.endsWith('/catalog')) return Response.json({ok:true,data:{projects:[],sessions:[{id:sessionId,title:'History',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});
     if (url.pathname.endsWith('/plugins')) { await held; return Response.json({ok:true,data:{revision:'catalog:slow',plugins:[]}}); }
     if (url.pathname.endsWith('/profiles')) { await held; return Response.json({ok:true,data:{profiles:[]}}); }
     if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
-    if (url.pathname.endsWith('/projection')) return Response.json({ok:true,data:projection});
+    if (url.pathname.endsWith('/read') || url.pathname.endsWith('/projection')) return historyResponse(journal, url, init);
     throw new Error(`Unexpected request: ${url.pathname}`);
   });
   const store = await loadGuiModelStore(t);
@@ -399,12 +421,15 @@ test('history selection can supersede a pending read while mutations remain busy
   const held = new Promise(resolve => { release = resolve; });
   t.after(release);
   const sessions = ['slow','chosen'].map(name => ({id:`session:${name}`,title:name,workspaceBindings:[],createdAt:'1',updatedAt:'1'}));
-  installGuiFetch(t, async url => {
+  const journal = await historyJournal(sessions.map(session => session.id));
+  let slowReadStarted = false;
+  installGuiFetch(t, async (url, init) => {
     if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
+    if (url.pathname.endsWith('/read')) return historyResponse(journal, url, init);
     if (url.pathname.endsWith('/projection')) {
       const id = decodeURIComponent(url.pathname.split('/').at(-2));
-      if (id === sessions[0].id) await held;
-      return Response.json({ok:true,data:projectSession(emptySessionState(id))});
+      if (id === sessions[0].id) { slowReadStarted = true; await held; }
+      return historyResponse(journal, url, init);
     }
     throw new Error(`Unexpected request: ${url.pathname}`);
   });
@@ -414,7 +439,7 @@ test('history selection can supersede a pending read while mutations remain busy
   t.mock.method(useSettingsStore.getState(), 'loadUserSettings', async () => {});
   store.setState({catalog:{projects:[],sessions},catalogStatus:'ready'});
   const slow = store.getState().activateSession(sessions[0].id);
-  await waitUntil(() => store.getState().loading, 'pending history');
+  await waitUntil(() => slowReadStarted && store.getState().loading, 'pending history');
   let tree;
   function Probe() {
     tree = Sidebar({language:'en-US',projects:[],sessions,catalogStatus:'ready',
@@ -437,12 +462,13 @@ test('late history restoration still receives the initial default model', async 
   const held = new Promise(resolve => { release = resolve; });
   t.after(release);
   const sessionId = 'session:no-recorded-model';
-  installGuiFetch(t, async url => {
+  const journal = await historyJournal([sessionId]);
+  installGuiFetch(t, async (url, init) => {
     if (url.pathname.endsWith('/catalog')) return Response.json({ok:true,data:{projects:[],sessions:[{id:sessionId,title:'Old history',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});
     if (url.pathname.endsWith('/profiles')) return Response.json({ok:true,data:{profiles:[{id:'profile:default',enabled:true}]}});
     if (url.pathname.endsWith('/plugins')) { await held; return Response.json({ok:true,data:{revision:'catalog:empty',plugins:[]}}); }
     if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
-    if (url.pathname.endsWith('/projection')) return Response.json({ok:true,data:projectSession(emptySessionState(sessionId))});
+    if (url.pathname.endsWith('/read') || url.pathname.endsWith('/projection')) return historyResponse(journal, url, init);
     throw new Error(`Unexpected request: ${url.pathname}`);
   });
   const [{useLocalAgentStore:store},{useSettingsStore}] = await loadGuiModules(t, ['/src/state/localAgentStore.ts','/src/state/settingsStore.ts']);
@@ -460,12 +486,13 @@ test('late history restoration cannot swallow the initial profile error', async 
   const held = new Promise(resolve => { release = resolve; });
   t.after(release);
   const sessionId = 'session:profile-failure';
-  installGuiFetch(t, async url => {
+  const journal = await historyJournal([sessionId]);
+  installGuiFetch(t, async (url, init) => {
     if (url.pathname.endsWith('/catalog')) return Response.json({ok:true,data:{projects:[],sessions:[{id:sessionId,title:'History',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});
     if (url.pathname.endsWith('/profiles')) return Response.json({ok:false,message:'original profile failure'});
     if (url.pathname.endsWith('/plugins')) { await held; return Response.json({ok:true,data:{revision:'catalog:empty',plugins:[]}}); }
     if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
-    if (url.pathname.endsWith('/projection')) return Response.json({ok:true,data:projectSession(emptySessionState(sessionId))});
+    if (url.pathname.endsWith('/read') || url.pathname.endsWith('/projection')) return historyResponse(journal, url, init);
     throw new Error(`Unexpected request: ${url.pathname}`);
   });
   const [{useLocalAgentStore:store},{useSettingsStore}] = await loadGuiModules(t, ['/src/state/localAgentStore.ts','/src/state/settingsStore.ts']);
@@ -486,13 +513,15 @@ test('catalog is selectable while execution waits; only the latest choice reads 
   t.after(ready);
   const ids = ['session:pending-a', 'session:pending-b', 'session:pending-c'];
   const reads = [], other = [];
-  installGuiFetch(t, async url => {
+  const journal = await historyJournal(ids);
+  installGuiFetch(t, async (url, init) => {
     if (url.pathname.endsWith('/catalog')) return Response.json({ok:true,data:{projects:[],sessions:ids.map(id=>({id,title:id,workspaceBindings:[],createdAt:'1',updatedAt:'1'}))}});
     if (url.pathname.endsWith('/projection')) {
       const id = decodeURIComponent(url.pathname.split('/').at(-2)); reads.push(id);
-      return Response.json({ok:true,data:projectSession(emptySessionState(id))});
+      return historyResponse(journal, url, init);
     }
     other.push(url.pathname);
+    if (url.pathname.endsWith('/read')) return historyResponse(journal, url, init);
     if (url.pathname.endsWith('/plugins')) return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});
     if (url.pathname.endsWith('/profiles')) return Response.json({ok:true,data:{profiles:[]}});
     if (url.pathname.endsWith('/statuses')) return Response.json({ok:true,data:[]});
@@ -526,7 +555,9 @@ test('new conversation cancels a pending history open and startup failure keeps 
     const id='session:pending-cancel'; let reads=0;
     installGuiFetch(t,async url=>{
       if(url.pathname.endsWith('/catalog'))return Response.json({ok:true,data:{projects:[],sessions:[{id,title:'History',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});
-      if(url.pathname.endsWith('/projection')){reads++;return Response.json({ok:true,data:projectSession(emptySessionState(id))});}
+      if (url.pathname.endsWith('/read') || url.pathname.endsWith('/projection')) {
+        reads++; throw new Error(`Unexpected history request during cancellation: ${url.pathname}`);
+      }
       if(url.pathname.endsWith('/plugins'))return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});
       if(url.pathname.endsWith('/profiles'))return Response.json({ok:true,data:{profiles:[]}});
       if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});
@@ -552,9 +583,11 @@ test('execution readiness before the catalog still opens the selected history ex
   let catalogReady;
   const held=new Promise(resolve=>{catalogReady=resolve;});t.after(catalogReady);
   const id='session:early-execution';let reads=0;
-  installGuiFetch(t,async url=>{
+  const journal = await historyJournal([id]);
+  installGuiFetch(t, async (url, init) => {
     if(url.pathname.endsWith('/catalog')){await held;return Response.json({ok:true,data:{projects:[],sessions:[{id,title:'History',workspaceBindings:[],createdAt:'1',updatedAt:'1'}]}});}
-    if(url.pathname.endsWith('/projection')){reads++;return Response.json({ok:true,data:projectSession(emptySessionState(id))});}
+    if (url.pathname.endsWith('/read')) return historyResponse(journal, url, init);
+    if(url.pathname.endsWith('/projection')){reads++;return historyResponse(journal, url, init);}
     if(url.pathname.endsWith('/plugins'))return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});
     if(url.pathname.endsWith('/profiles'))return Response.json({ok:true,data:{profiles:[]}});
     if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});
@@ -577,9 +610,11 @@ test('replacing a pending or ready Host installs its own gate and preserves the 
   const initializations=[];
   const startup=createHostCatalogStartup(ready=>{const promise=store.getState().initialize(ready);initializations.push(promise);return promise;});
   const ids=['session:host-a','session:host-b'];let catalogs=0,plugins=0,profiles=0;const reads=[];
-  installGuiFetch(t,async url=>{
+  const journal = await historyJournal(ids);
+  installGuiFetch(t, async (url, init) => {
     if(url.pathname.endsWith('/catalog')){catalogs++;return Response.json({ok:true,data:{projects:[],sessions:ids.map(id=>({id,title:id,workspaceBindings:[],createdAt:'1',updatedAt:'1'}))}});}
-    if(url.pathname.endsWith('/projection')){const id=decodeURIComponent(url.pathname.split('/').at(-2));reads.push(id);return Response.json({ok:true,data:projectSession(emptySessionState(id))});}
+    if (url.pathname.endsWith('/read')) return historyResponse(journal, url, init);
+    if(url.pathname.endsWith('/projection')){const id=decodeURIComponent(url.pathname.split('/').at(-2));reads.push(id);return historyResponse(journal, url, init);}
     if(url.pathname.endsWith('/plugins')){plugins++;return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});}
     if(url.pathname.endsWith('/profiles')){profiles++;return Response.json({ok:true,data:{profiles:[]}});}
     if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});

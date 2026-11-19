@@ -36,6 +36,8 @@ import {
   deleteConversationSession as deleteSessionRequest,
   getConversationCatalog,
   getConversationStatuses,
+  readOpeningHistory,
+  type OpeningHistoryPage,
   watchConversationCatalog,
   getConversationCatalogManagement,
   getPluginCatalog,
@@ -93,6 +95,7 @@ export interface LocalAgentState {
   statusError: string | null;
   pluginCatalog: PluginCatalogProjection;
   projection: SessionProjection | null;
+  openingHistory: OpeningHistoryPage | null;
   loading: boolean;
   loadingPurpose: 'initialization' | 'session' | null;
   submitting: boolean;
@@ -195,11 +198,16 @@ function cacheProjection(projection: SessionProjection): void {
   projectionCache.set(projection.sessionId, projection);
   while (projectionCache.size > 6) projectionCache.delete(projectionCache.keys().next().value!);
 }
-function readProjection(sessionId: string, signal?: AbortSignal): Promise<SessionProjection> {
+function readProjection(sessionId: string, signal?: AbortSignal, minimumRevision = 0): Promise<SessionProjection> {
   const read = (projectionReadQueues.get(sessionId) ?? Promise.resolve())
-    .then(() => {
+    .then(async () => {
       signal?.throwIfAborted();
-      return getLocalAgentProjection(sessionId, signal);
+      const first = await getLocalAgentProjection(sessionId, signal);
+      if (first.revision >= minimumRevision) return first;
+      signal?.throwIfAborted();
+      const fresh = await getLocalAgentProjection(sessionId, signal);
+      if (fresh.revision < minimumRevision) throw new Error('session_projection_revision_behind');
+      return fresh;
     })
     .then((projection) => {
       signal?.throwIfAborted();
@@ -277,6 +285,7 @@ const store = create<LocalAgentState>((set, get) => ({
   statusError: null,
   pluginCatalog: EMPTY_PLUGIN_CATALOG,
   projection: null,
+  openingHistory: null,
   loading: false, loadingPurpose: null,
   submitting: false,
   catalogBusy: false,
@@ -433,6 +442,7 @@ const store = create<LocalAgentState>((set, get) => ({
       welcomeIndex: get().sessionId === null ? get().welcomeIndex : Math.floor(Math.random() * 4),
       sessionId: null,
       projection: null,
+      openingHistory: null,
       draftProjectId: projectId,
       modelSettingsBusy: false,
       selectedProfileId: get().defaultProfileId,
@@ -453,7 +463,7 @@ const store = create<LocalAgentState>((set, get) => ({
     if (!summary) {
       // CLI and other windows can create conversations after this view's catalog read.
       const readVersion = catalogVersion;
-      set({ loading: true, loadingPurpose: 'session', error: null, errorSource: null });
+      set({ loading: true, loadingPurpose: 'session', openingHistory: null, error: null, errorSource: null });
       try {
         let catalog = await getConversationCatalog(signal);
         if (currentGeneration !== generation) return;
@@ -486,31 +496,40 @@ const store = create<LocalAgentState>((set, get) => ({
       selectedProfileId: cached?.modelSettings?.profileId ?? summary.profileId ?? null,
       reasoningEffortOverride: cached?.modelSettings?.reasoningEffortOverride ?? null,
       projection: visibleCached,
+      openingHistory: null,
       draftProjectId: null,
     });
     try {
       if (!get().runtimeReady) await waitForExecution(signal);
       if (currentGeneration !== generation) return;
-    if (cached) {
-      if (!visibleCached) set({ projection: cached, loading: false, loadingPurpose: null });
-      // Paint the cached view immediately; the small status reply decides whether
-      // any full snapshot is needed. Viewing history never reopens a Session run.
-      await get().refresh();
-      return;
-    }
-      const projection = await readProjection(sessionId, signal);
+      if (cached) {
+        if (!visibleCached) set({ projection: cached, loading: false, loadingPurpose: null });
+        await get().refresh();
+        return;
+      }
+      // The status catalog already identifies short conversations. For large or
+      // unmeasured histories the public message page can paint ahead of replay.
+      const revision = get().sessionStatuses[sessionId]?.revision;
+      let minimumRevision = 0;
+      if (revision === undefined || revision > 64) {
+        const page = await readOpeningHistory(sessionId, signal);
+        if (currentGeneration !== generation) return;
+        minimumRevision = page.revision;
+        if (page.messages.length) set({ openingHistory: page });
+      }
+      const projection = await readProjection(sessionId, signal, minimumRevision);
       if (currentGeneration !== generation) return;
       set({
         sessionId,
         selectedProfileId: projection.modelSettings?.profileId ?? summary.profileId ?? null,
         reasoningEffortOverride: projection.modelSettings?.reasoningEffortOverride ?? null,
-        projection,
+        projection, openingHistory: null,
         loading: false, loadingPurpose: null,
       });
     } catch (error) {
       if (currentGeneration === generation) {
         set({
-          loading: false, loadingPurpose: null,
+          loading: false, loadingPurpose: null, openingHistory: null,
           error: errorMessage(error),
           errorSource: 'projection',
         });

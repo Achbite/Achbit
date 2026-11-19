@@ -101,6 +101,11 @@ export function ConversationTranscript({
     }
     setLatestFollowMode(false);
   };
+  const opening = useLocalAgentStore((state) => state.openingHistory);
+  useLayoutEffect(() => {
+    const body = viewport.bodyRef.current;
+    if (opening && !projection && body) body.scrollTop = body.scrollHeight;
+  }, [opening, projection, viewport.bodyRef]);
   const assistantDraft = projection?.assistantDraft ?? null;
   const submitting = useLocalAgentStore((state) => state.submitting);
   const welcomeIndex = useLocalAgentStore((state) => state.welcomeIndex);
@@ -319,7 +324,12 @@ export function ConversationTranscript({
         }}>{language === 'zh-CN' ? '复制路径' : 'Copy path'}</button>
       </div>}
       {loading && !projection && (
-        <div className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
+        opening?.messages.length ? <section aria-label={t(language, 'agent.chat.recentMessages')}>
+          <p role="status">{t(language, 'agent.chat.loadingHistory')}</p>
+          {opening.messages.map(message => <article key={message.id} className={`local-agent__message local-agent__message--${message.role}`}>
+            <div className="local-agent__message-text local-agent__opening-text">{message.content}{message.truncated && '…'}</div>
+          </article>)}
+        </section> : <div className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
       )}
       {!hasConversationContent && !loading && (
         <div className="local-agent__empty local-agent__empty--welcome">

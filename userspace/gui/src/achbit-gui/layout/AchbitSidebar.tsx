@@ -1,5 +1,5 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   ConversationProject,
   ConversationSessionSummary,
@@ -48,6 +48,34 @@ interface AchbitSidebarProps {
 }
 
 const PROJECT_SESSION_PREVIEW_LIMIT = 6;
+const INITIAL_CATALOG_ROWS = 32;
+
+// Leave a frame for the visible navigation before mounting the remainder.
+// The active row stays reachable during restoration, even when it is near the end.
+function CatalogRows<T>({ items, isActive, children }: {
+  items: T[];
+  isActive: (item: T) => boolean;
+  children: (item: T) => React.ReactNode;
+}) {
+  const [complete, setComplete] = useState(false);
+  const needsMore = !complete;
+  useEffect(() => {
+    if (!needsMore) return;
+    const frame = requestAnimationFrame(() => startTransition(() => setComplete(true)));
+    return () => cancelAnimationFrame(frame);
+  }, [needsMore]);
+  if (!needsMore) return <>{items.map(children)}</>;
+  const first = items.slice(0, INITIAL_CATALOG_ROWS);
+  const active = items.find(isActive);
+  if (active && !first.includes(active)) first.push(active);
+  return <>{first.map(children)}</>;
+}
+
+function renderCatalogRows<T>(items: T[], isActive: (item: T) => boolean, render: (item: T) => React.ReactNode) {
+  return items.length <= INITIAL_CATALOG_ROWS
+    ? items.map(render)
+    : <CatalogRows items={items} isActive={isActive}>{render}</CatalogRows>;
+}
 
 const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
   language,
@@ -80,8 +108,18 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
   const listRef = useRef<HTMLElement>(null);
   const projectListId = useId();
   const [expandedProjectLists, setExpandedProjectLists] = useState<ReadonlySet<string>>(() => new Set());
+  const sessionsByProject = useMemo(() => {
+    const groups = new Map<string | undefined, ConversationSessionSummary[]>();
+    for (const session of sessions) {
+      const projectId = session.projectId || undefined;
+      const group = groups.get(projectId);
+      if (group) group.push(session);
+      else groups.set(projectId, [session]);
+    }
+    return groups;
+  }, [sessions]);
   const projectGroups = useMemo(() => projects.map((project) => {
-    const projectSessions = sessions.filter((session) => session.projectId === project.id);
+    const projectSessions = sessionsByProject.get(project.id) ?? [];
     const expanded = expandedProjectLists.has(project.id);
     const activeIndex = projectSessions.findIndex((session) => session.id === activeSessionId);
     const visibleSessions = expanded ? projectSessions
@@ -89,7 +127,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
         ? [...projectSessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT - 1), projectSessions[activeIndex]]
         : projectSessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT);
     return { project, projectSessions, visibleSessions, expanded };
-  }), [activeSessionId, expandedProjectLists, projects, sessions]);
+  }), [activeSessionId, expandedProjectLists, projects, sessionsByProject]);
   const activeProjectId = activeSessionId
     ? sessions.find((session) => session.id === activeSessionId)?.projectId
     : draftProjectId;
@@ -175,7 +213,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
     if (!run || (marker && readRunMarkers[sessionId] === marker)) return null;
     return <SessionRunStatus run={run} language={language} compact />;
   };
-  const standalone = sessions.filter((session) => !session.projectId);
+  const standalone = sessionsByProject.get(undefined) ?? [];
   const renderSession = (session: ConversationSessionSummary) => {
     return (
       <div
@@ -207,6 +245,9 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
       </div>
     );
   };
+
+  const renderRows = (rows: ConversationSessionSummary[]) =>
+    renderCatalogRows(rows, row => row.id === activeSessionId, renderSession);
 
   return (
     <div
@@ -285,7 +326,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
           </div>
         ) : (
           <div className="achbit-gui-project-archive-list">
-            {projectGroups.map(({ project, projectSessions, visibleSessions, expanded }) => {
+            {renderCatalogRows(projectGroups, group => group.project.id === activeProjectId, ({ project, projectSessions, visibleSessions, expanded }) => {
               const collapsed = collapsedProjectIds.has(project.id);
               const sessionsId = `${projectListId}-${project.id}`;
               const current = draftProjectId === project.id
@@ -351,7 +392,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
                       >
                         {projectSessions.length === 0 ? (
                           <div className="achbit-gui-sidebar-empty achbit-gui-sidebar-empty--nested" />
-                        ) : visibleSessions.map(renderSession)}
+                        ) : renderRows(visibleSessions)}
                       </div>
                       {projectSessions.length > PROJECT_SESSION_PREVIEW_LIMIT && (
                         <button
@@ -399,7 +440,7 @@ const AchbitSidebar: React.FC<AchbitSidebarProps> = ({
           <div className="achbit-gui-sidebar-empty" />
         ) : (
           <div className="achbit-gui-session-list">
-            {standalone.map(renderSession)}
+            {renderRows(standalone)}
           </div>
         )}
       </section>

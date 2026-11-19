@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties } from 'react';
+import { ResourceTreeRows } from './ResourceTreeRows';
 import { ResourceTreeMenu, type AttachTreeResource } from './ResourceTreeMenu';
 import { asyncDataLoaderFeature, hotkeysCoreFeature, createTree, type TreeConfig, type ItemInstance } from '@headless-tree/core';
 import { useConversationHost } from './ConversationHost';
@@ -72,7 +73,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
     if (activation === null) setWatchError(useSettingsStore.getState().errorMessage ?? 'settings_write_failed');
   };
   const [selected, setSelected] = useState<string>();
-  const rows = useRef(new Map<string, HTMLButtonElement>());
+  const revealRow = useRef<((id: string) => void) | null>(null);
   const nodes = useRef(new Map<string, Node>([['root', { name: chinese ? '文件' : 'Files' }]]));
   const lifetime = useRef<AbortController | undefined>(undefined);
   const displayedItems = useRef<ItemInstance<Node>[]>([]);
@@ -94,6 +95,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
   const activeTree = useRef<ReturnType<typeof createTree<Node>> | null>(null);
   const { tree, replace } = useResourceTree({
     rootItemId: 'root',
+    scrollToItem: item => revealRow.current?.(item.getId()),
     getItemName: item => item.getItemData().name,
     isItemFolder: item => item.getId() === 'root' || !!item.getItemData().children || item.getItemData().entry?.kind === 'directory',
     onPrimaryAction: item => open(item.getItemData().entry),
@@ -238,9 +240,9 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
   }, [sessionId, targetId, visible, projectionKey, tree]);
   useEffect(() => {
     if (!visible || !selected) return;
-    const frame = requestAnimationFrame(() => rows.current.get(selected)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+    const frame = requestAnimationFrame(() => revealRow.current?.(selected));
     return () => cancelAnimationFrame(frame);
-  }, [selected, visible]);
+  }, [selected, visible, tree]);
   const items = tree.getItems();
   const runtimeRoots = items.filter(item => item.getItemData().entry?.category === 'session').map(item => item.getId());
   const hidden = new Set<string>();
@@ -256,6 +258,10 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
   }
   const displayed = visibleItems.filter(item => !filter || matched.has(item.getId()));
   displayedItems.current = displayed;
+  const focused = tree.getFocusedItem()?.getId();
+  useEffect(() => {
+    if (displayed.length && !displayed.some(item => item.getId() === focused)) displayed[0].setFocused();
+  }, [displayed, focused]);
   const selectedItem = displayed.find(item => item.getId() === selected);
   const selectedParentId = selectedItem && selectedItem.getItemMeta().level > 0 ? selectedItem.getParent()?.getId() : undefined;
   const watched = visibleItems.filter(item => item.isExpanded() && item.getItemData().entry?.kind === 'directory');
@@ -280,14 +286,14 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
     {visible && menu && <ResourceTreeMenu {...menu} sessionId={sessionId} language={language}
       onOpen={() => open(menu.entry)} onAttach={onAttach} onClose={closeMenu} onError={setActionError} />}
     <UiRegion slot="reader.tree" data={{ kind: 'resourceTree', visible, filter, showRuntime, watchError,
-      selectedId: selected ?? null, items: displayed.map(item => {
+      selectedId: selected ?? null, get items() { return displayed.map(item => {
         const data = item.getItemData();
         return { id: item.getId(), parentId: data.parentId, name: data.name,
           kind: data.entry?.kind ?? (item.isFolder() ? 'directory' : 'unavailable'),
           depth: item.getItemMeta().level, expanded: item.isExpanded(), selected: item.getId() === selected,
           ...(data.error ? { error: data.error } : {}),
         };
-      }),
+      }); },
     }} actions={{ setTreeFilter: setFilter, setTreeRuntimeVisible: setShowRuntime,
       setTreeItemExpanded: (id, expanded) => {
         const item = displayedItem(id);
@@ -297,7 +303,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
       openTreeItem: id => open(displayedItem(id).getItemData().entry),
       openTreeItemMenu: id => {
         const focused = document.activeElement;
-        const anchor = rows.current.get(id) ?? (focused instanceof HTMLElement && treeAnchor.current?.contains(focused) ? focused : treeAnchor.current);
+        const anchor = displayedItem(id).getElement() ?? (focused instanceof HTMLElement && treeAnchor.current?.contains(focused) ? focused : treeAnchor.current);
         if (!anchor) throw new Error('resource_tree_item_unavailable');
         const rect = anchor.getBoundingClientRect();
         openMenu(displayedItem(id).getItemData().entry, anchor, rect.left, rect.bottom);
@@ -305,9 +311,9 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
     }}>
     <label className="resource-tree__filter"><AchbitShellIcon name="search" /><input value={filter} onChange={event => setFilter(event.target.value)} placeholder={chinese ? '筛选已加载文件…' : 'Filter loaded files…'} aria-label={chinese ? '筛选文件' : 'Filter files'} /></label>
     {watchError && <p className="local-agent__resource-error" role="alert">{watchError}</p>}
-    <div className="resource-tree__items" {...tree.getContainerProps(chinese ? '文件' : 'Files')}
-      style={{ '--resource-tree-active-depth': selectedItem?.getItemMeta().level ?? 0 } as CSSProperties}>
-      {displayed.map(item => {
+    <ResourceTreeRows tree={tree} items={displayed} label={chinese ? '文件' : 'Files'}
+      activeDepth={selectedItem?.getItemMeta().level ?? 0} menuId={menu ? resourceKey(menu.entry.resource) : undefined} reveal={revealRow}>
+      {(item, top) => {
         const data = item.getItemData();
         return <button key={item.getId()} {...item.getProps()} aria-current={item.getId() === selected ? 'true' : undefined} type="button" title={data.error ?? data.entry?.resource.logicalPath ?? data.name}
           onContextMenu={event => { if (data.entry) { event.preventDefault(); event.stopPropagation(); openMenu(data.entry, event.currentTarget, event.clientX, event.clientY); } }}
@@ -319,12 +325,12 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
           }}
           data-current-branch={selectedParentId && item.isDescendentOf(selectedParentId) ? '' : undefined}
           className={`resource-tree__item${item.getId() === selected ? ' is-selected' : ''}${data.entry?.category ? ' is-root' : ''}`}
-          style={{ '--resource-tree-depth': item.getItemMeta().level } as CSSProperties}>
+          style={{ top, '--resource-tree-depth': item.getItemMeta().level } as CSSProperties}>
           <AchbitShellIcon name={item.isFolder() ? (item.isExpanded() ? 'chevronDown' : 'chevronRight') : 'artifact'} />
-          <span ref={element => { if (element?.parentElement) rows.current.set(item.getId(), element.parentElement as HTMLButtonElement); else rows.current.delete(item.getId()); }} className={data.error ? 'local-agent__resource-error' : ''}>{data.name}</span>
+          <span className={data.error ? 'local-agent__resource-error' : ''}>{data.name}</span>
         </button>;
-      })}
-    </div>
+      }}
+    </ResourceTreeRows>
     </UiRegion>
   </aside>;
 }

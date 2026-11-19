@@ -1,4 +1,5 @@
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
+import { readConversation as readJournalPage } from '../../session-core/dist/local-agent/conversationRead.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SessionService, loopSnapshot } from '../../session-core/dist/index.js';
@@ -1747,6 +1748,73 @@ test('independent views own navigation, errors and pending commands separately',
   assert.equal(first.getState().submitting, false);
 });
 
+async function journalPageResponse(journal, sessionId, init) {
+  assert.equal(init.method, 'POST');
+  return Response.json({ ok: true, data: await readJournalPage(journal, { ...JSON.parse(init.body), sessionId }) });
+}
+
+test('opening a conversation shows committed excerpts before the timeline and clears them on navigation or failure', async (t) => {
+  const sessionId = 'session:opening-history';
+  const journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const reply = 'An answer from the journal.';
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:opening', content: reply });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'opening-history');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:open', 'A saved question.'));
+  const projection = await waitForProjection(actor, value => value.run?.status === 'completed');
+  const store = await loadGuiModelStore(t);
+  store.setState({ catalog: { projects: [], sessions: [{ id: sessionId }] } });
+  let release, invalid = false, earlier = false, otherSession = false;
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname.endsWith('/read')) {
+      if (invalid) return Response.json({ ok: true, data: { sessionId, revision: 0, view: 'messages', items: [] } });
+      return journalPageResponse(journal, sessionId, init);
+    }
+    assert.ok(url.pathname.endsWith('/projection'));
+    if (otherSession) return Response.json({ ok: true, data: { ...projection, sessionId: 'session:another' } });
+    if (earlier) {
+      earlier = false;
+      return Response.json({ ok: true, data: { ...projection, revision: projection.revision - 1 } });
+    }
+    await new Promise(resolve => { release = resolve; });
+    return Response.json({ ok: true, data: projection });
+  });
+  const opening = store.getState().activateSession(sessionId);
+  await waitUntil(() => release !== undefined);
+  const state = store.getState();
+  assert.deepEqual(state.openingHistory.messages.map(({role, content}) => [role, content]), [
+    ['user', 'A saved question.'], ['assistant', reply],
+  ]);
+  assert.equal(state.openingHistory.revision, projection.revision);
+  assert.equal(state.projection, null);
+  store.getState().startNewSession();
+  release();
+  await opening;
+  assert.equal(store.getState().openingHistory, null);
+  assert.equal(store.getState().sessionId, null);
+  invalid = true;
+  await store.getState().activateSession(sessionId);
+  assert.match(store.getState().error, /conversation_message_page_invalid/);
+  assert.equal(store.getState().openingHistory, null);
+  invalid = false;
+  otherSession = true;
+  await store.getState().activateSession(sessionId);
+  assert.match(store.getState().error, /session_projection_identity_mismatch/);
+  assert.equal(store.getState().projection, null);
+  otherSession = false;
+  earlier = true;
+  release = undefined;
+  const reopened = store.getState().activateSession(sessionId);
+  await waitUntil(() => release !== undefined);
+  release();
+  await reopened;
+  assert.deepEqual(store.getState().projection.messages, projection.messages);
+  assert.equal(store.getState().openingHistory, null);
+});
+
 test('cached navigation displays immediately and another session read cannot block it', async (t) => {
   const journal = new InMemoryCommandJournal();
   const actors = [];
@@ -1770,6 +1838,7 @@ test('cached navigation displays immediately and another session read cannot blo
     if (url.pathname === '/api/conversation/statuses') return Response.json({ ok: true, data: Object.values(projections).map((p) => ({ sessionId: p.sessionId, revision: p.revision, run: p.run })) });
     const id = decodeURIComponent(url.pathname.split('/')[4]);
     assert.ok(projections[id]);
+    if (url.pathname.endsWith('/read')) return journalPageResponse(journal, id, init);
     requests += 1;
     if (id === slowId) { readSignal = init.signal; await slow; }
     return Response.json({ ok: true, data: projections[id] });
@@ -1814,20 +1883,21 @@ test('navigation refreshes the catalog for an externally created session and pre
   const store = await loadGuiModelStore(t);
   const paths = [];
   let failCatalog = false;
-  installGuiFetch(t, async url => {
+  installGuiFetch(t, async (url, init) => {
     paths.push(url.pathname);
     if (url.pathname === '/api/conversation/catalog') {
       if (failCatalog) throw new Error('catalog read interrupted');
       return Response.json({ ok: true, data: { projects: [], sessions: [{ id: sessionId, title: 'External conversation',
         workspaceBindings: [workspaceBinding], createdAt: '2026-10-18T00:00:00Z', updatedAt: '2026-10-18T00:00:00Z' }] } });
     }
+    if (url.pathname.endsWith('/read')) return journalPageResponse(journal, sessionId, init);
     assert.match(url.pathname, /\/projection$/);
     return Response.json({ ok: true, data: projection });
   });
   await store.getState().activateSession(sessionId);
   assert.equal(store.getState().projection.sessionId, sessionId);
   assert.equal(store.getState().loading, false);
-  assert.equal(paths.length, 2);
+  assert.deepEqual(paths.map(path => path.split('/').at(-1)), ['catalog', 'read', 'projection']);
   failCatalog = true;
   await store.getState().activateSession('session:unavailable');
   assert.match(store.getState().error, /catalog read interrupted/);
@@ -3594,6 +3664,7 @@ test('invalid default profiles retain editable settings and do not prevent readi
   const catalog = { projects: [], sessions: [{ id: sessionId, title: 'Saved conversation', workspaceBindings: [workspaceBinding], profileId: profile.id,
     createdAt: '2026-09-14T00:00:00Z', updatedAt: '2026-09-14T00:00:00Z' }] };
   installGuiFetch(t, (url, init) => {
+    if (url.pathname.endsWith('/read')) return journalPageResponse(journal, sessionId, init);
     assert.equal(init.method ?? 'GET', 'GET');
     if (url.pathname === '/api/llm/profiles') return Response.json(failure);
     if (url.pathname === '/api/conversation/catalog') return Response.json({ ok: true, data: catalog });

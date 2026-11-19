@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import React, { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, installGuiFetch, loadGuiModule, loadGuiModules } from './gui-projection-contract.mjs';
+import { readConversation } from '../../session-core/dist/local-agent/conversationRead.js';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
 import { actorWith, createSession, emptyKernel, fakeRunPreparation, messageCommand, providerEvent,
   waitForProjection } from '../../session-core/tests/local-agent-fixtures.mjs';
@@ -129,14 +130,18 @@ test('a completed model handoff is a notice, not a permanent conversation state'
 
 test('GUI projection reads publish a handoff once without replaying history, navigation or expired notices', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:notice';
-  await createSession(journal, sessionId);
-  const actor = actorWith(journal, sessionId, { async *stream(request) {
-    yield providerEvent(request.requestId, 'text.delta', { text: 'Finished.' });
-    yield providerEvent(request.requestId, 'completed', {});
-  } }, emptyKernel(), fakeRunPreparation().port, 'notice');
-  t.after(() => actor.dispose());
-  await actor.submit(messageCommand(sessionId, 'command:notice', 'Test notice ownership.'));
-  const base = await waitForProjection(actor, projection => projection.run?.status === 'completed');
+  async function completedSession(id, key) {
+    await createSession(journal, id);
+    const actor = actorWith(journal, id, { async *stream(request) {
+      yield providerEvent(request.requestId, 'text.delta', { text: 'Finished.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    } }, emptyKernel(), fakeRunPreparation().port, key);
+    t.after(() => actor.dispose());
+    await actor.submit(messageCommand(id, `command:${key}`, 'Test notice ownership.'));
+    return waitForProjection(actor, projection => projection.run?.status === 'completed');
+  }
+  const base = await completedSession(sessionId, 'notice');
+  const other = await completedSession('session:other', 'other');
   const [{ useLocalAgentStore: store }, { uiEvents, UI_EVENT_TTL_MS }] = await loadGuiModules(t, [
     '/src/state/localAgentStore.ts', '/src/state/uiEvents.ts',
   ]);
@@ -144,8 +149,12 @@ test('GUI projection reads publish a handoff once without replaying history, nav
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let current = { ...base, contextHandoff: { runId: base.run.runId, historyThroughSequence: 1,
     previousProfileId: 'profile:old', profileId: base.run.profileId, status: 'ready' } };
-  const other = { ...base, sessionId: 'session:other' };
-  installGuiFetch(t, async url => {
+  installGuiFetch(t, async (url, init) => {
+    if (init.method === 'POST' && url.pathname.endsWith('/read')) {
+      const id = decodeURIComponent(url.pathname.split('/').at(-2));
+      const page = await readConversation(journal, { ...JSON.parse(init.body), sessionId: id });
+      return Response.json({ ok: true, data: page });
+    }
     if (url.pathname.endsWith('/statuses')) return Response.json({ ok: true, data: [current, other].map(projection => ({
       sessionId: projection.sessionId, revision: projection.revision,
       run: { runId: projection.run.runId, status: projection.run.status },
