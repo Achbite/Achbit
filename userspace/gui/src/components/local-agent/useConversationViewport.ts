@@ -248,8 +248,9 @@ export function useConversationViewport({
     const body = bodyRef.current;
     const node = body && anchors.read(body).byKey.get(key);
     if (!body || !node) return;
+    const target = node.getClientRects().length ? node : node.closest('.conversation-round');
+    if (!target) return;
     applyLatestFollowMode(false);
-    const target = node.getClientRects().length ? node : node.closest('.conversation-round')!;
     writeScrollTop(body.scrollTop + target.getBoundingClientRect().top - body.getBoundingClientRect().top - 12);
     if (activeViewRef.current) sessionViewportsRef.current.set(activeViewRef.current, {
       mode: 'detached', ...capturePosition(),

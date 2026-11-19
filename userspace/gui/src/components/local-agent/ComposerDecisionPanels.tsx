@@ -133,6 +133,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
     const sessionId = projection?.sessionId;
     const operation = Symbol('save-rule');
     pendingRuleSave.current = operation;
+    let persisted = false;
     setRuleSaving(true); setRuleError(null);
     // Child decisions already supply a Session-bound callback. The main store's
     // callback selects at call time, so never invoke it after navigation away.
@@ -145,10 +146,12 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
       const saved = await patchSetting('agent.permissions.commandRules', next);
       if (!saved) throw new Error(useSettingsStore.getState().errorMessage ?? t(language, 'settings.common.saveFailed'));
       if (!stillCurrent()) return;
+      persisted = true;
       await setPermissions({ 'agent.permissions.commandRules': next });
       if (stillCurrent()) setRuleSaved(true);
     } catch (error) {
-      if (stillCurrent()) setRuleError(error instanceof Error ? error.message : String(error));
+      const detail = error instanceof Error ? error.message : String(error);
+      if (stillCurrent()) setRuleError(persisted ? t(language, 'agent.permission.ruleSaved') + ' · ' + detail : detail);
     } finally {
       if (pendingRuleSave.current === operation) {
         pendingRuleSave.current = null;

@@ -277,7 +277,10 @@ function normalizeSettingValue(key: string, value: unknown): UserSettingValue {
     }
     return value;
   }
-  if (typeof defaultValue === 'boolean') return Boolean(value);
+  if (typeof defaultValue === 'boolean') {
+    if (typeof value !== 'boolean') throw new TypeError(key + ': expected a boolean');
+    return value;
+  }
   if (typeof defaultValue === 'number') {
     const n = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(n) ? n : defaultValue;
