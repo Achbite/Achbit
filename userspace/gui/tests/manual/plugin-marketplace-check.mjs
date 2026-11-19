@@ -2,20 +2,33 @@ export async function checkPluginMarketplace({ navigate, evaluate, cmd, until, c
   const root = 'https://github.com/example/achbit-market-fixture', commit = 'a'.repeat(40);
   const source = root + '/tree/' + commit, license = root + '/blob/' + commit + '/LICENSE';
   const download = root + '/releases/download/1.0.0/echo.zip';
-  for (const [lang, width, viewport, installed, discover] of [
-    ['zh-CN', 900, 1040, '已安装', '插件市场'], ['en-US', 380, 412, 'Installed', 'Marketplace'],
+  for (const [lang, width, viewport, all, enabled, installed, discover] of [
+    ['zh-CN', 900, 1040, '全部', '已启用', '已安装', '插件市场'], ['en-US', 380, 412, 'All', 'Enabled', 'Installed', 'Marketplace'],
   ]) {
     await cmd('Emulation.setDeviceMetricsOverride', { width: viewport, height: 900, deviceScaleFactor: 1, mobile: false });
     await navigate('settings-layout');
     await selectFixture('Language', lang);
     await selectFixture('Panel width', String(width));
     await selectFixture('Page', 'plugins');
-    const nav = '.plugin-manager__nav button', active = nav + '[aria-pressed="true"]', other = nav + '[aria-pressed="false"]';
+    const nav = '.plugin-manager__nav button', active = nav + '[aria-pressed="true"]';
+    const allButton = nav + ':nth-of-type(1)', enabledButton = nav + ':nth-of-type(2)', marketButton = '#setting-plugin-marketplace';
     const market = `section[aria-label="${discover}"]`, target = JSON.stringify(market);
-    const current = () => evaluate(`document.querySelector('${active}')?.textContent.trim()`);
+    const current = () => evaluate(`document.querySelector('${active}')?.textContent.trim().replace(/ [0-9]+$/, '')`);
     const matches = () => evaluate(`Array.from(document.querySelector(${target}).querySelectorAll('article h3'), item => item.innerText)`);
-    const defaultInstalled = await current() === installed && await evaluate('window.marketplaceFixture.requests === 0');
-    await click(other);
+    const inventoryRows = () => evaluate("[...document.querySelectorAll('.plugin-manager__summary strong')].map(e=>e.textContent)");
+    const tabNames = () => evaluate(`[...document.querySelectorAll('${nav}')].map(button=>button.textContent.trim())`);
+    await until("document.querySelectorAll('.plugin-manager__summary').length === 2");
+    const labels = await tabNames(), allRows = await inventoryRows();
+    const defaultAll = await current() === all && await evaluate('window.marketplaceFixture.requests === 0');
+    const showsAdd = () => evaluate("!!document.querySelector('.plugin-manager__add')?.getClientRects().length");
+    const allAdd = await showsAdd();
+    await record(`plugin-inventory-all-${lang}-${width}`, {labels, allRows, defaultAll, allAdd},
+      defaultAll && allAdd && labels.join('|') === [all + ' 2', enabled + ' 1', discover].join('|') && allRows.includes('Layout preview plugin'));
+    await click(enabledButton);
+    const enabledRows = await inventoryRows();
+    await record(`plugin-inventory-enabled-${lang}-${width}`, {enabledRows}, await current() === enabled
+      && await showsAdd() && enabledRows.length === 1 && allRows.includes(enabledRows[0]) && !enabledRows.includes('Layout preview plugin'));
+    await click(marketButton);
     await until(`document.querySelector(${target})?.querySelector('[role=alert]')?.textContent.includes('503')`);
     const failedOnce = await evaluate('window.marketplaceFixture.requests === 1');
     await click(market + ' [role="alert"] + button');
@@ -52,11 +65,11 @@ export async function checkPluginMarketplace({ navigate, evaluate, cmd, until, c
     const hasLink = (entry, href, text) => entry.links.some(item => item.href === href && item.text === text);
     const hasSource = entry => entry.links.some(item => item.href === source && item.text === commit.slice(0, 12) &&
       item.title?.includes(commit) && item.accessibleName?.includes(commit));
-    const echoOkay = defaultInstalled && failedOnce && retried && verified.length === 1 && verified[0] === 'Echo Tools'
+    const echoOkay = defaultAll && !await showsAdd() && failedOnce && retried && verified.length === 1 && verified[0] === 'Echo Tools'
       && hasSource(echo) && hasLink(echo, license, 'MIT') && echo.fits && echo.width === width && echo.text.includes('macos-arm64')
       && echo.text.includes(lang === 'zh-CN' ? '开源' : 'Open source')
       && urls.length === 1 && urls[0] === download && await current() === discover;
-    await record(`plugin-market-verified-${lang}-${width}`, { defaultInstalled, failedOnce, retried, verified, echo, urls }, echoOkay);
+    await record(`plugin-market-verified-${lang}-${width}`, { defaultAll, failedOnce, retried, verified, echo, urls }, echoOkay);
 
     await click(market + ' input[type="checkbox"]');
     await type(market + ' input[type="search"]', 'Lee');
@@ -67,12 +80,12 @@ export async function checkPluginMarketplace({ navigate, evaluate, cmd, until, c
     const themeOkay = filtered.length === 1 && filtered[0] === 'Quiet Theme' && hasLink(theme, license, 'Fixture Community License')
       && theme.text.includes(kind) && hasSource(theme) && theme.fits;
     await record(`plugin-market-author-${lang}-${width}`, { filtered, theme }, themeOkay);
-    await click(other);
+    await click(allButton);
     await frame();
-    const returned = await current() === installed && await evaluate(`!document.querySelector(${target})`);
+    const returned = await current() === all && await evaluate(`!document.querySelector(${target})`);
     const writes = await evaluate('window.marketplaceFixture.installations.slice()');
     await record(`plugin-market-return-${lang}-${width}`, { returned, writes }, returned && writes.length === 0);
-    await click(other);
+    await click(marketButton);
     await type(market + ' input[type="search"]', 'Echo');
     const echoRow = market + ' article[aria-label="Echo Tools"]';
     const echoBtn = echoRow + ' button';
@@ -83,7 +96,7 @@ export async function checkPluginMarketplace({ navigate, evaluate, cmd, until, c
     };
     await attempt();
     const queued = await evaluate(`({busy:document.querySelector(${JSON.stringify(echoBtn)}).disabled,writes:window.marketplaceFixture.commands.slice()})`);
-    await click(other); await click(other);
+    await click(enabledButton); await click(marketButton);
     await until(`document.querySelector(${JSON.stringify(echoBtn)})?.getAttribute('aria-busy')==='true'`);
     const persisted = await evaluate('window.marketplaceFixture.commands.length===1');
     let retriedInstall = false;
@@ -100,7 +113,7 @@ export async function checkPluginMarketplace({ navigate, evaluate, cmd, until, c
     const error = await evaluate(`document.querySelector(${JSON.stringify(echoRow + ' [role="alert"]')})?.innerText || ''`);
     await click(echoBtn);
     await until("[...document.querySelectorAll('.plugin-manager__summary[aria-expanded=true]')].some(b=>b.textContent.includes('Echo Tools'))");
-    const managed = await current() === installed;
+    const managed = await current() === all;
     const first = queued.writes[0]?.marketplace;
     await record('plugin-market-install-' + lang + '-' + width, { queued, persisted, retriedInstall, error, success, managed },
       queued.busy && queued.writes.length === 1 && first?.id === 'echo' && first.version === '1.0.0' && first.kind === 'guidance' && first.manifestId === 'Echo Demonstration' && first.sha256 === 'b'.repeat(64)
@@ -149,4 +162,26 @@ export async function checkPluginMarketplace({ navigate, evaluate, cmd, until, c
   const conflict = await evaluate("({error:document.querySelector('.plugin-market article [role=alert]')?.innerText,commands:window.marketplaceFixture.commands.length,requests:window.marketplaceFixture.requests})");
   await record('plugin-market-concurrent-install', conflict, conflict.error?.includes('Plugin already registered') && conflict.commands === 1 && conflict.requests === requests);
   await cmd('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+  await navigate('settings-layout', {fullSettings:'1'});
+  await evaluate("[...document.querySelectorAll('.settings-nav button')].find(button=>button.textContent.trim()==='插件').click()");
+  await until("document.querySelectorAll('.plugin-manager__summary').length===2");
+  await click('.plugin-manager__nav button:nth-of-type(2)');
+  await type('.plugin-manager__tools input', 'GitHub');
+  const selectResult = async title => {
+    await type('.settings-search input', title);
+    const result = `[...document.querySelectorAll('.settings-search-result')].find(button=>button.querySelector('strong')?.innerText===${JSON.stringify(title)})`;
+    await until(result);
+    await evaluate(result + '.click()');
+    await frame();
+  };
+  await selectResult('Layout preview plugin');
+  const revealed = await evaluate(`({
+    title:document.activeElement?.querySelector('strong')?.innerText,
+    view:document.querySelector('.plugin-manager__nav [aria-pressed=true]')?.textContent.trim(),
+    query:document.querySelector('.plugin-manager__tools input')?.value
+  })`);
+  await selectResult('插件市场');
+  const marketFocused = await evaluate("document.activeElement?.id==='setting-plugin-marketplace' && document.activeElement.getAttribute('aria-pressed')==='true'");
+  await record('plugin-inventory-search-navigation', {revealed, marketFocused},
+    revealed.title === 'Layout preview plugin' && revealed.view === '全部 2' && revealed.query === '' && marketFocused);
 }

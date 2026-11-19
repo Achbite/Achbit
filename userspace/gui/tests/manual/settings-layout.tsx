@@ -1,8 +1,9 @@
 // Production settings with isolated desktop/HTTP fixtures; never updates a real installation.
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DEFAULT_USER_SETTINGS } from '@achbit/protocol';
+import { DEFAULT_USER_SETTINGS, type PluginCatalogItem } from '@achbit/protocol';
 import { GuiSettingsSection } from '../../src/components/settings-center/sections/CategorizedSettingsSections';
+import SettingsCenter from '../../src/components/settings-center/SettingsCenter';
 import PluginsSection, { type PluginsView } from '../../src/components/settings-center/sections/PluginsSection';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import { installProductUpdateMonitor, type ProductUpdateStatus } from '../../src/services/productUpdates';
@@ -90,11 +91,16 @@ window.fetch = async (input, init) => {
     return Response.json({ ok: true, data: { plugin: echoManifest, application } });
   }
   if (path.endsWith('/conversation/plugins')) {
-    const plugins = inventory.includes(echoManifest) ? [{
+    const plugins: PluginCatalogItem[] = [{
+      uri: 'plugin://github@first-party', displayName: 'GitHub', shortDescription: 'Read GitHub content.', activationMediaTypes: [],
+      enabled: true, available: true, source: 'builtin', category: 'reference', contributionKind: 'host', discovery: 'searchOnly',
+      management: { key: 'plugins.disabled', id: 'github' },
+    }];
+    if (inventory.includes(echoManifest)) plugins.push({
       uri: 'plugin://echo@fixture', displayName: 'Echo Tools', shortDescription: 'Echo sample.', activationMediaTypes: [],
       enabled: true, available: true, source: 'mounted', category: 'reference', contributionKind: 'skill', discovery: 'searchOnly',
       management: { key: 'skills.mounts', id: 'mount-fixture', path: echoManifest.path },
-    }] : [];
+    });
     return Response.json({ ok: true, data: { revision: 'fixture', plugins } });
   }
   if (path.endsWith('/host/plugins/inspect')) return Response.json({ ok: true, data: {
@@ -152,7 +158,7 @@ function geometry() {
 type Page = 'about' | 'appearance' | 'general' | 'plugins';
 function Fixture() {
   const [page, setPage] = useState<Page>('about');
-  const [pluginsView, setPluginsView] = useState<PluginsView>('installed');
+  const [pluginsView, setPluginsView] = useState<PluginsView>({ tab: 'all', search: '' });
   const [width, setWidth] = useState(900);
   const [scale, setScale] = useState(1);
   const [language, setLanguage] = useState<UiLanguage>('zh-CN');
@@ -225,6 +231,8 @@ function Fixture() {
   </>;
 }
 const root = createRoot(document.getElementById('root')!);
-root.render(<Fixture />);
+root.render(new URLSearchParams(location.search).has('fullSettings')
+  ? <SettingsCenter apiStatus="connected" serverVersion="preview" />
+  : <Fixture />);
 window.addEventListener('achbit:request-interface-reload', () => { calls.push('interface-reload'); });
 window.addEventListener('pagehide', () => { root.unmount(); void stopMonitor.then(stop => stop()); window.__TAURI__ = originalTauri; window.fetch = originalFetch; window.__ACHBIT_BROWSER_PREVIEW__ = originalPreview; }, { once: true });

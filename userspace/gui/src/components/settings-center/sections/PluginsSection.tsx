@@ -55,9 +55,10 @@ function sourceList(value: unknown): Source[] {
 const filename = (path: string) => path.split(/[\\/]/u).filter(Boolean).at(-1) ?? path;
 
 /** Inventory reads the existing settings owners and live display registry; saving does not invent runtime state. */
-export type PluginsView = 'installed' | 'discover';
+export interface PluginsView { tab: 'all' | 'enabled' | 'discover'; search: string }
 
 export default function PluginsSection({ view, setView }: { view: PluginsView; setView(view: PluginsView): void }) {
+  const { tab, search } = view;
   const settings = useSettingsStore((state) => state.effectiveSettings);
   const patch = useSettingsStore((state) => state.patchUserSetting);
   const language = normalizeUiLanguage(settings['workbench.language']),
@@ -71,9 +72,7 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
   const [error, setError] = useState<string | null>(null),
     [itemErrors, setItemErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false),
-    [revision, setRevision] = useState(0),
-    [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<'all' | 'enabled'>('all');
+    [revision, setRevision] = useState(0);
   const [managePath, setManagePath] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null),
     [choosing, setChoosing] = useState(false);
@@ -218,19 +217,19 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
   ]);
   const shown = items.filter(
     (item) =>
-      (filter === 'all' || item.enabled) &&
+      (tab !== 'enabled' || item.enabled) &&
       `${item.name} ${item.description}`
         .toLowerCase()
         .includes(search.trim().toLowerCase()),
   );
   useEffect(() => {
-    if (view !== 'installed' || !managePath) return;
+    if (tab !== 'all' || !managePath) return;
     const item = items.find(item => item.path === managePath);
     if (!item) return;
     setExpanded(item.id);
     setManagePath(null);
     document.getElementById('setting-plugin-' + item.id)?.scrollIntoView({ block: 'nearest' });
-  }, [view, managePath, items]);
+  }, [tab, managePath, items]);
   const refreshInstallation = async () => {
     await useSettingsStore.getState().loadUserSettings();
     setRevision(value => value + 1);
@@ -336,7 +335,7 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
         <div>
           <h2 className="settings-title">{chinese ? '插件' : 'Plugins'}</h2>
         </div>
-        {view === 'installed' && <button
+        {tab !== 'discover' && <button
           className="settings-button plugin-manager__add"
           ref={addButton}
           disabled={busy}
@@ -346,57 +345,46 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
           {chinese ? '添加…' : 'Add…'}
         </button>}
       </header>
-      <div className="plugin-manager__nav" role="group" aria-label={t(language, 'settings.plugins.market.sections')}>
-        {(['installed', 'discover'] as const).map(key =>
-          <Button key={key} id={key === 'discover' ? 'setting-plugin-marketplace' : undefined} aria-pressed={view === key} onClick={() => setView(key)}>
-            {t(language, 'settings.plugins.market.' + key)}
-          </Button>
-        )}
-      </div>
-      <PluginMarketplace active={view === 'discover'} language={language} onInstalled={() => void refreshInstallation()} onManage={path => {
-        setFilter('all');
-        setSearch('');
-        setManagePath(path);
-        setView('installed');
-      }} />
-      <div hidden={view !== 'installed'}>
-      <div className="plugin-manager__filters">
-        <div role="group" aria-label={t(language, 'settings.plugins.filter')}>
-          {(['all', 'enabled'] as const).map((key) => (
-            <button
-              key={key}
-
-              aria-pressed={filter === key}
-              onClick={() => setFilter(key)}
-            >
-              {key === 'all' ? (chinese ? '全部' : 'All') : chinese ? '已启用' : 'Enabled'}{' '}
-              <small>
-                {key === 'all' ? items.length : items.filter((item) => item.enabled).length}
-              </small>
-            </button>
+      <div className="plugin-manager__toolbar">
+        <div className="plugin-manager__nav" role="group" aria-label={t(language, 'settings.plugins.market.sections')}>
+          {(['all', 'enabled'] as const).map(key => (
+            <Button key={key} aria-pressed={tab === key} onClick={() => setView({ tab: key, search })}>
+              {t(language, 'settings.plugins.views.' + key)}{' '}
+              <small>{key === 'all' ? items.length : items.filter(item => item.enabled).length}</small>
+            </Button>
           ))}
+          <Button id="setting-plugin-marketplace" aria-pressed={tab === 'discover'} onClick={() => setView({ tab: 'discover', search })}>
+            {t(language, 'settings.plugins.market.discover')}
+          </Button>
         </div>
-        <label>
-          <AchbitShellIcon name="search" />
-          <input
-            placeholder={chinese ? '搜索插件' : 'Search plugins'}
-            aria-label={chinese ? '搜索插件' : 'Search plugins'}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </label>
-        <button
-          className="reader-icon-button"
-          title={t(language, 'settings.plugins.refresh')}
-          aria-label={t(language, 'settings.plugins.refresh')}
-          onClick={() => {
-            setRevision((value) => value + 1);
-            ui.refresh?.();
-          }}
-        >
-          <AchbitShellIcon name="refresh" />
-        </button>
+        {tab !== 'discover' && <div className="plugin-manager__tools">
+          <label>
+            <AchbitShellIcon name="search" />
+            <input
+              placeholder={chinese ? '搜索插件' : 'Search plugins'}
+              aria-label={chinese ? '搜索插件' : 'Search plugins'}
+              value={search}
+              onChange={(event) => setView({ tab, search: event.target.value })}
+            />
+          </label>
+          <button
+            className="reader-icon-button"
+            title={t(language, 'settings.plugins.refresh')}
+            aria-label={t(language, 'settings.plugins.refresh')}
+            onClick={() => {
+              setRevision((value) => value + 1);
+              ui.refresh?.();
+            }}
+          >
+            <AchbitShellIcon name="refresh" />
+          </button>
+        </div>}
       </div>
+      <PluginMarketplace active={tab === 'discover'} language={language} onInstalled={() => void refreshInstallation()} onManage={path => {
+        setManagePath(path);
+        setView({ tab: 'all', search: '' });
+      }} />
+      <div hidden={tab === 'discover'}>
       {(error || config.error || ui.connectionError) && (
         <p role="alert" className="settings-error">
           {error ?? config.error ?? ui.connectionError}

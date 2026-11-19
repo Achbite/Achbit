@@ -48,7 +48,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   const targets = useRef(new Map<string, HTMLElement>());
   const pendingTarget = useRef<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [pluginsView, setPluginsView] = useState<PluginsView>('installed');
+  const [pluginsView, setPluginsView] = useState<PluginsView>({ tab: 'all', search: '' });
   const [visited, setVisited] = useState<SettingsKey[]>([activeKey]);
   useInterfaceReloadView('settingsPage', activeKey);
   const language = normalizeUiLanguage(
@@ -80,7 +80,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
     interaction.clearReveal();
     pendingTarget.current = target ?? null;
     if (key === 'plugins' && target?.startsWith('plugin-')) {
-      setPluginsView(target === 'plugin-marketplace' ? 'discover' : 'installed');
+      setPluginsView({ tab: target === 'plugin-marketplace' ? 'discover' : 'all', search: '' });
     }
     if (key !== activeKey && scrollRef.current) scrollRef.current.scrollTop = 0;
     setActiveKey(key); setSearchQuery('');
