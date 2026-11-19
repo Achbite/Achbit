@@ -836,26 +836,35 @@ fn tool_contract(
     definition: &RemoteToolDefinition,
 ) -> Result<McpToolContract, McpRuntimeError> {
     match &server.contract {
-        McpServerContract::External | McpServerContract::LocalCli { .. } => Ok(McpToolContract {
-            public_name: if server.setting.transport == "cli" {
+        McpServerContract::External | McpServerContract::LocalCli { .. } => {
+            let server_name = normalized_name(&server.setting.id);
+            let remote_name = normalized_name(&definition.name);
+            let contribution_name = format!("mcp.{server_name}.{remote_name}");
+            let public_name = if server.setting.transport == "cli" {
                 format!("{}.{}", server.setting.id, definition.name)
             } else {
-                public_tool_name(&server.setting.id, &definition.name)?
-            },
-            description: definition
-                .description
-                .clone()
-                .unwrap_or_else(|| format!("MCP tool {}", definition.name)),
-            input_schema: definition.input_schema.clone(),
-            provider_ref: server.descriptor.provider_ref.clone(),
-            contribution_ref: format!(
-                "tool-contribution:mcp:{}",
-                public_tool_name(&server.setting.id, &definition.name)?
-            ),
-            effect_scope: McpToolEffectScope::External,
-            logical_target: None,
-            binding_requirement: McpToolBindingRequirement::None,
-        }),
+                contribution_name.clone()
+            };
+            if remote_name.is_empty() || public_name.len() > 128 {
+                return Err(McpRuntimeError::new(
+                    "mcp_tool_name_invalid",
+                    format!("MCP 工具名称无法映射：{}", definition.name),
+                ));
+            }
+            Ok(McpToolContract {
+                public_name,
+                description: definition
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("MCP tool {}", definition.name)),
+                input_schema: definition.input_schema.clone(),
+                provider_ref: server.descriptor.provider_ref.clone(),
+                contribution_ref: format!("tool-contribution:mcp:{contribution_name}"),
+                effect_scope: McpToolEffectScope::External,
+                logical_target: None,
+                binding_requirement: McpToolBindingRequirement::None,
+            })
+        }
         McpServerContract::FirstParty(tools) => {
             let tool = tools
                 .iter()
@@ -1849,19 +1858,6 @@ fn decode_frame(server_id: &str, frame: Vec<u8>) -> Result<Value, McpRuntimeErro
     Ok(value)
 }
 
-fn public_tool_name(server_id: &str, remote_name: &str) -> Result<String, McpRuntimeError> {
-    let server = normalized_name(server_id);
-    let remote = normalized_name(remote_name);
-    let name = format!("mcp.{server}.{remote}");
-    if remote.is_empty() || name.len() > 128 {
-        return Err(McpRuntimeError::new(
-            "mcp_tool_name_invalid",
-            format!("MCP 工具名称无法映射：{remote_name}"),
-        ));
-    }
-    Ok(name)
-}
-
 fn normalized_name(value: &str) -> String {
     value
         .chars()
@@ -1880,6 +1876,7 @@ fn normalized_name(value: &str) -> String {
 fn split_args(value: &str) -> Result<Vec<String>, McpRuntimeError> {
     let mut args = Vec::new();
     let mut current = String::new();
+    let mut started = false;
     let mut quote = None;
     let mut escaped = false;
     for character in value.chars() {
@@ -1889,10 +1886,12 @@ fn split_args(value: &str) -> Result<Vec<String>, McpRuntimeError> {
             continue;
         }
         if character == '\\' && quote != Some('\'') {
+            started = true;
             escaped = true;
             continue;
         }
         if matches!(character, '\'' | '"') {
+            started = true;
             if quote == Some(character) {
                 quote = None;
             } else if quote.is_none() {
@@ -1903,10 +1902,12 @@ fn split_args(value: &str) -> Result<Vec<String>, McpRuntimeError> {
             continue;
         }
         if character.is_whitespace() && quote.is_none() {
-            if !current.is_empty() {
+            if started {
                 args.push(std::mem::take(&mut current));
+                started = false;
             }
         } else {
+            started = true;
             current.push(character);
         }
     }
@@ -1916,7 +1917,7 @@ fn split_args(value: &str) -> Result<Vec<String>, McpRuntimeError> {
             "MCP Server args 中的引号或转义未闭合。",
         ));
     }
-    if !current.is_empty() {
+    if started {
         args.push(current);
     }
     Ok(args)
@@ -1941,6 +1942,57 @@ const fn enabled_by_default() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_args_preserve_explicit_empty_arguments() {
+        assert_eq!(split_args(r#"a "" '' b"#).unwrap(), ["a", "", "", "b"]);
+        assert_eq!(split_args(r#""""#).unwrap(), [""]);
+        assert_eq!(
+            split_args(r#"a""b 'x y' z\ w"#).unwrap(),
+            ["ab", "x y", "z w"]
+        );
+        assert!(split_args("   ").unwrap().is_empty());
+        assert!(split_args("'unclosed").is_err());
+        assert!(split_args("unfinished\\").is_err());
+    }
+
+    #[test]
+    fn cli_name_limit_counts_the_public_name_and_preserves_contribution_identity() {
+        let directory = TestDirectory::new();
+        let id = "A".repeat(64);
+        let name = "b".repeat(63);
+        let definition = |name: &str| RemoteToolDefinition {
+            name: name.into(),
+            description: Some("fixture".into()),
+            input_schema: default_input_schema(),
+        };
+        std::fs::write(directory.0.join("entry.js"), "// fixture").unwrap();
+        std::fs::write(directory.0.join("achbit-tool.json"), json!({
+            "id":id, "name":"fixture", "description":"fixture", "command":"node", "entry":"entry.js",
+            "tools":[{"name":name,"description":"fixture"}]
+        }).to_string()).unwrap();
+        let local = local_cli_source(LocalPluginSource {
+            id: id.clone(),
+            path: directory.0.to_string_lossy().into(),
+            enabled: true,
+        });
+        assert!(local.descriptor.error.is_none());
+        let advertised = tool_contract(&local, &definition(&name)).unwrap();
+        assert_eq!(advertised.public_name, format!("{id}.{name}"));
+        assert_eq!(
+            advertised.contribution_ref,
+            format!("tool-contribution:mcp:mcp.{id}.{name}")
+        );
+        assert!(tool_contract(&local, &definition(&format!("{name}x"))).is_err());
+        let external = external_server_source(
+            serde_json::from_value(json!({
+                "id":id,"name":"fixture","command":"node","transport":"stdio"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(tool_contract(&external, &definition(&name)).is_err());
+    }
 
     #[test]
     fn chrome_platform_runtime_preserves_paths_and_disabled_settings() {
