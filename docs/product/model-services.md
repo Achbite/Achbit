@@ -141,7 +141,7 @@ Hosted search citations need a source-to-URL mapping. An unresolved `[?]` cannot
 
 ## Image attachments
 
-Attach supported PNG/JPEG/WebP/GIF files through Files and folders or CLI `--file`. The profile must support image input; enable the capability for a custom model only when its service supports it. The local limit is 8 MiB per image; encoded data also counts toward request size.
+Attach supported PNG/JPEG/WebP/GIF files through Files and folders or CLI `--file`. The profile must support image input; enable the capability for a custom model only when its service supports it. Images up to and including 8 MiB keep their original bytes. For pasted and selected static images over 8 MiB and up to 32 MiB, the Host prepares a local copy: it preserves aspect ratio and transparency, caps the long edge at 2048 pixels, and reduces it further only if needed to fit 8 MiB. JPEG stays JPEG; other oversized static formats use PNG. Selected files are never overwritten. Oversized animations are rejected instead of silently dropping frames. Oversized images above 32 megapixels or 16384 pixels on either axis require manual resizing. These are attachment limits, not a change to tool output or the model’s total request budget.
 
 Pixels enter one successful logical request, including its retries. Later requests carry archived references; reopen exact current-session images with `session.read` → `images` for comparison. A filename, live preview or archived resource alone is not visual evidence. File attachment does not grant access to its parent directory.
 
