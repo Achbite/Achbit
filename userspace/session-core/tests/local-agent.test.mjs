@@ -1312,6 +1312,47 @@ test('snapshot consumes the write publication without journal reads and matches 
   assert.equal(updated.modelSettings.profileId, 'profile:new');
 });
 
+test('a delayed or unacknowledged journal write publishes a streamed answer without a projection gap', async t => {
+  for (const lostAck of [false, true]) {
+    await t.test(lostAck ? 'committed but acknowledgement lost' : 'durable acknowledgement', async () => {
+      const journal = new InMemoryCommandJournal();
+      const sessionId = 'session:stream-publication';
+      await createSession(journal, sessionId);
+      const writing = Promise.withResolvers();
+      const finish = Promise.withResolvers();
+      const appendBatch = journal.appendBatch.bind(journal);
+      journal.appendBatch = async events => {
+        if (!events.some(event => event.type === 'message.committed' && event.payload.role === 'assistant')) return appendBatch(events);
+        writing.resolve();
+        await finish.promise;
+        const committed = await appendBatch(events);
+        if (lostAck) throw new Error('acknowledgement_lost');
+        return committed;
+      };
+      const answer = 'A streamed answer.';
+      const provider = { async *stream(request) {
+        yield providerEvent(request.requestId, 'text.delta', { text: answer });
+        yield providerEvent(request.requestId, 'completed', {});
+      } };
+      const actor = actorWith(journal, sessionId, provider, emptyKernel(), fakeRunPreparation().port, 'stream-publish');
+      try {
+        await actor.submit(messageCommand(sessionId, 'command:start', 'A question.'));
+        await writing.promise;
+        const pending = await actor.snapshot();
+        assert.equal(pending.assistantDraft?.blocks.at(-1)?.content, answer);
+        assert.equal(pending.messages.some(message => message.role === 'assistant'), false);
+        finish.resolve();
+        const published = await waitForProjection(actor, value => value.messages.some(message => message.role === 'assistant'));
+        assert.equal(published.assistantDraft, null);
+        assert.deepEqual(published.messages.filter(message => message.role === 'assistant').map(message => message.content), [answer]);
+      } finally {
+        finish.resolve();
+        await actor.dispose();
+      }
+    });
+  }
+});
+
 test('Actor recovers a lost write acknowledgement once and publishes before subsequent reads', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:lost-ack';
   await createSession(journal, sessionId);
@@ -4621,6 +4662,86 @@ test('an explicit Provider failure remains failed with its original error', asyn
   assertEventOrder(composition, providerSettlement, settlement);
 
   await actor.dispose();
+});
+
+for (const wire of ['ordered', 'aggregate']) test(`hosted search response usage stays billable and dispatches skill.read once (${wire})`, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = `session:hosted-usage-${wire}`;
+  await createSession(journal, sessionId);
+  const usage = wire === 'ordered'
+    ? { inputTokens: 1144538, outputTokens: 2415, contextWindowTokens: 1024000, cacheReadInputTokens: 883712, cacheMissInputTokens: 260826, reasoningOutputTokens: 1266 }
+    : { inputTokens: 480, outputTokens: 25, contextWindowTokens: 1024000, cacheReadInputTokens: 400, cacheMissInputTokens: 80, reasoningOutputTokens: 5 };
+  const preparation = fakeRunPreparation({ apiSurface: 'responses', contextWindowTokens: usage.contextWindowTokens,
+    webSearch: { owner: 'providerHosted', providerToolType: 'web_search' }, hostedWebSearch: 'web_search',
+    tools: [{ name: 'skill.read', toolBindingRef: 'binding:skill', origin: 'coreBuiltin', availability: 'callable',
+      description: 'Read a bundled skill.', possibleEffects: [],
+      inputSchema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } } }] });
+  const requests = [], executions = [], input = { name: 'achbit-product' };
+  const provider = { async *stream(request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      for (let i = 0; i < 4; i++) {
+        const item = { type: 'web_search_call', id: `ws_${i}`, status: 'completed', action: { type: 'search', query: `q${i}` } };
+        yield wire === 'ordered' ? providerEvent(request.requestId, 'output.item.completed', { outputIndex: i, item })
+          : providerEvent(request.requestId, 'hosted.web-search.completed', { item });
+      }
+      if (wire === 'ordered') yield providerEvent(request.requestId, 'output.item.completed', { outputIndex: 4,
+        item: { type: 'function_call', id: 'fc_skill', call_id: 'call_skill', name: 'skill_read', arguments: JSON.stringify(input), status: 'completed' } });
+      else yield providerEvent(request.requestId, 'tool.call', { callId: 'call_skill', name: 'skill_read', input });
+      yield providerEvent(request.requestId, 'completed', { usage });
+    } else {
+      yield providerEvent(request.requestId, 'assistant.message', { messageId: 'answer:skill', content: 'Skill read.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    }
+  } };
+  const actor = actorWith(journal, sessionId, provider, emptyKernel({ async execute(request) {
+    executions.push({ name: request.toolName, input: request.input });
+    return completedExecutionReply(request, { content: 'skill-content-marker' });
+  } }), preparation.port, `hosted-${wire}`);
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:hosted', 'Search and read the skill.'));
+  const projection = await waitForProjection(actor, value => ['completed', 'failed'].includes(value.run?.status));
+  assert.equal(projection.run.status, 'completed', JSON.stringify(projection.terminalError));
+  assert.deepEqual(executions, [{ name: 'skill.read', input }]);
+  assert.equal(requests.length, 2);
+  const toolMessages = requests[1].messages.filter(message => message.role === 'tool');
+  assert.deepEqual(toolMessages.map(message => message.providerCallId), ['call_skill']);
+  assert.match(toolMessages[0].content, /skill-content-marker/u);
+  const events = await readEvents(journal, sessionId);
+  for (const type of ['tool.requested', 'tool.completed', 'context.updated']) assert.equal(events.filter(event => event.type === type).length, 1, type);
+  const updated = events.findIndex(event => event.type === 'context.updated');
+  const state = loopSnapshot(sessionId, events.slice(0, updated + 1)).state;
+  assert.equal(state.contextUsage, null, 'hosted response totals do not measure any one context window');
+  const partitions = state.contextCompositions.find(receipt => receipt.providerRequestId === requests[0].requestId).partitions;
+  assert.ok(partitions.length > 0 && partitions.every(part => part.estimatedInputTokens === undefined));
+  for (const aggregate of [projection.tokenUsage, ...projection.tokenUsageHistory]) {
+    for (const key of ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheMissInputTokens']) assert.equal(aggregate[key], usage[key], key);
+    assert.equal(aggregate.reasoningUsage.outputTokens, usage.reasoningOutputTokens);
+    assert.equal(aggregate.reportedCallCount, 1);
+  }
+});
+
+test('Provider usage validation reports conflicting counts and distinguishes observed hosted steps', async t => {
+  for (const { label, hosted, usage, fields } of [
+    { label: 'single', hosted: false, usage: { inputTokens: 4100, outputTokens: 2 }, fields: ['inputTokens=4100', 'outputTokens=2', 'contextWindowTokens=4096'] },
+    { label: 'reasoning', hosted: true, usage: { inputTokens: 4100, outputTokens: 2, reasoningOutputTokens: 3 }, fields: ['reasoningOutputTokens=3', 'outputTokens=2'] },
+    { label: 'cache', hosted: true, usage: { inputTokens: 4100, outputTokens: 2, cacheReadInputTokens: 4000, cacheMissInputTokens: 80 }, fields: ['cacheReadInputTokens=4000', 'cacheMissInputTokens=80', 'inputTokens=4100'] },
+  ]) {
+    const journal = new InMemoryCommandJournal(), sessionId = `session:usage-boundary-${label}`;
+    await createSession(journal, sessionId);
+    const preparation = fakeRunPreparation({ apiSurface: 'responses', contextWindowTokens: 4096,
+      webSearch: { owner: 'providerHosted', providerToolType: 'web_search' }, hostedWebSearch: 'web_search' });
+    const actor = actorWith(journal, sessionId, { async *stream(request) {
+      if (hosted) yield providerEvent(request.requestId, 'output.item.completed', { outputIndex: 0,
+        item: { type: 'web_search_call', id: 'ws_bound', status: 'completed' } });
+      yield providerEvent(request.requestId, 'completed', { usage: { ...usage, contextWindowTokens: 4096 } });
+    } }, emptyKernel(), preparation.port, label);
+    t.after(() => actor.dispose());
+    await actor.submit(messageCommand(sessionId, 'command:invalid', 'Check the usage boundary.'));
+    const failed = await waitForProjection(actor, value => value.run?.status === 'failed');
+    assert.equal(failed.terminalError.code, 'provider_usage_invalid');
+    for (const field of fields) assert.ok(failed.terminalError.message.includes(field), failed.terminalError.message);
+    assert.ok(!(await readEvents(journal, sessionId)).some(event => event.type === 'context.updated'));
+  }
 });
 
 test('Provider cache fields are absent together or exactly partition one call input', async () => {

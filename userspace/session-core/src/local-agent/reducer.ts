@@ -1,4 +1,5 @@
 import { isHandoffRead } from './modelContext.js';
+import { hasHostedSearchSteps } from './contextBudget.js';
 import { shellCommandIntents } from './shellIntent.js';
 import { isAgentLifetimeEvent, reduceAgentLifetime, type AgentLifetime } from './agentLifecycle.js';
 import { isManagedProcessSnapshot, providerRuntimeForPurpose, decodeProviderNativeReplay } from '@achbit/protocol';
@@ -1162,18 +1163,23 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       const receiptIndex = compositionIndex(next, providerRequestId, replay);
       if (receiptIndex < 0 || next.contextCompositions[receiptIndex].runId !== event.runId) throw new Error('provider_request_receipt_missing');
       next.providerUsageRequestIds[providerRequestId] = true;
-      const receipt = next.contextCompositions[receiptIndex];
-      next.contextCompositions[receiptIndex] = {
-        ...receipt,
-        partitions: estimatePartitionTokens(receipt.partitions, event.payload.inputTokens),
-      };
-      if (turn.purpose === 'agent') next.contextUsage = {
-        ...event.payload,
-        providerRequestId,
-        runId: event.runId,
-        sequence: event.sequence,
-        updatedAt: event.occurredAt,
-      };
+      if (!hasHostedSearchSteps(turn.hostedWebSearchCalls, turn.orderedOutputBlocks)) {
+        if (addTokenCount(event.payload.inputTokens, event.payload.outputTokens) > provider.contextWindowTokens) {
+          throw new Error('provider_usage_exceeds_context_window');
+        }
+        const receipt = next.contextCompositions[receiptIndex];
+        next.contextCompositions[receiptIndex] = {
+          ...receipt,
+          partitions: estimatePartitionTokens(receipt.partitions, event.payload.inputTokens),
+        };
+        if (turn.purpose === 'agent') next.contextUsage = {
+          ...event.payload,
+          providerRequestId,
+          runId: event.runId,
+          sequence: event.sequence,
+          updatedAt: event.occurredAt,
+        };
+      }
       next.tokenUsage = withProviderUsage(next.tokenUsage, event.payload);
       const runUsage = next.tokenUsageHistory[event.runId];
       if (!runUsage) throw new Error('token_usage_run_missing');
@@ -1679,7 +1685,7 @@ function timelineIndexes(state: SessionState) {
   };
 }
 
-function projectTimeline(state: SessionState): SessionProjection['timeline'] {
+export function projectTimeline(state: SessionState): SessionProjection['timeline'] {
   const index = timelineIndexes(state);
   const groups: Array<{
     sequence: number;

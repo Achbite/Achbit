@@ -3385,23 +3385,31 @@ fn validate_new_event(
             )?;
             let input_tokens = required_u64(payload, "inputTokens")?;
             let output_tokens = required_u64(payload, "outputTokens")?;
-            if payload.get("reasoningOutputTokens").is_some()
-                && required_u64(payload, "reasoningOutputTokens")? > output_tokens
-            {
-                return Err(LocalAgentStoreError::new(
-                    "session_event_invalid",
-                    "Reasoning tokens 超过总输出 tokens。",
-                ));
+            if payload.get("reasoningOutputTokens").is_some() {
+                let reasoning = required_u64(payload, "reasoningOutputTokens")?;
+                if reasoning > output_tokens {
+                    return Err(LocalAgentStoreError::new(
+                        "session_event_invalid",
+                        format!(
+                            "reasoningOutputTokens={reasoning} 超过 outputTokens={output_tokens}。"
+                        ),
+                    ));
+                }
             }
             let context_window_tokens = required_u64(payload, "contextWindowTokens")?;
-            if context_window_tokens == 0
-                || input_tokens
-                    .checked_add(output_tokens)
-                    .is_none_or(|total| total > context_window_tokens)
-            {
+            if context_window_tokens == 0 {
                 return Err(LocalAgentStoreError::new(
                     "session_event_invalid",
-                    "context.updated token 用量超过上下文窗口。",
+                    "contextWindowTokens=0，需要正整数。",
+                ));
+            }
+            // The receipt contains response totals, including any provider-hosted steps.
+            if input_tokens.checked_add(output_tokens).is_none() {
+                return Err(LocalAgentStoreError::new(
+                    "session_event_invalid",
+                    format!(
+                        "inputTokens={input_tokens} 与 outputTokens={output_tokens} 之和溢出。"
+                    ),
                 ));
             }
             let cache_read = payload.get("cacheReadInputTokens");
@@ -3421,7 +3429,7 @@ fn validate_new_event(
                 {
                     return Err(LocalAgentStoreError::new(
                         "session_event_invalid",
-                        "context.updated 缓存 token 必须完整划分输入 token。",
+                        format!("cacheReadInputTokens={read} 与 cacheMissInputTokens={miss} 之和必须等于 inputTokens={input_tokens}。"),
                     ));
                 }
             }
@@ -7024,6 +7032,34 @@ mod tests {
                 .code,
             "session_not_found"
         );
+    }
+
+    #[test]
+    fn hosted_response_usage_round_trips_through_the_journal() {
+        let journal = LocalAgentJournal::open(Path::new(":memory:")).unwrap();
+        let session_id = "session:hosted-usage";
+        journal
+            .create_session(session_id, "Hosted", &json!([]), None, None)
+            .unwrap();
+        journal
+            .append(&json!({"type":"message.committed","sessionId":session_id,
+            "payload":{"messageId":"message:input","role":"user","content":"Search the project."}}))
+            .unwrap();
+        journal.append(&json!({"type":"run.started","sessionId":session_id,"runId":"run:usage",
+            "payload":{"inputMessageId":"message:input","workspaceBindings":[],"runtimeSnapshot":runtime_snapshot()}})).unwrap();
+        journal.append(&json!({"type":"provider.turn.settled","sessionId":session_id,"runId":"run:usage",
+            "payload":{"providerRequestId":"request:search","providerRuntimeRef":"provider-runtime:test","purpose":"agent",
+                "outcome":"completed","orderedCallIds":[],"orderedOutputBlocks":[{"outputIndex":0,"kind":"providerHosted",
+                    "activityId":"activity:search","providerCallId":"ws_1","providerToolType":"web_search",
+                    "item":{"type":"web_search_call","id":"ws_1","status":"completed"}},
+                {"outputIndex":1,"kind":"finalMessage","messageId":"message:answer",
+                    "item":{"type":"message","content":[{"type":"output_text","text":"Found."}]}}]}})).unwrap();
+        let usage = json!({"providerRequestId":"request:search","providerRuntimeRef":"provider-runtime:test",
+            "inputTokens":1144538,"outputTokens":2415,"contextWindowTokens":1024000,
+            "cacheReadInputTokens":883712,"cacheMissInputTokens":260826,"reasoningOutputTokens":1266});
+        journal.append(&json!({"type":"context.updated","sessionId":session_id,"runId":"run:usage","payload":usage})).unwrap();
+        let history = journal.read_provider_usage(session_id).unwrap();
+        assert_eq!(history["events"][1]["payload"], usage);
     }
 
     #[test]

@@ -1,5 +1,13 @@
-import type { ContextCompositionReceipt, RunRuntimeSnapshot, SessionEvent } from '@achbit/protocol';
+import type { ContextCompositionReceipt, JsonObject, RunRuntimeSnapshot, SessionEvent } from '@achbit/protocol';
 import type { SessionState } from './reducer.js';
+
+/** A response that ran hosted steps reports no separate single-step window measurement. */
+export function hasHostedSearchSteps(
+  aggregateItems: readonly JsonObject[] | undefined,
+  orderedItems: readonly { item: JsonObject }[] | undefined,
+): boolean {
+  return Boolean(aggregateItems?.length || orderedItems?.some(({ item }) => item.type === 'web_search_call'));
+}
 
 function contextShapeUnits(
   partitions: readonly { requestShapeUnits: number }[],

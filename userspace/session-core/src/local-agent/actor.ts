@@ -200,7 +200,9 @@ export class SessionActor {
   }
 
   async snapshot(): Promise<SessionProjection> {
-    const projection = projectSession((await this.loadSnapshot()).state, this.#assistantDraft);
+    // Recovery can replace the cached revision while a reader awaits initialization.
+    while (!this.#snapshot) await this.loadSnapshot();
+    const projection = projectSession(this.#snapshot.state, this.#assistantDraft);
     for (const activity of projection.activities) {
       if (activity.status === 'active' && activity.callId) {
         const output = this.#liveToolOutput.get(activity.callId);
@@ -1888,9 +1890,6 @@ export class SessionActor {
     if (!events.length) return;
     events = this.#timing.decorate(events);
     admitSessionEvents(current, events);
-    const previousDraft = this.#assistantDraft;
-    const closesDraft = current.state.run && closesAssistantDraft(events, current.state.run.runId);
-    if (closesDraft) this.#assistantDraft = null;
     try {
       const committed = events.length === 1
         ? [await this.#journal.append(events[0]!)]
@@ -1898,7 +1897,6 @@ export class SessionActor {
       this.publishEvents(committed);
       for (const event of committed) await this.observe(event);
     } catch (error) {
-      if (closesDraft) this.#assistantDraft = previousDraft;
       await this.recoverFailedWrite(error);
       throw error;
     }
@@ -1946,9 +1944,14 @@ export class SessionActor {
       : { journalEvents: [...current.journalEvents, ...added], events: [...current.events, ...added],
         state: added.reduce(reduceSession, current.state) };
     this.#snapshot = { ...this.#snapshot, state: { ...this.#snapshot.state, publishedPermissions: this.#publishedPermissions } };
+    this.retireCommittedDraft(added);
   }
 
-  private async loadSnapshot(): Promise<LoopSnapshot> {
+  private retireCommittedDraft(events: readonly SessionEvent[]): void {
+    if (this.#assistantDraft && closesAssistantDraft(events, this.#assistantDraft.runId)) this.#assistantDraft = null;
+  }
+
+  private async loadSnapshot(recoverAfter?: number): Promise<LoopSnapshot> {
     if (this.#snapshot) return this.#snapshot;
     this.#initialSnapshot ??= (async () => {
       const events: SessionEvent[] = [...this.#initialEvents ?? []];
@@ -1957,6 +1960,9 @@ export class SessionActor {
       const snapshot = loopSnapshot(this.sessionId, events);
       this.#timing.restore(Object.values(snapshot.state.runTimings));
       snapshot.state.publishedPermissions = this.#publishedPermissions;
+      if (recoverAfter !== undefined && this.#assistantDraft) {
+        this.retireCommittedDraft(events.filter(event => event.sequence > recoverAfter));
+      }
       return this.#snapshot = snapshot;
     })();
     return this.#initialSnapshot;
@@ -1970,7 +1976,7 @@ export class SessionActor {
     this.#initialEvents = undefined;
     this.#initialSnapshot = undefined;
     try {
-      const recovered = await this.loadSnapshot();
+      const recovered = await this.loadSnapshot(revision);
       for (const event of recovered.journalEvents) if (event.sequence > revision) await this.observe(event);
     } catch (error) {
       this.#loopFailure = new AggregateError([original, error], 'session_commit_recovery_failed');

@@ -239,13 +239,13 @@ impl ProviderStreamAccumulator {
         else {
             return Ok(None);
         };
-        if self
+        if let Some(reasoning) = self
             .reasoning_output_tokens
-            .is_some_and(|tokens| tokens > output_tokens)
+            .filter(|tokens| *tokens > output_tokens)
         {
             return Err(ProviderStreamError::new(
                 "provider_usage_invalid",
-                "Reasoning tokens 超过总输出 tokens。",
+                format!("reasoningOutputTokens={reasoning} 超过 outputTokens={output_tokens}。"),
             ));
         }
         match self.kind {
@@ -1254,10 +1254,12 @@ fn cache_usage_from_total(
         {
             (read, miss)
         }
-        _ => {
+        (read, miss) => {
+            let count =
+                |value: Option<u64>| value.map_or_else(|| "缺失".to_owned(), |n| n.to_string());
             return Err(ProviderStreamError::new(
                 "provider_usage_invalid",
-                "Provider 缓存 token 必须完整划分输入 token 总量。",
+                format!("cacheReadInputTokens={} 和 cacheMissInputTokens={} 应完整划分 inputTokens={input_tokens}。", count(read), count(miss)),
             ));
         }
     };
@@ -1421,15 +1423,20 @@ fn set_token_count(
         return Ok(());
     };
     let value = value.as_u64().ok_or_else(|| {
+        let observed = match value {
+            Value::Number(number) => number.to_string(),
+            Value::Null => "null".to_owned(),
+            _ => "非数值".to_owned(),
+        };
         ProviderStreamError::new(
             "provider_usage_invalid",
-            format!("Provider {label}计数不是非负整数。"),
+            format!("Provider {label}计数={observed}，需要非负整数。"),
         )
     })?;
-    if slot.is_some_and(|existing| existing != value) {
+    if let Some(previous) = slot.filter(|previous| *previous != value) {
         return Err(ProviderStreamError::new(
             "provider_usage_conflict",
-            format!("Provider 在同一响应中改变了{label}计数。"),
+            format!("Provider 在同一响应中将{label}计数从 {previous} 改为 {value}。"),
         ));
     }
     *slot = Some(value);

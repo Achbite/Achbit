@@ -14,7 +14,8 @@ import type {
 import { withProviderAttempts } from './providerAttempts.js';
 import { LoopFailure, ProviderReportedFailure } from './loopFailure.js';
 import { TruncatedCallCollector } from './truncatedOutput.js';
-import { throwIfAborted, isRecord, positiveOrZeroInteger, positiveInteger } from './loopFacts.js';
+import { throwIfAborted, isRecord } from './loopFacts.js';
+import { hasHostedSearchSteps } from './contextBudget.js';
 import { decodeProviderToolInput } from './providerToolCodec.js';
 import type { ProviderToolCodec } from './providerToolCodec.js';
 import type { SessionCapabilities } from './plugins.js';
@@ -117,7 +118,7 @@ async function consumeTextAttempt(
       case 'completed':
         completed = true;
         onCompleted();
-        contextUsage = decodeContextUsage(event.data);
+        contextUsage = decodeProviderUsage(event.data, false);
         break;
       case 'failed':
         throw new ProviderReportedFailure(event.data.code, event.data.message, event.data.diagnostics);
@@ -338,7 +339,7 @@ async function consumeProviderOutput(
       case 'completed':
         completed = true;
         onCompleted();
-        contextUsage = decodeContextUsage(event.data);
+        contextUsage = decodeProviderUsage(event.data, hasHostedSearchSteps(hostedWebSearchCalls, orderedOutputItems));
         break;
       case 'failed': {
         const truncated = toolCodec.codingTools && request.purpose === 'agent'
@@ -1149,37 +1150,40 @@ function providerOutputItemText(
   return text;
 }
 
-function decodeContextUsage(data: Record<string, unknown>): ProviderTokenUsage | undefined {
+function decodeProviderUsage(data: Record<string, unknown>, hasHostedSteps: boolean): ProviderTokenUsage | undefined {
   const value = data.usage;
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
     throw new LoopFailure('provider_usage_invalid', 'Provider 完成事件中的 usage 不是对象。');
   }
-  const inputTokens = positiveOrZeroInteger(value.inputTokens);
-  const outputTokens = positiveOrZeroInteger(value.outputTokens);
-  const reasoningPresent = Object.hasOwn(value, 'reasoningOutputTokens');
-  const reasoningOutputTokens = reasoningPresent ? positiveOrZeroInteger(value.reasoningOutputTokens) : undefined;
-  const contextWindowTokens = positiveInteger(value.contextWindowTokens);
-  const cacheReadPresent = Object.hasOwn(value, 'cacheReadInputTokens');
-  const cacheMissPresent = Object.hasOwn(value, 'cacheMissInputTokens');
-  const cacheReadInputTokens = !cacheReadPresent
-    ? undefined
-    : positiveOrZeroInteger(value.cacheReadInputTokens);
-  const cacheMissInputTokens = !cacheMissPresent
-    ? undefined
-    : positiveOrZeroInteger(value.cacheMissInputTokens);
-  if (
-    inputTokens === undefined
-    || outputTokens === undefined
-    || reasoningPresent && (reasoningOutputTokens === undefined || reasoningOutputTokens > outputTokens)
-    || contextWindowTokens === undefined
-    || inputTokens + outputTokens > contextWindowTokens
-    || cacheReadPresent !== cacheMissPresent
-    || cacheReadPresent && (cacheReadInputTokens === undefined || cacheMissInputTokens === undefined)
-    || cacheReadInputTokens !== undefined && cacheMissInputTokens !== undefined
-      && cacheReadInputTokens + cacheMissInputTokens !== inputTokens
-  ) {
-    throw new LoopFailure('provider_usage_invalid', 'Provider 完成事件中的上下文计数无效。');
+  const count = (field: string, minimum = 0): number => {
+    const raw = value[field];
+    if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < minimum) {
+      const actual = typeof raw === 'number' || raw == null ? String(raw) : typeof raw;
+      throw new LoopFailure('provider_usage_invalid', `${field}=${actual}，需要不小于 ${minimum} 的安全整数。`);
+    }
+    return raw;
+  };
+  const inputTokens = count('inputTokens');
+  const outputTokens = count('outputTokens');
+  const contextWindowTokens = count('contextWindowTokens', 1);
+  const reasoningOutputTokens = Object.hasOwn(value, 'reasoningOutputTokens') ? count('reasoningOutputTokens') : undefined;
+  const cacheReadInputTokens = Object.hasOwn(value, 'cacheReadInputTokens') ? count('cacheReadInputTokens') : undefined;
+  const cacheMissInputTokens = Object.hasOwn(value, 'cacheMissInputTokens') ? count('cacheMissInputTokens') : undefined;
+  if (reasoningOutputTokens !== undefined && reasoningOutputTokens > outputTokens) {
+    throw new LoopFailure('provider_usage_invalid', `reasoningOutputTokens=${reasoningOutputTokens} 超过 outputTokens=${outputTokens}。`);
+  }
+  const total = inputTokens + outputTokens;
+  if (!Number.isSafeInteger(total)) {
+    throw new LoopFailure('provider_usage_invalid', `inputTokens=${inputTokens} 与 outputTokens=${outputTokens} 之和超出安全整数范围。`);
+  }
+  if (!hasHostedSteps && total > contextWindowTokens) {
+    throw new LoopFailure('provider_usage_invalid', `单步 inputTokens=${inputTokens} 与 outputTokens=${outputTokens} 之和超过 contextWindowTokens=${contextWindowTokens}。`);
+  }
+  if (cacheReadInputTokens !== undefined || cacheMissInputTokens !== undefined) {
+    if (cacheReadInputTokens === undefined || cacheMissInputTokens === undefined || cacheReadInputTokens + cacheMissInputTokens !== inputTokens) {
+      throw new LoopFailure('provider_usage_invalid', `cacheReadInputTokens=${cacheReadInputTokens ?? '缺失'} 和 cacheMissInputTokens=${cacheMissInputTokens ?? '缺失'} 应完整划分 inputTokens=${inputTokens}。`);
+    }
   }
   return {
     inputTokens,
