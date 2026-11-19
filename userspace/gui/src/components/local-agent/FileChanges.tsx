@@ -169,7 +169,8 @@ export function FileChangePreview({ sessionId, file }: { sessionId: string; file
       .then(async ([change, { createCodeDiffView }, { loadCodeLanguage }]) => {
         const language = await loadCodeLanguage('', change.path);
         if (controller.signal.aborted || !container.current) return;
-        const view = createCodeDiffView(container.current, change.before ?? '', change.after ?? '', language, theme === 'vs-dark');
+        const view = await createCodeDiffView(container.current, change.before ?? '', change.after ?? '', language, theme === 'vs-dark', controller.signal);
+        if (controller.signal.aborted) { view.destroy(); return; }
         dispose = () => view.destroy();
         setStatus('');
       }).catch((error: unknown) => { if (!controller.signal.aborted) {
