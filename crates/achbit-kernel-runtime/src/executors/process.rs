@@ -739,10 +739,7 @@ fn invoke_terminal_shell(
                 } else {
                     "bash_exit_nonzero"
                 },
-                match exit_code {
-                    Some(code) => format!("{tool_name} command exited with status {code}."),
-                    None => "Bash command terminated without an exit status.".to_string(),
-                },
+                shell_exit_message(&tool_name, exit_code),
             ))
         }
     })()
@@ -1660,6 +1657,25 @@ mod plan_scope_tests {
         )
         .unwrap();
         assert_eq!(exited.output["exitCode"], 7);
+        let signalled = complete_shell_output(
+            "call".into(),
+            "powershell",
+            None,
+            Instant::now(),
+            None,
+            false,
+            false,
+            archive(),
+            empty(),
+            empty(),
+        )
+        .unwrap();
+        let error = signalled.error.unwrap();
+        assert_eq!(error.code, "powershell_exit_nonzero");
+        assert_eq!(
+            error.message,
+            "powershell command terminated without an exit status."
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2658,6 +2674,13 @@ pub fn execute_cli_command(
     )
 }
 
+fn shell_exit_message(tool_name: &str, exit_code: Option<i32>) -> String {
+    match exit_code {
+        Some(code) => format!("{tool_name} command exited with status {code}."),
+        None => format!("{tool_name} command terminated without an exit status."),
+    }
+}
+
 fn complete_shell_output(
     invocation_id: String,
     tool_name: &str,
@@ -2719,10 +2742,7 @@ fn complete_shell_output(
                 "bash" => "bash_exit_nonzero",
                 _ => "process_exit_nonzero",
             },
-            match exit_code {
-                Some(code) => format!("{tool_name} command exited with status {code}."),
-                None => "Bash command terminated without an exit status.".to_string(),
-            },
+            shell_exit_message(tool_name, exit_code),
         ))
     }
 }

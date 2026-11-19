@@ -213,7 +213,7 @@ fn render_pdf(
                 process.stop();
                 break Err(ToolError::new(
                     "document_render_timeout",
-                    "PDF rendering exceeded 90 seconds.",
+                    format!("PDF rendering exceeded {} seconds.", timeout.as_secs_f64()),
                 ));
             }
             match process.owned.child.try_wait() {
