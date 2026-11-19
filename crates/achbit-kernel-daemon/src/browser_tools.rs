@@ -182,7 +182,7 @@ fn exchange(
     BufReader::new(stream)
         .read_line(&mut response)
         .map_err(|error| error.to_string())?;
-    let response: Value = serde_json::from_str(&response)
+    let mut response: Value = serde_json::from_str(&response)
         .map_err(|error| format!("native_browser_response_invalid: {error}"))?;
     if response["ok"] != true {
         return Err(NativeError {
@@ -190,10 +190,10 @@ fn exchange(
                 .as_str()
                 .ok_or("Native failure is missing its message")?
                 .into(),
-            diagnostics: response["diagnostics"].clone(),
+            diagnostics: response["diagnostics"].take(),
         });
     }
-    Ok(response["data"].clone())
+    Ok(response["data"].take())
 }
 
 pub(crate) fn attach_observation(result: &mut Value, invocation_id: &str) {

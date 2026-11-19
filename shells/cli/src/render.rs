@@ -21,6 +21,13 @@ pub(crate) struct CliRenderState {
     summarized_runs: HashSet<String>,
     queued_inputs: HashMap<String, String>,
     retry_attempt: Option<String>,
+    draft_attempt: Option<DraftAttempt>,
+}
+
+struct DraftAttempt {
+    run: String,
+    request: String,
+    id: String,
 }
 
 impl CliRenderState {
@@ -56,6 +63,31 @@ impl CliRenderState {
         out: &mut impl Write,
         projection: &SessionProjection,
     ) -> io::Result<()> {
+        if let Some(previous) = &self.draft_attempt {
+            let current = projection
+                .assistant_draft
+                .as_ref()
+                .filter(|draft| draft.run_id == previous.run && draft.turn_id == previous.request)
+                .and_then(|draft| draft.provider_attempt_id.as_deref())
+                .or_else(|| {
+                    projection
+                        .provider_attempts
+                        .iter()
+                        .filter(|attempt| {
+                            attempt.run_id == previous.run
+                                && attempt.provider_request_id == previous.request
+                        })
+                        .max_by_key(|attempt| attempt.attempt)
+                        .map(|attempt| attempt.provider_attempt_id.as_str())
+                });
+            if current.is_some_and(|id| id != previous.id) {
+                // The logical output slot is reused after retry, its old prefix is not.
+                self.finish_text(out)?;
+                self.text.clear();
+                self.plan_preview = None;
+                self.draft_attempt = None;
+            }
+        }
         if let Some(attempt) = projection
             .provider_attempts
             .last()
@@ -225,6 +257,16 @@ impl CliRenderState {
             self.todo = projection.todo_list.clone();
         }
         self.render_draft(out, projection)?;
+        // Only a live draft can receive more deltas. Committed items are
+        // deduplicated by their timeline IDs, so their text can be released.
+        self.text.retain(|stream, _| {
+            projection.assistant_draft.as_ref().is_some_and(|draft| {
+                draft
+                    .blocks
+                    .iter()
+                    .any(|block| block.text().is_some_and(|(id, _)| id == stream))
+            })
+        });
         out.flush()
     }
 
@@ -243,11 +285,13 @@ impl CliRenderState {
             self.finish_text(out)?;
         }
         // No splitting, trimming or reformatting of Markdown / Unicode deltas.
-        let previous_len = self.text.get(stream).map_or(0, String::len);
-        out.write_all(content[previous_len..].as_bytes())?;
+        out.write_all(delta.as_bytes())?;
         self.line_open = !content.ends_with('\n');
         self.active_stream = Some(stream.to_owned());
-        self.text.insert(stream.to_owned(), content.to_owned());
+        self.text
+            .entry(stream.to_owned())
+            .or_default()
+            .push_str(delta);
         Ok(())
     }
 
@@ -259,6 +303,19 @@ impl CliRenderState {
         let Some(draft) = projection.assistant_draft.as_ref() else {
             return Ok(());
         };
+        if let Some(id) = &draft.provider_attempt_id {
+            if self
+                .draft_attempt
+                .as_ref()
+                .is_none_or(|previous| &previous.id != id)
+            {
+                self.draft_attempt = Some(DraftAttempt {
+                    run: draft.run_id.clone(),
+                    request: draft.turn_id.clone(),
+                    id: id.clone(),
+                });
+            }
+        }
         for block in &draft.blocks {
             if let Some((stream, content)) = block.text() {
                 // A committed block supersedes its draft even if both are visible
@@ -1358,6 +1415,67 @@ mod tests {
             text,
             format!("{complete}\nPlan 状态 · revision 1 · completed\n")
         );
+    }
+
+    #[test]
+    fn retry_renders_a_fresh_answer_even_if_the_poller_skips_a_draft_or_the_retry_notice() {
+        for (see_notice, see_second_draft) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let mut p = projection();
+            let mut state = CliRenderState::default();
+            let mut out = Vec::new();
+            draft(&mut p, "interrupted");
+            p.assistant_draft.as_mut().unwrap().provider_attempt_id = Some("attempt:1".into());
+            state.render(&mut out, &p).unwrap();
+            p.provider_attempts.push(serde_json::from_value(json!({
+                "runId":"run:test", "providerRequestId":"turn:final", "providerAttemptId":"attempt:1",
+                "attempt":1, "purpose":"agent", "phase":"retryWaiting", "updatedAt":"now",
+                "retryAt":"later", "error":{"code":"disconnect","message":"lost connection"}
+            })).unwrap());
+            p.assistant_draft = None;
+            if see_notice {
+                state.render(&mut out, &p).unwrap();
+            }
+            p.provider_attempts.push(serde_json::from_value(json!({
+                "runId":"run:test", "providerRequestId":"turn:final", "providerAttemptId":"attempt:2",
+                "attempt":2, "purpose":"agent", "phase":"started", "updatedAt":"now"
+            })).unwrap());
+            if see_second_draft {
+                draft(&mut p, "fresh");
+                p.assistant_draft.as_mut().unwrap().provider_attempt_id = Some("attempt:2".into());
+                state.render(&mut out, &p).unwrap();
+            }
+            commit(&mut p, "fresh answer");
+            p.assistant_draft = None;
+            state.render(&mut out, &p).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(
+                text.lines().filter(|line| *line == "interrupted").count(),
+                1
+            );
+            assert_eq!(
+                text.lines().filter(|line| *line == "fresh answer").count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn replacing_text_in_the_same_physical_attempt_still_reports_the_original_error() {
+        let mut p = projection();
+        let mut state = CliRenderState::default();
+        let mut out = Vec::new();
+        for text in ["original", "rewrite"] {
+            draft(&mut p, text);
+            p.assistant_draft.as_mut().unwrap().provider_attempt_id = Some("attempt:1".into());
+            let result = state.render(&mut out, &p);
+            if text == "original" {
+                result.unwrap();
+            } else {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+            }
+        }
     }
 
     #[test]

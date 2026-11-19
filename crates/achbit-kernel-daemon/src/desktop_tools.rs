@@ -389,15 +389,15 @@ mod tests {
     }
 }
 
-fn decode(response: Value) -> Result<Value, NativeError> {
+fn decode(mut response: Value) -> Result<Value, NativeError> {
     match response["ok"].as_bool() {
-        Some(true) => Ok(response["data"].clone()),
+        Some(true) => Ok(response["data"].take()),
         Some(false) => Err(NativeError {
             message: response["message"]
                 .as_str()
                 .ok_or("Native failure is missing its message")?
                 .into(),
-            diagnostics: response["diagnostics"].clone(),
+            diagnostics: response["diagnostics"].take(),
         }),
         None => Err("computer_component_response_invalid".into()),
     }

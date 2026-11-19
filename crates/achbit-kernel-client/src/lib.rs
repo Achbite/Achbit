@@ -569,7 +569,7 @@ fn decode_projection(value: Value) -> KernelClientResult<SessionProjection> {
     Ok(projection)
 }
 
-fn api_data(value: Value) -> KernelClientResult<Value> {
+fn api_data(mut value: Value) -> KernelClientResult<Value> {
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
         let code = value.get("error").and_then(Value::as_str);
         let message = value.get("message").and_then(Value::as_str);
@@ -581,7 +581,7 @@ fn api_data(value: Value) -> KernelClientResult<Value> {
         };
         return Err(KernelClientError::Api(detail));
     }
-    Ok(value.get("data").cloned().unwrap_or(value))
+    Ok(value.get_mut("data").map(Value::take).unwrap_or(value))
 }
 
 fn decode_api_data<T: DeserializeOwned>(value: Value) -> KernelClientResult<T> {

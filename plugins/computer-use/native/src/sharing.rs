@@ -51,11 +51,11 @@ fn decode(response: *mut c_char) -> Result<Value, String> {
     }
     let decoded = unsafe { serde_json::from_slice::<Value>(CStr::from_ptr(response).to_bytes()) };
     unsafe { ac_sharing_free(response) };
-    let response = decoded.map_err(|e| format!("ScreenCaptureKit response invalid: {e}"))?;
+    let mut response = decoded.map_err(|e| format!("ScreenCaptureKit response invalid: {e}"))?;
     if response["ok"] != true {
         return Err(format!("ScreenCaptureKit: {}", response["error"]));
     }
-    Ok(response["data"].clone())
+    Ok(response["data"].take())
 }
 
 pub fn status(binding: &Value) -> Result<Value, String> {

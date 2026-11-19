@@ -350,14 +350,14 @@ fn observation_failed(frame: &Value) -> bool {
 }
 async fn decode(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
-    let value: Value = response
+    let mut value: Value = response
         .json()
         .await
         .map_err(|e| format!("HTTP {status}: {e}"))?;
     if !status.is_success() || value["ok"] != true {
         return Err(format!("{}: {}", value["error"], value["message"]));
     }
-    Ok(value["data"].clone())
+    Ok(value["data"].take())
 }
 fn configure(root: &Path, resources: &Path, kernel: &Path) {
     for key in [
