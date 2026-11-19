@@ -472,6 +472,7 @@ export function ResourcePreview({
               ) : (
                 preview.sessionId && (
                   <ReaderDocument
+                    active={preview.visible && preview.activeId === tab.id}
                     key={tab.target.kind === 'workspace' ? `${tab.id}:${tab.target.line ?? ''}:${tab.target.column ?? ''}` : tab.id}
                     sessionId={sourceSessionId(tab.target)!}
                     target={tab.target as Exclude<ReaderTarget, { kind: 'browser' | 'diff' | 'agent' }>}
@@ -638,11 +639,13 @@ function ReaderStart({
 }
 
 function ReaderDocument({
+  active,
   sessionId,
   target,
   language,
   openTarget,
 }: {
+  active: boolean;
   sessionId: string;
   target: Exclude<ReaderTarget, { kind: 'browser' | 'diff' | 'agent' }>;
   language: UiLanguage;
@@ -843,6 +846,7 @@ function ReaderDocument({
           <InterfaceLoadBoundary><Suspense fallback={<p>{t(language, 'agent.resource.reading')}</p>}>
             <ConversationBodyLinkScope.Provider value={bodyLinks.open}><DocumentPreview
               readingKey={key}
+              active={active}
               location={target.kind === 'workspace' ? target : undefined}
               blob={state.blob}
               format={state.format}

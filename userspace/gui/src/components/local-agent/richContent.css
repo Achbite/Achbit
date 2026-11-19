@@ -1,4 +1,5 @@
 .conversation-markdown { min-width: 0; overflow-wrap: anywhere; font-family: var(--ac-font-reading, var(--ac-font-ui)); font-size: var(--ac-font-reading-size, var(--ac-font-body, 14px)); line-height: var(--ac-line-reading, 1.72); }
+.conversation-markdown__pending-source { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; content-visibility: auto; }
 .conversation-markdown :is(h1, h2, h3, h4, h5, h6) { color: var(--ac-foreground-strong); font-weight: 600; line-height: 1.4; margin: 1.4em 0 .6em; }
 .conversation-markdown h1 { font-size: 1.5em; }
 .conversation-markdown h2 { font-size: 1.3em; margin-top: 1.6em; }
@@ -70,8 +71,8 @@
 .conversation-table th { padding-block: 10px; background: var(--ac-surface-subtle); border-bottom-color: var(--ac-border-strong); color: var(--ac-muted); font-weight: 500; }
 .conversation-table [data-column='label'] { min-width: 12em; }
 .conversation-table [data-column='prose'] { min-width: 19em; }
-.conversation-table-scroll :is(th, td):first-child { position: sticky; left: 0; z-index: 1; }
-.conversation-table-scroll[data-scrolled='true'] :is(th, td):first-child { box-shadow: 5px 0 7px -6px color-mix(in srgb, var(--ac-shadow-color) 26.67%, transparent); }
+.conversation-table-scroll tr[data-pin-leading] > :is(th, td):first-child { position: sticky; left: 0; z-index: 1; }
+.conversation-table-scroll[data-scrolled='true'] tr[data-pin-leading] > :is(th, td):first-child { box-shadow: 5px 0 7px -6px color-mix(in srgb, var(--ac-shadow-color) 26.67%, transparent); }
 .conversation-table td code { overflow-wrap: normal; word-break: normal; }
 .conversation-table :is(th, td) p { margin: 0; }
 .conversation-table tbody tr:last-child td { border-bottom: 0; }
@@ -86,7 +87,7 @@
 .conversation-table-dialog-body { min-height: 0; padding: 18px; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; }
 .conversation-table-dialog th { position: sticky; top: -18px; z-index: 1; }
 @media (max-width: 620px) {
-  .conversation-table-scroll :is(th, td):first-child { position: static; box-shadow: none; }
+  .conversation-table-scroll tr[data-pin-leading] > :is(th, td):first-child { position: static; box-shadow: none; }
   .conversation-table-dialog-body { padding: 12px; }
   .conversation-table-dialog th { top: -12px; }
 }

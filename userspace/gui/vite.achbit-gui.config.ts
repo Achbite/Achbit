@@ -1,3 +1,4 @@
+import { markdownAliases } from './vite.markdown';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { pdfDocumentAssets } from './vite.pdf';
@@ -47,6 +48,7 @@ export default defineConfig(({ command }) => {
     },
   };
   return {
+    resolve: { alias: markdownAliases },
     plugins: [achbitGuiDevelopmentEntry(), react(), pdfDocumentAssets(), {
       name: 'achbit-common-gui-entry',
       async writeBundle(options) {

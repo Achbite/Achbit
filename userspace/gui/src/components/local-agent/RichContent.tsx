@@ -12,7 +12,7 @@ import { ImageReview } from './ImageReview';
 import { RichContentScope } from './RichContentIdentity';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 
-export const CodeContent = memo(function CodeContent({ code, language, streaming = false }: { code: string; language: string; streaming?: boolean }) {
+export const CodeContent = memo(function CodeContent({ code, language, streaming = false, copyPending = false }: { code: string; language: string; streaming?: boolean; copyPending?: boolean }) {
   const target = useContext(RichContentScope);
   const identity = useUiOwner('conversation.code', undefined, { ...target });
   const uiLanguage = useUiLanguage();
@@ -36,7 +36,7 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
     <header data-image-export-exclude=""><span>{language || 'text'}</span>
       <ContentImageSave {...(target ? identity.action('save', 'click') : {})} disabled={streaming}
         createImage={() => elementImage(content.current?.querySelector('pre') ?? null, language || 'code')} />
-      <button {...(target ? identity.action('copy', 'click') : {})} type="button" className="conversation-copy-button" aria-label={t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')} onClick={() => {
+      <button {...(target ? identity.action('copy', 'click') : {})} type="button" disabled={copyPending} className="conversation-copy-button" aria-label={t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')} onClick={() => {
       setCopyFeedback(null); setCopyError('');
       void host.copyText(code).then(() => setCopyFeedback({ code })).catch((error: unknown) => setCopyError(String(error)));
     }}><AchbitShellIcon name={copied ? 'check' : 'copy'} /><span className="conversation-copy-hint" role="status">{t(uiLanguage, copied ? 'content.code.copied' : 'content.code.copy')}</span></button></header>

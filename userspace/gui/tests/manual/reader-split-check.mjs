@@ -226,7 +226,114 @@ export async function checkReaderSplit({ navigate, evaluate, cmd, until, frame, 
     await follow(href, heading);
   }
   await record('reader-physical-filenames', physical, true);
+  // Capture a real Reader during its first DOM commit, including actions queued before the worker completes.
+  const sample = await evaluate(`new Promise((resolve,reject) => {
+    const deadline = setTimeout(() => { observe.disconnect(); reject(Error('progressive Reader timeout')); }, 8000);
+    const observe = new MutationObserver(() => {
+      const view = document.querySelector('.reader-pane:not([hidden]) .conversation-markdown[aria-busy="true"]');
+      const jump = view?.querySelector('a[href="#last-section"]'), save = view?.querySelector('.content-image-action button');
+      if (!jump || !save) return;
+      observe.disconnect(); clearTimeout(deadline);
+      const found = window.find('FINAL-READER-MARKER'), selection = String(getSelection());
+      getSelection().removeAllRanges();
+      const source = fetch(view.closest('.reader-pane').querySelector('a[download]').href).then(response => response.text());
+      save.click(); jump.click();
+      source.then(text => resolve({ found, selection, correctFile: text === window.readerWorkbench.progressiveSource,
+        first: view.querySelector('tbody tr')?.textContent, savesBeforeReady: window.readerWorkbench.saves.length }));
+    });
+    observe.observe(document.body, { childList:true, subtree:true });
+    window.readerWorkbench.openDocument('notes/progressive.md');
+  })`);
+  await until("document.querySelector('.reader-pane:not([hidden]) .conversation-markdown[aria-busy=false] a[href=\"../Agent.md\"]') && window.readerWorkbench.saves.length === 1");
+  const targetVisible = await headingVisible('Last section');
+  const finalDocument = await evaluate(`(() => {
+    const view = document.querySelector('.reader-pane:not([hidden]) .conversation-markdown');
+    const row = view.querySelector('tbody tr');
+    const range = new Range(); range.selectNodeContents(row);
+    const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    const selected = selection.toString(); selection.removeAllRanges();
+    return { end: view.querySelector('.katex math annotation')?.textContent, selected, image: window.readerWorkbench.saves[0] };
+  })()`);
+  await record('reader-progressive-document', { sample, finalDocument, targetVisible },
+    sample.found && sample.selection === 'FINAL-READER-MARKER' && sample.correctFile && sample.first.includes('A & B') &&
+    sample.savesBeforeReady === 0 && targetVisible && finalDocument.selected.includes('©') && finalDocument.end === 'x^2' &&
+    finalDocument.image.type === 'image/png' && finalDocument.image.width > 0 && finalDocument.image.height > 0);
+  for (const [file, expected, token] of [['long-code.md', 'longCode', 'BOUNDARYMARKER'], ['many-lines.md', 'manyCodeLines', 'source line 999']]) {
+    const copy = await evaluate(`new Promise((resolve,reject) => {
+      const end = setTimeout(() => { observe.disconnect(); reject(Error('code action timed out')); }, 8000);
+      const fixture = window.readerWorkbench, initial = fixture.copies.length;
+      let temporary;
+      const observe = new MutationObserver(() => {
+        const view = document.querySelector('.reader-pane:not([hidden]) .conversation-markdown[aria-busy]');
+        if (!view) return;
+        const button = view.querySelector('.conversation-copy-button');
+        if (view.ariaBusy === 'true' && temporary === undefined) {
+          const found = window.find(${JSON.stringify(token)}); getSelection().removeAllRanges();
+          button?.click();
+          temporary = { found, withheld: !button || button.disabled, unchanged: fixture.copies.length === initial };
+        } else if (view.ariaBusy === 'false' && temporary && button && !button.disabled) {
+          observe.disconnect(); clearTimeout(end); button.click();
+          resolve({ temporary, canonical: fixture.copies.at(-1) === fixture[${JSON.stringify(expected)}] + '\\n',
+            delivered: fixture.copies.at(-1)?.length, completeSearch: window.find(${JSON.stringify(token)}) });
+          getSelection().removeAllRanges();
+        }
+      });
+      observe.observe(document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['aria-busy'] });
+      fixture.openDocument(${JSON.stringify('notes/' + file)});
+    })`);
+    await record('reader-whole-code-copy-' + file, copy, copy.temporary.found && copy.temporary.withheld &&
+      copy.temporary.unchanged && copy.canonical && copy.completeSearch);
+  }
+  await evaluate('window.readerWorkbench.openDiff()');
+  const diff = '.reader-pane:not([hidden]) .reader-diff';
+  await until(`document.querySelector('${diff} .cm-collapsedLines') && document.querySelector('${diff}').textContent.includes('NEW 🦊 row 1 value 1')`);
+  const endings = await evaluate(`(() => {const view=document.querySelector('${diff}');return {
+    originalLoneCR: [...view.querySelectorAll('.cm-deletedChunk')].some(n=>n.textContent.includes('OLD 🧪 row 1 value 1\\rOLD-CR-ONE')),
+    currentLoneCR: [...view.querySelectorAll('.cm-line')].some(n=>n.textContent === 'NEW-CR-ONE')};})()`);
+  await click(diff + ' .cm-collapsedLines');
+  await until(`[...document.querySelectorAll('${diff} .cm-line')].some(line => line.textContent === 'unchanged 🧭 row 10 value 100' && !line.matches('.cm-changedLine,.cm-insertedLine'))`);
+  await evaluate(`document.querySelector('${diff} .cm-scroller').scrollTop = document.querySelector('${diff} .cm-scroller').scrollHeight`);
+  await until(`[...document.querySelectorAll('${diff} .cm-line')].some(line => line.textContent === 'NEW 🦊 row 6000 value 36000000')`);
+  const finalChange = await evaluate(`(() => {const pane=document.querySelector('${diff}');return {
+    deleted:pane.textContent.includes('OLD 🧪 row 6000 value 36000000'), inserted:pane.textContent.includes('NEW 🦊 row 6000 value 36000000')};})()`);
+  await click(close);
+  await until("!document.querySelector('.reader-diff .cm-editor')");
+  await record('reader-large-unified-diff', { ...finalChange, ...endings }, finalChange.deleted && finalChange.inserted && endings.originalLoneCR && endings.currentLoneCR);
   const actions = await evaluate("({ folders: window.readerWorkbench.folders, external: window.readerWorkbench.external })");
   await record('reader-document-link-routing', { count, after, ...actions }, count === after &&
     actions.folders[0] === '/fixture/notes' && actions.external[0] === 'https://example.org/reader');
+  await evaluate('sessionStorage.clear()');
+  await navigate('reader-workbench', { files: '5000' });
+  await until("document.querySelector('[data-ui-action$=\"toggle-tree\"]')");
+  await click('[data-ui-action$="toggle-tree"]');
+  const box = '.resource-tree:not([hidden]) [role=tree]';
+  const firstFile = box + ' [title="large-00001.md"]';
+  await until(`document.querySelector('${firstFile}')?.getAttribute('aria-setsize') === '5000'`);
+  const rowCount = () => evaluate(`document.querySelectorAll('${box} [role=treeitem]').length`);
+  const initial = await rowCount();
+  async function press(key, code, modifiers = 0) {
+    await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, modifiers, windowsVirtualKeyCode: code });
+    await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers, windowsVirtualKeyCode: code });
+    await frame();
+  }
+  const activeTitle = 'document.activeElement.title';
+  await evaluate(`document.querySelector('${firstFile}').focus()`);
+  await press('End', 35);
+  await until(`${activeTitle} === 'large-05000.md'`);
+  const last = await evaluate(`({ position: document.activeElement.getAttribute('aria-posinset'), scrollTop: document.querySelector('${box}').scrollTop })`);
+  await press('ArrowUp', 38); await until(`${activeTitle} === 'large-04999.md'`);
+  await press('ArrowDown', 40); await until(`${activeTitle} === 'large-05000.md'`);
+  await press('F10', 121, 8); await until("document.querySelector('.resource-tree-menu [role=menuitem], .resource-tree-menu button')");
+  await press('Escape', 27); await until(`${activeTitle} === 'large-05000.md'`);
+  await press('Home', 36); await until(`${activeTitle} === '' && document.activeElement.getAttribute('aria-level') === '1'`);
+  const input = '.resource-tree__filter input';
+  await click(input); await cmd('Input.insertText', { text: 'large-05000' }); await until(`document.querySelectorAll('${box} [role=treeitem]').length === 2`);
+  await evaluate(`document.querySelector('${input}').select()`); await press('Backspace', 8);
+  await until(`document.querySelector('${firstFile}')`);
+  await evaluate("window.readerWorkbench.openDocument('large-04500.md')");
+  const revealedFile = box + ' [title="large-04500.md"]';
+  await until(`document.querySelector('${revealedFile}')?.getAttribute('aria-current') === 'true'`);
+  const revealed = await evaluate(`(()=>{const r=document.querySelector('${revealedFile}').getBoundingClientRect(),b=document.querySelector('${box}').getBoundingClientRect();return { inView:r.top>=b.top-1 && r.bottom<=b.bottom+1, title:document.querySelector('.reader-tab--active')?.textContent }})()`);
+  const finalRows = await rowCount();
+  await record('reader-large-tree-viewport-actions', { initial, finalRows, last, revealed }, initial < 100 && finalRows < 100 && last.position === '5000' && last.scrollTop > 0 && revealed.inView && revealed.title.includes('large-04500.md'));
 }

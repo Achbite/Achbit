@@ -17,37 +17,55 @@ import type { BrowserViewport } from '../../services/nativeBrowser';
 
 const PdfDocumentPreview = lazy(() => loadInterfaceModule(() => import('./PdfDocumentPreview')));
 
-function scrollToHeading(document: HTMLElement, fragment: string) {
+function scrollToHeading(document: HTMLElement, fragment: string): boolean {
   const used = new Set<string>();
   for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
     const base = (heading.textContent ?? '').toLowerCase().trim()
       .replace(/[^\p{L}\p{M}\p{N}_ -]/gu, '').replace(/ /gu, '-');
     let id = base, occurrence = 0;
     while (used.has(id)) id = base + '-' + ++occurrence;
-    if (id === fragment) { heading.scrollIntoView({ block: 'start' }); return; }
+    if (id === fragment) { heading.scrollIntoView({ block: 'start' }); return true; }
     used.add(id);
   }
+  return false;
 }
 
-function MarkdownDocument({ content, location }: { content: string; location?: SourcePosition }) {
+function MarkdownDocument({ content, location, active }: { content: string; location?: SourcePosition; active: boolean }) {
   const container = useRef<HTMLDivElement>(null);
+  const pending = useRef<MutationObserver | null>(null);
+  const follow = (fragment?: string) => {
+    pending.current?.disconnect();
+    pending.current = null;
+    const surface = container.current;
+    if (!fragment || !surface || scrollToHeading(surface, fragment)
+      || !surface.querySelector('[aria-busy="true"]')) return;
+    const observe = new MutationObserver(() => {
+      if (scrollToHeading(surface, fragment) || !surface.querySelector('[aria-busy="true"]')) {
+        observe.disconnect();
+        pending.current = null;
+      }
+    });
+    observe.observe(surface, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-busy'] });
+    pending.current = observe;
+  };
   useLayoutEffect(() => {
-    if (location?.fragment && container.current) scrollToHeading(container.current, location.fragment);
-  }, [location, content]);
+    if (active) follow(location?.fragment);
+    return () => pending.current?.disconnect();
+  }, [location, content, active]);
   const followHeading = (event: React.MouseEvent<HTMLDivElement>) => {
     const href = event.target instanceof Element ? event.target.closest('a[href]')?.getAttribute('href') : null;
     if (!href || !/^[?#]/u.test(href) || event.defaultPrevented) return;
     const fragment = fileLinkLocation(href)?.fragment;
     if (!fragment) return;
     event.preventDefault();
-    scrollToHeading(event.currentTarget, fragment);
+    follow(fragment);
   };
   return <div className="document-preview__markdown" ref={container} onClickCapture={followHeading} onAuxClickCapture={followHeading}>
-    <MarkdownContent>{content}</MarkdownContent>
+    <MarkdownContent active={active}>{content}</MarkdownContent>
   </div>;
 }
 
-export function DocumentPreview({ blob, format, filename, language, readingKey, location, actions }: { blob: Blob; format: DocumentFormat | 'image'; filename: string; language: UiLanguage; readingKey?: string; location?: SourcePosition; actions?: React.ReactNode }) {
+export function DocumentPreview({ blob, format, filename, language, readingKey, location, actions, active = true }: { active?: boolean; blob: Blob; format: DocumentFormat | 'image'; filename: string; language: UiLanguage; readingKey?: string; location?: SourcePosition; actions?: React.ReactNode }) {
   const [viewport, setViewport] = useState<BrowserViewport>(DEFAULT_BROWSER_VIEWPORT);
   useEffect(() => setViewport(DEFAULT_BROWSER_VIEWPORT), [readingKey, filename]);
   const chinese = language === 'zh-CN';
@@ -90,7 +108,7 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
           {format === 'pdf' ? <InterfaceLoadBoundary><Suspense fallback={loading}><PdfDocumentPreview blob={blob} language={language} readingKey={readingKey} /></Suspense></InterfaceLoadBoundary>
             : content === null ? loading
             : format === 'html' ? <HtmlDocumentFrame content={content} title={filename} viewport={viewport} />
-              : <MarkdownDocument content={content} location={location} />}
+              : <MarkdownDocument content={content} location={location} active={active} />}
           </UiPluginSlotView>}
   </div>;
 }

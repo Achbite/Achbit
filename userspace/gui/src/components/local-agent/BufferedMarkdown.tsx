@@ -1,12 +1,13 @@
-import React, { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Fragment, jsx, jsxs } from 'react/jsx-runtime';
 import { toJsxRuntime } from 'hast-util-to-jsx-runtime';
 import { CodeContent, ImageContent } from './RichContent';
 import { MathContent } from './MathContent';
 import { MermaidContent } from './MermaidContent';
 import { MarkdownTable } from './MarkdownTable';
-import { formatDecisionProse, StreamingMarkdownParser, type MarkdownBlock } from './streamingMarkdown';
+import { formatDecisionProse, cachedMarkdown, completeMarkdown, StreamingMarkdownParser, type MarkdownBlock } from './streamingMarkdown';
 import { StreamingTextBuffer } from './streamingText';
+import { parseMarkdownDocument } from './markdownParseQueue';
 import type { Element, ElementContent, Root, RootContent } from 'hast';
 import './richContent.css';
 import { parseLocalTarget, readableResourceLinks } from './resourceLinks';
@@ -17,8 +18,7 @@ import { InlineInteractivePreview } from './InteractivePreview';
 
 import { RichContentScope } from './RichContentIdentity';
 
-const StreamingContext = createContext(false);
-const MarkdownBlockScope = createContext<{ key: string; start: number | undefined } | null>(null);
+const MarkdownBlockScope = createContext<{ key: string; start: number | undefined; streaming: boolean; copyPending: boolean } | null>(null);
 
 /** Nested tables/fences share a parsed block, but have distinct source positions within it. */
 function MarkdownNodeScope({ node, children }: { node?: Element; children: React.ReactNode }) {
@@ -31,7 +31,8 @@ function MarkdownNodeScope({ node, children }: { node?: Element; children: React
 }
 const COMPONENTS = {
   pre: function MarkdownCode({ node, children }: { node?: Element; children?: React.ReactNode }) {
-    const streaming = useContext(StreamingContext);
+    const block = useContext(MarkdownBlockScope);
+    const streaming = block?.streaming ?? false;
     const child = React.Children.toArray(children)[0];
     if (!React.isValidElement<{ className?: string; children?: React.ReactNode }>(child)) return <pre>{children}</pre>;
     const language = /language-([^\s]+)/.exec(child.props.className ?? '')?.[1] ?? '';
@@ -39,7 +40,7 @@ const COMPONENTS = {
     return <MarkdownNodeScope node={node}>{language === 'achbit-preview'
       ? <InlineInteractivePreview source={code} pending={streaming} />
       : language === 'mermaid' && !streaming
-        ? <MermaidContent source={code} /> : <CodeContent code={code} language={language} streaming={streaming} />}</MarkdownNodeScope>;
+        ? <MermaidContent source={code} /> : <CodeContent code={code} language={language} streaming={streaming} copyPending={block?.copyPending} />}</MarkdownNodeScope>;
   },
   table: function ScopedMarkdownTable({ node, children }: { node?: Element; children?: React.ReactNode }) {
     return <MarkdownNodeScope node={node}><MarkdownTable>{children}</MarkdownTable></MarkdownNodeScope>;
@@ -59,16 +60,73 @@ function ScopedMarkdownLink({ href, children, node: _node, ...attributes }: Reac
   return <a {...attributes} href={target} onClick={open ?? undefined} onAuxClick={open ?? undefined}>{children}</a>;
 }
 
-const RenderedBlock = memo(function RenderedBlock({ block }: { block: MarkdownBlock }) {
-  return <MarkdownBlockScope.Provider value={{ key: block.key, start: block.tree.children[0]?.position?.start.offset }}>
-    <StreamingContext.Provider value={block.streaming}>{toJsxRuntime(readableResourceLinks(block.tree), { Fragment, jsx, jsxs, components: COMPONENTS, passNode: true })}</StreamingContext.Provider>
+const RenderedBlock = memo(function RenderedBlock({ block, provisional }: { block: MarkdownBlock; provisional: boolean }) {
+  return <MarkdownBlockScope.Provider value={{ key: block.key, start: block.tree.children[0]?.position?.start.offset,
+    streaming: block.streaming, copyPending: provisional && block.streaming }}>
+    {toJsxRuntime(readableResourceLinks(block.tree), { Fragment, jsx, jsxs, components: COMPONENTS, passNode: true })}
   </MarkdownBlockScope.Provider>;
 });
 
-export const MarkdownContent = memo(function MarkdownContent({ children, streaming = false, decisionProse = false }: { children: string; streaming?: boolean; decisionProse?: boolean }) {
+interface MarkdownContentProps { children: string; streaming?: boolean; decisionProse?: boolean; active?: boolean }
+
+function MarkdownBlocks({ blocks, provisional = false }: { blocks: MarkdownBlock[]; provisional?: boolean }) {
+  return <>{blocks.map(block => <RenderedBlock key={block.key} block={block} provisional={provisional} />)}</>;
+}
+
+function ImmediateMarkdown({ children, streaming = false, decisionProse = false }: MarkdownContentProps) {
   const parser = useRef(new StreamingMarkdownParser());
   const blocks = useMemo(() => parser.current.update(decisionProse ? formatDecisionProse(children) : children, streaming), [children, streaming, decisionProse]);
-  return <div className="conversation-markdown">{blocks.map((block) => <RenderedBlock key={block.key} block={block} />)}</div>;
+  return <div className="conversation-markdown"><MarkdownBlocks blocks={blocks} /></div>;
+}
+
+// Bound synchronous work by both lines and characters, including unbroken paragraphs.
+function firstPage(text: string): string {
+  const prefix = text.slice(0, 4096);
+  const lines = prefix.match(/^(?:[^\n]*\n){32}/u)?.[0];
+  if (lines) return lines;
+  // Keep unbroken source on one side of the boundary for native selection and find.
+  return prefix.slice(0, prefix.lastIndexOf('\n') + 1);
+}
+
+function ProgressiveMarkdown({ children: text, decisionProse = false, active = true }: MarkdownContentProps) {
+  const surface = useRef<HTMLDivElement>(null);
+  const cached = useMemo(() => decisionProse ? undefined : cachedMarkdown(text), [text, decisionProse]);
+  const first = useMemo(() => firstPage(text), [text]);
+  const preview = useMemo(() => new StreamingMarkdownParser().update(decisionProse ? formatDecisionProse(first) : first, true), [first, decisionProse]);
+  const [result, setResult] = useState<{ text: string; decisionProse: boolean; blocks?: MarkdownBlock[]; error?: string } | null>(null);
+  const current = result?.text === text && result.decisionProse === decisionProse ? result : null;
+  const blocks = current?.blocks ?? cached;
+  useEffect(() => {
+    if (!active || blocks || current?.error) return;
+    const controller = new AbortController();
+    void parseMarkdownDocument(text, decisionProse, controller.signal).then(root => {
+      if (controller.signal.aborted) return;
+      const completed = completeMarkdown(root, decisionProse ? undefined : text);
+      const publish = () => {
+        const selection = document.getSelection();
+        if (surface.current && selection && !selection.isCollapsed && selection.containsNode(surface.current, true)) return;
+        document.removeEventListener('selectionchange', publish);
+        startTransition(() => setResult({ text, decisionProse, blocks: completed }));
+      };
+      // A selection in the provisional view remains usable until the reader releases it.
+      document.addEventListener('selectionchange', publish, { signal: controller.signal });
+      publish();
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) setResult({ text, decisionProse, error: reason instanceof Error ? reason.message : String(reason) });
+    });
+    return () => controller.abort();
+  }, [text, decisionProse, active, blocks, current?.error]);
+  return <div className="conversation-markdown" ref={surface} aria-busy={!blocks && !current?.error}>
+    <MarkdownBlocks blocks={blocks ?? preview} provisional={!blocks} />
+    {current?.error && <p role="alert">{current.error}</p>}
+    {!blocks && <pre className="conversation-markdown__pending-source">{text.slice(first.length)}</pre>}
+  </div>;
+}
+
+export const MarkdownContent = memo(function MarkdownContent(props: MarkdownContentProps) {
+  return !props.streaming && props.children.length > 24_000
+    ? <ProgressiveMarkdown {...props} />
+    : <ImmediateMarkdown {...props} />;
 });
 
 /** Inline fields share the Markdown grammar, without nested links or block layout in buttons/headings. */

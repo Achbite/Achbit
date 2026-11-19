@@ -1,9 +1,12 @@
+import { markdownAliases } from '../../vite.markdown';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 export default defineConfig({
   root: fileURLToPath(new URL('../..', import.meta.url)),
-  base: './', plugins: [react()],
+  base: './',
+  resolve: { alias: markdownAliases },
+  plugins: [react()],
   build: { outDir: '../../.task-artifacts/manual-preview', emptyOutDir: true,
     rollupOptions: { input: {
       typography: fileURLToPath(new URL('./typography.html', import.meta.url)),
