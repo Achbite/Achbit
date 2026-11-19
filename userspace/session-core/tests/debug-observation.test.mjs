@@ -114,3 +114,33 @@ test('initial running-task snapshots route nested decisions and preserve referen
   hub.accept({ ...question, event: { ...question.event, sequence: 2, runId: 'unrelated-run' } }); await nextTick();
   assert.equal(frames.length, 1);
 });
+
+test('terminal delivery backpressure reports the same failed outcome on unsubscribe and run settlement', async t => {
+  for (const terminal of ['unsubscribe', 'settle', 'receiverCloses']) {
+    const frames = [];
+    const hub = new DebugObservations(async frame => {
+      if (terminal === 'receiverCloses') throw new Error('receiver closed');
+      frames.push(frame);
+    });
+    t.after(() => hub.dispose());
+    hub.subscribe({ subscriptionId: terminal, sessionId });
+    const content = 'a'.repeat(290_000);
+    for (let sequence = 1; sequence <= 15; sequence++) {
+      hub.accept(event(sequence, 'message.committed', {
+        messageId: 'message:' + sequence, role: sequence < 15 ? 'assistant' : 'user', content,
+      }));
+    }
+    if (terminal === 'settle') hub.accept(event(16, 'run.settled', { outcome: 'completed' }));
+    const result = hub.close(terminal);
+    await nextTick();
+    const status = hub.status(terminal);
+    assert.deepEqual([result.status, status.status, status.error.code], ['failed', 'failed', 'observation_receiver_backpressure']);
+    if (terminal === 'receiverCloses') {
+      assert.deepEqual(status.error.deliveryError, { code: 'observation_send_failed', message: 'Error: receiver closed' });
+      assert.equal(status.error.notificationDelivered, false);
+    } else {
+      assert.equal(frames.at(-1)?.status, 'failed');
+      assert.equal(status.error.notificationDelivered, true);
+    }
+  }
+});

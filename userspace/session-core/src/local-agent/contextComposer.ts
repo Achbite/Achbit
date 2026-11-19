@@ -990,7 +990,7 @@ export function buildContextCompositionReceipt<Purpose extends ContextCompositio
     dynamicInstructionBytes: selected.reduce((total, contribution) => (
       contribution.message.role === 'system'
       && !stableCoreInstructions.some(core => contribution.contributionId === `instruction:${core.id}`)
-        ? total + new TextEncoder().encode(contribution.message.content).byteLength
+        ? total + Buffer.byteLength(contribution.message.content)
         : total
     ), 0),
     messages,
@@ -1312,7 +1312,7 @@ function sumShapeUnits(values: readonly unknown[]): number {
 
 function jsonShapeUnits(value: unknown): number {
   const encoded = JSON.stringify(value);
-  return encoded ? new TextEncoder().encode(encoded).byteLength : 0;
+  return encoded ? Buffer.byteLength(encoded) : 0;
 }
 
 function contextCompositionBlocks(message: ModelMessage): ContextCompositionMessage['blocks'] {

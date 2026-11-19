@@ -3,7 +3,7 @@ import { LOCAL_AGENT_PROTOCOL_VERSION } from '@achbit/protocol';
 /** A logical reply may span multiple bounded NDJSON transport frames. */
 export function* responseFrames(value: unknown): Generator<string> {
   const encoded = JSON.stringify(value);
-  if (new TextEncoder().encode(encoded).byteLength <= 1024 * 1024) {
+  if (Buffer.byteLength(encoded) <= 1024 * 1024) {
     yield encoded;
     return;
   }

@@ -547,9 +547,10 @@ async function* readLines(): AsyncGenerator<string> {
       if (newline < 0) break;
       const raw = buffered.slice(0, newline);
       const line = raw.replace(/\r$/u, '');
-      if (new TextEncoder().encode(line).byteLength > MAX_REQUEST_BYTES) throw new Error('session_service_request_too_large');
+      const lineBytes = Buffer.byteLength(line);
+      if (lineBytes > MAX_REQUEST_BYTES) throw new Error('session_service_request_too_large');
       buffered = buffered.slice(newline + 1);
-      bytes -= new TextEncoder().encode(raw).byteLength + 1;
+      bytes -= lineBytes + (raw.length - line.length) + 1;
       if (!line) throw new Error('session_service_request_empty');
       yield line;
     }

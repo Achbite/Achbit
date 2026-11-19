@@ -43,10 +43,36 @@ export class DebugObservations implements SessionObservationSink {
   }
   close(id: string): Item {
     const s = this.subscriptions.get(id); if (!s) throw new Error('observation_subscription_not_found');
-    if (s.phase === 'active') { this.flush(s, 'subscriptionClosed'); s.phase = 'closed'; this.clearTimers(s); }
+    this.finish(s, 'subscriptionClosed');
     return this.status(id);
   }
-  dispose(): void { for (const s of this.subscriptions.values()) { this.clearTimers(s); s.phase = 'closed'; } this.outgoing = []; this.outgoingBytes = 0; this.taskOwners.clear(); }
+  dispose(): void {
+    for (const s of this.subscriptions.values()) {
+      this.releaseCapture(s);
+      if (s.phase === 'active') s.phase = 'closed';
+    }
+    this.outgoing = [];
+    this.outgoingBytes = 0;
+    this.taskOwners.clear();
+  }
+  private finish(s: Subscription, reason: 'subscriptionClosed' | 'runSettled'): void {
+    if (s.phase !== 'active') return;
+    this.flush(s, reason);
+    if (s.phase === 'active') {
+      s.phase = 'closed';
+      this.releaseCapture(s);
+    }
+  }
+  private releaseCapture(s: Subscription): void {
+    this.clearTimers(s);
+    s.pending = [];
+    s.pendingBytes = 0;
+    s.committedStreams.clear();
+    s.ranges.clear();
+    s.attempts.clear();
+    s.calls.clear();
+    s.childDecisionSequences.clear();
+  }
   seedTasks(snapshot: Pick<SessionProjection, 'sessionId' | 'revision' | 'agentTasks'>): void {
     if ((this.taskOwners.get(snapshot.sessionId)?.revision ?? -1) > snapshot.revision) return;
     this.taskOwners.set(snapshot.sessionId, { revision: snapshot.revision, tasks: new Map((snapshot.agentTasks ?? [])
@@ -183,10 +209,11 @@ export class DebugObservations implements SessionObservationSink {
         outputReference: { source: 'kernelToolRecord', recordId: record.recordId, streamedRanges: Object.fromEntries(observed) } } : record } });
     } else if (event.type !== 'context.composed') this.add(s, { ...base, payload: event.payload });
     if (event.type === 'approval.requested' || event.type === 'interaction.requested' || event.type === 'plan.published' || event.type === 'run.waiting') this.flush(s, 'decisionRequired');
-    if (event.type === 'run.settled') { this.flush(s, 'runSettled'); s.phase = 'closed'; this.clearTimers(s); }
+    if (event.type === 'run.settled') this.finish(s, 'runSettled');
   }
   private text(s: Subscription, item: Item, text: string): void {
     this.add(s, item);
+    if (s.phase !== 'active') return;
     const key = `${item.providerAttemptId}:${item.outputItemId}`;
     if (s.currentTextKey === key && !s.textTimer) return;
     s.currentTextKey = key;
@@ -194,6 +221,7 @@ export class DebugObservations implements SessionObservationSink {
     if (/[。！？.!?\n]\s*$/u.test(text)) { this.flush(s, s.firstTextSent ? 'textAfterTools' : 'firstText'); s.firstTextSent = true; }
   }
   private add(s: Subscription, item: Item): void {
+    if (s.phase !== 'active') return;
     let bytes = Buffer.byteLength(JSON.stringify(item));
     if (bytes > s.budget * 3 && (item.kind === 'text' || item.kind === 'toolOutput')) {
       const range = item.range as { unit: string; start: number; end: number };
@@ -218,6 +246,7 @@ export class DebugObservations implements SessionObservationSink {
       bytes = Buffer.byteLength(JSON.stringify(item));
     }
     if (s.pendingBytes + bytes > s.budget * 3 && s.pending.length) this.flush(s, 'inputBudget');
+    if (s.phase !== 'active') return;
     if (bytes > MAX_QUEUE_BYTES || s.pendingBytes + bytes > MAX_QUEUE_BYTES) { this.fail(s, 'observation_capture_budget_exceeded', 'A live fragment exceeded the bounded capture capacity.'); return; }
     if (!s.pending.length) {
       s.oldestAt = this.now();
@@ -252,10 +281,14 @@ export class DebugObservations implements SessionObservationSink {
     } finally { this.sending = false; }
   }
   private fail(s: Subscription, code: string, message: string): void {
-    this.clearTimers(s); s.phase = 'failed';
-    s.failure = { code, message, lastKnownEventSequence: s.lastEventSequence, lastQueuedObservationSequence: s.sequence,
-      missingRange: { afterObservationSequence: s.lastSentSequence, through: 'unknown' }, notificationDelivered: false };
-    s.pending = []; s.pendingBytes = 0;
+    this.releaseCapture(s); s.phase = 'failed';
+    if (s.failure) {
+      // Sending the terminal notice can itself fail after capture has already failed.
+      s.failure.deliveryError = { code, message };
+    } else {
+      s.failure = { code, message, lastKnownEventSequence: s.lastEventSequence, lastQueuedObservationSequence: s.sequence,
+        missingRange: { afterObservationSequence: s.lastSentSequence, through: 'unknown' }, notificationDelivered: false };
+    }
     // A healthy connection can deliver a small terminal failure fact. Failed transport itself is never retried.
     const retained = this.outgoing.filter(item => item.subscription !== s);
     this.outgoing = retained; this.outgoingBytes = retained.reduce((total, item) => total + item.bytes, 0);
