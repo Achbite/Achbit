@@ -85,7 +85,7 @@ Copy the saved profile ID from `connections`. In TUI, use `/model` to choose a m
 
 In **Settings → Plugins → Marketplace**, browse Skills, UI extensions, CLI tools or services. Select **Install & enable** to install a listed ZIP on the connected Host. Open the details to check its source, license and verification record, or download the package from its author. [Public plugin directory](https://github.com/Achbite/achbit-plugins)
 
-Import an external plugin from **Settings → Plugins → Installed → Add…**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
+Import an external plugin from **Settings → Plugins → All → Add…**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
 
 Plugins use shared discovery, invocation and cleanup protocols. A hosted service starts when enabled and releases its process/port when disabled; a compatible model endpoint is configured through the usual model connection settings. Task tools and context are assembled before model requests, keeping optional capabilities separate from the main Loop.
 

@@ -85,7 +85,7 @@ achbit-tui -C /path/to/project
 
 在 **设置 → 插件 → 插件市场** 中，可以按分类浏览技能、界面插件、命令行工具和服务。点击 **安装并启用**，即可将目录中支持安装的 ZIP 安装到当前连接的 Host。展开详情可核对源码、许可和认证记录，也可从作者处下载插件。[公共插件目录](https://github.com/Achbite/achbit-plugins/blob/main/README.zh-CN.md)
 
-打开 **设置 → 插件 → 已安装 → 添加…**，选择外部插件 ZIP、目录或清单文件。Achbit 能识别 CLI 工具（`achbit-tool.json`）、托管服务（`achbit-service.json`）、展示模块（`achbit-ui.json`）与 Skill（`SKILL.md`）。MCP 服务沿用已有 MCP 设置。ZIP 由 Host 自动解压、验证并安装，可直接用于导入或更新。
+打开 **设置 → 插件 → 全部 → 添加…**，选择外部插件 ZIP、目录或清单文件。Achbit 能识别 CLI 工具（`achbit-tool.json`）、托管服务（`achbit-service.json`）、展示模块（`achbit-ui.json`）与 Skill（`SKILL.md`）。MCP 服务沿用已有 MCP 设置。ZIP 由 Host 自动解压、验证并安装，可直接用于导入或更新。
 
 插件遵循共享的发现、调用和资源释放协议。托管服务随启用启动，停用后释放进程和端口。兼容模型端点仍通过普通模型连接配置使用。任务工具与上下文在请求前装配，可选能力独立于主 Loop。
 

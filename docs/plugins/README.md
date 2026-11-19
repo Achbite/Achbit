@@ -26,7 +26,7 @@ Open **Settings → Plugins → Marketplace**. Browse by category or search for 
 
 **Install & enable** downloads the selected ZIP on the connected Host. The Host compares the package digest and manifest identity with the directory entry before applying the same installation process used for local packages. **Manage** takes you to installed plugins to disable, update or remove a registration. Existing registrations with the same kind and manifest ID keep their installed copy.
 
-**Download from author** opens the version-specific distribution in your browser. For listings that provide only an author download, save the package and use **Installed → Add…**. Authors submit a bilingual Markdown entry with a description, source, license and asset link in the appropriate directory category. For direct installation, include the ZIP SHA-256 and the manifest ID reported by Achbit. The directory generates the category tables and the machine-readable index from those pages. [Plugin contribution guide](https://github.com/Achbite/achbit-plugins/blob/main/CONTRIBUTING.md)
+**Download from author** opens the version-specific distribution in your browser. For listings that provide only an author download, save the package and use **All → Add…**. Authors submit a bilingual Markdown entry with a description, source, license and asset link in the appropriate directory category. For direct installation, include the ZIP SHA-256 and the manifest ID reported by Achbit. The directory generates the category tables and the machine-readable index from those pages. [Plugin contribution guide](https://github.com/Achbite/achbit-plugins/blob/main/CONTRIBUTING.md)
 
 ## Artifacts and import
 
