@@ -26,7 +26,7 @@ import {
   type ConversationResourceReadResult,
 } from '../../services/localAgentApi';
 import { documentFormat, imageMediaType, readDocumentText, selectedFilePreview, type DocumentFormat } from './documentResources';
-import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, selectReaderTarget, identifyReaderFiles, isReaderFile, type ReaderFileTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
+import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, removeReaderTab, selectReaderTarget, identifyReaderFiles, isReaderFile, type ReaderFileTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
 import { NativeBrowserPreview } from './NativeBrowserPreview';
 import { browserAddressError } from './BrowserChrome';
 import { useUiLanguage } from '../../useUiLanguage';
@@ -40,7 +40,7 @@ import {
   type NativeHostBinding,
   type NativePage,
 } from '../../services/nativeBrowser';
-import { openBoundResource } from './useConversationBodyLinks';
+import { ConversationBodyLinkScope, openBoundResource, useConversationBodyLinks } from './useConversationBodyLinks';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import ProjectFolderDialog from '../workspace-open-dialog/ProjectFolderDialog';
 import './documentPreview.css';
@@ -238,30 +238,30 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     if (!sessionId) return;
     await openBoundResource(host, sessionId, workspaceId, logicalPath, position, () => currentSession.current === sessionId, openTarget);
   };
-  const removeTab = (id: string) => {
+  const removeTab = (id: string, selectRemaining = false) => {
     openLifetime.current = {};
     navigation?.onTabClosed(sessionId, id);
     bindings.current.delete(id);
     setState((old) => {
-      const tabs = old.tabs.filter((tab) => tab.id !== id);
-      const activeId = old.activeId === id ? (tabs.at(-1)?.id ?? null) : old.activeId;
+      const next = removeReaderTab(old, id, selectRemaining);
       saveViewState(
         sessionId + ':selection',
-        tabs.find((tab) => tab.id === activeId)?.target ?? null,
+        next.tabs.find(tab => tab.id === next.activeId)?.target ?? null,
       );
-      return { ...old, tabs, activeId };
+      return next;
     });
   };
   const closeTab = async (id: string) => {
     if (!sessionId) return;
     const tab = live.tabs.find((tab) => tab.id === id);
+    const active = live.activeId === id, sequence = openSequence.current;
     try {
       if (tab?.target.kind === 'browser') {
         const binding = bindings.current.get(id) ?? await nativeHostBinding();
         if (!binding) throw new Error('Native browser requires the desktop GUI Host.');
         await nativeBrowserCommand({ ...binding, sessionId }, { action: 'close', previewId: tab.target.previewId });
       }
-      if (currentSession.current === sessionId) removeTab(id);
+      if (currentSession.current === sessionId) removeTab(id, active && sequence === openSequence.current);
     } catch (reason) {
       if (currentSession.current === sessionId) setError(String(reason));
     }
@@ -456,7 +456,8 @@ export function ResourcePreview({
                   sessionId={preview.sessionId}
                   active={preview.visible && preview.activeId === tab.id}
                   onReady={(page, binding) => preview.ready(tab.id, page, binding)}
-                  onClose={() => preview.removeTab(tab.id)}
+                  onClosed={() => preview.removeTab(tab.id)}
+                  onRequestClose={() => preview.closeTab(tab.id)}
                   previewId={tab.target.previewId}
                   onReview={onReview}
                   reviewEdit={preview.reviewEdit?.previewId === (tab.page?.previewId ?? tab.target.previewId) ? preview.reviewEdit : null}
@@ -667,6 +668,9 @@ function ReaderDocument({
   useEffect(() => { setStartByte(undefined); }, [key]);
   const reference = targetResource(target);
   const referenceId = reference && resourceKey(reference);
+  const bodyLinks = useConversationBodyLinks({ sessionId, document: { reference,
+    path: isReaderFile(target) ? target.canonicalPath ?? (target.kind === 'file' ? target.path : undefined) : undefined,
+  } }, language, setLocationError, true);
   const [watchError, setWatchError] = useState('');
   const [watchReady, setWatchReady] = useState(false);
   const [watchAttempt, setWatchAttempt] = useState(0);
@@ -837,14 +841,15 @@ function ReaderDocument({
           </Suspense></InterfaceLoadBoundary>
         ) : state.status === 'document' ? (
           <InterfaceLoadBoundary><Suspense fallback={<p>{t(language, 'agent.resource.reading')}</p>}>
-            <DocumentPreview
+            <ConversationBodyLinkScope.Provider value={bodyLinks.open}><DocumentPreview
               readingKey={key}
+              location={target.kind === 'workspace' ? target : undefined}
               blob={state.blob}
               format={state.format}
               filename={path}
               language={language}
               actions={actions}
-            />
+            /></ConversationBodyLinkScope.Provider>{bodyLinks.selection}
           </Suspense></InterfaceLoadBoundary>
         ) : (
           <>

@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties } from 'react';
 import { ResourceTreeMenu, type AttachTreeResource } from './ResourceTreeMenu';
-import { asyncDataLoaderFeature, hotkeysCoreFeature, type ItemInstance } from '@headless-tree/core';
-import { useTree } from '@headless-tree/react';
+import { asyncDataLoaderFeature, hotkeysCoreFeature, createTree, type TreeConfig, type ItemInstance } from '@headless-tree/core';
 import { useConversationHost } from './ConversationHost';
 import { resourceKey, type ResourceEntry, type ResourceReference } from '../../services/conversationResources';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -12,7 +11,34 @@ import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 
-type Node = { name: string; parentId?: string; entry?: ResourceEntry; children?: ResourceEntry[]; error?: string };
+type Node = { name: string; parentId?: string; entry?: ResourceEntry; children?: ResourceEntry[]; childIds?: string[]; error?: string };
+
+// A Headless Tree instance owns its item handles for its entire lifetime. When a
+// directory withdraws an item, reproject only the still-reachable snapshots.
+function useResourceTree(config: TreeConfig<Node>) {
+  const [tree, setTree] = useState(() => createTree<Node>(config));
+  const [, render] = useReducer(value => value + 1, 0);
+  tree.setConfig(previous => ({ ...previous, ...config, setState: render }));
+  useEffect(() => {
+    tree.setMounted(true);
+    tree.rebuildTree();
+    return () => tree.setMounted(false);
+  }, [tree]);
+  const replace = (nodes: Map<string, Node>) => {
+    const { expandedItems, focusedItem } = tree.getState();
+    const next = createTree<Node>({ ...config, initialState: {
+      expandedItems: expandedItems.filter(id => nodes.has(id)),
+      focusedItem: focusedItem && nodes.has(focusedItem) ? focusedItem : null,
+    } });
+    for (const [id, node] of nodes) {
+      const item = next.getItemInstance(id);
+      item.updateCachedData(node, true);
+      if (node.childIds) item.updateCachedChildrenIds(node.childIds, true);
+    }
+    setTree(next);
+  };
+  return { tree, replace };
+}
 
 type ResourceTreeProps = { sessionId: string; language: UiLanguage; visible: boolean; activeTarget?: ReaderTarget; openTarget(target: ReaderTarget): void; onAttach?: AttachTreeResource };
 
@@ -65,7 +91,8 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
   const open = (entry?: ResourceEntry) => {
     if (entry?.kind === 'file') openTarget({ kind: 'resource', resource: entry.resource, name: entry.name });
   };
-  const tree = useTree<Node>({
+  const activeTree = useRef<ReturnType<typeof createTree<Node>> | null>(null);
+  const { tree, replace } = useResourceTree({
     rootItemId: 'root',
     getItemName: item => item.getItemData().name,
     isItemFolder: item => item.getId() === 'root' || !!item.getItemData().children || item.getItemData().entry?.kind === 'directory',
@@ -89,6 +116,46 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
         return node;
       },
       getChildrenWithData: async id => {
+        const project = (children: { id: string; data: Node }[]) => {
+          const current = nodes.current;
+          const parent = current.get(id);
+          if (activeTree.current !== tree || !parent || lifetime.current?.signal.aborted) return [];
+          const nextIds = children.map(child => child.id);
+          const retained = new Set(nextIds);
+          let withdrawn = parent.childIds?.some(child => !retained.has(child));
+          parent.childIds = nextIds;
+          for (const child of children) {
+            const old = current.get(child.id);
+            if (old?.childIds) {
+              if (old.entry?.kind === child.data.entry?.kind && JSON.stringify(old.children) === JSON.stringify(child.data.children)) {
+                child.data.childIds = old.childIds;
+              } else withdrawn = true;
+            }
+            current.set(child.id, child.data);
+          }
+          if (withdrawn) {
+            const reachable = new Map<string, Node>();
+            const pending = ['root'];
+            while (pending.length) {
+              const key = pending.pop()!;
+              const node = current.get(key);
+              if (!node || reachable.has(key)) continue;
+              reachable.set(key, node);
+              if (node.childIds) for (const child of node.childIds) pending.push(child);
+            }
+            for (const [key, data] of current) {
+              const item = tree.getItemInstance(key);
+              item.updateCachedData(undefined, true);
+              if (data.childIds) item.updateCachedChildrenIds([], true);
+            }
+            current.clear();
+            nodes.current = reachable;
+            activeTree.current = null;
+            replace(reachable);
+            return [];
+          }
+          return children;
+        };
         try {
           const node = nodes.current.get(id);
           const children = id === 'root'
@@ -98,7 +165,6 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
           const add = (child: ResourceEntry) => {
             const childId = resourceKey(child.resource);
             const data: Node = { entry: child, parentId: id, name: child.category === 'session' ? (chinese ? '会话文件' : 'Session files') : child.name, error: child.error };
-            nodes.current.set(childId, data);
             result.push({ id: childId, data });
           };
           if (id === 'root') {
@@ -108,36 +174,42 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
               if (!entries.length) continue;
               const groupId = 'group:' + category;
               const data: Node = { name: label, parentId: 'root', children: entries };
-              nodes.current.set(groupId, data);
               result.push({ id: groupId, data });
             }
             children.filter(child => child.category === 'session').forEach(add);
           } else children.forEach(add);
-          return result;
+          return project(result);
         } catch (error) {
           if (lifetime.current?.signal.aborted) return [];
           const data = { name: String(error), error: String(error) };
-          nodes.current.set(`${id}:error`, data);
-          return [{ id: `${id}:error`, data }];
+          return project([{ id: `${id}:error`, data }]);
         }
       },
     },
     features: [asyncDataLoaderFeature, hotkeysCoreFeature],
   });
+  activeTree.current = tree;
   useEffect(() => { if (visible) void tree.getRootItem().invalidateChildrenIds(true); }, [projectionKey, visible, tree]);
   const targetReference: ResourceReference | undefined = activeTarget?.kind === 'workspace'
     ? { workspaceId: activeTarget.workspaceId, logicalPath: activeTarget.logicalPath }
     : activeTarget?.kind === 'resource' ? activeTarget.resource : undefined;
   const targetId = targetReference && resourceKey(targetReference);
+  const completedReveal = useRef<string | undefined>(undefined);
   useEffect(() => {
+    if (!visible) { completedReveal.current = undefined; return; }
+    const reveal = JSON.stringify([sessionId, projectionKey, targetId]);
+    if (completedReveal.current === reveal) {
+      setSelected(previous => previous && nodes.current.has(previous) ? previous : undefined);
+      return;
+    }
+    completedReveal.current = undefined;
     let cancelled = false;
     setSelected(undefined);
-    if (!visible) return;
     void (async () => {
       const rootIds = await tree.loadChildrenIds('root');
       if (cancelled) return;
       for (const id of rootIds) if (nodes.current.get(id)?.entry?.category === 'project') tree.getItemInstance(id).expand();
-      if (!targetReference || 'change' in targetReference) return;
+      if (!targetReference || 'change' in targetReference) { completedReveal.current = reveal; return; }
       const candidates = [...rootIds];
       for (const id of rootIds) {
         if (nodes.current.get(id)?.children) candidates.push(...await tree.loadChildrenIds(id));
@@ -160,10 +232,10 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
         if (!children.includes(next)) return;
         current = next;
       }
-      if (!cancelled) { setSelected(current); setFilter(''); }
+      if (!cancelled) { completedReveal.current = reveal; setSelected(current); setFilter(''); }
     })().catch(error => { if (!cancelled) setWatchError(String(error)); });
     return () => { cancelled = true; };
-  }, [targetId, visible, projectionKey, tree]);
+  }, [sessionId, targetId, visible, projectionKey, tree]);
   useEffect(() => {
     if (!visible || !selected) return;
     const frame = requestAnimationFrame(() => rows.current.get(selected)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
@@ -178,7 +250,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
     return ![...hidden].some(id => item.getId() === id || item.isDescendentOf(id));
   });
   const matched = new Set<string>();
-  for (const [id, node] of nodes.current) {
+  if (filter) for (const [id, node] of nodes.current) {
     if (!node.name.toLocaleLowerCase().includes(filter.toLocaleLowerCase())) continue;
     for (let ancestor: string | undefined = id; ancestor; ancestor = nodes.current.get(ancestor)?.parentId) matched.add(ancestor);
   }
@@ -186,7 +258,7 @@ function ResourceTreeContents({ sessionId, language, openTarget, visible, active
   displayedItems.current = displayed;
   const selectedItem = displayed.find(item => item.getId() === selected);
   const selectedParentId = selectedItem && selectedItem.getItemMeta().level > 0 ? selectedItem.getParent()?.getId() : undefined;
-  const watched = displayed.filter(item => item.isExpanded() && item.getItemData().entry?.kind === 'directory');
+  const watched = visibleItems.filter(item => item.isExpanded() && item.getItemData().entry?.kind === 'directory');
   const watchKey = JSON.stringify(watched.map(item => item.getId()).sort());
   useEffect(() => {
     const ids = JSON.parse(watchKey) as string[];

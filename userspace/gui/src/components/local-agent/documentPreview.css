@@ -35,7 +35,18 @@
 .local-agent--reading.local-agent--external-header:not(.local-agent--expanded)::before { grid-row:1 / -1; }
 .local-agent--reading > .local-agent__viewport { z-index:1; }
 .local-agent--reading > .local-agent__reader { position:relative; z-index:1; border-radius:var(--ac-radius-inner) var(--ac-radius-inner) 0 0; }
-.local-agent.local-agent--reading { display:grid; grid-template-columns:minmax(260px,1fr) 5px minmax(280px,var(--reader-width,55%)); grid-template-rows:58px minmax(0,1fr) auto; }
+/* Both rows place the divider from the full workspace width. The titlebar
+   reserves its window buttons from the space after that divider. */
+.local-agent--reading, .local-agent__header--reading {
+  --reader-divider-width: 5px;
+  --reader-pane-width: max(var(--reader-split-min, 280px), calc(var(--reader-width-percent, 55) * var(--reader-row-unit, 1%)));
+  --conversation-pane-width: max(260px, calc(100 * var(--reader-row-unit, 1%) - var(--reader-pane-width) - var(--reader-divider-width)));
+}
+.local-agent.local-agent--reading {
+  display: grid;
+  grid-template-columns: var(--conversation-pane-width) var(--reader-divider-width) minmax(var(--reader-split-min, 280px), 1fr);
+  grid-template-rows: 58px minmax(0,1fr) auto;
+}
 .local-agent--reading .local-agent__header { grid-column:1 / 4; grid-row:1; }
 .local-agent--reading > .local-agent__viewport {grid-column:1;grid-row:2;min-width:0;}
 .local-agent--reading .local-agent__composer-shell {grid-column:1;grid-row:3;min-width:0;}
@@ -146,11 +157,20 @@
   .local-agent--reading:not(.local-agent--expanded)>.local-agent__reader{grid-column:1;grid-row:4;border-top:1px solid var(--ac-border);}
   .local-agent--reading>.reader-resize{display:none;}
   .local-agent--reading:not(.local-agent--expanded)::before{grid-row:2 / 4;}
-  .local-agent--external-header.local-agent--reading:not(.local-agent--expanded)::before{grid-row:1 / 3;}
-  .local-agent.local-agent--external-header.local-agent--reading:not(.local-agent--expanded){grid-template-rows:minmax(0,1fr) auto minmax(220px,50%);}
-  .local-agent--external-header.local-agent--reading:not(.local-agent--expanded)>.local-agent__reader{grid-row:3;}
   .local-agent--reading:not(.local-agent--expanded)>.local-agent__conversation-overlay-bounds{grid-row:2 / 4;}
-  .local-agent--external-header.local-agent--reading:not(.local-agent--expanded)>.local-agent__conversation-overlay-bounds{grid-row:1 / 3;}
+}
+
+/* Stack the external-header workbench when its 260px + 5px + 400px tracks no longer fit. */
+@container reader-row (max-width: 665px) {
+  .local-agent.local-agent--external-header.local-agent--reading:not(.local-agent--expanded) {
+    grid-template: minmax(0,1fr) auto minmax(220px,50%) / minmax(0,1fr);
+  }
+  .local-agent--external-header.local-agent--reading:not(.local-agent--expanded) > .local-agent__reader {
+    grid-column: 1; grid-row: 3; border-top: 1px solid var(--ac-border);
+  }
+  .local-agent--external-header.local-agent--reading > .reader-resize { display: none; }
+  .local-agent--external-header.local-agent--reading:not(.local-agent--expanded)::before,
+  .local-agent--external-header.local-agent--reading:not(.local-agent--expanded) > .local-agent__conversation-overlay-bounds { grid-row: 1 / 3; }
 }
 
 .document-artifact-image { max-height: 180px; width: 100%; object-fit: contain; }

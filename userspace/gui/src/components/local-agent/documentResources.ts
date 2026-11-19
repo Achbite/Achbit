@@ -1,3 +1,5 @@
+import { fileLinkLocation, type SourcePosition } from './resourceLinks';
+
 export type DocumentFormat = 'html' | 'pdf' | 'markdown';
 
 export function documentFormat(path: string): DocumentFormat | null {
@@ -23,13 +25,15 @@ export async function selectedFilePreview(path: string, blob: Blob) {
   return { status: 'source' as const, content: await readDocumentText(blob) };
 }
 
-export function workspaceResourceLink(href: string): { workspaceId: string; logicalPath: string } | null {
+export function workspaceResourceLink(href: string): ({ workspaceId: string; logicalPath: string } & SourcePosition) | null {
   const match = /^workspace:\/\/([^/]+)\/(.+)$/.exec(href);
   if (!match) return null;
   try {
     const workspaceId = decodeURIComponent(match[1]);
-    const logicalPath = decodeURIComponent(match[2]);
-    return workspaceId && logicalPath ? { workspaceId, logicalPath } : null;
+    const location = fileLinkLocation(match[2]);
+    if (!workspaceId || !location?.path) return null;
+    const { path: logicalPath, ...position } = location;
+    return { workspaceId, logicalPath, ...position };
   } catch { return null; }
 }
 

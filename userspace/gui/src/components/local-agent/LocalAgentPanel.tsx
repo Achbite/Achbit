@@ -113,7 +113,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const [readerHeader, setReaderHeader] = useState<HTMLDivElement | null>(null);
   const [conversationBounds, setConversationBounds] = useState<HTMLDivElement | null>(null);
   const [readerTreeWidth, setReaderTreeWidth] = useState(0);
-  const readerLayout = { '--reader-width': `${resourcePreview.width}%`, '--reader-tree-width': `${readerTreeWidth}px` } as React.CSSProperties;
+  const readerLayout = { '--reader-width-percent': resourcePreview.width, '--reader-tree-width': `${readerTreeWidth}px` } as React.CSSProperties;
   useLayoutEffect(() => {
     onReaderLayoutChange?.({ visible: resourcePreview.visible, expanded: resourcePreview.expanded, conversationBounds });
   }, [onReaderLayoutChange, resourcePreview.visible, resourcePreview.expanded, conversationBounds]);

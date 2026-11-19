@@ -1,7 +1,8 @@
 import { InterfaceLoadBoundary } from '../shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
-import React, { lazy, Suspense, useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { UiLanguage } from '../../i18n';
+import { fileLinkLocation, type SourcePosition } from './resourceLinks';
 import { MarkdownContent } from './BufferedMarkdown';
 import { readDocumentText, type DocumentFormat } from './documentResources';
 import './documentPreview.css';
@@ -16,7 +17,37 @@ import type { BrowserViewport } from '../../services/nativeBrowser';
 
 const PdfDocumentPreview = lazy(() => loadInterfaceModule(() => import('./PdfDocumentPreview')));
 
-export function DocumentPreview({ blob, format, filename, language, readingKey, actions }: { blob: Blob; format: DocumentFormat | 'image'; filename: string; language: UiLanguage; readingKey?: string; actions?: React.ReactNode }) {
+function scrollToHeading(document: HTMLElement, fragment: string) {
+  const used = new Set<string>();
+  for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
+    const base = (heading.textContent ?? '').toLowerCase().trim()
+      .replace(/[^\p{L}\p{M}\p{N}_ -]/gu, '').replace(/ /gu, '-');
+    let id = base, occurrence = 0;
+    while (used.has(id)) id = base + '-' + ++occurrence;
+    if (id === fragment) { heading.scrollIntoView({ block: 'start' }); return; }
+    used.add(id);
+  }
+}
+
+function MarkdownDocument({ content, location }: { content: string; location?: SourcePosition }) {
+  const container = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (location?.fragment && container.current) scrollToHeading(container.current, location.fragment);
+  }, [location, content]);
+  const followHeading = (event: React.MouseEvent<HTMLDivElement>) => {
+    const href = event.target instanceof Element ? event.target.closest('a[href]')?.getAttribute('href') : null;
+    if (!href || !/^[?#]/u.test(href) || event.defaultPrevented) return;
+    const fragment = fileLinkLocation(href)?.fragment;
+    if (!fragment) return;
+    event.preventDefault();
+    scrollToHeading(event.currentTarget, fragment);
+  };
+  return <div className="document-preview__markdown" ref={container} onClickCapture={followHeading} onAuxClickCapture={followHeading}>
+    <MarkdownContent>{content}</MarkdownContent>
+  </div>;
+}
+
+export function DocumentPreview({ blob, format, filename, language, readingKey, location, actions }: { blob: Blob; format: DocumentFormat | 'image'; filename: string; language: UiLanguage; readingKey?: string; location?: SourcePosition; actions?: React.ReactNode }) {
   const [viewport, setViewport] = useState<BrowserViewport>(DEFAULT_BROWSER_VIEWPORT);
   useEffect(() => setViewport(DEFAULT_BROWSER_VIEWPORT), [readingKey, filename]);
   const chinese = language === 'zh-CN';
@@ -59,7 +90,7 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
           {format === 'pdf' ? <InterfaceLoadBoundary><Suspense fallback={loading}><PdfDocumentPreview blob={blob} language={language} readingKey={readingKey} /></Suspense></InterfaceLoadBoundary>
             : content === null ? loading
             : format === 'html' ? <HtmlDocumentFrame content={content} title={filename} viewport={viewport} />
-              : <div className="document-preview__markdown"><MarkdownContent>{content}</MarkdownContent></div>}
+              : <MarkdownDocument content={content} location={location} />}
           </UiPluginSlotView>}
   </div>;
 }

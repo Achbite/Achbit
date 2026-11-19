@@ -13,7 +13,7 @@ export function locationKey(location: WorkbenchLocation): string {
   const { target, visible, expanded } = location.reader;
   return JSON.stringify([location.sessionId, location.draftProjectId, location.settingsOpen,
     visible, expanded, target && readerTargetKey(target),
-    target?.kind === 'workspace' ? [target.line, target.column] : null]);
+    target?.kind === 'workspace' ? [target.line, target.column, target.fragment] : null]);
 }
 
 export function visitLocation(history: NavigationHistory, location: WorkbenchLocation): NavigationHistory {
