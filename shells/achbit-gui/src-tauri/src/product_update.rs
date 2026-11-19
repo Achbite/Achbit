@@ -517,27 +517,21 @@ fn install(
     manual: bool,
 ) -> Result<InstallOutcome, String> {
     let state = app.state::<ProductUpdates>();
-    let host = local_host(app)?;
-    if host.is_none() {
+    let Some(host) = local_host(app)? else {
         return Ok(InstallOutcome::Blocked("clients".into()));
-    }
-    let token = match &host {
-        Some(host) => {
-            let reply = host.request("prepare", None, manual, preparation.confirmed)?;
-            if reply["prepared"] != true {
-                let reason = reply["reason"]
-                    .as_str()
-                    .ok_or("Host update reason is missing")?;
-                return Ok(InstallOutcome::Blocked(reason.into()));
-            }
-            Some(
-                reply["token"]
-                    .as_u64()
-                    .ok_or("Host update token is missing")?,
-            )
-        }
-        None => None,
     };
+    let reply = host.request("prepare", None, manual, preparation.confirmed)?;
+    if reply["prepared"] != true {
+        let reason = reply["reason"]
+            .as_str()
+            .ok_or("Host update reason is missing")?;
+        return Ok(InstallOutcome::Blocked(reason.into()));
+    }
+    let token = Some(
+        reply["token"]
+            .as_u64()
+            .ok_or("Host update token is missing")?,
+    );
     let mut committed = false;
     let mut can_restart = true;
     let mut restart = Restart {
@@ -562,18 +556,15 @@ fn install(
             })
         };
         save_restart(&restart)?;
-        if let Some(host) = &host {
-            committed = true;
-            let receipt: HostShutdownReceipt =
-                serde_json::from_value(host.request("commit", token, manual, false)?)
-                    .map_err(|error| error.to_string())?;
-            wait_for_process_exit(host.identity.pid, Duration::from_secs(30))
-                .map_err(|error| error.to_string())?;
-            if !receipt.confirms_shutdown_of(&host.identity) {
-                return Err("Host cleanup did not complete".into());
-            }
-        }
         committed = true;
+        let receipt: HostShutdownReceipt =
+            serde_json::from_value(host.request("commit", token, manual, false)?)
+                .map_err(|error| error.to_string())?;
+        wait_for_process_exit(host.identity.pid, Duration::from_secs(30))
+            .map_err(|error| error.to_string())?;
+        if !receipt.confirms_shutdown_of(&host.identity) {
+            return Err("Host cleanup did not complete".into());
+        }
         app.state::<HostProcessGroup>().detach();
         if manual {
             let deadline = Instant::now() + Duration::from_secs(30);
@@ -622,17 +613,20 @@ fn install(
         Ok(InstallOutcome::Installed)
     })();
     if !committed {
-        state
-            .installation
-            .resume()
-            .map_err(|error| error.to_string())?;
-        if let Some(host) = &host {
-            host.request("abort", token, false, false)?;
-        }
-        if let Err(error) = &result {
+        let outcome = recover_preparation(
+            result,
+            || {
+                state
+                    .installation
+                    .resume()
+                    .map_err(|error| error.to_string())
+            },
+            || host.request("abort", token, false, false).map(|_| ()),
+        );
+        if outcome.is_err() {
             let _ = app.emit("achbit:update-resume", ());
-            eprintln!("Update preparation failed: {error}");
         }
+        return outcome;
     } else if let Err(error) = &result {
         restart.error = Some(error.clone());
         let mut failure = error.clone();
@@ -662,9 +656,52 @@ fn install(
     result
 }
 
+/// Resume the installation lease and release the Host preparation independently.
+fn recover_preparation(
+    result: Result<InstallOutcome, String>,
+    resume: impl FnOnce() -> Result<(), String>,
+    abort: impl FnOnce() -> Result<(), String>,
+) -> Result<InstallOutcome, String> {
+    let lease = resume();
+    let host = abort();
+    if lease.is_ok() && host.is_ok() {
+        return result;
+    }
+    let mut reason = match result {
+        Err(error) => error,
+        Ok(InstallOutcome::Blocked(reason)) => format!("Update preparation blocked: {reason}"),
+        Ok(InstallOutcome::Installed) => "Update preparation cleanup failed".into(),
+    };
+    if let Err(error) = lease {
+        reason.push_str(&format!("; cannot resume installation lease: {error}"));
+    }
+    if let Err(error) = host {
+        reason.push_str(&format!("; cannot abort Host update preparation: {error}"));
+    }
+    Err(reason)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_update_preparation_attempts_both_recoveries_and_preserves_the_cause() {
+        let mut aborted = false;
+        let result = recover_preparation(
+            Err("write restart snapshot: disk full".into()),
+            || Err("lease busy".into()),
+            || {
+                aborted = true;
+                Err("Host unavailable".into())
+            },
+        );
+        assert!(aborted);
+        assert_eq!(result.err().unwrap(), "write restart snapshot: disk full; cannot resume installation lease: lease busy; cannot abort Host update preparation: Host unavailable");
+        assert!(
+            matches!(recover_preparation(Ok(InstallOutcome::Blocked("clients".into())), || Ok(()), || Ok(())), Ok(InstallOutcome::Blocked(reason)) if reason == "clients")
+        );
+    }
 
     #[test]
     fn update_failure_preserves_the_cause_without_exposing_private_urls() {
