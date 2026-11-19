@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
+import { checkAttachmentThumbnails } from './attachment-thumbnails-check.mjs';
 import { checkPluginMarketplace } from './plugin-marketplace-check.mjs';
 const preview = resolve(process.env.UI_FIXTURE_ROOT ?? fileURLToPath(new URL('../../../../.task-artifacts/manual-preview', import.meta.url)));
 const out = process.env.UI_EVIDENCE_DIR ? resolve(process.env.UI_EVIDENCE_DIR) : await mkdtemp(join(tmpdir(), 'achbit-ui-results-'));
@@ -85,6 +86,7 @@ try {
     const image = await cmd('Page.captureScreenshot', { format: 'png' }); await writeFile(join(out, name + '.png'), Buffer.from(image.data, 'base64'));
     console.log(`${pass ? 'PASS' : 'FAIL'} ${name}: ${JSON.stringify(actual)}`);
   };
+  await checkAttachmentThumbnails({ navigate, evaluate, cmd, until, frame, click, key, record });
   await navigate('ui-components');
   const closeButton = '[aria-label="紧凑关闭"]';
   await evaluate(`document.querySelector('${closeButton}').focus()`); await key('Enter');
