@@ -546,7 +546,10 @@ mod tests {
         let path = "/api/conversation/input-resources/prepare-image";
         assert!(host_proxy_path_allowed("POST", path));
         assert!(!host_proxy_path_allowed("GET", path));
-        assert!(!host_proxy_path_allowed("POST", "/api/conversation/input-resources/other"));
+        assert!(!host_proxy_path_allowed(
+            "POST",
+            "/api/conversation/input-resources/other"
+        ));
     }
 
     #[test]

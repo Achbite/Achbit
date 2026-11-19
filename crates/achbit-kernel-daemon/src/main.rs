@@ -2,11 +2,11 @@
 
 mod api_response;
 mod artifact_resources;
+mod attachment_image;
 mod command_denylist;
 mod config_root_lease;
 mod config_setup;
 mod container_tools;
-mod attachment_image;
 mod conversation_api;
 mod conversation_catalog;
 mod conversation_resources;
