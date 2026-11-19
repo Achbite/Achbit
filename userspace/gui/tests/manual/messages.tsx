@@ -37,6 +37,28 @@ const messages = [
 ].map((message, i) => ({ ...message, messageId: `message:${i}`, sequence: i + 1, createdAt: '2026-09-16T08:35:00Z',
   filesystemReferences: i === 0 ? [{ referenceId: 'reference:notes', workspaceId: 'workspace:preview', logicalPath: 'notes.txt',
     displayName: 'notes.txt', kind: 'file', mediaType: 'text/plain', byteLength: 120 }] : [], pluginSelections: [], feedback: null })) as SessionProjection['messages'];
+if (previewParams.has('thumbnails')) {
+  // Actual message/attachment components with four local, known image sizes; no Host needed.
+  const assets = new Map<string, Blob>();
+  const samples = [[1440, 810], [500, 900], [1800, 240], [16, 16]] as const;
+  messages[2]!.content = '这几张图片在对话里是什么样子？';
+  messages[2]!.filesystemReferences = samples.map(([width, height], i) => {
+    const name = `${width}x${height}.svg`;
+    const skies = ['#b8d6df', '#ecd7bd', '#d0dee4', '#d2e8d6'];
+    const art = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 160 100" preserveAspectRatio="xMidYMid slice"><rect width="160" height="100" fill="${skies[i]}"/><circle cx="100" cy="32" r="15" fill="#fff0c8"/><path d="M0 64 46 24 79 58 110 39 160 64V100H0Z" fill="#688d8c"/><path d="M0 77 40 51 92 74 144 48 160 53V100H0Z" fill="#305c66"/></svg>`;
+    const blob = new Blob([art], { type: 'image/svg+xml' }); assets.set(name, blob);
+    return { referenceId: `ref:${name}`, workspaceId: 'fixture:images', logicalPath: name, displayName: name,
+      kind: 'file', mediaType: blob.type, byteLength: blob.size };
+  });
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    if (new URL(input instanceof Request ? input.url : String(input), location.href).pathname === `/api/conversation/sessions/${encodeURIComponent(sessionId)}/resources/read` && init?.method === 'POST') {
+      const { workspaceId, logicalPath } = JSON.parse(String(init.body));
+      if (workspaceId === 'fixture:images') return assets.has(logicalPath) ? new Response(assets.get(logicalPath)) : new Response(null, { status: 404 });
+    }
+    return originalFetch(input, init);
+  };
+}
 if (navigationCheck) {
   messages[1]!.content = Array.from({ length: 12 }, (_, index) => `历史说明 ${index + 1}：保留多轮消息，检查到底部时最新标题无需顶到阅读线。`).join('\n\n');
   messages[3]!.content = '这是最新一轮的短回答。';

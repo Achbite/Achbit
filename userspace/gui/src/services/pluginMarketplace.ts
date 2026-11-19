@@ -1,5 +1,9 @@
-export const PLUGIN_MARKETPLACE_REPOSITORY_URL = 'https://github.com/Achbite/achbit-plugins';
-export const PLUGIN_MARKETPLACE_INDEX_URL = 'https://raw.githubusercontent.com/Achbite/achbit-plugins/main/plugins.json';
+import sources from '../../../protocol/src/pluginMarketplaceSources.json';
+import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
+import { requestPluginInstallation } from '../ui-plugins/source';
+
+export const PLUGIN_MARKETPLACE_REPOSITORY_URL = sources.repositoryUrl;
+export const PLUGIN_MARKETPLACE_INDEX_URL = sources.indexUrl;
 
 export interface PluginMarketplaceVerification {
   kind: 'publisher' | 'installation';
@@ -12,6 +16,8 @@ export interface PluginMarketplaceEntry {
   id: string;
   name: string;
   description: string;
+  descriptionZhCN?: string;
+  install?: { sha256: string; manifestId: string };
   kind: 'ui' | 'cli' | 'service' | 'guidance';
   author: string;
   version: string;
@@ -72,6 +78,14 @@ function verification(value: unknown, version: string): PluginMarketplaceVerific
   };
 }
 
+function installMetadata(value: unknown): PluginMarketplaceEntry['install'] {
+  if (value === undefined) return undefined;
+  if (!objectRecord(value) || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(value.sha256)) {
+    throw new Error('Invalid plugin ZIP SHA-256.');
+  }
+  return { sha256: value.sha256, manifestId: requiredText(value.manifestId, 'install.manifestId') };
+}
+
 function entry(value: unknown): PluginMarketplaceEntry {
   if (!objectRecord(value)) throw new Error('Invalid plugin directory entry.');
   const { kind, licenseKind } = value;
@@ -85,9 +99,12 @@ function entry(value: unknown): PluginMarketplaceEntry {
   }
   const version = requiredText(value.version, 'version');
   const mark = verification(value.verification, version);
+  const install = installMetadata(value.install);
   return {
     id: requiredText(value.id, 'id'), name: requiredText(value.name, 'name'),
     description: requiredText(value.description, 'description'), kind, author: requiredText(value.author, 'author'), version,
+    ...(value.descriptionZhCN !== undefined && { descriptionZhCN: requiredText(value.descriptionZhCN, 'descriptionZhCN') }),
+    ...(install && { install }),
     sourceCommit, sourceUrl: sourceUrl.href,
     ...(value.repositoryUrl !== undefined && { repositoryUrl: httpsUrl(value.repositoryUrl, 'repositoryUrl').href }),
     licenseName: requiredText(value.licenseName, 'licenseName'), licenseKind,
@@ -105,7 +122,6 @@ export function decodePluginMarketplace(value: unknown): PluginMarketplaceEntry[
   return plugins;
 }
 
-const CONTENTS_URL = 'https://api.github.com/repos/Achbite/achbit-plugins/contents/plugins.json?ref=main';
 const REQUEST_TIMEOUT_MS = 6_000;
 
 class DirectoryHttpError extends Error {}
@@ -142,7 +158,7 @@ export async function fetchPluginMarketplace(signal?: AbortSignal): Promise<Plug
   } catch (primaryError) {
     if (signal?.aborted || primaryError instanceof DirectoryHttpError) throw primaryError;
     try {
-      const mirror = await readDirectory(CONTENTS_URL, signal, { Accept: 'application/vnd.github.raw+json' });
+      const mirror = await readDirectory(sources.contentsUrl, signal, { Accept: 'application/vnd.github.raw+json' });
       return decodePluginMarketplace(JSON.parse(mirror));
     } catch (secondaryError) {
       if (signal?.aborted) throw secondaryError;
@@ -150,4 +166,50 @@ export async function fetchPluginMarketplace(signal?: AbortSignal): Promise<Plug
     }
   }
   return decodePluginMarketplace(JSON.parse(raw));
+}
+
+export interface InstalledPluginIdentity {
+  id: string;
+  kind: PluginMarketplaceEntry['kind'];
+  path: string;
+}
+
+export interface LocalPluginInstallation {
+  plugin: InstalledPluginIdentity;
+  application: { status: string; error?: string | null };
+}
+
+function installedIdentity(value: unknown): InstalledPluginIdentity {
+  if (!objectRecord(value) || typeof value.id !== 'string' || !value.id
+    || typeof value.path !== 'string' || !value.path
+    || !['ui', 'guidance', 'cli', 'service'].includes(String(value.kind))) {
+    throw new Error('Invalid installed plugin identity.');
+  }
+  return { id: value.id, kind: value.kind as InstalledPluginIdentity['kind'], path: value.path };
+}
+
+export async function installMarketplacePlugin(entry: PluginMarketplaceEntry): Promise<LocalPluginInstallation> {
+  if (!entry.install) throw new Error('This entry provides an author download only.');
+  const data = await requestPluginInstallation({
+    marketplace: { id: entry.id, version: entry.version, kind: entry.kind, ...entry.install },
+  });
+  if (!objectRecord(data) || !objectRecord(data.application) || typeof data.application.status !== 'string') {
+    throw new Error('Host did not report the plugin installation result.');
+  }
+  const plugin = installedIdentity(data.plugin);
+  if (plugin.kind !== entry.kind || plugin.id !== entry.install.manifestId) throw new Error('Unexpected installed plugin identity.');
+  const { status, error } = data.application;
+  return { plugin, application: { status, ...(typeof error === 'string' && { error }) } };
+}
+
+export async function fetchInstalledMarketplacePlugins(signal?: AbortSignal): Promise<InstalledPluginIdentity[]> {
+  const response = await fetch(`${getKernelApiBase()}/host/plugins`, { headers: getHostConnectionHeaders(), signal });
+  if (!response.ok) throw new Error(`Plugin inventory: ${response.status} ${await response.text()}`);
+  const result = await response.json();
+  if (!result.ok) throw new Error(result.message ?? result.error ?? 'Plugin inventory failed.');
+  if (!Array.isArray(result.data?.plugins)) throw new Error('Host returned an invalid plugin inventory.');
+  return result.data.plugins.filter((item: unknown) =>
+    // A broken Skill registration may carry its mount ID instead of its manifest identity.
+    !(objectRecord(item) && item.error && (!item.id || item.kind === 'guidance'))
+  ).map(installedIdentity);
 }

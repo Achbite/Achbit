@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 
+import windows_signing
 
 def macos(stage, output, version):
     with tempfile.TemporaryDirectory(prefix='pkg-', dir=output.parent) as directory:
@@ -53,6 +54,7 @@ def macos(stage, output, version):
 
 
 def windows(stage, output, version):
+    identity = windows_signing.build_identity(required=True)
     with tempfile.TemporaryDirectory(prefix='nsis-', dir=output.parent) as directory:
         uninstall = Path(directory) / 'uninstall-files.nsh'
         lines = []
@@ -61,11 +63,14 @@ def windows(stage, output, version):
             command = 'RMDir /r' if entry.is_dir() else 'Delete'
             lines.append(f'{command} "$INSTDIR\\{entry.name}"')
         uninstall.write_text('\n'.join(lines) + '\n')
-        subprocess.run(['makensis', '-V2', f'-DSTAGE={stage.resolve()}',
-            f'-DOUTPUT={output.resolve()}', f'-DVERSION={version}',
-            f'-DUNINSTALL_FILES={uninstall}',
-            f'-DINSTALL_RUNTIME={Path(__file__).parent / "installers/install-runtime.ps1"}',
-            str(Path(__file__).parent / 'installers/windows.nsi')], check=True)
+        scripts = Path(__file__).resolve().parent
+        setup = Path(directory) / output.name
+        subprocess.run(['makensis', '-NOCD', '-V2', f'-DSTAGE={stage.resolve()}',
+            f'-DOUTPUT={setup.resolve()}', f'-DVERSION={version}', f'-DUNINSTALL_FILES={uninstall.resolve()}',
+            f'-DINSTALL_RUNTIME={scripts / "installers/install-runtime.ps1"}', 'installers/windows.nsi'],
+            cwd=scripts, check=True)
+        windows_signing.sign(setup, identity)
+        setup.replace(output)
 
 
 def main():

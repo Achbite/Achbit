@@ -1,9 +1,7 @@
 //! Shared GUI/CLI management over the existing installation, settings and runtime owners.
 use crate::prelude::*;
 use crate::{ApiResponse, AppState, ReadyState};
-use achbit_host_connection::plugin_artifact::{
-    inspect_plugin, prepare_plugin, registered_ui_manifest_id,
-};
+use achbit_host_connection::plugin_artifact::{inspect_plugin, registered_ui_manifest_id};
 
 const SOURCES: &[(&str, &str)] = &[
     ("cli", "plugins.sources"),
@@ -31,11 +29,7 @@ pub(crate) async fn inspect(
     ReadyState(_state): ReadyState,
     Json(request): Json<InspectRequest>,
 ) -> Json<ApiResponse> {
-    match tokio::task::spawn_blocking(move || {
-        prepare_plugin(&request.path).map(|prepared| prepared.inspection.clone())
-    })
-    .await
-    {
+    match tokio::task::spawn_blocking(move || inspect_plugin(&request.path)).await {
         Ok(Ok(value)) => ApiResponse::ok(value),
         Ok(Err(error)) => ApiResponse::error("plugin_inspect_failed", error),
         Err(error) => ApiResponse::error("plugin_inspect_failed", error.to_string()),
@@ -275,6 +269,7 @@ fn manage_owned(state: &AppState, request: ManageRequest) -> Json<ApiResponse> {
                 replace_path: Some(path),
             },
             Some(&key),
+            None,
         );
     }
     let mut sources = match crate::plugin_installation::source_list(&settings, &key) {

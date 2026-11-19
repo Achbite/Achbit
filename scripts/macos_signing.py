@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One stable signing identity for native packages and updates to their resources."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -108,6 +110,59 @@ def require_same_identity(app, identity):
         if not leaf.is_file() or hashlib.sha1(leaf.read_bytes()).hexdigest().upper() != identity:
             raise ValueError('The installed App uses a different signing identity. '
                              'Use explicit full macOS packaging to change signing identities.')
+
+
+@contextmanager
+def app_update_lock(directory):
+    # The directory inode persists across replacements by full builds and partial updates.
+    import fcntl
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def staged_app_update(app):
+    """Edit and verify a complete sibling bundle before touching the installed one."""
+    with app_update_lock(app.parent):
+        scratch = Path(tempfile.mkdtemp(prefix='.app-update-', dir=app.parent))
+        staged, previous = scratch / app.name, scratch / 'previous.app'
+        published = False
+        try:
+            if sys.platform == 'darwin':
+                # APFS clones keep this inexpensive and preserve xattrs, ACLs and symlinks.
+                subprocess.run(['/bin/cp', '-ac', str(app), str(staged)], check=True)
+            else:
+                shutil.copytree(app, staged, symlinks=True)
+            yield staged
+            if sys.platform == 'darwin':
+                # renamex_np(RENAME_SWAP) atomically exchanges the two nonempty bundles.
+                import ctypes
+                import errno
+                libc = ctypes.CDLL(None, use_errno=True)
+                if libc.renamex_np(os.fsencode(staged), os.fsencode(app), 2) == 0:
+                    published = True
+                    return
+                error = ctypes.get_errno()
+                if error != errno.ENOTSUP:
+                    raise OSError(error, os.strerror(error), str(app))
+            # Filesystems lacking exchange can move the verified bundle into place.
+            app.rename(previous)
+            try:
+                staged.rename(app)
+            except BaseException:
+                try:
+                    previous.rename(app)
+                except OSError as recovery_error:
+                    print(f'Original App retained at {previous}: {recovery_error}', file=sys.stderr)
+                raise
+            published = True
+        finally:
+            if published or not previous.exists():
+                shutil.rmtree(scratch)
 
 
 def sign_app(app, identity, *, native_components=False):

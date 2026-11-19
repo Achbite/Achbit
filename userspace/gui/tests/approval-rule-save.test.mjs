@@ -6,6 +6,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DEFAULT_USER_SETTINGS } from '../../protocol/dist/index.js';
 import { loopSnapshot, projectSession } from '../../session-core/dist/index.js';
+import { readConversation } from '../../session-core/dist/local-agent/conversationRead.js';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
 import { createSession, readEvents } from '../../session-core/tests/local-agent-fixtures.mjs';
 import { findReactElement, installGuiFetch, loadGuiModules } from './gui-projection-contract.mjs';
@@ -48,7 +49,12 @@ for (const navigate of [false, true]) test(`approval rule save retains its Sessi
       return Response.json({ ok: true, data: { settings: savedSettings, runtimeSettings: savedSettings, storePath: '/fixture/settings.json' } });
     }
     for (const projection of [projectionA, projectionB]) {
-      if (url.pathname === `/api/conversation/sessions/${encodeURIComponent(projection.sessionId)}/projection`)
+      const path = `/api/conversation/sessions/${encodeURIComponent(projection.sessionId)}`;
+      if (init.method === 'POST' && url.pathname === `${path}/read`) {
+        const page = await readConversation(journal, { ...JSON.parse(init.body), sessionId: projection.sessionId });
+        return Response.json({ ok: true, data: page });
+      }
+      if (url.pathname === `${path}/projection`)
         return Response.json({ ok: true, data: projection });
     }
     if (url.pathname.endsWith('/commands') && init.method === 'POST') {

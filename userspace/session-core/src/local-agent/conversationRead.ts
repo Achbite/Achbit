@@ -2,11 +2,10 @@ import type {
   CommandJournalPort, ConversationReadQuery, ConversationReadResult, JsonObject, SessionEvent,
 } from '@achbit/protocol';
 import { reasoningReadItem } from './reasoningRead.js';
-import { projectSession, recoverSession } from './reducer.js';
+import { projectTimeline, recoverSession } from './reducer.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { imageCatalog, readImageReferences } from './visualContext.js';
 
-const encoder = new TextEncoder();
 const MAX_PAGE_BYTES = 48 * 1024;
 
 export function decodeConversationReadQuery(value: unknown): ConversationReadQuery {
@@ -45,13 +44,25 @@ export async function readSessionEvents(journal: CommandJournalPort, sessionId: 
 }
 
 export async function readConversation(journal: CommandJournalPort, query: ConversationReadQuery): Promise<ConversationReadResult> {
-  const allEvents = await readSessionEvents(journal, query.sessionId);
-  if (query.throughSequence !== undefined && query.throughSequence > allEvents.at(-1)!.sequence) throw new Error('conversation_read_boundary_unavailable');
+  const selected = query.view === 'messages' ? await journal.readMessageHistory?.(query.sessionId) : undefined;
+  const allEvents = selected?.events ?? await readSessionEvents(journal, query.sessionId);
+  const revision = selected?.revision ?? allEvents.at(-1)!.sequence;
+  if (selected) {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('session_event_sequence_gap');
+    let previous = 0;
+    for (const event of allEvents) {
+      if (event.sessionId !== query.sessionId) throw new Error('session_event_identity_mismatch');
+      if (!Number.isSafeInteger(event.sequence) || event.sequence <= previous || event.sequence > revision) throw new Error('session_event_sequence_gap');
+      previous = event.sequence;
+    }
+    if (allEvents[0]?.type !== 'session.created' || allEvents[0].sequence !== 1) throw new Error('session_creation_event_missing');
+  }
+  if (query.throughSequence !== undefined && query.throughSequence > revision) throw new Error('conversation_read_boundary_unavailable');
   const journalEvents = query.throughSequence === undefined ? allEvents : allEvents.filter(event => event.sequence <= query.throughSequence!);
   const events = activeConversationEvents(journalEvents);
   const view = query.view ?? 'summary';
   const result: ConversationReadResult = {
-    sessionId: query.sessionId, revision: journalEvents.at(-1)!.sequence, view, items: [], nextBefore: null,
+    sessionId: query.sessionId, revision: query.throughSequence ?? revision, view, items: [], nextBefore: null,
   };
   if (view === 'images') {
     const images = query.imageIds !== undefined ? readImageReferences(events, query.imageIds)
@@ -67,7 +78,7 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   if (view === 'summary') {
     const state = recoverSession(query.sessionId, journalEvents);
     const lastUser = state.messages.findLast((message) => message.role === 'user');
-    const lastMessageId = projectSession(state).timeline.findLast(item => item.kind === 'message' && state.messages.some(message => message.messageId === item.messageId && message.role === 'assistant'));
+    const lastMessageId = projectTimeline(state).findLast(item => item.kind === 'message' && state.messages.some(message => message.messageId === item.messageId && message.role === 'assistant'));
     const lastAssistant = lastMessageId?.kind === 'message' ? state.messages.find(message => message.messageId === lastMessageId.messageId) : undefined;
     result.summary = {
       title: state.display.creationTitle,
@@ -119,10 +130,14 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
   if (query.recordId && !candidates.length) throw new Error('tool_record_not_found');
   if (query.messageId && !candidates.length) throw new Error('message_not_found');
   if (query.providerRequestId && !candidates.length) throw new Error(view === 'reasoning' ? 'reasoning_not_found' : 'context_composition_not_found');
-  const envelopeBytes = encoder.encode(JSON.stringify(result)).byteLength;
+  const envelopeBytes = Buffer.byteLength(JSON.stringify(result));
   let size = envelopeBytes;
   const limit = query.limit ?? (view === 'summary' ? 5 : 10);
   for (const event of candidates) {
+    if (result.items.length >= limit) {
+      result.nextBefore = Number(result.items.at(-1)!.sequence);
+      break;
+    }
     let item = view === 'reasoning' && event.type === 'provider.turn.settled'
       ? reasoningReadItem(event, query.providerRequestId ? query.offset ?? 0 : null)
       : readItem(event, view === 'summary', events, Boolean(query.providerRequestId),
@@ -130,14 +145,14 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
     // A named context can contain an arbitrarily large archived review input.
     // Preserve small detail responses; expose oversized detail as an explicit
     // excerpt rather than allowing the first item to bypass the page budget.
-    if (view === 'context' && encoder.encode(JSON.stringify(item)).byteLength + envelopeBytes > MAX_PAGE_BYTES) {
+    if (view === 'context' && Buffer.byteLength(JSON.stringify(item)) + envelopeBytes > MAX_PAGE_BYTES) {
       const identity = { sequence: item.sequence, eventId: item.eventId, type: item.type, runId: item.runId,
         providerRequestId: item.providerRequestId, detailTruncated: true };
-      const budget = MAX_PAGE_BYTES - envelopeBytes - encoder.encode(JSON.stringify(identity)).byteLength - 256;
+      const budget = MAX_PAGE_BYTES - envelopeBytes - Buffer.byteLength(JSON.stringify(identity)) - 256;
       item = { ...identity, data: textExcerpt(JSON.stringify(item), budget) };
     }
-    const itemBytes = encoder.encode(JSON.stringify(item)).byteLength + 1;
-    if (result.items.length >= limit || (result.items.length > 0 && size + itemBytes > MAX_PAGE_BYTES)) {
+    const itemBytes = Buffer.byteLength(JSON.stringify(item)) + 1;
+    if (result.items.length > 0 && size + itemBytes > MAX_PAGE_BYTES) {
       result.nextBefore = Number(result.items.at(-1)!.sequence);
       break;
     }
@@ -248,16 +263,17 @@ function textChunk(content: string, maxBytes: number, requestedOffset: number): 
     && /[\uD800-\uDBFF]/u.test(content[offset - 1])) offset -= 1;
   // Bound the serialized string, including JSON escaping, not only raw UTF-8.
   let low = offset;
-  let high = content.length;
+  // Each UTF-16 unit costs at least one serialized byte, plus the two JSON quotes.
+  let high = Math.min(content.length, offset + Math.max(0, maxBytes - 2));
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (encoder.encode(JSON.stringify(content.slice(offset, middle))).byteLength <= maxBytes) low = middle;
+    if (Buffer.byteLength(JSON.stringify(content.slice(offset, middle))) <= maxBytes) low = middle;
     else high = middle - 1;
   }
   if (low > offset && low < content.length && /[\uD800-\uDBFF]/u.test(content[low - 1])
     && /[\uDC00-\uDFFF]/u.test(content[low])) low -= 1;
   return { content: content.slice(offset, low), offset, nextOffset: low < content.length ? low : null,
-    totalCharacters: content.length, truncated: low < content.length, totalBytes: encoder.encode(content).byteLength };
+    totalCharacters: content.length, truncated: low < content.length, totalBytes: Buffer.byteLength(content) };
 }
 
 function identifier(value: unknown): value is string {

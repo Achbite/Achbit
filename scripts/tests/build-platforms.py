@@ -14,12 +14,14 @@ import tarfile
 import tempfile
 import time
 import unittest
+import zipfile
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import macos_signing
+import windows_signing
 
 spec = importlib.util.spec_from_file_location('package_runtime', ROOT / 'scripts/package-runtime.py')
 package = importlib.util.module_from_spec(spec)
@@ -124,7 +126,8 @@ class ProgramCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='achbit-clean-dry-run-') as directory:
             root = Path(directory)
             (root / 'scripts').mkdir()
-            for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py', 'version.py'):
+            for name in ('clean-caches.sh', 'package-runtime.py', 'macos_signing.py', 'computer_use_package.py',
+                         'windows_signing.py', 'version.py'):
                 shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
             write(root, 'bin/macos-arm64/achbit-cli', b'program')
             write(root, 'bin/macos-arm64/config/settings.json', b'user settings')
@@ -429,11 +432,14 @@ class BuildTests(unittest.TestCase):
         self.assertEqual({path.name for path in (self.root / 'output').iterdir()}, {'macos.txt'})
 
     def prepare_container_fixture(self):
+        signing = tempfile.TemporaryDirectory(prefix='achbit-mount-fixture-')
+        self.addCleanup(signing.cleanup)
+        self.environment[windows_signing.PROFILE_ENV] = signing.name
         commands = self.root / 'commands'
         commands.mkdir()
         docker = commands / 'docker'
         docker.write_text(r'''#!/usr/bin/env python3
-import json, sys
+import json, os, sys
 from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 state_path = root / 'docker-state.json'
@@ -445,7 +451,10 @@ if args[:2] == ['container', 'inspect']:
     if not state['exists']: sys.exit(1)
     if '-f' in args:
         field = args[args.index('-f') + 1]
-        if '.Mounts' in field: print(root)
+        if '.Mounts' in field and '/run/secrets/achbit-windows-signing' in field:
+            source = state.get('signingSource', os.environ['ACHBIT_WINDOWS_SIGNING_DIR'])
+            print(source + (':rw' if '.RW' in field and state.get('signingWritable') else ''))
+        elif '.Mounts' in field: print(root)
         elif '.Config.Env' in field:
             if state['host'] is not None: print('ACHBIT_BUILD_HOST_OS=' + state['host'])
         elif '.Image' in field: print('fixture-image')
@@ -492,6 +501,22 @@ else: sys.exit('Unexpected Docker invocation: ' + repr(args))
                 self.assertEqual(len(launches), int(host != 'Darwin'))
                 if launches:
                     self.assertIn('ACHBIT_BUILD_HOST_OS=Darwin', launches[0])
+
+    def test_container_refreshes_missing_or_writable_signing_mount(self):
+        self.prepare_container_fixture()
+        profile = self.environment[windows_signing.PROFILE_ENV]
+        for source in ('', profile):
+            with self.subTest(source=source):
+                (self.root / 'docker-state.json').write_text(json.dumps(
+                    {'host': 'Darwin', 'exists': True, 'signingSource': source, 'signingWritable': bool(source)}))
+                (self.root / 'docker-calls.jsonl').write_text('')
+                result = subprocess.run(['make', '_ensure_container'], cwd=self.root, env=self.environment,
+                                        text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = [json.loads(line) for line in (self.root / 'docker-calls.jsonl').read_text().splitlines()]
+                launches = [args for args in calls if args[0] == 'run']
+                self.assertEqual(len(launches), 1)
+                self.assertIn(profile + ':/run/secrets/achbit-windows-signing:ro', launches[0])
 
     def test_shell_updates_image_inputs_before_entering(self):
         self.prepare_container_fixture()
@@ -671,6 +696,18 @@ class WindowsDebugPackageTests(unittest.TestCase):
                 self.assertEqual((stage / 'Achbit.exe').exists(), not debug)
                 self.assertEqual((stage / 'achbit-debug.cmd').exists(), debug)
                 self.assertEqual(json.loads((stage / 'BUILDINFO.json').read_text())['debugControl'], debug)
+                if not debug:
+                    # Resolve bare commands with Windows' default PATHEXT precedence.
+                    commands = stage / 'libexec/commands'
+                    candidates = {entry.name.casefold(): entry for entry in commands.iterdir()}
+                    for name, shell in [('achbit', 'cli'), ('achbit-cli', 'cli'), ('achbit-tui', 'tui')]:
+                        selected = next(candidates[name + ext] for ext in ('.com', '.exe', '.bat', '.cmd')
+                                        if name + ext in candidates)
+                        target = selected.read_text().splitlines()[-1].split('"')[1]
+                        launcher = commands / target.removeprefix('%~dp0').replace('\\', '/')
+                        self.assertEqual(launcher.resolve(), stage / f'achbit-{shell}.bat')
+                        self.assertTrue(launcher.is_file())
+                    self.assertIn('libexec', json.loads((stage / 'package-files.json').read_text()))
                 if debug:
                     launcher = (stage / 'achbit-debug.cmd').read_text()
                     self.assertIn('"%~dp0achbit-cli.exe" debug %*', launcher)
@@ -1422,6 +1459,24 @@ class PublicationTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+
+    def test_stale_windows_uninstall_only_affects_its_program_directory(self):
+        # This is an NSIS ownership boundary. Track the actual nesting of the uninstall instructions.
+        script = (ROOT / 'scripts/installers/windows.nsi').read_text()
+        section = script.split('Section "Uninstall"', 1)[1].split('SectionEnd', 1)[0]
+        guards, shared, local = [], [], []
+        for instruction in map(str.strip, section.splitlines()):
+            if instruction.startswith('${If}'):
+                guards.append(instruction)
+            elif instruction == '${EndIf}':
+                guards.pop()
+            elif instruction.startswith(('ExecWait ', 'System::Call ', 'DeleteRegKey ', 'Delete ', 'RMDir ', '!include ')):
+                group = shared if '${If} $R7 == $INSTDIR' in guards else local
+                group.append(instruction)
+        self.assertEqual(local, ['!include "${UNINSTALL_FILES}"', 'Delete "$INSTDIR\\Uninstall.exe"', 'RMDir "$INSTDIR"'])
+        self.assertTrue(any('--workspace-sandbox-reset' in instruction for instruction in shared))
+        self.assertTrue(any('windows-environment.ps1' in instruction for instruction in shared))
+
     def test_macos_payload_installs_cli_against_the_same_app_resources(self):
         with tempfile.TemporaryDirectory(prefix='achbit-pkg-') as directory:
             root = Path(directory) / 'fixture with spaces'
@@ -1480,6 +1535,36 @@ exec "$ACHBIT_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sys.
                 installers.macos(stage, root / 'Achbit.pkg', '0.6.2')
                 self.assertEqual(packager.run.call_count, 2)
 
+    def test_macos_helper_update_commits_only_a_verified_parent_app(self):
+        import computer_use_package
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / 'package/Achbit.app'
+            helper = Path('Contents/Helpers') / computer_use_package.APP_NAME
+            write(app / helper, 'payload', b'old helper')
+            write(app, 'Contents/_CodeSignature/CodeResources', b'old seal')
+            write(app, 'Contents/MacOS/Achbit', b'old signed executable')
+            before = files(app)
+            def assemble(root, native, destination, identity):
+                result = destination / computer_use_package.APP_NAME
+                write(result, 'payload', b'new helper')
+                return result
+            def fail_parent(parent, identity):
+                write(parent, 'Contents/_CodeSignature/CodeResources', b'partially changed seal')
+                write(parent, 'Contents/MacOS/Achbit', b'partially changed signature')
+                raise OSError('parent signing failed')
+            with patch.object(computer_use_package, 'assemble', side_effect=assemble), \
+                    patch.object(computer_use_package, 'require_same_identity'), \
+                    patch.object(computer_use_package, 'signing_identity', return_value='fixture'):
+                with patch.object(computer_use_package, 'sign_app', side_effect=fail_parent):
+                    with self.assertRaisesRegex(OSError, 'parent signing failed'):
+                        computer_use_package.update(root, root, app.parent)
+                self.assertEqual(files(app), before)
+                with patch.object(computer_use_package, 'sign_app'):
+                    computer_use_package.update(root, root, app.parent)
+                self.assertEqual((app / helper / 'payload').read_bytes(), b'new helper')
+                self.assertEqual(list(app.parent.iterdir()), [app])
+
     def test_windows_computer_use_update_renames_the_running_image_aside(self):
         import computer_use_package
         with tempfile.TemporaryDirectory(prefix='achbit-cu-update-') as directory:
@@ -1504,8 +1589,72 @@ exec "$ACHBIT_TEST_PYTHON" -c 'import json,os,sys; print(json.dumps({"argv":sys.
             write(stage, 'Achbit.exe', b'disposable native compiler output')
             write(stage, 'libexec/windows-environment.ps1', b'exit 0')
             output = root / 'Achbit-setup.exe'
-            installers.windows(stage, output, '0.6.2')
+            profile = root / 'test identity'
+            windows_signing.initialize(profile)
+            with patch.dict(os.environ, {windows_signing.PROFILE_ENV: str(profile), 'ACHBIT_WINDOWS_TIMESTAMP_URL': ''}):
+                installers.windows(stage, output, '0.6.2')
             self.assertEqual(output.read_bytes()[:2], b'MZ')
+            subprocess.run(['osslsigncode', 'verify', '-CAfile', profile / 'publisher.crt', '-in', output],
+                           check=True, capture_output=True)
+
+            previous = output.read_bytes()
+            (profile / 'password').write_text('wrong-passphrase')
+            with patch.dict(os.environ, {windows_signing.PROFILE_ENV: str(profile), 'ACHBIT_WINDOWS_TIMESTAMP_URL': ''}):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    installers.windows(stage, output, '0.6.2')
+            self.assertEqual(output.read_bytes(), previous)
+
+
+class WindowsSigningTests(unittest.TestCase):
+    def test_portable_identity_signs_owned_executables_before_zip(self):
+        with tempfile.TemporaryDirectory(prefix='achbit-windows-signing-') as temporary:
+            root = Path(temporary)
+            profile, restored = root / 'first host', root / 'second host'
+            windows_signing.initialize(profile)
+            certificate = (profile / 'publisher.crt').read_bytes()
+            windows_signing.initialize(profile)
+            self.assertEqual((profile / 'publisher.crt').read_bytes(), certificate)
+            shutil.copytree(profile, restored)
+            stage, native, shared = root / 'stage', root / 'native', root / 'shared'
+            native.mkdir()
+            shared.mkdir()
+            pe = root / 'upstream.exe'
+            subprocess.run(['x86_64-w64-mingw32-gcc', '-x', 'c', '-', '-o', pe],
+                           input=b'int main(void) { return 0; }', check=True)
+            sources = ('Achbit', 'achbit-cli', 'achbit-tui', 'achbit-kernel-daemon', 'achbit-host-web',
+                       'achbit-first-party-provider', 'Achbit-Computer-Use')
+            for source in sources:
+                shutil.copy2(pe, native / (source + '.exe'))
+            write(root, 'license', b'Third-party license')
+            args = SimpleNamespace(root=ROOT, stage=stage, platform='win64', native=native, shared=shared,
+                                   node=pe, node_license=root / 'license', webview_loader=pe)
+            with patch.dict(os.environ, {windows_signing.PROFILE_ENV: str(restored), 'ACHBIT_BUILD_KIND': 'normal',
+                                         'ACHBIT_BUILD_TIME': 'fixture', 'ACHBIT_WINDOWS_TIMESTAMP_URL': ''}):
+                package.assemble(args, windows_signing.build_identity(required=True))
+            expected = {(name if name != 'achbit-kernel-daemon' else 'achbit-kernel') + '.exe' for name in sources}
+            self.assertEqual({p.name for p in stage.glob('*.exe')}, expected)
+            for name in expected:
+                subprocess.run(['osslsigncode', 'verify', '-CAfile', profile / 'publisher.crt', '-in', stage / name],
+                               check=True, capture_output=True)
+            for name in ('node/bin/node.exe', 'WebView2Loader.dll'):
+                self.assertEqual((stage / name).read_bytes(), pe.read_bytes())
+            archive = root / 'windows.zip'
+            package.publish(stage, root / 'win64', archive)
+            with zipfile.ZipFile(archive) as packaged:
+                for name in expected:
+                    self.assertEqual(packaged.read('win64/' + name), (root / 'win64' / name).read_bytes())
+                profile_names = {p.name for p in profile.iterdir()}
+                self.assertFalse({Path(name).name for name in packaged.namelist()} & profile_names)
+
+    def test_explicit_missing_identity_and_checkout_destination_fail(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / 'missing'
+            with patch.dict(os.environ, {windows_signing.PROFILE_ENV: str(missing)}):
+                with self.assertRaisesRegex(ValueError, 'Missing Windows signing file'):
+                    windows_signing.build_identity()
+                self.assertFalse(missing.exists())
+            with self.assertRaisesRegex(ValueError, 'outside the checkout'):
+                windows_signing.initialize(ROOT / 'bin' / 'forbidden-windows-signing-test')
 
 
 if __name__ == '__main__':

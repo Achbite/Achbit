@@ -31,6 +31,8 @@ ACHBIT_DOCKER_NET_ENV_PASSTHROUGH ?= auto
 ACHBIT_CONTAINER_CARGO_TARGET_DIR ?= $(WORKDIR_IN_CTNR)/target
 ACHBIT_CONTAINER_TMPDIR ?= /tmp/achbit-build
 ACHBIT_CONTAINER_SCCACHE_DIR ?= $(WORKDIR_IN_CTNR)/target/.sccache
+WINDOWS_SIGNING_DIR := $(or $(ACHBIT_WINDOWS_SIGNING_DIR),$(HOME)/.config/achbit/windows-signing)
+WINDOWS_SIGNING_SOURCE := $(shell if test -d "$(WINDOWS_SIGNING_DIR)"; then cd "$(WINDOWS_SIGNING_DIR)" && pwd -P; fi)
 BUILD_ARGS := \
 	--build-arg ACHBIT_RUST_VERSION=$(ACHBIT_RUST_VERSION) \
 	--build-arg ACHBIT_APT_MIRROR=$(ACHBIT_APT_MIRROR) \
@@ -110,6 +112,10 @@ RUN_ARGS := \
 	-e PATH=/root/.local/share/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	$(NETWORK_ENV_ARGS)
 
+ifneq ($(WINDOWS_SIGNING_SOURCE),)
+RUN_ARGS += -v "$(WINDOWS_SIGNING_SOURCE):/run/secrets/achbit-windows-signing:ro"
+endif
+
 .PHONY: help docker-info branch-audit branch-hooks shell build package ui ui-update native-gui dev-achbit-gui reset-dev clean package-macos _validate_config _print_image _ensure_image _ensure_container
 
 # Environment settings are forwarded to the sole build orchestrator.
@@ -148,6 +154,8 @@ branch-hooks:
 	@bash ./scripts/branch-flow.sh install-hooks
 
 _validate_config:
+	@if [ -n "$(ACHBIT_WINDOWS_SIGNING_DIR)" ] && [ -z "$(WINDOWS_SIGNING_SOURCE)" ]; then echo "Windows signing directory not found: $(ACHBIT_WINDOWS_SIGNING_DIR)" >&2; exit 1; fi
+	@case "$(WINDOWS_SIGNING_SOURCE)/" in "$(ACHBIT_PROJECT_ROOT)/"*) echo 'Keep the Windows signing profile outside the checkout.' >&2; exit 1;; esac
 	@if [ ! -d "$(ACHBIT_PROJECT_ROOT)" ]; then \
 		echo "[make][error] 项目根目录不可用: $(ACHBIT_PROJECT_ROOT)" >&2; \
 		exit 1; \
@@ -182,6 +190,7 @@ _ensure_image: _validate_config
 _ensure_container: _ensure_image
 	@if docker container inspect $(CONTAINER_NAME) >/dev/null 2>&1; then \
 		mounted_root=$$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "$(WORKDIR_IN_CTNR)"}}{{.Source}}{{end}}{{end}}' $(CONTAINER_NAME)); \
+		signing_source=$$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/run/secrets/achbit-windows-signing"}}{{.Source}}{{if .RW}}:rw{{end}}{{end}}{{end}}' $(CONTAINER_NAME)); \
 		container_host_os=$$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $(CONTAINER_NAME) | sed -n 's/^ACHBIT_BUILD_HOST_OS=//p'); \
 		container_image=$$(docker container inspect -f '{{.Image}}' $(CONTAINER_NAME)); \
 		current_image=$$(docker image inspect -f '{{.Id}}' $(IMAGE)); \
@@ -191,6 +200,7 @@ _ensure_container: _ensure_image
 		container_system_paths=$$(docker container inspect -f '{{len .HostConfig.MaskedPaths}} {{len .HostConfig.ReadonlyPaths}}' $(CONTAINER_NAME)); \
 		reason=""; \
 		if [ "$$mounted_root" != "$(ACHBIT_PROJECT_ROOT)" ]; then reason="源码挂载已变化"; \
+		elif [ "$$signing_source" != "$(WINDOWS_SIGNING_SOURCE)" ]; then reason="Windows 签名目录挂载已变化"; \
 		elif [ "$$container_image" != "$$current_image" ]; then reason="开发镜像已更新"; \
 		elif [ "$$container_host_os" != "$(ACHBIT_BUILD_HOST_OS)" ]; then reason="构建宿主平台已变化或缺失"; \
 		elif [ "$$actual_host_port" != "$(ACHBIT_HOST_PORT)" ]; then reason="端口配置已变化"; \
@@ -237,7 +247,7 @@ _ensure_container: _ensure_image
 # ---- shell：唯一交互入口 ----
 shell: _ensure_container
 	@echo "[make] exec 进入容器 $(CONTAINER_NAME) ..."
-	@docker exec -it $(NETWORK_ENV_ARGS) -e ACHBIT_BUILD_HOST_OS=$(ACHBIT_BUILD_HOST_OS) -e ACHBIT_MACOS_SIGN_IDENTITY $(CONTAINER_NAME) bash
+	@docker exec -it $(NETWORK_ENV_ARGS) -e ACHBIT_BUILD_HOST_OS=$(ACHBIT_BUILD_HOST_OS) -e ACHBIT_MACOS_SIGN_IDENTITY -e ACHBIT_WINDOWS_TIMESTAMP_URL $(CONTAINER_NAME) bash
 
 build:
 	@bash ./build.sh

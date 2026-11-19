@@ -54,14 +54,24 @@ export async function inspectLocalPlugin(path: string, signal?: AbortSignal): Pr
   return item;
 }
 
-/** Host copies and publishes one installation; GUI never persists an external source path. */
-export async function installLocalPlugin(path: string, replacePath?: string): Promise<void> {
+type PluginInstallRequest =
+  | { path: string; replacePath?: string }
+  | { marketplace: { id: string; version: string; kind: string; manifestId: string; sha256: string } };
+
+export async function requestPluginInstallation(request: PluginInstallRequest): Promise<unknown> {
   const response = await fetch(`${getKernelApiBase()}/host/plugins/install`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...getHostConnectionHeaders() },
-    body: JSON.stringify({ path, ...(replacePath ? { replacePath } : {}) }),
+    body: JSON.stringify(request),
   });
   if (!response.ok) throw new Error(`Plugin installation: ${response.status} ${await response.text()}`);
   const result = await response.json();
   if (!result.ok) throw new Error(`${result.error}: ${result.message}`);
-  if (result.data?.application?.status === 'failed') throw new Error(result.data.application.error ?? 'Plugin activation failed');
+  return result.data;
+}
+
+/** Host copies and publishes one installation; GUI never persists an external source path. */
+export async function installLocalPlugin(path: string, replacePath?: string): Promise<void> {
+  const data = await requestPluginInstallation({ path, ...(replacePath ? { replacePath } : {}) }) as
+    { application?: { status: string; error?: string } } | undefined;
+  if (data?.application?.status === 'failed') throw new Error(data.application.error ?? 'Plugin activation failed');
 }

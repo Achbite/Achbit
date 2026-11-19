@@ -71,13 +71,19 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
 
   useLayoutEffect(() => {
     const element = viewport.current!;
+    const tableNode = element.querySelector('table')!;
     const measure = () => setOverflowing(element.scrollWidth > element.clientWidth + 1);
     const observer = new ResizeObserver(measure);
     observer.observe(element);
-    observer.observe(element.querySelector('table')!);
+    observer.observe(tableNode);
+    // Only leading cells that can enter the reading viewport need compositor layers.
+    const leading = new IntersectionObserver(entries => {
+      for (const entry of entries) entry.target.toggleAttribute('data-pin-leading', entry.isIntersecting);
+    }, { root: element.closest('.local-agent__resource-body, .local-agent__body'), rootMargin: '100% 0px' });
+    for (const row of tableNode.rows) leading.observe(row);
     measure();
-    return () => observer.disconnect();
-  }, []);
+    return () => { observer.disconnect(); leading.disconnect(); };
+  }, [table]);
   useEffect(() => {
     const element = dialog.current!;
     if (expanded && !element.open) showContentDialog(element, dialogBody.current);

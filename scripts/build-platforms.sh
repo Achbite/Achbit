@@ -28,7 +28,7 @@ check_platform() {
     linux)
       require strip; require bwrap
       if [ "${2:-package}" = package ]; then require appimagetool; fi
-      pkg-config --exists openssl gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1 librsvg-2.0 || { printf 'Linux desktop SDK is incomplete.\n' >&2; exit 1; }
+      pkg-config --exists openssl dbus-1 gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1 librsvg-2.0 || { printf 'Linux desktop SDK is incomplete.\n' >&2; exit 1; }
       ;;
     windows)
       require x86_64-w64-mingw32-gcc; require x86_64-w64-mingw32-g++; require x86_64-w64-mingw32-strip
@@ -70,7 +70,7 @@ case "${1:-}" in
   --computer-use-windows)
     # Replace only the Windows desktop executor in an existing win64 runtime.
     output="$2"
-    check_platform windows
+    check_platform windows runtime
     configure_cache
     cargo build --release --target "$WINDOWS_TARGET" -p achbit-computer-use
     python3 scripts/computer_use_package.py --windows --native "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release" --output "$output/win64"
@@ -100,12 +100,16 @@ case "${1:-}" in
     node="$(command -v node)"
     node_license="${ACHBIT_NODE_LICENSE:-$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve().parent.parent / "LICENSE")' "$node")}"
     native="$CARGO_TARGET_DIR/release"
-    loader_args=()
+    assembly_args=()
     if [ "$platform" = windows ]; then
       target_args=(--target "$WINDOWS_TARGET")
       native="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
       platform_dir=win64
       node="$ACHBIT_WINDOWS_NODE_BIN"
+      if [ "$1" = --package ] && [ "${ACHBIT_BUILD_KIND:-normal}" != debug ]; then
+        python3 scripts/windows_signing.py check
+        assembly_args+=(--require-windows-signing)
+      fi
     else
       case "$(uname -m)" in x86_64) platform_dir=linux-x64 ;; aarch64) platform_dir=linux-arm64 ;; *) printf 'Unsupported Linux architecture.\n' >&2; exit 1 ;; esac
     fi
@@ -127,12 +131,12 @@ case "${1:-}" in
       cargo build --release "${target_args[@]}" "${gui_features[@]}" --manifest-path "$GUI_MANIFEST" --message-format=json-render-diagnostics > "$messages"
       # Read this Cargo invocation's dependency output, not a glob over cached builds.
       loader="$(python3 -c 'import json,sys; from pathlib import Path; messages=map(json.loads,open(sys.argv[1])); output=next(m["out_dir"] for m in messages if m.get("reason")=="build-script-executed" and m["package_id"].split("#")[-1].startswith("webview2-com-sys@")); print(Path(output)/"x64/WebView2Loader.dll")' "$messages")"
-      loader_args=(--webview-loader "$loader")
+      assembly_args+=(--webview-loader "$loader")
     else
       cargo build --release --manifest-path "$GUI_MANIFEST"
     fi
     stage="$(mktemp -d "$(dirname "$shared")/$platform_dir.XXXXXX")"
-    python3 scripts/package-runtime.py assemble --root "$ROOT_DIR" --platform "$platform_dir" --stage "$stage" --shared "$shared" --native "$native" --node "$node" --node-license "$node_license" "${loader_args[@]}"
+    python3 scripts/package-runtime.py assemble --root "$ROOT_DIR" --platform "$platform_dir" --stage "$stage" --shared "$shared" --native "$native" --node "$node" --node-license "$node_license" "${assembly_args[@]}"
     if [ "$1" = --runtime ]; then
       python3 scripts/package-runtime.py publish "$stage" "$output/$platform_dir"
       exit 0

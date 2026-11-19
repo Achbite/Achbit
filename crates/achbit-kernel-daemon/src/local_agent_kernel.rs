@@ -4222,7 +4222,7 @@ mod attempt_control_tests {
         kernel_with_workspaces(resolver, tool_name, input, product, config, bindings)
     }
 
-    fn kernel_with_workspaces(
+    pub(super) fn kernel_with_workspaces(
         resolver: Arc<dyn WorkspaceResolverPort>,
         tool_name: &str,
         input: Value,

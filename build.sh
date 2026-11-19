@@ -31,6 +31,8 @@ Environment: CONTAINER_NAME, WORKDIR_IN_CTNR, ACHBIT_OUTPUT_DIR,
   CARGO_TARGET_DIR, RUSTC_WRAPPER, SCCACHE_DIR,
   ACHBIT_MACOS_CARGO, ACHBIT_MACOS_NODE_BIN, ACHBIT_MACOS_CARGO_TARGET_DIR,
   ACHBIT_MACOS_SIGN_IDENTITY (default: Achbit Local Development).
+  Windows packages use the external signing profile mounted by make shell.
+  ACHBIT_WINDOWS_TIMESTAMP_URL selects an optional RFC 3161 timestamp server.
 Tools must already be installed. Package stages use a fresh staging directory;
 Cargo/pnpm caches are retained. User data in existing output directories is retained.
 Runtime builds include current native programs and shared resources; macOS Apps are signed.
@@ -137,7 +139,7 @@ container_step() {
   else
     local name
     local environment=(-e ACHBIT_BUILD_COMMIT -e ACHBIT_BUILD_TIME -e ACHBIT_BUILD_KIND -e ACHBIT_BUILD_VERSION)
-    for name in PNPM_STORE_DIR ACHBIT_WINDOWS_NODE_BIN ACHBIT_NODE_LICENSE ACHBIT_DISABLE_SCCACHE; do
+    for name in PNPM_STORE_DIR ACHBIT_WINDOWS_NODE_BIN ACHBIT_NODE_LICENSE ACHBIT_DISABLE_SCCACHE ACHBIT_WINDOWS_TIMESTAMP_URL; do
       [ -z "${!name+x}" ] || environment+=(-e "$name")
     done
     docker exec -w "$WORKDIR_IN_CTNR" "${environment[@]}" -e ACHBIT_BUILD_PID_FILE="$(container_path "$TRANSACTION")/container.pid" "$CONTAINER_NAME" setsid --wait bash ./scripts/build-platforms.sh "$@"

@@ -16,7 +16,8 @@ import { type BrowserAnnotation, type BrowserReviewEdit } from './browserReview'
 export function NativeBrowserPreview({
   sessionId,
   active,
-  onClose,
+  onClosed,
+  onRequestClose,
   onReady,
   previewId,
   onReview,
@@ -24,14 +25,15 @@ export function NativeBrowserPreview({
 }: {
   sessionId: string;
   active: boolean;
-  onClose(): void;
+  onClosed(): void;
+  onRequestClose(): Promise<void>;
   onReady(page: NativePage, binding: NativeHostBinding): void;
   previewId: string;
   onReview?: (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => void;
   reviewEdit?: BrowserReviewEdit | null;
 }) {
-  const callbacks = useRef({ onClose, onReady, onReview });
-  callbacks.current = { onClose, onReady, onReview };
+  const callbacks = useRef({ onClosed, onReady, onReview });
+  callbacks.current = { onClosed, onReady, onReview };
   const surface = useRef<HTMLDivElement>(null);
   const owner = useRef<{ binding: NativeHostBinding; page: NativePage; sequence: number; layoutKey?: string; pending?: Promise<NativePage> } | null>(
     null,
@@ -116,7 +118,7 @@ export function NativeBrowserPreview({
       setPage(next);
       if (next.status === 'closed') {
         owner.current = null;
-        callbacks.current.onClose();
+        callbacks.current.onClosed();
       } else callbacks.current.onReady(next, owner.current.binding);
     })
       .then((dispose) => {
@@ -243,7 +245,7 @@ export function NativeBrowserPreview({
         onEndFind={() => command({ action: 'endFind' })}
         onFocusChrome={() => command({ action: 'focusChrome' })}
         onFocusPage={() => { void command({ action: 'focus' }).catch(reason => setError(String(reason))); }}
-        onClose={async () => { await command({ action: 'close' }); callbacks.current.onClose(); }}
+        onClose={onRequestClose}
         control={page?.control && owner.current ? <NativeBrowserControl key={page.previewId}
           binding={owner.current.binding} previewId={page.previewId} language={language} onError={setError} /> : null} />
       {(error || page?.loadError) && <p role="alert" className="local-agent__resource-error">{error || page?.loadError}</p>}

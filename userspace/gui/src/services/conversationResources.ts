@@ -28,19 +28,22 @@ export async function readResourceReference(sessionId: string, resource: Resourc
   return value;
 }
 
+async function resourceResponseError(response: Response, operation: string): Promise<Error> {
+  const detail = await response.text();
+  try {
+    const body = JSON.parse(detail) as { message?: string; error?: string };
+    if (body?.message || body?.error) return new Error(body.message || body.error);
+  } catch { /* Keep plain-text Host and proxy errors. */ }
+  return new Error(operation + ':HTTP ' + response.status + (detail ? ' ' + detail : ''));
+}
+
 export async function readResourceBlob(sessionId: string, resource: ResourceReference, format: 'image' | 'document', signal?: AbortSignal): Promise<Blob> {
   const response = await fetch(endpoint(sessionId, 'read'), { method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', ...getHostConnectionHeaders() }, body: JSON.stringify({ ...resource, format }) });
   const mediaType = response.headers.get('content-type')?.split(';', 1)[0].trim() ?? '';
   const validMediaType = format === 'image' ? mediaType.startsWith('image/') : ['application/pdf', 'text/html', 'text/markdown'].includes(mediaType);
   if (!response.ok || !validMediaType) {
-    const detail = await response.text();
-    let message = detail;
-    try {
-      const error = JSON.parse(detail) as { message?: string; error?: string };
-      message = error.message ?? error.error ?? detail;
-    } catch { /* Preserve non-JSON transport errors. */ }
-    throw new Error(message || `resource_read_failed:HTTP ${response.status}`);
+    throw await resourceResponseError(response, 'resource_read_failed');
   }
   return response.blob();
 }
@@ -54,8 +57,7 @@ async function watchResourceStream(sessionId: string, resources: ResourceReferen
   const response = await fetch(endpoint(sessionId, 'watch'), { method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', ...getHostConnectionHeaders() }, body: JSON.stringify({ resources }) });
   if (!response.ok || !response.headers.get('content-type')?.startsWith('text/event-stream') || !response.body) {
-    const error = await response.json() as { message?: string; error?: string };
-    throw new Error(error.message ?? error.error ?? `resource_watch_failed:HTTP ${response.status}`);
+    throw await resourceResponseError(response, 'resource_watch_failed');
   }
   const reader = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new EventSourceParserStream()).getReader();
   try {

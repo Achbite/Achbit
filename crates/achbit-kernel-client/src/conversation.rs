@@ -3223,6 +3223,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scoped_reads_only_accept_the_requested_session_projection() {
+        let reply = json!({"ok": true, "data": projection_value()});
+        let id = "session:test";
+        for expected in [None, Some(id)] {
+            assert_eq!(
+                crate::decode_projection(reply.clone(), expected)
+                    .unwrap()
+                    .session_id,
+                id
+            );
+        }
+        let err = crate::decode_projection(reply, Some("session:other")).unwrap_err();
+        assert!(
+            matches!(err, crate::KernelClientError::Api(code) if code == "session_projection_identity_mismatch")
+        );
+    }
+
     fn projection_value() -> Value {
         let mut value = json!({
             "schemaVersion": SESSION_PROJECTION_VERSION, "permissionOverrides":{}, "effectivePermissions":null, "shellAuthorizations":[],

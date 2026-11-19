@@ -179,8 +179,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port().to_string();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 512];
-            stream.read(&mut request).unwrap();
+            stream.read_exact(&mut [0; 1]).unwrap();
             for _ in 0..10 {
                 if stream.write_all(b" ").is_err() {
                     break;
@@ -211,8 +210,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port().to_string();
         assert!(probe_loopback_listener("127.0.0.1", &port).unwrap());
-        drop(listener);
-        assert!(!probe_loopback_listener("127.0.0.1", &port).unwrap());
+        // A connected client's local port stays reserved but never listens.
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let client_port = client.local_addr().unwrap().port().to_string();
+        assert!(!probe_loopback_listener("127.0.0.1", &client_port).unwrap());
     }
 
     #[test]

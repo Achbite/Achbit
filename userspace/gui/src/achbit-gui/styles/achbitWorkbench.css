@@ -1,6 +1,8 @@
 /* One grid owns the navigation width and the shared titlebar baseline. */
 .achbit-gui-workbench {
   --ac-sidebar-width: var(--ac-navigation-width);
+  /* Leave a scrollable tab beside the Reader tools and desktop window controls. */
+  --reader-split-min: 400px;
   --ac-context-width: 296px;
   --ac-navigation-row: 36px;
   display: grid;
@@ -69,6 +71,8 @@
   background: transparent;
 }
 
+.achbit-gui-titlebar, .achbit-gui-session-main { container: reader-row / inline-size; }
+
 .achbit-gui-titlebar {
   grid-column: 2;
   grid-row: 1;
@@ -136,7 +140,7 @@
 .achbit-gui-navigation-controls svg { width:17px; height:17px; }
 .achbit-gui-navigation-toggle svg { transform:scaleX(-1); }
 .achbit-gui-navigation-error { position:absolute; top:44px; left:12px; width:240px; padding:12px; background:var(--ac-surface-raised); box-shadow:var(--ac-shadow-panel); border-radius:var(--ac-radius-control); overflow-wrap:anywhere; }
-.achbit-gui-workbench--navigation-collapsed { --ac-sidebar-width:0px; }
+.achbit-gui-workbench--navigation-collapsed { --ac-sidebar-width:0px; --reader-stacked-leading:var(--ac-navigation-leading); }
 .achbit-gui-workbench--navigation-collapsed .achbit-gui-navigation-box { background:transparent; }
 .achbit-gui-workbench--navigation-collapsed .achbit-gui-navigation-box__titlebar { position:absolute; top:0; left:0; height:var(--ac-titlebar-height); }
 .achbit-gui-workbench--navigation-collapsed .local-agent__header-conversation,
@@ -144,7 +148,7 @@
 .achbit-gui-workbench--navigation-collapsed .achbit-gui-settings-header { padding-left:var(--ac-navigation-leading); }
 
 @media (max-width: 760px) {
-  .achbit-gui-workbench { --ac-sidebar-width:0px; }
+  .achbit-gui-workbench { --ac-sidebar-width:0px; --reader-stacked-leading:var(--ac-navigation-leading); }
   .achbit-gui-navigation-box { position:absolute; inset:0 auto 0 0; width:var(--ac-navigation-width); z-index:22; box-shadow:var(--ac-shadow-panel); }
   .achbit-gui-workbench--navigation-collapsed .achbit-gui-navigation-box { width:0; box-shadow:none; }
   .achbit-gui-titlebar .local-agent__header-conversation,

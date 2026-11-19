@@ -625,8 +625,7 @@ mod ownership_tests {
         let server = std::thread::spawn(move || {
             let _probe = listener.accept().unwrap();
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            stream.read(&mut request).unwrap();
+            stream.read_exact(&mut [0; 1]).unwrap();
             std::thread::sleep(Duration::from_millis(250));
             listener
         });

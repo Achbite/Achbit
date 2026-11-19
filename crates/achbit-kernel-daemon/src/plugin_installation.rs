@@ -3,6 +3,15 @@ use crate::prelude::*;
 use crate::{ApiResponse, AppState, ReadyState};
 use achbit_host_connection::plugin_artifact::{copy_plugin, prepare_plugin};
 
+mod marketplace;
+
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub(crate) enum InstallInput {
+    Local(InstallRequest),
+    Marketplace { marketplace: marketplace::Selection },
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct InstallRequest {
@@ -13,26 +22,46 @@ pub(crate) struct InstallRequest {
 
 pub(crate) async fn install(
     ReadyState(state): ReadyState,
-    Json(request): Json<InstallRequest>,
+    Json(input): Json<InstallInput>,
 ) -> Json<ApiResponse> {
-    match tokio::task::spawn_blocking(move || install_owned(state, request)).await {
+    let (request, downloaded) = match input {
+        InstallInput::Local(request) => (request, None),
+        InstallInput::Marketplace { marketplace } => match marketplace::download(marketplace).await
+        {
+            Ok(package) => {
+                let Some(path) = package.path.to_str() else {
+                    return ApiResponse::error("plugin_install_failed", "Plugin path is not UTF-8");
+                };
+                (
+                    InstallRequest {
+                        path: path.into(),
+                        replace_path: None,
+                    },
+                    Some(package),
+                )
+            }
+            Err(error) => return ApiResponse::error("plugin_install_failed", error),
+        },
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _transition = match state.local_agent.runtime_transition() {
+            Ok(guard) => guard,
+            Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
+        };
+        install_locked(&state, request, None, downloaded.as_ref())
+    })
+    .await
+    {
         Ok(result) => result,
         Err(error) => ApiResponse::error("plugin_install_failed", error.to_string()),
     }
-}
-
-fn install_owned(state: AppState, request: InstallRequest) -> Json<ApiResponse> {
-    let _transition = match state.local_agent.runtime_transition() {
-        Ok(guard) => guard,
-        Err(error) => return ApiResponse::error("runtime_transition_lock_failed", error),
-    };
-    install_locked(&state, request, None)
 }
 
 pub(crate) fn install_locked(
     state: &AppState,
     request: InstallRequest,
     registered_key: Option<&str>,
+    downloaded: Option<&marketplace::Download>,
 ) -> Json<ApiResponse> {
     let (settings, data) = {
         let gui = state.gui.lock().expect("gui state lock");
@@ -44,6 +73,9 @@ pub(crate) fn install_locked(
     let result = (|| -> Result<_, String> {
         let prepared = prepare_plugin(&request.path)?;
         let candidate = &prepared.inspection;
+        if let Some(package) = downloaded {
+            package.verify_manifest(candidate)?;
+        }
         let kind = candidate["kind"].as_str().ok_or("Plugin kind missing")?;
         let key = settings_key(kind)?;
         if registered_key.is_some_and(|registered| key != registered) {

@@ -5,6 +5,7 @@ Unicode true
 !include "FileFunc.nsh"
 Name "Achbit"
 OutFile "${OUTPUT}"
+!uninstfinalize 'python3 windows_signing.py sign "%1"' = 0
 InstallDir "$LOCALAPPDATA\Programs\Achbit"
 InstallDirRegKey HKCU "Software\Achbit" "InstallDir"
 RequestExecutionLevel user
@@ -114,23 +115,27 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
-  ; Remove workspace Shell sandbox grants and profiles of this user; user files stay.
-  ExecWait '"$INSTDIR\achbit-kernel.exe" --workspace-sandbox-reset' $1
-  ${If} $1 != 0
-    DetailPrint "Workspace sandbox reset reported exit $1; continuing uninstall."
+  ; A newer installation in another directory owns all per-user uninstallation effects.
+  ReadRegStr $R7 HKCU "Software\Achbit" "InstallDir"
+  ${If} $R7 == $INSTDIR
+    ; Remove workspace Shell sandbox grants and profiles of this user; user files stay.
+    ExecWait '"$INSTDIR\achbit-kernel.exe" --workspace-sandbox-reset' $1
+    ${If} $1 != 0
+      DetailPrint "Workspace sandbox reset reported exit $1; continuing uninstall."
+    ${EndIf}
+    ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\libexec\windows-environment.ps1" -Remove' $0
+    ${If} $0 != 0
+      MessageBox MB_ICONSTOP "Cannot remove the Achbit PATH entry (exit $0). Uninstall stopped."
+      Abort
+    ${EndIf}
+    System::Call 'user32::SendMessageTimeoutW(p 0xffff, i 0x1a, p 0, w "Environment", i 2, i 5000, *p .r0)'
+    Delete "$SMPROGRAMS\Achbit\Achbit.lnk"
+    Delete "$SMPROGRAMS\Achbit\Achbit TUI.lnk"
+    RMDir "$SMPROGRAMS\Achbit"
+    DeleteRegKey HKCU "Software\Achbit"
+    DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit"
   ${EndIf}
-  ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\libexec\windows-environment.ps1" -Remove' $0
-  ${If} $0 != 0
-    MessageBox MB_ICONSTOP "Cannot remove the Achbit PATH entry (exit $0). Uninstall stopped."
-    Abort
-  ${EndIf}
-  System::Call 'user32::SendMessageTimeoutW(p 0xffff, i 0x1a, p 0, w "Environment", i 2, i 5000, *p .r0)'
   !include "${UNINSTALL_FILES}"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
-  Delete "$SMPROGRAMS\Achbit\Achbit.lnk"
-  Delete "$SMPROGRAMS\Achbit\Achbit TUI.lnk"
-  RMDir "$SMPROGRAMS\Achbit"
-  DeleteRegKey HKCU "Software\Achbit"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Achbit"
 SectionEnd

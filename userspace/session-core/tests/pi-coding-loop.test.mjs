@@ -81,6 +81,36 @@ test('coding prompt uses PI section order and actual declarations without produc
   assert.ok(receipt.messages.every(message => message.contributionId));
 });
 
+for (const mode of ['coding', 'full']) test(`file path guidance and original NotFound reach the model in ${mode} context`, async t => {
+  const path = 'assets/missing.tres', error = { code: 'fs_read_metadata_failed', message: 'Cannot inspect assets/missing.tres' };
+  const output = { stage: 'metadata', details: { path, ioKind: 'NotFound', osCode: 2 } };
+  const preset = 'assets/preset.tres', content = 'script = "res://scripts/live.cs"';
+  const reads = [];
+  const { actor, requests } = await setup(t, `missing-path-${mode}`, async function* (request, turn) {
+    if (turn === 1) {
+      const reader = request.tools.find(tool => tool.inputSchema.properties?.offset || tool.inputSchema.properties?.startLine);
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'read-missing', name: reader.name, input: { path } });
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'read-preset', name: reader.name, input: { path: preset } });
+    } else yield answer(request);
+    yield providerEvent(request.requestId, 'completed', {});
+  }, emptyKernel({ async execute(request) {
+    reads.push(request.input.path);
+    return request.input.path === preset ? completedExecutionReply(request, { content, path: preset })
+      : failedExecutionReply(request, output, error);
+  } }), mode === 'coding');
+  const projection = await waitForProjection(actor, terminal);
+  assert.equal(projection.run.status, 'completed', JSON.stringify(projection.terminalError));
+  assert.deepEqual(reads.sort(), [path, preset].sort());
+  const replies = requests[1].messages.filter(message => message.role === 'tool');
+  assert.deepEqual(replies.map(message => message.providerCallId), ['read-missing', 'read-preset']);
+  assert.equal(replies[1].content, content);
+  assert.deepEqual(JSON.parse(replies[0].content), { error, result: output });
+  const instructions = requests[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
+  const directRead = instructions.indexOf('Read paths observed');
+  assert.ok(directRead >= 0 && instructions.indexOf('For unknown paths') > directRead);
+  for (const guidance of [/project-root references.*res:\/\/.*file-relative paths/iu, /symbol.*search/iu, /same.name/iu, /NotFound.*verified path/iu]) assert.match(instructions, guidance);
+});
+
 test('PI batch overlaps more than four reads and mutations, and a failed same-file predecessor does not skip its successor', async t => {
   const hold = gate(), reads = [], writes = [];
   t.after(() => hold.resolve());

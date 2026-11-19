@@ -58,6 +58,21 @@ test('browser selection is reconciled with live native pages without overriding 
   assert.equal(reconciled.visible, false);
 });
 
+test('only explicitly closing the selected native page selects the remaining file in either event order', async t => {
+  const { reconcileReaderPages, selectReaderTarget, readReaderViewState, removeReaderTab } = await setup(t);
+  const session = 'session:read';
+  const file = selectReaderTarget(readReaderViewState(session), session, { kind: 'file', path: '/docs/report.html' });
+  const page = selectReaderTarget(file, session, { kind: 'browser', previewId: 'preview:report' });
+  const disappeared = reconcileReaderPages(page, []);
+  assert.deepEqual([disappeared.tabs, disappeared.activeId], [file.tabs, null]);
+  for (const closed of [removeReaderTab(disappeared, page.activeId, true),
+    reconcileReaderPages(removeReaderTab(page, page.activeId, true), [])]) {
+    assert.deepEqual([closed.tabs, closed.activeId], [file.tabs, file.activeId]);
+  }
+  const start = removeReaderTab({ ...page, activeId: null }, page.activeId, false);
+  assert.deepEqual([start.tabs, start.activeId], [file.tabs, null]);
+});
+
 // TCR: .task-artifacts/browser-interaction-20261117/TCR.md.
 test('file-backed output and body links open the same file target as the file tree', async t => {
   const { artifactReaderTarget, selectReaderTarget, readerTargetKey, readReaderViewState } = await setup(t);

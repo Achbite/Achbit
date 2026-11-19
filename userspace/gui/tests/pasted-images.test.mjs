@@ -51,9 +51,30 @@ test('image paste preserves draft text and follows the same failed-draft ownersh
 
 test('clipboard images use the existing size and format bounds', async t => {
   const [{ clipboardImages, readPastedImage, MAX_PASTED_IMAGE_BYTES }] = await loadGuiModules(t, ['/src/services/pastedImage.ts']);
+  let attempted = 0;
+  installGuiFetch(t, async () => { attempted++; return Response.json({ ok: false, message: 'invalid PNG contents' }); });
   assert.deepEqual(clipboardImages({ items: [{ kind: 'string', type: 'text/plain' }] }), []);
   await assert.rejects(readPastedImage(new File(['svg'], 'x.svg', { type: 'image/svg+xml' }), 'image:svg', false), /PNG/);
-  await assert.rejects(readPastedImage(new File([new Uint8Array(MAX_PASTED_IMAGE_BYTES + 1)], 'large.png', { type: 'image/png' }), 'image:large', false), /8 MiB/);
+  await assert.rejects(readPastedImage(new File([new Uint8Array(MAX_PASTED_IMAGE_BYTES + 1)], 'large.png', { type: 'image/png' }), 'image:large', false), /8 MiB.*invalid PNG contents/);
+  await assert.rejects(readPastedImage(new File([new Uint8Array(32 * 1024 * 1024 + 1)], 'huge.png', { type: 'image/png' }), 'image:huge', false), /32 MiB/);
+  assert.equal(attempted, 1);
+});
+
+test('oversized paste puts only the prepared image in the draft without changing the clipboard File', async t => {
+  const [{ readPastedImage, pastedImageBytes, MAX_PASTED_IMAGE_BYTES }] = await loadGuiModules(t, ['/src/services/pastedImage.ts']);
+  const source = new File([new Uint8Array(MAX_PASTED_IMAGE_BYTES + 1)], 'input.webp', { type: 'image/webp' });
+  installGuiFetch(t, async (url, init) => {
+    assert.equal(url.pathname, '/api/conversation/input-resources/prepare-image');
+    assert.equal(init.method, 'POST'); assert.equal(init.body, source); assert.equal(init.headers['Content-Type'], 'image/webp');
+    return new Response(png, { headers: { 'Content-Type': 'image/png' } });
+  });
+  const old = globalThis.FileReader; t.after(() => { globalThis.FileReader = old; });
+  globalThis.FileReader = class { async readAsDataURL(blob) {
+    assert.equal(blob.size, png.length); this.result = `data:${blob.type};base64,${Buffer.from(await blob.arrayBuffer()).toString('base64')}`; this.onload();
+  } };
+  const draft = await readPastedImage(source, 'image:normalized', false);
+  assert.equal(draft.inputId, 'image:normalized'); assert.equal(draft.mediaType, 'image/png'); assert.equal(draft.byteLength, png.length);
+  assert.deepEqual(Buffer.from(pastedImageBytes(draft)), png); assert.equal(source.size, MAX_PASTED_IMAGE_BYTES + 1);
 });
 
 test('image-only paste uploads bytes before submitting the bound image and keeps upload errors retryable', async t => {

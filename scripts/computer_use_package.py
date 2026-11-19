@@ -6,11 +6,11 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
-import tempfile
 import time
 
+import windows_signing
 from version import build_version
-from macos_signing import require_same_identity, sign_app, signing_identity
+from macos_signing import require_same_identity, sign_app, signing_identity, staged_app_update
 
 APP_NAME = 'Achbit Computer Use.app'
 WINDOWS_EXECUTABLE = 'Achbit-Computer-Use.exe'
@@ -18,7 +18,7 @@ WINDOWS_EXECUTABLE = 'Achbit-Computer-Use.exe'
 WINDOWS_RETIRED = WINDOWS_EXECUTABLE + '.retired-'
 
 
-def update_windows(native, destination, strip='x86_64-w64-mingw32-strip'):
+def update_windows(native, destination, strip='x86_64-w64-mingw32-strip', identity=None):
     """Replace the executor beside Achbit.exe while the old one may still run.
 
     Windows cannot overwrite a mapped image but can rename it. The Host notices
@@ -32,6 +32,12 @@ def update_windows(native, destination, strip='x86_64-w64-mingw32-strip'):
         subprocess.run([strip, '--strip-unneeded', '-o', str(staged), str(native)], check=True)
     else:
         shutil.copy2(native, staged)
+    if identity:
+        try:
+            windows_signing.sign(staged, identity)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
     retired = None
     if target.exists():
         retired = destination / f'{WINDOWS_RETIRED}{time.time_ns()}'
@@ -79,23 +85,16 @@ def update(root, native, destination):
     identity = signing_identity()
     parent_app = destination / "Achbit.app"
     if not parent_app.is_dir(): raise ValueError("Build the complete Achbit App before updating its helper.")
-    require_same_identity(parent_app, identity)
-    destination = parent_app / "Contents/Helpers"
-    destination.mkdir(parents=True, exist_ok=True)
-    target = destination / APP_NAME
-    if target.exists():
-        require_same_identity(target, identity)
-    with tempfile.TemporaryDirectory(prefix='.computer-use-', dir=destination) as directory:
-        scratch = Path(directory)
-        app = assemble(root, native, scratch, identity)
-        previous = scratch / 'previous.app'
-        if target.exists(): target.rename(previous)
-        try:
-            app.rename(target)
-        except OSError:
-            if previous.exists(): previous.rename(target)
-            raise
-    sign_app(parent_app, identity)
+    with staged_app_update(parent_app) as staged:
+        require_same_identity(staged, identity)
+        helpers = staged / 'Contents/Helpers'
+        target = helpers / APP_NAME
+        if target.exists():
+            require_same_identity(target, identity)
+            shutil.rmtree(target)
+        assemble(root, native, helpers, identity)
+        sign_app(staged, identity)
+    target = parent_app / 'Contents/Helpers' / APP_NAME
     print(f'Updated {target}. The GUI Host retires its old helper between calls; observe again after updating.')
 
 
@@ -106,6 +105,6 @@ if __name__ == '__main__':
     parser.add_argument('--windows', action='store_true', help='Update Achbit-Computer-Use.exe in a win64 runtime.')
     args = parser.parse_args()
     if args.windows:
-        update_windows(args.native / WINDOWS_EXECUTABLE, args.output)
+        update_windows(args.native / WINDOWS_EXECUTABLE, args.output, identity=windows_signing.build_identity())
     else:
         update(Path(__file__).resolve().parents[1], args.native, args.output)

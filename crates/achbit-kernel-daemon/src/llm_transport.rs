@@ -4324,7 +4324,7 @@ mod tests {
             assert_eq!(
                 failure["message"],
                 if stage == "invalid" {
-                    "Provider 缓存 token 必须完整划分输入 token 总量。"
+                    "cacheReadInputTokens=18 和 cacheMissInputTokens=10 应完整划分 inputTokens=30。"
                 } else {
                     "fixture usage write denied"
                 },

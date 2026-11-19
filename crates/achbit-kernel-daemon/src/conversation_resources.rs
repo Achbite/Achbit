@@ -467,7 +467,6 @@ pub(crate) async fn conversation_resources_watch(
             Err(error) => failures.push(json!({"indices":[index],"error":error.0})),
         }
     }
-    let directories: Vec<bool> = paths.iter().map(|path| path.is_dir()).collect();
     let mut watch = match FileWatch::new(&paths) {
         Ok(watch) => watch,
         Err(error) => {
@@ -488,25 +487,15 @@ pub(crate) async fn conversation_resources_watch(
                 change = watch.next() => change,
             };
             let Some(change) = change else { break; };
-            let mut changes = vec![change];
-            while let Ok(change) = watch.changes.try_recv() { changes.push(change); }
-            let mut affected = std::collections::BTreeSet::new();
-            let mut error = None;
-            for change in changes {
-                match change {
-                    Ok(changed) => for (index, path) in paths.iter().enumerate() {
-                        if changed.iter().any(|change| change == path || (directories[index] && change.parent() == Some(path.as_path()))) { affected.insert(indices[index]); }
-                    },
-                    Err(message) => { error = Some(message); break; }
+            match change {
+                Ok(positions) => {
+                    let affected: Vec<_> = positions.into_iter().map(|position| indices[position]).collect();
+                    yield Ok(Event::default().event("change").data(json!({"indices":affected}).to_string()));
                 }
-            }
-            if let Some(error) = error {
-                yield Ok(Event::default().event("error").data(json!({"message":error}).to_string()));
-                break;
-            }
-            if !affected.is_empty() {
-                // Notify only subscribed identities, never sibling names of a single-file grant.
-                yield Ok(Event::default().event("change").data(json!({"indices":affected}).to_string()));
+                Err(error) => {
+                    yield Ok(Event::default().event("error").data(json!({"message":error}).to_string()));
+                    break;
+                }
             }
         }
     };

@@ -133,23 +133,22 @@ pub(crate) async fn conversation_read(
 
 fn visible_session_ids(
     catalog: &ConversationCatalog,
-    journal: &crate::local_agent_store::LocalAgentJournal,
+    reader: &crate::local_agent_store::SessionCatalogReader,
 ) -> Result<Vec<String>, crate::local_agent_store::LocalAgentStoreError> {
-    let mut session_ids = Vec::new();
-    for session in &catalog.sessions {
-        if journal.agent_context(&session.id)?.is_none() {
-            session_ids.push(session.id.clone());
-        }
-    }
-    Ok(session_ids)
+    let ids: Vec<_> = catalog
+        .sessions
+        .iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    reader.visible_sessions(&ids)
 }
 
 fn visible_catalog_response(
     gui: &GuiState,
-    journal: &crate::local_agent_store::LocalAgentJournal,
+    reader: &crate::local_agent_store::SessionCatalogReader,
     management: bool,
 ) -> Json<ApiResponse> {
-    let visible = match visible_session_ids(&gui.conversation_catalog, journal) {
+    let visible = match visible_session_ids(&gui.conversation_catalog, reader) {
         Ok(ids) => ids.into_iter().collect::<HashSet<_>>(),
         Err(error) => return ApiResponse::error(error.code, error.message),
     };
@@ -170,28 +169,7 @@ pub(crate) async fn conversation_catalog_get(State(state): State<HostState>) -> 
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
         return ApiResponse::error("conversation_catalog_unavailable", error);
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_catalog_events(State(state): State<HostState>) -> Response {
@@ -228,7 +206,7 @@ pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> 
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error);
         }
-        match visible_session_ids(&gui.conversation_catalog, &state.local_agent.journal) {
+        match visible_session_ids(&gui.conversation_catalog, &state.catalog_reader) {
             Ok(ids) => ids,
             Err(error) => return ApiResponse::error(error.code, error.message),
         }
@@ -347,7 +325,7 @@ pub(crate) async fn conversation_resource_read(
             )
             .into_response();
         }
-        return match read_reader_image(&target) {
+        return match read_reader_image(&target).await {
             Ok((media_type, bytes)) => {
                 ([(axum::http::header::CONTENT_TYPE, media_type)], bytes).into_response()
             }
@@ -518,23 +496,24 @@ fn read_image_bytes(path: &StdPath) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn read_reader_image(path: &StdPath) -> Result<(&'static str, Vec<u8>), String> {
-    let bytes = read_image_bytes(path)?;
-    let media =
-        if let Some(media) = achbit_kernel_tools::file_content::image_type_from_header(&bytes) {
-            media
-        } else if bytes.starts_with(b"BM") {
-            "image/bmp"
-        } else if path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
-        {
-            // SVG is XML and has no fixed magic bytes. The Reader's image element
-            // handles its encoding and reports a decode error for invalid documents.
-            "image/svg+xml"
-        } else {
-            return Err("当前资源不是支持的图片。".into());
-        };
+async fn read_reader_image(path: &StdPath) -> Result<(&'static str, bytes::Bytes), String> {
+    let bytes = crate::attachment_image::read_source(path.to_owned()).await?;
+    if let Some(media) = achbit_kernel_tools::file_content::image_type_from_header(&bytes) {
+        return crate::attachment_image::prepare(bytes, media).await;
+    }
+    check_image_size(&bytes)?; // Display-only formats keep their previous bounds.
+    let media = if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+    {
+        // SVG is XML and has no fixed magic bytes. The Reader's image element
+        // handles its encoding and reports a decode error for invalid documents.
+        "image/svg+xml"
+    } else {
+        return Err("当前资源不是支持的图片。".into());
+    };
     Ok((media, bytes))
 }
 
@@ -560,7 +539,7 @@ pub(crate) fn image_media_type(bytes: &[u8]) -> Result<&'static str, String> {
     provider_image_type(bytes)
 }
 
-pub(crate) fn resolve_provider_images(
+pub(crate) async fn resolve_provider_images(
     state: &AppState,
     session_id: &str,
     messages: &mut [crate::local_agent_api::LocalProviderMessage],
@@ -644,10 +623,9 @@ pub(crate) fn resolve_provider_images(
                 &image.logical_path,
             )
             .map_err(|error| error.message)?;
-            let (media, bytes) = read_image_resource(&path)?;
-            if media != image.media_type {
-                return Err("图片内容与附件格式不一致。".into());
-            }
+            let source = crate::attachment_image::read_source(path).await?;
+            let (media, bytes) =
+                crate::attachment_image::prepare(source, &image.media_type).await?;
             message
                 .image_data
                 .push(crate::local_agent_api::LocalProviderImage {
@@ -1036,7 +1014,7 @@ pub(crate) async fn conversation_catalog_management_get(
     if let Some(error) = gui.conversation_catalog_error.as_deref() {
         return ApiResponse::error("conversation_catalog_unavailable", error);
     }
-    visible_catalog_response(&gui, &state.local_agent.journal, true)
+    visible_catalog_response(&gui, &state.catalog_reader, true)
 }
 
 pub(crate) async fn conversation_project_create(
@@ -1078,28 +1056,7 @@ pub(crate) async fn conversation_project_create(
     if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_project_update(
@@ -1163,28 +1120,7 @@ pub(crate) async fn conversation_project_update(
         }
     }
     let gui = state.gui.lock().expect("gui state lock");
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 /// Project metadata selects roots; each Session commits its own effective bindings.
@@ -1273,28 +1209,7 @@ pub(crate) async fn conversation_project_delete(
     {
         return ApiResponse::error("conversation_catalog_write_failed", error);
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_session_create(
@@ -1705,28 +1620,7 @@ pub(crate) async fn conversation_session_update(
             task.abort();
         }
     }
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 pub(crate) async fn conversation_session_delete(
@@ -1844,28 +1738,7 @@ async fn delete_conversation_session(
         );
     }
     let gui = state.gui.lock().expect("gui state lock");
-    let visible = match gui
-        .conversation_catalog
-        .sessions
-        .iter()
-        .filter_map(
-            |session| match state.catalog_reader.agent_context(&session.id) {
-                Ok(None) => Some(Ok(session.id.clone())),
-                Ok(Some(_)) => None,
-                Err(error) => Some(Err(error)),
-            },
-        )
-        .collect::<Result<HashSet<_>, _>>()
-    {
-        Ok(visible) => visible,
-        Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = gui.conversation_catalog.public_value();
-    value["sessions"]
-        .as_array_mut()
-        .expect("catalog sessions")
-        .retain(|session| visible.contains(session["id"].as_str().expect("catalog session id")));
-    ApiResponse::ok(value)
+    visible_catalog_response(&gui, &state.catalog_reader, false)
 }
 
 fn deletion_cleanup_ids(
@@ -2088,7 +1961,12 @@ pub(crate) async fn conversation_input_upload(
         .unwrap_or("text/plain")
         .trim();
     let saved = if media_type.starts_with("image/") {
-        save_input_image(&state, &session_id, &input_id, &body, media_type)
+        match crate::attachment_image::prepare(body, media_type).await {
+            Ok((prepared_type, bytes)) => {
+                save_input_image(&state, &session_id, &input_id, &bytes, prepared_type)
+            }
+            Err(error) => Err(error),
+        }
     } else {
         let content = match std::str::from_utf8(&body) {
             Ok(content) => content,
@@ -2277,7 +2155,13 @@ pub(crate) async fn conversation_command_submit(
                 Ok(projection) => projection["modelSettings"]["profileId"]
                     .as_str()
                     .map(str::to_string),
-                Err(error) => return session_service_error(error),
+                Err(error) => {
+                    eprintln!(
+                        "[conversation-profile] session={session_id} {}: {}",
+                        error.code, error.message
+                    );
+                    None
+                }
             }
         } else {
             None
@@ -2306,10 +2190,8 @@ pub(crate) async fn conversation_command_submit(
                 gui.llm_profiles.select_default(&path, profile_id)
             })();
             if let Err(error) = result {
-                return ApiResponse::error_with_data(
-                    "select_default_llm_profile_failed",
-                    error,
-                    reply,
+                eprintln!(
+                    "[conversation-profile] session={session_id} select_default_llm_profile_failed: {error}"
                 );
             }
         }
@@ -3704,8 +3586,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reader_serves_display_images_without_changing_provider_formats() {
+    #[tokio::test]
+    async fn reader_serves_display_images_without_changing_provider_formats() {
         let dir = tempfile::tempdir().unwrap();
         let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>"#;
         let mut bmp = vec![0; 58]; // One padded 24-bit pixel.
@@ -3723,7 +3605,10 @@ mod tests {
         ] {
             let path = dir.path().join(name);
             fs::write(&path, bytes).unwrap();
-            assert_eq!(read_reader_image(&path).unwrap(), (media, bytes.to_vec()));
+            assert_eq!(
+                read_reader_image(&path).await.unwrap(),
+                (media, bytes::Bytes::copy_from_slice(bytes))
+            );
             assert!(read_image_resource(&path).is_err());
         }
     }

@@ -33,6 +33,14 @@ def run():
 
         try:
             daemon.start()
+            # The preview outlives temporary ZIP extraction and supplies the path the installer consumes.
+            archive = Path(__file__).resolve().parents[2] / "examples/plugins/downloads/ui-theme-0.7.84.zip"
+            preview = plugins("inspect", archive)
+            assert Path(preview["manifestPath"]) == archive and Path(preview["path"]) == archive
+            imported = plugins("install", preview["manifestPath"])
+            assert imported["plugin"]["id"] == preview["id"] and imported["plugin"]["kind"] == "ui"
+            plugins("remove", imported["plugin"]["path"])
+
             installed = Path(plugins("install", candidate)["plugin"]["path"])
             plugins("disable", installed)
             # An existing installation can declare a slot the current GUI no longer supports.

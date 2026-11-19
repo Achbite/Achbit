@@ -9,7 +9,9 @@ use crossterm::event::KeyCode;
 use serde_json::json;
 use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -116,16 +118,24 @@ struct AgentReturnView {
     transcript_scroll: Option<usize>,
 }
 
+type ProjectionRead = Pin<
+    Box<dyn Future<Output = achbit_kernel_client::KernelClientResult<SessionProjection>> + Send>,
+>;
+
+pub type StartupData = (Option<SessionProjection>, PluginCatalogProjection);
+
 pub struct TuiApp {
     client: HttpKernelClient,
     renderer: Renderer,
     host: TuiHostOptions,
     projection: Option<SessionProjection>,
+    pending_refresh: Option<ProjectionRead>,
     input: String,
     input_failed: bool,
     command_picker: Option<usize>,
     recent_commands: VecDeque<&'static str>,
     initialized: bool,
+    pub startup_message: Option<String>,
     status: String,
     connection_error: Option<String>,
     next_message_profile_id: Option<String>,
@@ -146,8 +156,8 @@ pub struct TuiApp {
     detail_preview: Option<String>,
     tool_detail: Option<(String, String)>,
     reasoning_enabled: bool,
-    detail_scroll: Cell<u16>,
-    detail_scroll_max: Cell<u16>,
+    detail_scroll: Cell<usize>,
+    detail_scroll_max: Cell<usize>,
     viewport_height: Cell<u16>,
     transcript_scroll: Cell<Option<usize>>,
     transcript_scroll_max: Cell<usize>,
@@ -163,11 +173,13 @@ impl TuiApp {
             renderer,
             host,
             projection: None,
+            pending_refresh: None,
             input: String::new(),
             input_failed: false,
             command_picker: None,
             recent_commands: VecDeque::new(),
             initialized: false,
+            startup_message: None,
             next_message_profile_id: None,
             model_connections: None,
             model_profiles: Vec::new(),
@@ -194,32 +206,93 @@ impl TuiApp {
         }
     }
 
-    pub async fn bootstrap(&mut self) -> Result<(), String> {
+    pub fn load_startup(
+        &mut self,
+    ) -> Result<impl Future<Output = Result<StartupData, String>> + use<>, String> {
+        let language = self.host.language;
         if let Some(path) = self.host.workspace_path.as_mut() {
             *path = path.canonicalize().map_err(|error| {
-                self.host
-                    .language
-                    .format("tui.workspaceUnavailable", &[error.to_string()])
+                language.format("tui.workspaceUnavailable", &[error.to_string()])
             })?;
         }
-        if self.host.session_id.is_some() {
-            self.ensure_session().await?;
+        let session = self.host.session_id.clone();
+        let client = self.client.clone();
+        Ok(async move {
+            let projection = if let Some(id) = session {
+                Some(client.conversation_projection(&id).await.map_err(|error| {
+                    language.format("tui.sessionInitializationFailed", &[error.to_string()])
+                })?)
+            } else {
+                None
+            };
+            let catalog = client
+                .conversation_plugin_catalog()
+                .await
+                .map_err(|error| {
+                    language.format("tui.pluginCatalogLoadFailed", &[error.to_string()])
+                })?;
+            Ok((projection, catalog))
+        })
+    }
+
+    pub fn startup_message_read(&self) -> impl Future<Output = Option<(u64, String)>> + use<> {
+        let session = self.host.session_id.clone();
+        let language = self.host.language;
+        let client = self.client.clone();
+        async move {
+            let session = session?;
+            let result = client
+                .conversation_read(&session, &json!({"view":"messages","limit":4}))
+                .await
+                .ok()?;
+            let revision = result["revision"]
+                .as_u64()
+                .filter(|revision| *revision > 0)?;
+            let mut latest = None;
+            for item in result["items"].as_array()? {
+                if item["type"] != "message.committed" {
+                    continue;
+                }
+                let label = match item["role"].as_str() {
+                    Some("user") => language.text("tui.kind.user"),
+                    Some("assistant") => language.text("tui.kind.assistant"),
+                    _ => continue,
+                };
+                let id = item["messageId"].as_str()?;
+                if id.is_empty() || id.trim() != id {
+                    return None;
+                }
+                latest = Some((
+                    label,
+                    item["content"].as_str()?,
+                    item["truncated"].as_bool()?,
+                ));
+            }
+            let (label, content, truncated) = latest?;
+            let suffix = if truncated {
+                language.text("tui.truncated")
+            } else {
+                ""
+            };
+            Some((revision, format!("{label}{suffix}\n{content}")))
         }
-        let catalog = self
-            .client
-            .conversation_plugin_catalog()
-            .await
-            .map_err(|error| {
-                self.host
-                    .language
-                    .format("tui.pluginCatalogLoadFailed", &[error.to_string()])
-            })?;
+    }
+
+    pub fn finish_startup(&mut self, (projection, catalog): StartupData) -> Result<(), String> {
         self.selected_plugins =
             plugin_selections_from_uris(self.host.language, &catalog, &self.host.plugin_uris)?;
         self.plugin_catalog = Some(catalog);
+        self.replace_projection(projection);
+        self.startup_message = None;
         self.initialized = true;
         self.status = self.host.language.text("tui.ready").to_string();
+        self.sync_input_pickers();
         Ok(())
+    }
+
+    pub async fn bootstrap(&mut self) -> Result<(), String> {
+        let data = self.load_startup()?.await?;
+        self.finish_startup(data)
     }
 
     // Opening the shell is a local draft. Persist a Session only for an explicit
@@ -246,23 +319,43 @@ impl TuiApp {
                 })
                 .await
         };
-        self.projection = Some(result.map_err(|error| {
+        self.replace_projection(Some(result.map_err(|error| {
             self.host
                 .language
                 .format("tui.sessionInitializationFailed", &[error.to_string()])
-        })?);
+        })?));
         Ok(())
     }
 
+    fn replace_projection(&mut self, projection: Option<SessionProjection>) {
+        // Switching views or applying a command result supersedes any read
+        // started from the previous snapshot, including same-revision drafts.
+        self.pending_refresh = None;
+        self.projection = projection;
+    }
+
+    pub fn refresh_in_flight(&self) -> bool {
+        self.pending_refresh.is_some()
+    }
+
     pub async fn poll(&mut self) {
-        let Some(session_id) = self
-            .projection
-            .as_ref()
-            .map(|projection| projection.session_id.clone())
-        else {
+        // Explicit refreshes after commands read their effects from the Host.
+        self.pending_refresh = None;
+        self.background_poll().await;
+    }
+
+    pub async fn background_poll(&mut self) {
+        let Some(current) = &self.projection else {
             return;
         };
-        match self.client.conversation_projection(&session_id).await {
+        let request = self.pending_refresh.get_or_insert_with(|| {
+            let client = self.client.clone();
+            let session_id = current.session_id.clone();
+            Box::pin(async move { client.conversation_projection(&session_id).await })
+        });
+        let result = request.await;
+        self.pending_refresh = None;
+        match result {
             Ok(projection) => {
                 self.connection_error = None;
                 self.projection = Some(projection);
@@ -271,7 +364,7 @@ impl TuiApp {
                 self.connection_error = Some(
                     self.host
                         .language
-                        .format("tui.projectionRefreshFailed", &[format!("{}", error)]),
+                        .format("tui.projectionRefreshFailed", &[error.to_string()]),
                 )
             }
         }
@@ -532,7 +625,7 @@ impl TuiApp {
         );
         self.reset_session_view();
         self.host.session_id = None;
-        self.projection = None;
+        self.replace_projection(None);
         self.status = self.host.language.text("tui.sessionNew").into();
         if let Some(notice) = background {
             self.status.push_str(&format!(" · {notice}"));
@@ -572,7 +665,7 @@ impl TuiApp {
                 );
                 self.reset_session_view();
                 self.host.session_id = Some(session_id.clone());
-                self.projection = Some(projection);
+                self.replace_projection(Some(projection));
                 self.status = self
                     .host
                     .language
@@ -691,7 +784,7 @@ impl TuiApp {
                         transcript_scroll: self.transcript_scroll.get(),
                     });
                 }
-                self.projection = Some(child);
+                self.replace_projection(Some(child));
                 self.agent_picker = None;
                 self.command_picker = None;
                 self.transcript_scroll.set(None);
@@ -713,7 +806,7 @@ impl TuiApp {
     }
     pub fn back_from_agent(&mut self) {
         if let Some(parent) = self.agent_return_views.pop() {
-            self.projection = Some(parent.projection);
+            self.replace_projection(Some(parent.projection));
             self.input = parent.input;
             self.command_picker = None;
             self.transcript_scroll.set(parent.transcript_scroll);
@@ -759,22 +852,31 @@ impl TuiApp {
     pub fn close_session_picker(&mut self) {
         self.session_picker = None;
     }
-    pub fn session_picker_entries(&self) -> Vec<(String, bool)> {
+    pub fn session_picker_entries(
+        &self,
+        visible: usize,
+    ) -> impl ExactSizeIterator<Item = (String, bool)> + '_ {
+        let start = self
+            .session_picker
+            .unwrap_or(0)
+            .saturating_sub(visible.saturating_sub(1));
         let current = self
             .projection
             .as_ref()
             .map(|projection| projection.session_id.as_str());
         self.session_list
+            .as_deref()
+            .unwrap_or_default()
             .iter()
-            .flatten()
             .enumerate()
-            .map(|(index, session)| {
+            .skip(start)
+            .take(visible)
+            .map(move |(index, session)| {
                 (
                     crate::session_navigation::session_label(index + 1, session, current),
                     self.session_picker == Some(index),
                 )
             })
-            .collect()
     }
     pub fn session_picker_move(&mut self, delta: isize) {
         let count = self.session_list.as_ref().map_or(0, Vec::len);
@@ -801,7 +903,7 @@ impl TuiApp {
                 .conversation_projection(&projection.session_id)
                 .await
             {
-                Ok(current) => self.projection = Some(current),
+                Ok(current) => self.replace_projection(Some(current)),
                 Err(error) => {
                     self.input_failed = true;
                     self.status = error.to_string();
@@ -1286,7 +1388,7 @@ impl TuiApp {
             .await
         {
             Ok(projection) => {
-                self.projection = Some(projection);
+                self.replace_projection(Some(projection));
                 self.status = self.host.language.text("tui.directoryAttached").to_string();
             }
             Err(error) => {
@@ -1324,7 +1426,7 @@ impl TuiApp {
             .await
         {
             Ok(projection) => {
-                self.projection = Some(projection);
+                self.replace_projection(Some(projection));
                 self.status = self.host.language.text("tui.directoryDetached").to_string();
             }
             Err(error) => {
@@ -1489,10 +1591,10 @@ impl TuiApp {
             let current = self.detail_scroll.get();
             self.detail_scroll.set(if down {
                 current
-                    .saturating_add(lines)
+                    .saturating_add(usize::from(lines))
                     .min(self.detail_scroll_max.get())
             } else {
-                current.saturating_sub(lines)
+                current.saturating_sub(usize::from(lines))
             });
         } else {
             let maximum = self.transcript_scroll_max.get();
@@ -1525,9 +1627,8 @@ impl TuiApp {
         self.viewport_height.set(height);
     }
 
-    pub fn detail_offset(&self, maximum: usize, height: u16) -> u16 {
+    pub fn detail_offset(&self, maximum: usize, height: u16) -> usize {
         self.set_viewport_height(height);
-        let maximum = maximum.min(usize::from(u16::MAX)) as u16;
         self.detail_scroll_max.set(maximum);
         let offset = self.detail_scroll.get().min(maximum);
         self.detail_scroll.set(offset);
@@ -2415,6 +2516,7 @@ mod input_tests {
         use ratatui::{backend::TestBackend, Terminal};
         for language in [Language::ZhCn, Language::EnUs] {
             let mut app = test_app();
+            app.initialized = true;
             app.host.language = language;
             app.push_input('/');
             assert!(app.command_completion_key(KeyCode::Up));
@@ -2602,10 +2704,12 @@ mod input_tests {
         );
         app.session_picker = Some(0);
         app.session_picker_move(-1);
-        assert!(app.session_picker_entries()[11].1);
+        let last_rows = app.session_picker_entries(2).collect::<Vec<_>>();
+        assert!(last_rows[0].0.contains("11. Title 11"));
+        assert!(last_rows[1].0.contains("12. Title 12") && last_rows[1].1);
         assert!(app.renderer().render_plain(&app).contains("12. Title 12"));
         app.session_picker_move(1);
-        assert!(app.session_picker_entries()[0].1);
+        assert!(app.session_picker_entries(2).next().unwrap().1);
         app.close_session_picker();
         assert!(!app.session_picker_open());
         assert_eq!(
@@ -2652,6 +2756,7 @@ mod input_tests {
         use ratatui::{backend::TestBackend, Terminal};
         for (field, decision, _, _, _) in pending_decisions() {
             let mut app = test_app();
+            app.initialized = true;
             app.projection = Some(waiting_projection(field, decision));
             app.next_message_profile_id = Some("profile:next".into());
             app.push_input_text("中文输入最后一行");
@@ -2725,6 +2830,21 @@ mod input_tests {
     }
 
     #[test]
+    fn long_detail_scrolls_past_65535_visual_rows_and_back() {
+        let mut app = test_app();
+        app.detail_preview = Some(format!("first\n{}last", "middle\n".repeat(66000)));
+        assert!(screen_rows(&app, 60, 18).join("\n").contains("first"));
+        for _ in 0..2 {
+            app.scroll_lines(true, u16::MAX);
+        }
+        assert!(screen_rows(&app, 60, 18).join("\n").contains("last"));
+        for _ in 0..2 {
+            app.scroll_lines(false, u16::MAX);
+        }
+        assert!(screen_rows(&app, 60, 18).join("\n").contains("first"));
+    }
+
+    #[test]
     fn detail_pages_overlap_by_one_visible_row_and_keep_file_truncation_visible() {
         let mut app = test_app();
         app.detail_preview = Some(
@@ -2793,6 +2913,7 @@ mod input_tests {
     #[test]
     fn picker_wheel_navigation_keeps_the_hidden_document_in_place() {
         let mut app = test_app();
+        app.initialized = true;
         app.detail_preview = Some(
             (0..80)
                 .map(|i| format!("line {i}"))

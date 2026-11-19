@@ -20,7 +20,7 @@ Use the same signing identity for macOS updates to retain the helper's permissio
 
 ## Windows
 
-Run `Achbit-<version>-win64-setup.exe`. The default application directory is `%LOCALAPPDATA%\Programs\Achbit`. Setup creates Start menu entries and adds the application to the user PATH. Open a new terminal to use `achbit`, `achbit-cli`, and `achbit-tui`.
+Run `Achbit-<version>-win64-setup.exe`. The default application directory is `%LOCALAPPDATA%\Programs\Achbit`. Setup creates Start menu entries and adds the terminal command directory (`libexec\commands` under the installation) to the user PATH. Open a new terminal to use `achbit`, `achbit-cli`, and `achbit-tui`.
 
 The GUI requires WebView2 Evergreen Runtime. Setup downloads and runs Microsoft's installer when WebView2 is missing and reports any installation failure. The portable archive uses the same user directories; launch `Achbit.exe`, `achbit-cli.bat`, or `achbit-tui.bat`. Uninstallation removes program files and the PATH entry added by this installation, while retaining user files.
 

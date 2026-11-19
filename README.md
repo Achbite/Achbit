@@ -83,9 +83,9 @@ Copy the saved profile ID from `connections`. In TUI, use `/model` to choose a m
 
 ## Plugins
 
-Open **Settings → Plugins → Marketplace** to search by name, author or type. Expand a result to see its source commit, license and any verification record. **Download from author** opens the version supplied by the publisher. [Public plugin directory](https://github.com/Achbite/achbit-plugins)
+In **Settings → Plugins → Marketplace**, browse Skills, UI extensions, CLI tools or services. Select **Install & enable** to install a listed ZIP on the connected Host. Open the details to check its source, license and verification record, or download the package from its author. [Public plugin directory](https://github.com/Achbite/achbit-plugins)
 
-Import an external plugin from **Settings → Plugins → Installed → Add…**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
+Import an external plugin from **Settings → Plugins → All → Add…**, selecting its ZIP, directory or manifest. Achbit recognizes CLI tools (`achbit-tool.json`), hosted services (`achbit-service.json`), display modules (`achbit-ui.json`) and Skills (`SKILL.md`). MCP servers use the existing MCP settings. ZIP packages are extracted and validated by the Host before installation or update.
 
 Plugins use shared discovery, invocation and cleanup protocols. A hosted service starts when enabled and releases its process/port when disabled; a compatible model endpoint is configured through the usual model connection settings. Task tools and context are assembled before model requests, keeping optional capabilities separate from the main Loop.
 
@@ -118,7 +118,9 @@ make shell
 
 `make shell` automatically checks and updates the development image before entering. Docker reuses unchanged layers and rebuilds affected layers when the Dockerfile, entrypoint or image build arguments change. No separate image-update command is needed.
 
-Skip the signing command on Windows and Linux. Inside the container:
+To produce the standard Windows x64 ZIP and installer, prepare the [Windows signing profile](docs/development.md#windows-authenticode-signing) on the host before entering the container. Mac, Linux and Windows via WSL2 can reuse the same external profile.
+
+Inside the container:
 
 ```sh
 bash ./build.sh           # Runnable build for the development host

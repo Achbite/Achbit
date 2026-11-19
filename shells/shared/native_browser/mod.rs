@@ -379,14 +379,14 @@ fn open_link(app: tauri::AppHandle, source: String, url: tauri::Url) {
             let page = page_state(&app, &source)?;
             let binding = json!({"hostInstanceId":page.binding.host_instance_id,
                 "windowLabel":page.binding.window_label,"sessionId":page.session_id});
-            let mut input = json!({"action":"open","viewport":page.viewport});
-            if url.scheme() == "file" {
-                input["filePath"] =
-                    json!(url.to_file_path().map_err(|_| "Invalid browser file URL")?);
-            } else {
-                input["url"] = json!(url.as_str());
-            }
-            tauri::async_runtime::block_on(execute(app.clone(), binding, input))
+            let input = json!({"action":"open","viewport":page.viewport});
+            let target = new_window_url(url)?;
+            tauri::async_runtime::block_on(execute_request(
+                app.clone(),
+                binding,
+                input,
+                Some(target),
+            ))
         })();
         match opened {
             Ok(page) => {
@@ -557,17 +557,34 @@ async fn activate(app: tauri::AppHandle, page: Page) -> Result<Value, String> {
 #[cfg(target_os = "macos")]
 mod accessibility_macos;
 
+fn file_page_url(path: &std::path::Path) -> Result<tauri::Url, String> {
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("Browser file: {error}"))?;
+    if !path.is_file() {
+        return Err("Browser target is not a file.".into());
+    }
+    tauri::Url::from_file_path(path).map_err(|_| "Invalid browser file path.".into())
+}
+
+fn new_window_url(url: tauri::Url) -> Result<tauri::Url, String> {
+    if url.scheme() != "file" {
+        return web_page_url(url);
+    }
+    let mut target = file_page_url(&url.to_file_path().map_err(|_| "Invalid browser file URL")?)?;
+    target.set_query(url.query());
+    target.set_fragment(url.fragment());
+    Ok(target)
+}
+
 fn page_url(input: &Value) -> Result<tauri::Url, String> {
     if let Some(path) = input.get("filePath").and_then(Value::as_str) {
-        let path = PathBuf::from(path)
-            .canonicalize()
-            .map_err(|error| format!("Browser file: {error}"))?;
-        if !path.is_file() {
-            return Err("Browser target is not a file.".into());
-        }
-        return tauri::Url::from_file_path(path).map_err(|_| "Invalid browser file path.".into());
+        return file_page_url(std::path::Path::new(path));
     }
-    let url = tauri::Url::parse(string(input, "url")?).map_err(|error| error.to_string())?;
+    web_page_url(tauri::Url::parse(string(input, "url")?).map_err(|error| error.to_string())?)
+}
+
+fn web_page_url(url: tauri::Url) -> Result<tauri::Url, String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(
             "Browser URLs require HTTP or HTTPS; use filePath for a local HTML file.".into(),
@@ -579,6 +596,15 @@ fn page_url(input: &Value) -> Result<tauri::Url, String> {
 /// Every operation names an exact Host/window; existing page operations also
 /// require an exact preview id. No lookup by the most recently focused window.
 pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Result<Value, String> {
+    execute_request(app, binding, input, None).await
+}
+
+async fn execute_request(
+    app: tauri::AppHandle,
+    binding: Value,
+    input: Value,
+    new_window_target: Option<tauri::Url>,
+) -> Result<Value, String> {
     let session_id = binding["sessionId"].as_str().map(str::to_string);
     let preview_run_id = binding["runId"].as_str().map(str::to_string);
     let tool_request = binding["runId"].is_string();
@@ -657,7 +683,9 @@ pub async fn execute(app: tauri::AppHandle, binding: Value, input: Value) -> Res
         let state = app.state::<NativeBrowser>();
         let opening = state.opening.lock().await;
         let service_id = input["serviceId"].as_str().map(str::to_string);
-        let url = if action == "openSelf" {
+        let url = if let Some(target) = new_window_target {
+            target
+        } else if action == "openSelf" {
             crate::bundled_app_url("index.html")?
         } else if let Some(service_id) = service_id.as_deref() {
             let state = app.state::<NativeBrowser>();
@@ -1240,7 +1268,7 @@ async fn eval(view: tauri::Webview, script: String) -> Result<Value, String> {
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| format!("native_browser_evaluation_failed: {preview_id}; {error}"))?;
-    let result: Value =
+    let mut result: Value =
         serde_json::from_str(&value).map_err(|error| format!("Browser evaluation: {error}"))?;
     if result["ok"] != true {
         return Err(format!(
@@ -1250,7 +1278,7 @@ async fn eval(view: tauri::Webview, script: String) -> Result<Value, String> {
                 .unwrap_or("Invalid browser evaluation response")
         ));
     }
-    Ok(result["data"].clone())
+    Ok(result["data"].take())
 }
 
 struct Capture {
@@ -1701,6 +1729,19 @@ mod tests {
         empty[16..20].copy_from_slice(&0u32.to_be_bytes());
         assert!(png_dimensions(&empty).is_err());
         assert!(png_dimensions(b"GIF89a").is_err());
+    }
+
+    #[test]
+    fn local_new_window_targets_preserve_the_clicked_query_and_fragment() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("with space #.html");
+        std::fs::write(&path, "<h1 id='section'>Section</h1>").unwrap();
+        let base = page_url(&json!({"filePath":path})).unwrap();
+        let link = base.join("?view=side%20bar#section").unwrap();
+        assert_eq!(new_window_url(link.clone()).unwrap(), link);
+        assert_ne!(base, link);
+        assert!(page_url(&json!({"url":link})).is_err());
+        assert!(new_window_url(tauri::Url::parse("about:blank").unwrap()).is_err());
     }
 
     #[test]

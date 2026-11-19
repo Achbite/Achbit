@@ -1,7 +1,7 @@
 import type { ChangedFile } from './fileChangeSummary';
 import { resourceKey, type ResourceReference } from '../../services/conversationResources';
 import type { ArtifactProjection } from '@achbit/protocol';
-import type { SourcePosition } from './resourceLinks';
+import { canonicalFileKey, type SourcePosition } from './resourceLinks';
 import type { NativePage } from '../../services/nativeBrowser';
 export type AgentReaderTarget = { kind: 'agent'; parentSessionId: string; agentSessionId?: string; entryId?: string };
 export type ReaderFileTarget = (({ kind: 'workspace'; workspaceId: string; logicalPath: string } & SourcePosition)
@@ -60,6 +60,15 @@ export function reconcileReaderPages(state: ReaderViewState, pages: NativePage[]
   const selected = state.activeId ?? (state.tabs.length === 0 && savedSelection ? readerTargetKey(savedSelection) : null);
   return { ...state, tabs, activeId: tabs.some(tab => tab.id === selected) ? selected : null };
 }
+
+/** Only an explicit close of the selected tab may choose its successor. */
+export function removeReaderTab(state: ReaderViewState, id: string, selectRemaining: boolean): ReaderViewState {
+  const tabs = state.tabs.filter(tab => tab.id !== id);
+  const activeId = state.activeId === id || state.activeId === null
+    ? selectRemaining ? tabs.at(-1)?.id ?? null : null
+    : state.activeId;
+  return { ...state, tabs, activeId };
+}
 /** File-backed outputs and body links use the file manager's ordinary target.
  * Inline component previews keep their explicit archived HTML placement. */
 export function artifactReaderTarget(artifact: ArtifactProjection): ResolvedReaderTarget {
@@ -70,15 +79,6 @@ export function artifactReaderTarget(artifact: ArtifactProjection): ResolvedRead
 
 export function isReaderFile(target: ReaderTarget): target is ReaderFileTarget {
   return target.kind === 'workspace' || target.kind === 'resource' || target.kind === 'file';
-}
-
-function canonicalFileKey(path: string): string {
-  // The Host resolves the actual file. Preserve filename case on case-sensitive volumes.
-  if (/^(?:[a-z]:[\\/]|\\\\)/i.test(path)) {
-    return path.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\(?=[a-z]:[\\/])/i, '')
-      .replace(/\\/g, '/').replace(/^[a-z]:/i, drive => drive.toUpperCase());
-  }
-  return path;
 }
 
 type IdentifyReaderFile = (ownerSessionId: string, target: ReaderFileTarget) => Promise<string>;
@@ -122,7 +122,7 @@ export function selectReaderTarget(state: ReaderViewState, sessionId: string, ta
   if (existing) {
     const update = target.kind === 'workspace' || target.kind === 'agent'
       || target.kind === 'resource' && existing.target.kind === 'file';
-    const selected = target.kind === 'workspace' && target.line === undefined && existing.target.kind === 'workspace' && existing.target.line !== undefined
+    const selected = target.kind === 'workspace' && target.line === undefined && !target.fragment && existing.target.kind === 'workspace' && existing.target.line !== undefined
       ? { ...target, line: existing.target.line, column: existing.target.column } : target;
     nextTabs = tabs.filter(tab => tab === existing || !matches.includes(tab))
       .map(tab => tab === existing && update ? { ...tab, target: selected } : tab);

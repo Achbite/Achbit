@@ -1,0 +1,5 @@
+{
+  "repositoryUrl": "https://github.com/Achbite/achbit-plugins",
+  "indexUrl": "https://raw.githubusercontent.com/Achbite/achbit-plugins/main/plugins.json",
+  "contentsUrl": "https://api.github.com/repos/Achbite/achbit-plugins/contents/plugins.json?ref=main"
+}

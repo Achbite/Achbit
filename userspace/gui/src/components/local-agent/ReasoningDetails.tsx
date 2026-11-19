@@ -62,5 +62,6 @@ export function ReasoningHistory({ sessionId, runId, activeTurnId, throughTimeli
   }, [readConversation, sessionId, runId, before, activeTurnId, throughTimelineId]);
   return <>{error && <p role="alert">{error}</p>}{items.filter((item) => item.runId === runId
     && Array.isArray(item.kinds) && item.kinds.length).map((item) => <ReasoningDetails key={String(item.providerRequestId)} sessionId={sessionId} requestId={String(item.providerRequestId)} />)}
+    {before !== undefined && <button type="button" onClick={() => setBefore(undefined)}>{t(language, 'agent.reasoning.start')}</button>}
     {next !== null && <button type="button" onClick={() => setBefore(next)}>{t(language, 'agent.reasoning.earlier')}</button>}</>;
 }

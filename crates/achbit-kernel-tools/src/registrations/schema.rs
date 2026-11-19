@@ -10,7 +10,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 "path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "File path in the selected workspace or an authorized absolute file path. Directory listings use paths within a bound workspace."
+                    "description": "Use the exact path supplied by the user, a source reference or a discovery result. Resolve it relative to its project or referring file. Authorized absolute file paths are supported. Directory listings use paths within a bound workspace."
                 },
                 "startByte": { "type": "integer", "minimum": 0, "maximum": 9007199254740991u64, "description": "Files only. Resume at nextByte, including within long lines. Takes precedence over startLine." },
                 "startLine": {

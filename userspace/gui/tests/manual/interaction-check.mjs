@@ -8,7 +8,9 @@ import { resolve, join, extname, relative, isAbsolute, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { checkReaderSplit } from './reader-split-check.mjs';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
+import { checkAttachmentThumbnails } from './attachment-thumbnails-check.mjs';
 import { checkPluginMarketplace } from './plugin-marketplace-check.mjs';
 const preview = resolve(process.env.UI_FIXTURE_ROOT ?? fileURLToPath(new URL('../../../../.task-artifacts/manual-preview', import.meta.url)));
 const out = process.env.UI_EVIDENCE_DIR ? resolve(process.env.UI_EVIDENCE_DIR) : await mkdtemp(join(tmpdir(), 'achbit-ui-results-'));
@@ -85,6 +87,8 @@ try {
     const image = await cmd('Page.captureScreenshot', { format: 'png' }); await writeFile(join(out, name + '.png'), Buffer.from(image.data, 'base64'));
     console.log(`${pass ? 'PASS' : 'FAIL'} ${name}: ${JSON.stringify(actual)}`);
   };
+  await checkReaderSplit({ navigate, evaluate, cmd, until, frame, click, record });
+  await checkAttachmentThumbnails({ navigate, evaluate, cmd, until, frame, click, key, record });
   await navigate('ui-components');
   const closeButton = '[aria-label="紧凑关闭"]';
   await evaluate(`document.querySelector('${closeButton}').focus()`); await key('Enter');
@@ -188,7 +192,7 @@ try {
   await evaluate('document.querySelector(".settings-disclosure > summary").focus()'); await key('Enter');
   const plugin = await evaluate(`(()=>{const s=document.activeElement;return {control:s.dataset.uiComponent,open:s.parentElement.open,arrows:s.querySelectorAll('svg').length}})()`);
   await record('plugin-disclosure', plugin, plugin.control==='DisclosureSummary' && plugin.open && plugin.arrows===1);
-  await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, type, selectFixture, record });
+  await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, key, type, selectFixture, record });
   await checkPreviewLayout({ navigate, evaluate, cmd, until, frame, click, key, record });
   assert.ok(results.every(result => result.pass), 'see the retained browser result for failed invariants');
   await call('Browser.close');

@@ -210,7 +210,7 @@ export async function attachConversationDirectoryIndex(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/directory-indexes`,
     { method: 'POST', body: JSON.stringify({ path }), signal },
   );
-  return decodeProjection(projection);
+  return decodeProjection(projection, sessionId);
 }
 
 export async function resolveConversationFilesystemReferences(
@@ -237,7 +237,7 @@ export async function detachConversationDirectoryIndex(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/directory-indexes/${encodeURIComponent(workspaceId)}`,
     { method: 'DELETE', signal },
   );
-  return decodeProjection(projection);
+  return decodeProjection(projection, sessionId);
 }
 
 export async function uploadConversationPastedText(
@@ -304,7 +304,7 @@ export async function getLocalAgentProjection(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/projection`,
     { signal },
   );
-  return decodeProjection(projection);
+  return decodeProjection(projection, sessionId);
 }
 
 export async function resolveConversationResource(sessionId: string, workspaceId: string, logicalPath: string): Promise<{path: string; kind: 'file' | 'directory'}> {
@@ -376,7 +376,7 @@ export async function request<T>(url: string, init: RequestInit): Promise<T> {
   return envelope.data;
 }
 
-function decodeProjection(value: unknown): SessionProjection {
+function decodeProjection(value: unknown, expectedSessionId?: string): SessionProjection {
   if (
     !isExactRecord(value, [
       'schemaVersion',
@@ -482,6 +482,9 @@ function decodeProjection(value: unknown): SessionProjection {
     || !timelineReferencesAreValid(timeline, messages, narratives, plans, activities)
   ) {
     throw new Error('conversation_projection_invalid');
+  }
+  if (expectedSessionId !== undefined && value.sessionId !== expectedSessionId) {
+    throw new Error('session_projection_identity_mismatch');
   }
   return value as unknown as SessionProjection;
 }
@@ -1653,11 +1656,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function readConversation(sessionId: string, query: Omit<import('@achbit/protocol').ConversationReadQuery, 'sessionId'>, signal?: AbortSignal) {
-  return await request<import('@achbit/protocol').ConversationReadResult>(
+  const page = await request<import('@achbit/protocol').ConversationReadResult>(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/read`,
     { method: 'POST', body: JSON.stringify(query), signal },
   );
+  if (page.sessionId !== sessionId || page.view !== (query.view ?? 'summary')) {
+    throw new Error('conversation_read_identity_mismatch');
+  }
+  return page;
 }
+export interface OpeningHistoryPage {
+  sessionId: string;
+  revision: number;
+  messages: { id: string; role: 'user' | 'assistant'; content: string; truncated: boolean }[];
+}
+
+/** Show committed conversation text while the full timeline and its actions are loading. */
+export async function readOpeningHistory(sessionId: string, signal: AbortSignal): Promise<OpeningHistoryPage> {
+  const page = await readConversation(sessionId, { view: 'messages', limit: 4 }, signal);
+  if (!isPositiveNaturalNumber(page.revision) || !Array.isArray(page.items)) {
+    throw new Error('conversation_message_page_invalid');
+  }
+  const messages: OpeningHistoryPage['messages'] = [];
+  for (const item of page.items) {
+    if (item.type !== 'message.committed' || (item.role !== 'user' && item.role !== 'assistant')) continue;
+    if (!isIdentifier(item.messageId) || typeof item.content !== 'string' || typeof item.truncated !== 'boolean') {
+      throw new Error('conversation_message_page_invalid');
+    }
+    messages.push({ id: item.messageId, role: item.role, content: item.content, truncated: item.truncated });
+  }
+  return { sessionId, revision: page.revision, messages };
+}
+
 export async function readFileChange(sessionId: string, recordId: string, index: number, signal?: AbortSignal) {
   const value = await request<unknown>(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/changes/read`,

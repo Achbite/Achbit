@@ -1,4 +1,5 @@
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
+import { readConversation as readJournalPage } from '../../session-core/dist/local-agent/conversationRead.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SessionService, loopSnapshot } from '../../session-core/dist/index.js';
@@ -381,9 +382,13 @@ test('multi-workspace links resolve exact targets and never guess through read e
     return { path: `/project/${path}`, kind: 'file' };
   });
   assert.deepEqual(calls, [['main', 'README.md'], ['drafts', 'README.md']]);
-  assert.deepEqual(one, [{ workspaceId: 'main', logicalPath: 'README.md', path: '/project/README.md', line: 12, column: 3 }]);
+  assert.deepEqual(one, [{ workspaceId: 'main', logicalPath: 'README.md', path: '/project/README.md', kind: 'file', line: 12, column: 3 }]);
   const multiple = await resolveLocalTargets(parseLocalTarget('README.md'), roots, async (workspace, path) => ({ path: `${roots.find(root => root.workspaceId === workspace).root}/${path}`, kind: 'file' }));
   assert.equal(multiple.length, 2, 'the UI must offer both targets');
+  const caseSensitive = await resolveLocalTargets(parseLocalTarget('README.md'), roots, async workspace => ({
+    path: workspace === 'main' ? 'C:/docs/README.md' : 'C:/Docs/README.md', kind: 'file',
+  }));
+  assert.deepEqual(caseSensitive.map(target => target.path), ['C:/docs/README.md', 'C:/Docs/README.md']);
   const denied = Object.assign(new Error('permission denied'), { code: 'host_inspection_path_unavailable' });
   await assert.rejects(resolveLocalTargets(parseLocalTarget('README.md'), roots, async workspace => {
     if (workspace === 'drafts') throw denied;
@@ -434,12 +439,12 @@ test('body link activation uses the owning Session, file preference, directory a
     async openFile(path, position) { actions.push(['vscode', path, position?.line, position?.column]); },
     async locatePath(path) { actions.push(['directory', path]); },
   });
-  async function click(workspaceId, href) {
+  async function click(workspaceId, href, document) {
     const projection = { sessionId: 'session:' + workspaceId, workspaceBindings: [{ workspaceId }], messages: [], artifacts: [] };
     let open, settle;
     const complete = new Promise(resolve => { settle = resolve; });
     function View() {
-      open = useConversationBodyLinks(projection, 'en-US', settle, workspaceId === 'main').open;
+      open = useConversationBodyLinks(document ? { sessionId: projection.sessionId, document } : projection, 'en-US', settle, workspaceId === 'main').open;
       return null;
     }
     renderToStaticMarkup(createElement(View));
@@ -464,6 +469,8 @@ test('body link activation uses the owning Session, file preference, directory a
   assert.deepEqual(actions.pop(), ['directory', '/main/中文 目录']);
   assert.equal(await click('main', 'workspace://main/图.png'), null);
   assert.equal(actions.pop()[0], 'reader');
+  assert.match(await click('main', './README.md', {}), /document has no local directory/);
+  assert.equal(actions.length, 0, 'an archive without a file origin cannot direct a relative link to an arbitrary folder');
   assert.match(await click('main', './missing.txt'), /Host: missing missing\.txt/);
   assert.equal(actions.length, 0);
 });
@@ -541,6 +548,9 @@ test('local links preserve locations, workspace roots and unambiguous readable l
   assert.equal(bindLocalTarget(parseLocalTarget('/usr/local/bin/c++'), roots), null);
   assert.throws(() => bindLocalTarget(parseLocalTarget('README.md'), [...roots, { workspaceId: 'second', root: '/other' }]), /unambiguous/);
   for (const href of ['https://example.com/path', '#section', 'file://remote/path', 'javascript:alert(1)']) assert.equal(parseLocalTarget(href), null);
+  assert.deepEqual(parseLocalTarget('file:///project/A%23L21.md?download=1#Build%20Docs'), { path: '/project/A#L21.md', absolute: true, fragment: 'Build Docs' });
+  assert.deepEqual(parseLocalTarget('notes%3Fv%23L21'), { path: 'notes?v#L21', absolute: false });
+  assert.deepEqual(parseLocalTarget('notes.md?version=3#L21C2'), { path: 'notes.md', absolute: false, line: 21, column: 2 });
   const a = (href, text = href) => ({ type: 'element', tagName: 'a', properties: { href }, children: [{ type: 'text', value: text }] });
   const tree = readableResourceLinks({ type: 'root', children: [a('/one/src/main.rs:12'), a('/two/lib/main.rs'), a('/project/测试 项目', '项目根目录'),
     { type: 'element', tagName: 'pre', properties: {}, children: [{ type: 'text', value: '/one/src/main.rs' }] }] });
@@ -1738,6 +1748,73 @@ test('independent views own navigation, errors and pending commands separately',
   assert.equal(first.getState().submitting, false);
 });
 
+async function journalPageResponse(journal, sessionId, init) {
+  assert.equal(init.method, 'POST');
+  return Response.json({ ok: true, data: await readJournalPage(journal, { ...JSON.parse(init.body), sessionId }) });
+}
+
+test('opening a conversation shows committed excerpts before the timeline and clears them on navigation or failure', async (t) => {
+  const sessionId = 'session:opening-history';
+  const journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const reply = 'An answer from the journal.';
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    yield providerEvent(request.requestId, 'assistant.message', { messageId: 'message:opening', content: reply });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'opening-history');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:open', 'A saved question.'));
+  const projection = await waitForProjection(actor, value => value.run?.status === 'completed');
+  const store = await loadGuiModelStore(t);
+  store.setState({ catalog: { projects: [], sessions: [{ id: sessionId }] } });
+  let release, invalid = false, earlier = false, otherSession = false;
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname.endsWith('/read')) {
+      if (invalid) return Response.json({ ok: true, data: { sessionId, revision: 0, view: 'messages', items: [] } });
+      return journalPageResponse(journal, sessionId, init);
+    }
+    assert.ok(url.pathname.endsWith('/projection'));
+    if (otherSession) return Response.json({ ok: true, data: { ...projection, sessionId: 'session:another' } });
+    if (earlier) {
+      earlier = false;
+      return Response.json({ ok: true, data: { ...projection, revision: projection.revision - 1 } });
+    }
+    await new Promise(resolve => { release = resolve; });
+    return Response.json({ ok: true, data: projection });
+  });
+  const opening = store.getState().activateSession(sessionId);
+  await waitUntil(() => release !== undefined);
+  const state = store.getState();
+  assert.deepEqual(state.openingHistory.messages.map(({role, content}) => [role, content]), [
+    ['user', 'A saved question.'], ['assistant', reply],
+  ]);
+  assert.equal(state.openingHistory.revision, projection.revision);
+  assert.equal(state.projection, null);
+  store.getState().startNewSession();
+  release();
+  await opening;
+  assert.equal(store.getState().openingHistory, null);
+  assert.equal(store.getState().sessionId, null);
+  invalid = true;
+  await store.getState().activateSession(sessionId);
+  assert.match(store.getState().error, /conversation_message_page_invalid/);
+  assert.equal(store.getState().openingHistory, null);
+  invalid = false;
+  otherSession = true;
+  await store.getState().activateSession(sessionId);
+  assert.match(store.getState().error, /session_projection_identity_mismatch/);
+  assert.equal(store.getState().projection, null);
+  otherSession = false;
+  earlier = true;
+  release = undefined;
+  const reopened = store.getState().activateSession(sessionId);
+  await waitUntil(() => release !== undefined);
+  release();
+  await reopened;
+  assert.deepEqual(store.getState().projection.messages, projection.messages);
+  assert.equal(store.getState().openingHistory, null);
+});
+
 test('cached navigation displays immediately and another session read cannot block it', async (t) => {
   const journal = new InMemoryCommandJournal();
   const actors = [];
@@ -1761,6 +1838,7 @@ test('cached navigation displays immediately and another session read cannot blo
     if (url.pathname === '/api/conversation/statuses') return Response.json({ ok: true, data: Object.values(projections).map((p) => ({ sessionId: p.sessionId, revision: p.revision, run: p.run })) });
     const id = decodeURIComponent(url.pathname.split('/')[4]);
     assert.ok(projections[id]);
+    if (url.pathname.endsWith('/read')) return journalPageResponse(journal, id, init);
     requests += 1;
     if (id === slowId) { readSignal = init.signal; await slow; }
     return Response.json({ ok: true, data: projections[id] });
@@ -1805,20 +1883,21 @@ test('navigation refreshes the catalog for an externally created session and pre
   const store = await loadGuiModelStore(t);
   const paths = [];
   let failCatalog = false;
-  installGuiFetch(t, async url => {
+  installGuiFetch(t, async (url, init) => {
     paths.push(url.pathname);
     if (url.pathname === '/api/conversation/catalog') {
       if (failCatalog) throw new Error('catalog read interrupted');
       return Response.json({ ok: true, data: { projects: [], sessions: [{ id: sessionId, title: 'External conversation',
         workspaceBindings: [workspaceBinding], createdAt: '2026-10-18T00:00:00Z', updatedAt: '2026-10-18T00:00:00Z' }] } });
     }
+    if (url.pathname.endsWith('/read')) return journalPageResponse(journal, sessionId, init);
     assert.match(url.pathname, /\/projection$/);
     return Response.json({ ok: true, data: projection });
   });
   await store.getState().activateSession(sessionId);
   assert.equal(store.getState().projection.sessionId, sessionId);
   assert.equal(store.getState().loading, false);
-  assert.equal(paths.length, 2);
+  assert.deepEqual(paths.map(path => path.split('/').at(-1)), ['catalog', 'read', 'projection']);
   failCatalog = true;
   await store.getState().activateSession('session:unavailable');
   assert.match(store.getState().error, /catalog read interrupted/);
@@ -3585,6 +3664,7 @@ test('invalid default profiles retain editable settings and do not prevent readi
   const catalog = { projects: [], sessions: [{ id: sessionId, title: 'Saved conversation', workspaceBindings: [workspaceBinding], profileId: profile.id,
     createdAt: '2026-09-14T00:00:00Z', updatedAt: '2026-09-14T00:00:00Z' }] };
   installGuiFetch(t, (url, init) => {
+    if (url.pathname.endsWith('/read')) return journalPageResponse(journal, sessionId, init);
     assert.equal(init.method ?? 'GET', 'GET');
     if (url.pathname === '/api/llm/profiles') return Response.json(failure);
     if (url.pathname === '/api/conversation/catalog') return Response.json({ ok: true, data: catalog });
@@ -5349,4 +5429,53 @@ test('shell search and read summaries distinguish intent from exact fs.read evid
   activity.tool.shellIntents = [{ kind: 'read', targets: ['README.md'] }];
   assert.equal(toolActivitySummary({ ...activity, status: 'completed' }, 'zh-CN'), '读取目标: README.md');
   assert.match(toolActivitySummary({ ...activity, status: 'completed', tool: { operation: 'fs.read', resources: [{ label: 'README.md' }] } }, 'zh-CN'), /已读取/);
+});
+
+test('resource watch preserves non-JSON Host failures and the status of an empty response', async t => {
+  const { watchResources } = await loadGuiModule(t, '/src/services/conversationResources.ts');
+  const reference = { workspaceId: 'workspace:errors', logicalPath: '' };
+  let body = 'upstream unavailable';
+  installGuiFetch(t, () => new Response(body, { status: 502 }));
+  const watch = () => watchResources('session:errors', [reference], new AbortController().signal, () => {});
+  await assert.rejects(watch(), /HTTP 502 upstream unavailable/);
+  body = '';
+  await assert.rejects(watch(), /HTTP 502/);
+});
+
+test('boolean settings reject wrong types and preserve native false', async t => {
+  const { useSettingsStore } = await loadGuiModule(t, '/src/state/settingsStore.ts');
+  const writes = [];
+  installGuiFetch(t, (_url, init) => {
+    const { patches } = JSON.parse(init.body);
+    writes.push(patches);
+    return Response.json({ ok: true, data: { settings: patches, changedKeys: Object.keys(patches), activation: 'immediate' } });
+  });
+  const store = useSettingsStore.getState(), key = 'gui.usageWidget.enabled';
+  await assert.rejects(store.patchUserSetting(key, 'false'), /expected a boolean/);
+  await store.patchUserSetting(key, false);
+  assert.deepEqual(writes, [{ [key]: false }]);
+});
+
+test('generated links round-trip physical file names while authored URLs retain their URI meaning', async t => {
+  const { readableResourceLinks, parseLocalTarget } = await loadGuiModule(t, '/src/components/local-agent/resourceLinks.ts');
+  const physical = [
+    ['/project/2026#2.md', { path: '/project/2026#2.md' }],
+    ['/project/draft?again.md:8:3', { path: '/project/draft?again.md', line: 8, column: 3 }],
+    ['/project/literal%23.md#L21C2', { path: '/project/literal%23.md', line: 21, column: 2 }],
+    [String.raw`C:\Work\Project\2026#2.md:12`, { path: String.raw`C:\Work\Project\2026#2.md`, line: 12, column: 1 }],
+  ];
+  const text = value => ({ type: 'text', value });
+  const elem = (tagName, value, properties = {}) => ({ type: 'element', tagName, properties, children: [text(value)] });
+  for (const [raw, expected] of physical) {
+    for (const input of [text(raw), elem('code', raw)]) {
+      const [anchor] = readableResourceLinks({ type: 'root', children: [input] }).children;
+      assert.deepEqual(parseLocalTarget(anchor.properties.href), { ...expected, absolute: true });
+      assert.equal(anchor.properties.title, raw);
+    }
+  }
+  const fileUrl = 'file:///project/literal%23.md?mode=read#build';
+  for (const input of [text(fileUrl), elem('code', fileUrl), elem('a', 'My heading', { href: fileUrl })]) {
+    const [anchor] = readableResourceLinks({ type: 'root', children: [input] }).children;
+    assert.deepEqual(parseLocalTarget(anchor.properties.href), { absolute: true, path: '/project/literal#.md', fragment: 'build' });
+  }
 });

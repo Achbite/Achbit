@@ -86,19 +86,18 @@ async fn main() {
         .iter()
         .any(|value| matches!(value.as_str(), "--help" | "-h"))
     {
-        print_help();
+        println!("{HELP}");
         return;
     }
     let args = match Args::parse(values) {
         Ok(args) => args,
         Err(error) => {
-            eprintln!("{error}");
-            print_help();
+            eprintln!("{error}\n{HELP}");
             std::process::exit(EXIT_BAD_ARGS);
         }
     };
     if matches!(args.command, Command::Help) {
-        print_help();
+        println!("{HELP}");
         return;
     }
     if matches!(args.command, Command::GuiAttach)
@@ -370,7 +369,7 @@ impl Args {
             Some("show") => Command::Show,
             Some("read") => {
                 if positional.len() != 1 || session_id.is_none() {
-                    return Err("用法：read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50]".into());
+                    return Err("用法：read --session <id> [--view summary|messages|tools|plans|context|reasoning|images] [--before <sequence>] [--limit 1..50]".into());
                 }
                 Command::Read {
                     query: Value::Object(read_query.clone()),
@@ -1532,14 +1531,17 @@ fn new_id(kind: &str) -> String {
     format!("{kind}:{}:{clock:x}:{sequence:x}", std::process::id())
 }
 
-fn print_help() {
-    println!("插件：plugins list/status [id|installed-path] | capabilities | guide plugins/ui | template cli/service/ui/guidance | inspect/install <path> | update <id|installed-path> <path> | enable/disable/remove <id|installed-path>\n管理使用当前 Host；安装后通过 plugin.search 与 plugin.activate 在同一轮后续步骤使用工具。\n配置：instance | services | connections list/set/remove | models list/set/remove/default/probe\nset 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。\n模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days]\nusage 按位置填写连接和天数；省略时查询全部连接最近 30 天，天数范围为 1 至 366。\n示例：achbit-cli usage all 7（全部连接最近 7 天）。\nask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。");
-    println!(
-        r#"配置 JSON：models set 的 --input 是完整 profile 对象；connections set 是 {{"connection":{{...}},"profile":{{...}}}}（profile 可选）。先用 models list/connections list 读取当前字段，修改后通过 set 保存。
-密钥只通过 --api-key-file <文件|-> 提供。models probe <profile-id> 发起真实请求，失败返回非零退出码。help/-h/--help 无需连接 Host。"#
-    );
-    println!(
-        r#"Achbit 本地编码 Agent
+const HELP: &str = r#"插件：plugins list/status [id|installed-path] | capabilities | guide plugins/ui | template cli/service/ui/guidance | inspect/install <path> | update <id|installed-path> <path> | enable/disable/remove <id|installed-path>
+管理使用当前 Host；安装后通过 plugin.search 与 plugin.activate 在同一轮后续步骤使用工具。
+配置：instance | services | connections list/set/remove | models list/set/remove/default/probe
+set 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。
+模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days]
+usage 按位置填写连接和天数；省略时查询全部连接最近 30 天，天数范围为 1 至 366。
+示例：achbit-cli usage all 7（全部连接最近 7 天）。
+ask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。
+配置 JSON：models set 的 --input 是完整 profile 对象；connections set 是 {"connection":{...},"profile":{...}}（profile 可选）。先用 models list/connections list 读取当前字段，修改后通过 set 保存。
+密钥只通过 --api-key-file <文件|-> 提供。models probe <profile-id> 发起真实请求，失败返回非零退出码。help/-h/--help 无需连接 Host。
+Achbit 本地编码 Agent
 
 用法：
   achbit-cli ask [-C <workspace>] [--session <id>] [--file <path>]... [--directory <path>]... [--plugin <plugin://uri>]... [--plain] <message-or-response>
@@ -1548,7 +1550,7 @@ fn print_help() {
   achbit-cli new [-C <workspace>]
   achbit-cli resume <完整 session: ID>
   achbit-cli show --session <id>
-  achbit-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
+  achbit-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning|images] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
   achbit-cli cancel-plan --session <id>
   achbit-cli cancel --session <id> <run-id>
   achbit-cli attach-directory --session <id> <path>
@@ -1566,9 +1568,7 @@ chat 普通文本随时发送，运行中按序排队；/reply 1 确认计划，
 权限请求提供时，/reply 3 本轮允许相同命令，/reply 4 本轮允许 Host Shell。/permissions <JSON> 修改当前任务权限；/revoke <authority-id> 撤销本轮授权。
 文件与目录引用只在 ask 中显式选择；--file 与 --directory 均可重复。图片以视觉内容发送给支持图片的模型，其他文件保留只读引用。
 ask/chat 创建新会话时支持 --recipe <JSON 文件> 选择模型、Loop 组件、权限策略和 Sandbox 后端。
-ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现并加载已启用插件。PDF 文件需要已配置且支持 PDF 的 Skill。chat 使用 @ 选择下一次请求的插件，/focus <task> 开始任务，/plan <任务> 先提交计划，确认后执行本次任务。"#,
-    );
-}
+ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现并加载已启用插件。PDF 文件需要已配置且支持 PDF 的 Skill。chat 使用 @ 选择下一次请求的插件，/focus <task> 开始任务，/plan <任务> 先提交计划，确认后执行本次任务。"#;
 
 #[cfg(test)]
 mod tests {

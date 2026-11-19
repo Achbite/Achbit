@@ -2,6 +2,7 @@
 
 mod api_response;
 mod artifact_resources;
+mod attachment_image;
 mod command_denylist;
 mod config_root_lease;
 mod config_setup;

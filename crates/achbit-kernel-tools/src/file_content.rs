@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{self, Read};
 use std::path::Path;
 
 pub const MAX_LLM_TEXT_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -50,7 +51,28 @@ pub struct FileContentSkip {
 }
 
 pub fn read_text_file_for_llm(path: &Path) -> Result<SafeTextFile, FileContentSkip> {
-    let metadata = match fs::metadata(path) {
+    // Check the path before opening so ordinary special files are not opened for reading.
+    let initial = text_file_metadata(path, fs::metadata(path))?;
+    let file = fs::File::open(path).map_err(|error| {
+        skip(
+            path,
+            initial.len(),
+            executable_bit(&initial),
+            "read_failed",
+            format!("read {}: {error}", path.display()),
+            lower_extension(path),
+            None,
+        )
+    })?;
+    let metadata = text_file_metadata(path, file.metadata())?;
+    read_opened_text_file(path, &file, &metadata)
+}
+
+fn text_file_metadata(
+    path: &Path,
+    metadata: io::Result<fs::Metadata>,
+) -> Result<fs::Metadata, FileContentSkip> {
+    let metadata = match metadata {
         Ok(metadata) => metadata,
         Err(error) => {
             return Err(skip(
@@ -75,10 +97,8 @@ pub fn read_text_file_for_llm(path: &Path) -> Result<SafeTextFile, FileContentSk
             None,
         ));
     }
-
     let executable = executable_bit(&metadata);
-    let extension = lower_extension(path);
-    if let Some(extension) = extension.as_deref() {
+    if let Some(extension) = lower_extension(path).as_deref() {
         if binary_extension(extension) {
             return Err(skip(
                 path,
@@ -96,40 +116,60 @@ pub fn read_text_file_for_llm(path: &Path) -> Result<SafeTextFile, FileContentSk
     }
 
     if metadata.len() > MAX_LLM_TEXT_FILE_BYTES {
-        return Err(skip(
-            path,
-            metadata.len(),
-            executable,
-            "too_large",
-            format!(
-                "{} is larger than the Kernel text read limit of {} bytes",
-                path.display(),
-                MAX_LLM_TEXT_FILE_BYTES
-            ),
-            extension,
-            None,
-        ));
+        return Err(too_large(path, metadata.len(), executable));
     }
+    Ok(metadata)
+}
 
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(skip(
+fn too_large(path: &Path, size: u64, executable: bool) -> FileContentSkip {
+    skip(
+        path,
+        size,
+        executable,
+        "too_large",
+        format!(
+            "{} is larger than the Kernel text read limit of {} bytes",
+            path.display(),
+            MAX_LLM_TEXT_FILE_BYTES
+        ),
+        None,
+        None,
+    )
+}
+
+fn read_opened_text_file(
+    path: &Path,
+    file: &fs::File,
+    metadata: &fs::Metadata,
+) -> Result<SafeTextFile, FileContentSkip> {
+    let executable = executable_bit(metadata);
+    let extension = lower_extension(path);
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_LLM_TEXT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            skip(
                 path,
                 metadata.len(),
                 executable,
                 "read_failed",
                 format!("read {}: {error}", path.display()),
-                extension,
+                extension.clone(),
                 None,
-            ));
-        }
-    };
+            )
+        })?;
+    let observed = bytes.len() as u64;
+    if observed > MAX_LLM_TEXT_FILE_BYTES {
+        let size = file
+            .metadata()
+            .map_or(observed, |fresh| fresh.len().max(observed));
+        return Err(too_large(path, size, executable));
+    }
 
     if let Some(magic) = binary_magic(&bytes) {
         return Err(skip(
             path,
-            metadata.len(),
+            observed,
             executable,
             "binary_magic",
             format!("{} is binary content ({magic})", path.display()),
@@ -141,7 +181,7 @@ pub fn read_text_file_for_llm(path: &Path) -> Result<SafeTextFile, FileContentSk
     if bytes.contains(&0) {
         return Err(skip(
             path,
-            metadata.len(),
+            observed,
             executable,
             "binary_content",
             format!("{} contains NUL bytes", path.display()),
@@ -153,7 +193,7 @@ pub fn read_text_file_for_llm(path: &Path) -> Result<SafeTextFile, FileContentSk
     if has_high_control_byte_ratio(&bytes) {
         return Err(skip(
             path,
-            metadata.len(),
+            observed,
             executable,
             "binary_content",
             format!(
@@ -170,7 +210,7 @@ pub fn read_text_file_for_llm(path: &Path) -> Result<SafeTextFile, FileContentSk
         Err(error) => {
             return Err(skip(
                 path,
-                metadata.len(),
+                observed,
                 executable,
                 "invalid_utf8",
                 format!("{} is not valid UTF-8 text: {error}", path.display()),
@@ -195,7 +235,7 @@ pub fn read_text_file_for_llm(path: &Path) -> Result<SafeTextFile, FileContentSk
             readable_text: true,
             binary: false,
             executable,
-            size_bytes: metadata.len(),
+            size_bytes: observed,
             extension,
             magic: None,
             reason: None,
@@ -432,6 +472,37 @@ mod tests {
         let path = root.join(name);
         fs::write(&path, content).expect("write temp file");
         TempFileFixture { root, path }
+    }
+
+    #[test]
+    fn growing_file_consumes_only_the_text_window_and_preserves_the_size_error() {
+        use std::io::{Seek, Write};
+
+        let fixture = temp_file("growing.txt", b"start");
+        let mut file = fs::File::open(fixture.path()).unwrap();
+        let before = file.metadata().unwrap();
+        let mut writer = fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.path())
+            .unwrap();
+        io::copy(
+            &mut io::repeat(b'a').take(MAX_LLM_TEXT_FILE_BYTES - before.len()),
+            &mut writer,
+        )
+        .unwrap();
+        let exact = read_opened_text_file(fixture.path(), &file, &before).unwrap();
+        assert_eq!(exact.content.len() as u64, MAX_LLM_TEXT_FILE_BYTES);
+        assert_eq!(exact.classification.size_bytes, MAX_LLM_TEXT_FILE_BYTES);
+
+        writer.write_all(b"more bytes after the limit").unwrap();
+        file.rewind().unwrap();
+        let error = read_opened_text_file(fixture.path(), &file, &before).unwrap_err();
+        assert_eq!(error.reason, "too_large");
+        assert_eq!(
+            error.classification.size_bytes,
+            writer.metadata().unwrap().len()
+        );
+        assert_eq!(file.stream_position().unwrap(), MAX_LLM_TEXT_FILE_BYTES + 1);
     }
 
     #[test]

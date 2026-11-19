@@ -1,4 +1,5 @@
 use crate::app::TuiApp;
+use crate::document::Document;
 use crate::i18n::Language;
 use achbit_kernel_client::{
     ActivityProjection, AssistantDraftProjection, ContextCompositionProjection,
@@ -40,8 +41,7 @@ struct TranscriptKey {
 #[derive(Clone)]
 struct TranscriptCache {
     key: TranscriptKey,
-    paragraph: Paragraph<'static>,
-    line_count: usize,
+    document: Document<'static>,
 }
 
 impl Default for Renderer {
@@ -594,9 +594,17 @@ pub(crate) fn tool_details(
     text
 }
 
-fn multiline_text(lines: Vec<Line<'_>>) -> Text<'static> {
-    let mut result = Vec::new();
+fn multiline_text(lines: Vec<Line<'static>>) -> Text<'static> {
+    let has_newline = |line: &Line<'_>| line.spans.iter().any(|span| span.content.contains('\n'));
+    if !lines.iter().any(has_newline) {
+        return Text::from(lines);
+    }
+    let mut result = Vec::with_capacity(lines.len());
     for line in lines {
+        if !has_newline(&line) {
+            result.push(line);
+            continue;
+        }
         let mut current = Line::default().style(line.style);
         for span in line.spans {
             for (index, part) in span.content.split('\n').enumerate() {
@@ -823,24 +831,17 @@ mod layout_tests {
 
     #[test]
     fn transcript_preserves_newlines_and_scrolls_wrapped_rows() {
-        let paragraph =
-            Paragraph::new(Text::raw("abcdefghijklmnop\n最终正文")).wrap(Wrap { trim: false });
-        assert_eq!(paragraph.line_count(8), 3);
-        let mut terminal = Terminal::new(TestBackend::new(8, 1)).unwrap();
-        terminal
-            .draw(|frame| frame.render_widget(paragraph.clone().scroll((2, 0)), frame.area()))
-            .unwrap();
-        assert!(format!("{:?}", terminal.backend().buffer()).contains("最终正文"));
-        let short = Paragraph::new(Text::raw("短行\n\n第二段\n末行"));
-        assert_eq!(
-            short.line_count(80),
-            4,
-            "explicit newlines must survive even when no wrapping is needed"
-        );
-        terminal
-            .draw(|frame| frame.render_widget(short.clone().scroll((2, 0)), frame.area()))
-            .unwrap();
-        assert!(format!("{:?}", terminal.backend().buffer()).contains("第二段"));
+        for (content, expected) in [
+            ("abcdefghijklmnop\n最终正文", "最终正文"),
+            ("短行\n\n第二段\n末行", "第二段"),
+        ] {
+            let document = Document::new(Text::raw(content), 8);
+            let mut terminal = Terminal::new(TestBackend::new(8, 1)).unwrap();
+            terminal
+                .draw(|frame| document.draw(frame, frame.area(), 2))
+                .unwrap();
+            assert!(format!("{:?}", terminal.backend().buffer()).contains(expected));
+        }
     }
 }
 
@@ -874,7 +875,9 @@ impl Renderer {
             ])
             .split(area);
         self.draw_header(frame, rows[0], app);
-        if app.context_open() {
+        if let Some(message) = app.startup_message.as_deref() {
+            frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), rows[1]);
+        } else if app.context_open() {
             self.draw_context(frame, rows[1], app);
         } else if app.resource_preview().is_some() || app.detail_preview().is_some() {
             self.draw_resource(frame, rows[1], app);
@@ -903,7 +906,7 @@ impl Renderer {
             );
         }
         self.draw_input(frame, rows[4], app);
-        if app.command_picker_open() {
+        if app.initialized() && app.command_picker_open() {
             self.draw_command_picker(frame, rows[1], app);
         }
         if app.plugin_picker_open() {
@@ -1098,8 +1101,8 @@ impl Renderer {
         }
         if app.session_picker_open() {
             output.push_str(&format!("{}\n", app.language().text("tui.sessionsTitle")));
-            let entries = app.session_picker_entries();
-            if entries.is_empty() {
+            let entries = app.session_picker_entries(usize::MAX);
+            if entries.len() == 0 {
                 output.push_str(app.language().text("tui.sessionsEmpty"));
                 output.push('\n');
             }
@@ -1362,19 +1365,17 @@ impl Renderer {
             .title_style(Style::default())
             .title(title);
         let body = block.inner(area);
-        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-        let maximum = paragraph
-            .line_count(body.width)
-            .saturating_sub(usize::from(body.height));
+        let document = Document::new(text, body.width);
+        let maximum = document.maximum(body.height);
         let offset = app.detail_offset(maximum, body.height);
         frame.render_widget(block, area);
-        frame.render_widget(paragraph.scroll((offset, 0)), body);
+        document.draw(frame, body, offset);
         if maximum > 0 && body.height > 0 && area.width > 0 {
             draw_scrollbar(
                 frame,
                 Rect::new(area.right() - 1, body.y, 1, body.height),
                 maximum,
-                usize::from(offset),
+                offset,
             );
         }
     }
@@ -1446,22 +1447,14 @@ impl Renderer {
         };
         let mut cache = self.transcript.borrow_mut();
         if cache.as_ref().is_none_or(|cache| cache.key != key) {
-            let paragraph =
-                Paragraph::new(self.transcript_text(body, app)).wrap(Wrap { trim: false });
-            let line_count = paragraph.line_count(body.width);
-            *cache = Some(TranscriptCache {
-                key,
-                paragraph,
-                line_count,
-            });
+            let document = Document::new(self.transcript_text(body, app), body.width);
+            *cache = Some(TranscriptCache { key, document });
         }
-        let cache = cache.as_mut().unwrap();
-        let maximum = cache.line_count.saturating_sub(usize::from(body.height));
+        let document = &cache.as_ref().unwrap().document;
+        let maximum = document.maximum(body.height);
         app.set_viewport_height(body.height);
         let offset = app.transcript_offset(maximum);
-        cache.paragraph =
-            std::mem::take(&mut cache.paragraph).scroll((offset.min(u16::MAX as usize) as u16, 0));
-        frame.render_widget(&cache.paragraph, body);
+        document.draw(frame, body, offset);
         if maximum > 0 {
             draw_scrollbar(frame, area, maximum, offset);
         }
@@ -1650,7 +1643,14 @@ impl Renderer {
                 &[format!("{}", selected_plugins.join(", "))],
             ));
         }
-        let title = clipped(&title, area.width.saturating_sub(2));
+        let title = if app.initialized() {
+            clipped(&title, area.width.saturating_sub(2))
+        } else {
+            clipped(
+                language.text("tui.startupDraft"),
+                area.width.saturating_sub(2),
+            )
+        };
         let block = Block::default()
             .borders(Borders::TOP)
             // Preserve the editor's wrap width and cursor geometry without an enclosing box.
@@ -1767,21 +1767,13 @@ impl Renderer {
     }
 
     fn draw_session_picker(&self, frame: &mut Frame<'_>, area: Rect, app: &TuiApp) {
-        let entries = app.session_picker_entries();
         let visible = usize::from(area.height.saturating_sub(2)).max(1);
-        let selected = entries
-            .iter()
-            .position(|(_, selected)| *selected)
-            .unwrap_or(0);
-        let start = selected.saturating_sub(visible - 1);
-        let mut lines: Vec<Line<'_>> = entries
-            .iter()
-            .skip(start)
-            .take(visible)
+        let mut lines: Vec<Line<'_>> = app
+            .session_picker_entries(visible)
             .map(|(label, selected)| {
                 Line::from(Span::styled(
-                    format!("{} {label}", if *selected { ">" } else { " " }),
-                    picker_style(*selected),
+                    format!("{} {label}", if selected { ">" } else { " " }),
+                    picker_style(selected),
                 ))
             })
             .collect();

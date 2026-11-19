@@ -186,7 +186,7 @@ class Workflow:
         container_pid = self.container_path(pid_file)
         command = ['docker', 'exec', '-w', self.workdir]
         for name, value in (environment or {}).items():
-            command += ['-e', f'{name}={value}']
+            command += ['-e', name if value is None else f'{name}={value}']
         command += [self.container, 'setsid', '--wait', 'bash', '-c',
                     'export PATH="/usr/local/cargo/bin:/root/.local/share/pnpm:$PATH"; '
                     'printf "%s\n" "$$" > "$1"; shift; exec "$@"', 'bash', container_pid, *args]
@@ -319,6 +319,9 @@ class Workflow:
     def build(self, stages):
         environment = {'ACHBIT_BUILD_COMMIT': self.git('rev-parse', 'HEAD'),
                        'ACHBIT_OUTPUT_DIR': self.container_path(self.output / 'bin')}
+        if 'package-windows' in stages and 'ACHBIT_WINDOWS_TIMESTAMP_URL' in os.environ:
+            # Docker inherits the value by name, keeping the service URL out of release logs.
+            environment['ACHBIT_WINDOWS_TIMESTAMP_URL'] = None
         runtime = os.environ.get('ACHBIT_APPIMAGE_RUNTIME')
         if runtime:
             environment['ACHBIT_APPIMAGE_RUNTIME'] = self.container_path(Path(runtime).resolve())

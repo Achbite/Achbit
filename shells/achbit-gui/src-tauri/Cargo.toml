@@ -2,7 +2,7 @@
 
 [package]
 name = "achbit-gui-tauri-shell"
-version = "0.7.85"
+version = "0.7.86"
 edition = "2021"
 license = "MIT"
 rust-version = "1.86"
@@ -33,9 +33,9 @@ rodio = { version = "0.20", default-features = false, features = ["wav"] }
 tempfile = "3"
 flate2 = "1"
 tar = "0.4"
-keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 dunce = "1"
 base64 = "0.22"
 image = { version = "=0.25.6", default-features = false, features = ["png", "jpeg"] }
@@ -50,6 +50,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc2 = "0.6"
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGWindow", "CGImage", "CGGeometry"], optional = true }
 block2 = "0.6"
@@ -58,6 +59,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSData", "NSDictionary", "NSError", "NSBundle"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 gtk = "0.18"
 webkit2gtk = "=2.0.2"
 

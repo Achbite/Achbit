@@ -3,7 +3,9 @@ use crate::local_agent_kernel::{
     PermissionMode, PrepareToolCatalogRequest, ReleaseToolCatalogRequest, WorkspaceResolverPort,
 };
 use crate::local_agent_provider_runtime::{ProviderRuntimeRegistry, ProviderRuntimeSnapshot};
-use crate::local_agent_store::{LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime};
+use crate::local_agent_store::{
+    JournalEventPublication, LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime,
+};
 use crate::prelude::*;
 use crate::*;
 use achbit_kernel_runtime::executors::web_search_availability;
@@ -479,33 +481,37 @@ impl LocalAgentRuntime {
             let facts = environment.as_object_mut().expect("prepared environment");
             facts.remove("primaryWorkspaceDirectory");
             facts.remove("sessionWorkdirId");
-            if coding_context {
-                let catalog = &gui.conversation_catalog;
-                let bindings = catalog
-                    .session(&request.session_id)
-                    .map_or(&[][..], |session| session.workspace_bindings.as_slice());
-                let workdir = catalog.session_workdir(&request.session_id);
-                if let Some(implicit) = workdir.filter(|dir| {
-                    !bindings
-                        .iter()
-                        .any(|binding| binding.workspace_id == dir.workspace_id)
-                }) {
-                    environment["sessionWorkdirId"] = json!(implicit.workspace_id);
-                }
-                let primary = bindings
-                    .first()
-                    .and_then(|binding| catalog.workspace(&binding.workspace_id))
-                    .or(workdir);
-                if let Some(workspace) =
-                    primary.filter(|_| environment["executionTarget"]["kind"] == "native")
-                {
-                    let path = achbit_kernel_runtime::file_access::process_visible_path(
-                        std::path::Path::new(&workspace.canonical_root),
-                    );
-                    environment["primaryWorkspaceDirectory"] = json!({
-                        "workspaceId": workspace.workspace_id, "path": path,
-                    });
-                }
+            let catalog = &gui.conversation_catalog;
+            let bindings = catalog
+                .session(&request.session_id)
+                .map_or(&[][..], |session| session.workspace_bindings.as_slice());
+            // Full context exposes an explicitly bound native directory. Only coding
+            // context also describes an implicit session workdir.
+            let workdir = if coding_context {
+                catalog.session_workdir(&request.session_id)
+            } else {
+                None
+            };
+            if let Some(implicit) = workdir.filter(|dir| {
+                !bindings
+                    .iter()
+                    .any(|binding| binding.workspace_id == dir.workspace_id)
+            }) {
+                environment["sessionWorkdirId"] = json!(implicit.workspace_id);
+            }
+            let primary = bindings
+                .first()
+                .and_then(|binding| catalog.workspace(&binding.workspace_id))
+                .or(workdir);
+            if let Some(workspace) =
+                primary.filter(|_| environment["executionTarget"]["kind"] == "native")
+            {
+                let path = achbit_kernel_runtime::file_access::process_visible_path(
+                    std::path::Path::new(&workspace.canonical_root),
+                );
+                environment["primaryWorkspaceDirectory"] = json!({
+                    "workspaceId": workspace.workspace_id, "path": path,
+                });
             }
         }
         executor_config.sandbox_backend =
@@ -1490,6 +1496,19 @@ pub(crate) async fn local_agent_events_append_batch(
     }
 }
 
+pub(crate) async fn local_agent_history_version(
+    ReadyState(state): ReadyState,
+    headers: HeaderMap,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.journal.history_version() {
+        Ok(version) => ApiResponse::ok(json!(version)),
+        Err(error) => store_error(error),
+    }
+}
+
 pub(crate) async fn local_agent_events_read(
     ReadyState(state): ReadyState,
     headers: HeaderMap,
@@ -1499,11 +1518,46 @@ pub(crate) async fn local_agent_events_read(
     if let Err(response) = require_session_service(&state, &headers) {
         return response.into_response();
     }
-    match state
-        .local_agent
-        .journal
-        .read_events_publication(&session_id, query.after.unwrap_or(0))
-    {
+    journal_read_response(
+        &headers,
+        state
+            .local_agent
+            .journal
+            .read_events_publication(&session_id, query.after.unwrap_or(0)),
+    )
+}
+
+pub(crate) async fn local_agent_message_history(
+    ReadyState(state): ReadyState,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response.into_response();
+    }
+    journal_read_response(
+        &headers,
+        state.local_agent.journal.read_message_history(&session_id),
+    )
+}
+
+fn journal_read_response(
+    headers: &HeaderMap,
+    publication: Result<JournalEventPublication, LocalAgentStoreError>,
+) -> Response {
+    match publication {
+        Ok(events)
+            if headers
+                .get(axum::http::header::ACCEPT)
+                .and_then(|h| h.to_str().ok())
+                .is_some_and(|accept| {
+                    accept
+                        .split(',')
+                        .any(|item| item.trim().eq_ignore_ascii_case("application/json-seq"))
+                }) =>
+        {
+            journal_sequence_response(events)
+        }
         Ok(events) => Json(ApiResponse {
             ok: true,
             data: Some(events),
@@ -1513,6 +1567,42 @@ pub(crate) async fn local_agent_events_read(
         .into_response(),
         Err(error) => store_error(error).into_response(),
     }
+}
+
+fn journal_sequence_response(publication: JournalEventPublication) -> Response {
+    // All rows and permissions have been read successfully and the SQLite
+    // statement is closed before a slow client can apply backpressure.
+    let stream = async_stream::stream! {
+        let count = publication.value.len();
+        let mut chunk = Vec::new();
+        for event in publication.value {
+            if let Err(error) = append_json_record(&mut chunk, &event) {
+                yield Err(error);
+                return;
+            }
+            if chunk.len() >= 64 * 1024 {
+                yield Ok(bytes::Bytes::from(std::mem::take(&mut chunk)));
+            }
+        }
+        let mut receipt = json!({"count":count,"permissions":publication.permissions});
+        if let Some(revision) = publication.revision { receipt["revision"] = json!(revision); }
+        yield append_json_record(&mut chunk, &receipt).map(|()| bytes::Bytes::from(chunk));
+    };
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json-seq")],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+fn append_json_record(
+    chunk: &mut Vec<u8>,
+    value: &impl serde::Serialize,
+) -> serde_json::Result<()> {
+    chunk.push(0x1e);
+    serde_json::to_writer(&mut *chunk, value)?;
+    chunk.push(b'\n');
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1537,6 +1627,26 @@ pub(crate) async fn local_agent_resources_read(
         .read_resources(&session_id, &body.record_ids)
     {
         Ok(read) => ApiResponse::ok(read),
+        Err(error) => store_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RunLifecyclesRequest {
+    cursors: Vec<crate::local_agent_store::RunLifecycleCursor>,
+}
+
+pub(crate) async fn local_agent_run_lifecycles_read(
+    ReadyState(state): ReadyState,
+    headers: HeaderMap,
+    Json(body): Json<RunLifecyclesRequest>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match state.local_agent.journal.read_run_lifecycles(&body.cursors) {
+        Ok(reads) => ApiResponse::ok(json!(reads)),
         Err(error) => store_error(error),
     }
 }
@@ -1999,7 +2109,9 @@ pub(crate) async fn local_agent_provider_stream(
         &body.session_id,
         &mut request_envelope.messages,
         runtime.profile().image_input,
-    ) {
+    )
+    .await
+    {
         return local_provider_error(&request_id, "provider_image_input_failed", &error);
     }
     if let Err(error) = crate::conversation_api::resolve_provider_files(
@@ -2522,6 +2634,52 @@ fn random_service_token() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn journal_sequence_finishes_one_snapshot_with_permissions_and_unblocks_new_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.sqlite3");
+        let journal = LocalAgentJournal::open(&path).unwrap();
+        let id = "session:sequence";
+        journal
+            .create_session(id, "Snapshot", &json!([]), None, None)
+            .unwrap();
+        let event = json!({"type":"message.committed","sessionId":id,"payload":{
+            "role":"user","messageId":"message:start","content":"a\n\u{1e}汉🦉".repeat(16_384)}});
+        journal.append(&event).unwrap();
+        let external = rusqlite::Connection::open(&path).unwrap();
+        external
+            .execute(
+                "UPDATE session_events SET payload_json=?1 WHERE sequence=2",
+                [serde_json::to_string_pretty(&event["payload"]).unwrap()],
+            )
+            .unwrap();
+        let publication = journal.read_events_publication(id, 0).unwrap();
+        let expected = serde_json::to_value(&publication).unwrap();
+        let response = journal_sequence_response(publication);
+        assert_eq!(response.headers()["content-type"], "application/json-seq");
+        journal
+            .append(&json!({"type":"message.committed","sessionId":id,
+            "payload":{"role":"user","messageId":"message:later","content":"later"}}))
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body[0], 0x1e);
+        let mut records: Vec<Value> = body[1..]
+            .split(|byte| *byte == 0x1e)
+            .map(|frame| {
+                assert_eq!(frame.last(), Some(&b'\n'));
+                serde_json::from_slice(frame).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            records.pop().unwrap(),
+            json!({"count":2,"permissions":expected["permissions"]})
+        );
+        assert_eq!(json!(records), expected["value"]);
+        assert_eq!(journal.read_events(id, 0).unwrap().len(), 3);
+    }
 
     #[test]
     fn subagent_settings_capture_validates_and_owns_the_run_copy() {
