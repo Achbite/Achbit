@@ -31,11 +31,10 @@ if (-not $Remove) {
     }
 }
 
-# Read and write PATH without NSIS's string-length limit or expanding other entries.
 $environment = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
 try {
-    $current = $environment.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-    $entries = @($current -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ine $programRoot.TrimEnd('\') })
-    if (-not $Remove) { $entries += $programRoot }
-    $environment.SetValue('Path', ($entries -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    $installation = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Achbit')
+    try {
+        & (Join-Path $PSScriptRoot 'windows-command-path.ps1') $environment $installation $programRoot -Remove:$Remove
+    } finally { $installation.Dispose() }
 } finally { $environment.Dispose() }

@@ -66,8 +66,14 @@ class UiUpdateTests(unittest.TestCase):
         app = self.package / "Achbit.app"
         target = app / "Contents/Resources/web-achbit-gui"
         write(target, "index.html", b"previous app resources")
+        write(app, "Contents/_CodeSignature/CodeResources", b"original resource seal")
+        write(app, "Contents/MacOS/Achbit", b"original signed executable")
         before = files(app)
-        with patch.object(updater, "sign_app", side_effect=[OSError("signing failed"), None]):
+        def fail_after_writing(staged_app, identity):
+            write(staged_app, "Contents/_CodeSignature/CodeResources", b"partial new seal")
+            write(staged_app, "Contents/MacOS/Achbit", b"partial new executable signature")
+            raise OSError("signing failed")
+        with patch.object(updater, "sign_app", side_effect=fail_after_writing):
             with self.assertRaisesRegex(OSError, "signing failed"):
                 updater.replace_ui(self.assets, target, app)
         self.assertEqual(files(app), before)

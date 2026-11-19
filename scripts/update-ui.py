@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-from macos_signing import require_same_identity, sign_app, signing_identity
+from macos_signing import require_same_identity, sign_app, signing_identity, staged_app_update
 
 
 def replace_ui(source, target, app=None):
@@ -16,12 +16,20 @@ def replace_ui(source, target, app=None):
         raise ValueError(f'GUI index.html is missing: {source}')
     if source == target or source in target.parents or target in source.parents:
         raise ValueError('UI source and destination must be separate directories.')
-    identity = signing_identity() if app else None
     if app:
-        require_same_identity(app, identity)
+        app = app.resolve()
+        identity = signing_identity()
+        with staged_app_update(app) as staged:
+            require_same_identity(staged, identity)
+            staged_ui = staged / target.relative_to(app)
+            if staged_ui.exists():
+                shutil.rmtree(staged_ui)
+            shutil.copytree(source, staged_ui)
+            sign_app(staged, identity)
+        print(f'GUI resources published: {target}')
+        return
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Keep staging outside the App resource seal.
-    scratch = Path(tempfile.mkdtemp(prefix='.ui-update-', dir=app.parent if app else target.parent))
+    scratch = Path(tempfile.mkdtemp(prefix='.ui-update-', dir=target.parent))
     next_ui, previous = scratch / 'next', scratch / 'previous'
     installed = False
     try:
@@ -30,15 +38,11 @@ def replace_ui(source, target, app=None):
             target.rename(previous)
         next_ui.rename(target)
         installed = True
-        if app:
-            sign_app(app, identity)
     except BaseException:
         if installed:
             shutil.rmtree(target)
         if previous.exists():
             previous.rename(target)
-            if app:
-                sign_app(app, identity)
         raise
     else:
         if previous.exists():

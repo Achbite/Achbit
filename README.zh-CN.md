@@ -118,7 +118,9 @@ make shell
 
 `make shell` 会在进入容器前自动检查并更新开发镜像。Dockerfile、入口脚本或镜像构建参数发生变化时，Docker 仅重建受影响的层，其余层直接复用缓存，无需另记镜像更新命令。
 
-Windows 和 Linux 跳过签名命令。在容器内执行以下命令。
+制作 Windows x64 标准 ZIP 和安装包时，先在宿主机准备一次[Windows 自签身份](docs/development.md#windows-authenticode-signing)，再进入容器。Mac、Linux 和 Windows 的 WSL2 均可复用同一份仓库外身份。
+
+在容器内执行以下命令。
 
 ```sh
 bash ./build.sh           # 生成开发宿主平台的可运行程序

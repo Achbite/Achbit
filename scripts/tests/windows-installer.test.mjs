@@ -94,3 +94,63 @@ test('an invalid manifest entry is rejected before touching the installation', o
   assert.match(readFileSync(f.errorLog, 'utf8'), /Invalid program entry/);
   assert.equal(readFileSync(join(f.destination, 'Achbit.exe'), 'utf8'), 'untouched application');
 });
+
+test('Windows PATH registers terminal commands and preserves entries owned by the user', options, () => {
+  const commandPath = join(repository, 'scripts', 'installers', 'windows-command-path.ps1');
+  // Exercise the production registry operation in a private HKCU subtree.
+  const run = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', String.raw`
+    $ErrorActionPreference = 'Stop'
+    $registry = [Microsoft.Win32.Registry]::CurrentUser
+    $name = 'Software\Achbit-Installer-Test-' + [Guid]::NewGuid().ToString('N')
+    $envKey = $registry.CreateSubKey($name + '\Environment')
+    $installKey = $registry.CreateSubKey($name + '\Installation')
+    $root = 'C:\Fixture\Installed App'
+    $commands = Join-Path $root 'libexec\commands'
+    $original = 'C:\Other;;%USERPROFILE%\tools'
+    $snapshots = [ordered]@{}
+    function Record($name) {
+      $snapshots[$name] = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    }
+    try {
+      $envKey.SetValue('Path', $original, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root
+      Record 'install'
+      $installKey.SetValue('InstallDir', $root)
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root
+      Record 'repeat'
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root -Remove
+      Record 'uninstall'
+      $installKey.DeleteValue('CommandPath', $false)
+      $envKey.SetValue('Path', "$original;$root", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root
+      Record 'upgrade'
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root -Remove
+      $installKey.DeleteValue('InstallDir')
+      $envKey.SetValue('Path', "$original;$commands", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root
+      $installKey.SetValue('InstallDir', $root)
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root -Remove
+      Record 'preexisting'
+      $installKey.DeleteValue('InstallDir')
+      $envKey.SetValue('Path', "$root;$original", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root
+      Record 'manualRoot'
+      $installKey.SetValue('InstallDir', $root)
+      & $env:ACHBIT_TEST_PATH_SCRIPT $envKey $installKey $root -Remove
+      Record 'manualRootUninstall'
+      $snapshots | ConvertTo-Json -Compress
+    } finally {
+      $envKey.Close()
+      $installKey.Close()
+      $registry.DeleteSubKeyTree($name)
+    }`], { env: { ...process.env, ACHBIT_TEST_PATH_SCRIPT: commandPath }, encoding: 'utf8', timeout: 30_000 });
+  assert.equal(run.status, 0, run.stderr);
+  const root = 'C:\\Fixture\\Installed App';
+  const original = 'C:\\Other;;%USERPROFILE%\\tools';
+  const commands = root + '\\libexec\\commands';
+  assert.deepEqual(JSON.parse(run.stdout), {
+    install: original + ';' + commands, repeat: original + ';' + commands, uninstall: original,
+    upgrade: original + ';' + commands, preexisting: original + ';' + commands,
+    manualRoot: commands + ';' + root + ';' + original, manualRootUninstall: root + ';' + original
+  });
+});

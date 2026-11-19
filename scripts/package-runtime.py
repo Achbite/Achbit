@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Assemble runtime resources and publish owned program files, preserving user data."""
 import argparse
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -12,8 +13,10 @@ import tarfile
 import tempfile
 import zipfile
 
+import windows_signing
+
 from version import build_version
-from macos_signing import require_same_identity, sign_app, signing_identity
+from macos_signing import app_update_lock, require_same_identity, sign_app, signing_identity
 from computer_use_package import assemble as assemble_computer_use, APP_NAME as COMPUTER_USE_APP
 
 # The GUI Host resolves this name next to Achbit.exe.
@@ -116,7 +119,7 @@ def tui_fonts(root, target):
             destination.write_bytes(archive.read(name))
 
 
-def assemble(args):
+def assemble(args, windows_identity=None):
     root, stage = args.root, args.stage
     debug = os.environ.get('ACHBIT_BUILD_KIND', 'normal') == 'debug'
     version = build_version(root)
@@ -141,6 +144,8 @@ def assemble(args):
         if windows:
             # Avoid strip's in-place copy-back on Windows-mounted staging directories.
             subprocess.run(['x86_64-w64-mingw32-strip', '--strip-unneeded', '-o', str(destination), str(args.native / (source + suffix))], check=True)
+            if windows_identity:
+                windows_signing.sign(destination, windows_identity)
         else:
             shutil.copy2(args.native / (source + suffix), destination)
             subprocess.run(['strip', '-x' if macos else '--strip-unneeded', str(destination)], check=True)
@@ -153,7 +158,14 @@ def assemble(args):
     if windows:
         windows_tui_resources(root, resources)
         (stage / 'libexec').mkdir()
-        shutil.copy2(root / 'scripts/installers/windows-environment.ps1', stage / 'libexec/windows-environment.ps1')
+        for script in ('windows-environment.ps1', 'windows-command-path.ps1'):
+            shutil.copy2(root / 'scripts/installers' / script, stage / 'libexec' / script)
+        if not debug:
+            # Keep the case-insensitive Windows command search away from the GUI's Achbit.exe.
+            commands = stage / 'libexec/commands'
+            commands.mkdir()
+            for name, shell in [('achbit', 'cli'), ('achbit-cli', 'cli'), ('achbit-tui', 'tui')]:
+                (commands / (name + '.cmd')).write_text(f'@echo off\n"%~dp0..\\..\\achbit-{shell}.bat" %*\n')
         (stage / 'achbit.cmd').write_text('@echo off\ncall "%~dp0achbit-cli.bat" %*\nexit /b %errorlevel%\n')
         shutil.copy2(args.webview_loader, binaries / 'WebView2Loader.dll')
         for shell in ('cli', 'tui'):
@@ -224,6 +236,13 @@ PROGRAM_ENTRIES = {
 
 
 def publish(stage, destination, archive=None, installer=None):
+    destination.mkdir(parents=True, exist_ok=True)
+    lock = app_update_lock(destination) if any(stage.glob('*.app')) else nullcontext()
+    with lock:
+        publish_entries(stage, destination, archive, installer)
+
+
+def publish_entries(stage, destination, archive, installer):
     if archive is None:
         existing_apps = [destination / app.name for app in stage.glob('*.app')
                          if (destination / app.name).exists()]
@@ -231,7 +250,6 @@ def publish(stage, destination, archive=None, installer=None):
             identity = signing_identity()
             for app in existing_apps:
                 require_same_identity(app, identity)
-    destination.mkdir(parents=True, exist_ok=True)
     # Windows locks mapped images. Detect this before replacing any entries.
     if destination.name == 'win64':
         for file in [*destination.glob('*.exe'), *destination.glob('*.dll'), destination / 'node/bin/node.exe']:
@@ -311,6 +329,7 @@ def main():
         assembly.add_argument('--' + name, type=Path, required=True)
     assembly.add_argument('--platform', required=True)
     assembly.add_argument('--webview-loader', type=Path)
+    assembly.add_argument('--require-windows-signing', action='store_true')
     publication = sub.add_parser('publish')
     for name in ('stage', 'destination'):
         publication.add_argument(name, type=Path)
@@ -320,7 +339,8 @@ def main():
     if args.action == 'shared':
         shared(args.root, args.destination, args.dependency_list)
     elif args.action == 'assemble':
-        assemble(args)
+        identity = windows_signing.build_identity(args.require_windows_signing) if args.platform == 'win64' else None
+        assemble(args, identity)
     else:
         publish(args.stage, args.destination, args.archive, args.installer)
 

@@ -227,6 +227,19 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse((self.root / '.build-cache/release.lock').exists())
         self.assertTrue(all(b'\0' not in path.read_bytes() for path in self.output.glob('*.log')))
 
+    def test_windows_packaging_inherits_explicit_timestamp_without_logging_url(self):
+        flow = self.workflow()
+        flow.container, flow.workdir = 'fixture-dev', '/workspace'
+        git(self.root, 'commit', '-am', 'fixture source')
+        for service in ('https://timestamp.example.invalid/fixture', ''):
+            with self.subTest(service=service), patch.dict(os.environ, ACHBIT_WINDOWS_TIMESTAMP_URL=service):
+                flow.build(['package-windows'])
+                command = next(call for call in reversed(flow.calls) if call[:2] == ['docker', 'exec'])
+                forwarded = [command[i + 1] for i, arg in enumerate(command[:-1]) if arg == '-e']
+                self.assertIn('ACHBIT_WINDOWS_TIMESTAMP_URL', forwarded)
+                if service:
+                    self.assertNotIn(service, ' '.join(command))
+
     def test_failure_retains_commits_exit_status_and_stops_before_compile_push(self):
         flow = self.workflow('pr')
         flow.fail_test = True

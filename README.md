@@ -118,7 +118,9 @@ make shell
 
 `make shell` automatically checks and updates the development image before entering. Docker reuses unchanged layers and rebuilds affected layers when the Dockerfile, entrypoint or image build arguments change. No separate image-update command is needed.
 
-Skip the signing command on Windows and Linux. Inside the container:
+To produce the standard Windows x64 ZIP and installer, prepare the [Windows signing profile](docs/development.md#windows-authenticode-signing) on the host before entering the container. Mac, Linux and Windows via WSL2 can reuse the same external profile.
+
+Inside the container:
 
 ```sh
 bash ./build.sh           # Runnable build for the development host

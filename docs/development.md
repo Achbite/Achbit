@@ -163,6 +163,32 @@ For a separate worktree, also pass its `CONTAINER_NAME`. Select `bin/win64` or t
 
 A GUI resource update does not replace TUI, Session, Kernel, or native launchers. Changes to those components or bundled product documentation need the corresponding build and a restart. See [update behavior](distribution.md#updates-and-configuration-changes).
 
+### Windows Authenticode signing
+
+On the **first** signing host, use Python 3 and OpenSSL to create the local Windows publisher. The command prints the public certificate fingerprint. Running it again shows the existing identity.
+
+```bash
+python3 scripts/windows_signing.py init
+make shell
+# Inside the development container
+bash ./build.sh --stage package-windows
+```
+
+The default host directory is `~/.config/achbit/windows-signing`. For a different location, export `ACHBIT_WINDOWS_SIGNING_DIR` on the host before initialization and `make shell`. The project container mounts this directory read-only at `/run/secrets/achbit-windows-signing`.
+
+On another authorized Mac, Linux host or Windows WSL2 distribution, restore the same `publisher.pfx` (encrypted private key and certificate), `password` and `publisher.crt` (public certificate) to the host directory **before** running `make shell`. Keep the profile and its backup in private storage outside the checkout. Protect access to both the PFX and its password. Only the public certificate is needed on a verification machine.
+
+The normal Windows package requires the profile. The build strips and signs each Achbit runtime EXE, builds the ZIP and NSIS installer from those signed bytes, and signs the NSIS uninstaller and final Setup. It verifies each signature against the profile before publishing. Node and the WebView2 loader retain their original bytes. Runtime-only builds, Debug packages and single-helper rebuilds use the profile when mounted and can be built unsigned without one. A configured but incomplete profile fails the build.
+
+Local signing works offline. To request an RFC 3161 timestamp, set `ACHBIT_WINDOWS_TIMESTAMP_URL` to your TSA URL in the build environment. A timestamp service failure stops the signed build. Generate Tauri update signatures after the final signed installer has been produced.
+
+On an isolated Windows test machine, compare the signer's `Thumbprint` for the installer and each installed or extracted Achbit EXE with the public certificate. A clean Windows system can report `NotTrusted` for a local self-signed certificate. A test machine that explicitly trusts that certificate can verify `Valid`. The build does not install trust on user devices.
+
+```powershell
+$files = @(Get-ChildItem .\bin\win64\*.exe) + @(Get-ChildItem .\bin\Achbit-*-win64-setup.exe)
+Get-AuthenticodeSignature -FilePath $files.FullName | Select-Object Path, Status,
+    @{Name='Thumbprint'; Expression={$_.SignerCertificate.Thumbprint}}
+```
 
 ## Automatic application updates
 
