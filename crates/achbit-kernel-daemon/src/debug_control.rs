@@ -88,15 +88,19 @@ fn task_scope(state: &AppState, session_id: &str, workspace: &str) -> Result<(),
     if session.workspace_bindings.is_empty() {
         return Err("debug_session_workspace_required".into());
     }
+    let mut matches_root = false;
     for binding in &session.workspace_bindings {
         let bound = catalog
             .workspace(&binding.workspace_id)
             .ok_or("debug_session_workspace_missing")?;
-        if bound.canonical_root != workspace
-            && bound.owner_session_id.as_deref() != Some(session_id)
-        {
+        if bound.canonical_root == workspace {
+            matches_root = true;
+        } else if bound.owner_session_id.as_deref() != Some(session_id) {
             return Err("debug_session_workspace_scope_mismatch".into());
         }
+    }
+    if !matches_root {
+        return Err("debug_session_workspace_scope_mismatch".into());
     }
     Ok(())
 }

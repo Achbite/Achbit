@@ -994,18 +994,16 @@ impl LocalAgentKernel {
         let session = required_record_string(record, "sessionId")?;
         let run = required_record_string(record, "runId")?;
         let bindings = self.journal.run_workspace_binding_ids(session, run)?;
-        if bindings.is_empty() {
-            return Ok(false);
-        }
+        let mut matches_root = false;
         for id in bindings {
             let bound = self.resolve_owned_workspace(session, &id)?;
-            if Path::new(&bound.root) != workspace
-                && bound.access.owner_session_id() != Some(session)
-            {
+            if Path::new(&bound.root) == workspace {
+                matches_root = true;
+            } else if bound.access.owner_session_id() != Some(session) {
                 return Ok(false);
             }
         }
-        Ok(true)
+        Ok(matches_root)
     }
 
     pub(crate) fn debug_metrics(
@@ -1756,6 +1754,52 @@ mod tests {
         assert_eq!(result["status"], "denied", "{result}");
         assert_eq!(result["error"]["code"], "command_denied_by_rule");
         assert_eq!(result["timing"]["executor"]["coverage"], "notApplicable");
+    }
+
+    #[test]
+    fn historical_record_requires_a_matching_workspace_binding() {
+        struct Workspaces(PathBuf);
+        impl WorkspaceResolverPort for Workspaces {
+            fn resolve(&self, id: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                let (name, access) = match id {
+                    "workspace:managed" => (
+                        "managed",
+                        WorkspaceAccess::SessionWorkdir("session:reject".into()),
+                    ),
+                    "workspace:project" => ("project", WorkspaceAccess::Project),
+                    _ => panic!("unexpected fixture workspace"),
+                };
+                Ok(ResolvedWorkspace {
+                    root: self.0.join(name).to_string_lossy().into(),
+                    access,
+                })
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let record = json!({"sessionId":"session:reject","runId":"run:reject"});
+        for with_project in [false, true] {
+            let mut bindings =
+                vec![json!({"workspaceId":"workspace:managed","displayName":"Managed"})];
+            if with_project {
+                bindings.push(json!({"workspaceId":"workspace:project","displayName":"Project"}));
+            }
+            let (kernel, _, _) = super::super::attempt_control_tests::kernel_with_workspaces(
+                Arc::new(Workspaces(root.path().to_owned())),
+                "fs.read",
+                json!({"workspaceId":"workspace:managed","path":"sample.txt"}),
+                crate::local_agent_product_tools::test_product_tools(),
+                KernelExecutorConfig::default(),
+                json!(bindings),
+            );
+            let matches = |name| {
+                kernel
+                    .debug_record_in_workspace(&record, &root.path().join(name))
+                    .unwrap()
+            };
+            assert!(!matches("unrelated"));
+            assert_eq!(matches("project"), with_project);
+            assert_eq!(matches("managed"), !with_project);
+        }
     }
 
     #[test]

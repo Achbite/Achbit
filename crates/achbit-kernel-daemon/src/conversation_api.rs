@@ -2282,7 +2282,13 @@ pub(crate) async fn conversation_command_submit(
                 Ok(projection) => projection["modelSettings"]["profileId"]
                     .as_str()
                     .map(str::to_string),
-                Err(error) => return session_service_error(error),
+                Err(error) => {
+                    eprintln!(
+                        "[conversation-profile] session={session_id} {}: {}",
+                        error.code, error.message
+                    );
+                    None
+                }
             }
         } else {
             None
@@ -2311,10 +2317,8 @@ pub(crate) async fn conversation_command_submit(
                 gui.llm_profiles.select_default(&path, profile_id)
             })();
             if let Err(error) = result {
-                return ApiResponse::error_with_data(
-                    "select_default_llm_profile_failed",
-                    error,
-                    reply,
+                eprintln!(
+                    "[conversation-profile] session={session_id} select_default_llm_profile_failed: {error}"
                 );
             }
         }
