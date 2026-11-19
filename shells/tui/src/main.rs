@@ -1,6 +1,7 @@
 mod app;
 #[path = "../../shared/conversation_input.rs"]
 mod conversation_input;
+mod document;
 mod fonts;
 #[path = "../../shared/i18n.rs"]
 mod i18n;
@@ -336,22 +337,19 @@ async fn run_terminal(mut app: TuiApp) -> io::Result<()> {
     let loop_result = async {
         loop {
             terminal.draw(|frame| app.renderer().draw(frame, &app))?;
-            let event_task_result = tokio::select! {
-                result = &mut input_task => Some(result),
-                _ = refresh.tick() => {
-                    tokio::select! {
-                        result = &mut input_task => Some(result),
-                        _ = app.poll() => None,
-                    }
+            let event = tokio::select! {
+                result = &mut input_task => {
+                    input_task = spawn_terminal_event_task();
+                    terminal_event_result(language, result)?
                 }
+                _ = async {
+                    if !app.refresh_in_flight() {
+                        refresh.tick().await;
+                    }
+                    app.background_poll().await;
+                } => continue,
             };
-            let Some(event_task_result) = event_task_result else {
-                continue;
-            };
-            input_task = spawn_terminal_event_task();
-            let Some(next_event) = terminal_event_result(app.language(), event_task_result)? else {
-                continue;
-            };
+            let Some(next_event) = event else { continue };
             let keep_running = match next_event {
                 CrosstermEvent::Key(key)
                     if key.kind == KeyEventKind::Press && app.command_completion_key(key.code) =>
