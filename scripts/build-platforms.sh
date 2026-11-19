@@ -28,7 +28,7 @@ check_platform() {
     linux)
       require strip; require bwrap
       if [ "${2:-package}" = package ]; then require appimagetool; fi
-      pkg-config --exists openssl gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1 librsvg-2.0 || { printf 'Linux desktop SDK is incomplete.\n' >&2; exit 1; }
+      pkg-config --exists openssl dbus-1 gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1 librsvg-2.0 || { printf 'Linux desktop SDK is incomplete.\n' >&2; exit 1; }
       ;;
     windows)
       require x86_64-w64-mingw32-gcc; require x86_64-w64-mingw32-g++; require x86_64-w64-mingw32-strip
