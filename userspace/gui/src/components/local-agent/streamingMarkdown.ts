@@ -121,7 +121,8 @@ export class StreamingMarkdownParser {
   update(text: string, streaming: boolean): MarkdownBlock[] {
     text = displayMathFences(text);
     if (this.text === text && this.streaming === streaming) return this.blocks;
-    if (!text.startsWith(this.text)) {
+    // A committed document owns its final tree; the streaming prefix can now be released.
+    if (!streaming || !text.startsWith(this.text)) {
       this.offset = 0; this.frozen = []; this.documentReferences = false;
     }
     this.text = text; this.streaming = streaming;
