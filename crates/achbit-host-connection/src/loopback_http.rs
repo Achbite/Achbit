@@ -179,8 +179,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port().to_string();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 512];
-            stream.read(&mut request).unwrap();
+            stream.read_exact(&mut [0; 1]).unwrap();
             for _ in 0..10 {
                 if stream.write_all(b" ").is_err() {
                     break;
