@@ -13,6 +13,7 @@ import { restoredInterfaceView, takeRestoredInterfaceView, useInterfaceReloadVie
 import type { BrowserAnnotation, BrowserAnnotationDraft, BrowserReviewEdit } from './browserReview';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
 import { returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
+import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { InterfaceLoadBoundary } from '../shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import { createPortal } from 'react-dom';
@@ -892,13 +893,16 @@ function ReaderFileActions({ sessionId, target, language }: {
   sessionId: string | null; target?: ReaderTarget; language: UiLanguage;
 }) {
   const host = useConversationHost();
-  const interaction = useInteractionFocus();
   const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false);
   const menu = useRef<HTMLDetailsElement>(null);
+  const trigger = useRef<HTMLElement>(null);
+  const close = () => { if (menu.current) menu.current.open = false; };
+  useDismissibleLayer({ open: expanded, roots: [menu], trigger, onDismiss: close });
   const open = async (action: 'code' | 'folder') => {
     const callback = action === 'code' ? host.openFile : host.locatePath;
     if (!sessionId || !target || !callback) return;
-    if (menu.current) menu.current.open = false;
+    close();
     setError('');
     try {
       const reference = targetResource(target);
@@ -910,15 +914,8 @@ function ReaderFileActions({ sessionId, target, language }: {
   useEffect(() => setError(''), [target]);
   if ((!host.openFile && !host.locatePath) || !sessionId || !target || target.kind === 'browser' || target.kind === 'artifact' || target.kind === 'agent') return null;
   return <div className="reader-file-actions">
-      <details className="reader-external-open" ref={menu} data-native-overlay onBlur={event => {
-        if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-      }} onKeyDown={event => {
-        if (event.key === 'Escape') {
-          event.stopPropagation(); event.currentTarget.open = false;
-          returnFocusTo(event.currentTarget.querySelector('summary'), interaction, event.currentTarget);
-        }
-      }}>
-        <summary aria-label={language === 'zh-CN' ? '文件打开方式' : 'Open file with'}>{language === 'zh-CN' ? '打开' : 'Open'} <AchbitShellIcon name="chevronDown" /></summary>
+      <details className="reader-external-open" ref={menu} data-native-overlay onToggle={event => setExpanded(event.currentTarget.open)}>
+        <summary ref={trigger} aria-label={language === 'zh-CN' ? '文件打开方式' : 'Open file with'}>{language === 'zh-CN' ? '打开' : 'Open'} <AchbitShellIcon name="chevronDown" /></summary>
         <div role="menu">
           {host.openFile && <button role="menuitem" onClick={() => void open('code')}>{language === 'zh-CN' ? '在 VS Code 中打开' : 'Open in VS Code'}</button>}
           {host.locatePath && <button role="menuitem" onClick={() => void open('folder')}>{language === 'zh-CN' ? '打开所在文件夹' : 'Show in folder'}</button>}
