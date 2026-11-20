@@ -168,11 +168,17 @@ export function AgentConversationHistory({ projection, name, language, expanded 
   </div>;
 }
 
-export function ChildDecisions({ child, projection, language }: {
-  child: ReturnType<typeof useAgentChildConversation>; projection: SessionProjection; language: UiLanguage;
+/** A parent dialog handles one decision; the child Reader still shows its full decision history. */
+export type ChildReviewItem = { kind: 'plan'; plan: NonNullable<SessionProjection['pendingPlan']> }
+  | { kind: 'approval'; approval: NonNullable<SessionProjection['pendingApproval']> };
+
+export function ChildDecisions({ child, projection, language, only }: {
+  child: ReturnType<typeof useAgentChildConversation>; projection: SessionProjection; language: UiLanguage; only?: ChildReviewItem;
 }) {
   const [revisionText, setRevisionText] = useState('');
-  const pendingPlan = projection.pendingPlan;
+  const pendingPlan = only ? (only.kind === 'plan' ? only.plan : null) : projection.pendingPlan;
+  const pendingApproval = only ? (only.kind === 'approval' ? only.approval : null) : projection.pendingApproval;
+  const interactions = only ? [] : projection.interactions.filter(item => item.status === 'pending');
   const previousPlan = pendingPlan ? projection.plans.find(plan => plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1) : undefined;
   const base = () => ({ schemaVersion: CONVERSATION_COMMAND_VERSION, commandId: `command:${crypto.randomUUID()}`, sessionId: projection.sessionId });
   const respondPlan = (response: PlanResponse) => {
@@ -181,15 +187,14 @@ export function ChildDecisions({ child, projection, language }: {
       planId: pendingPlan.planId, revision: pendingPlan.revision, response });
   };
   const respondInteraction = (response: string, interactionId?: string) => {
-    const interaction = projection.interactions.find(item => item.interactionId === interactionId && item.status === 'pending');
+    const interaction = interactions.find(item => item.interactionId === interactionId);
     if (!interaction) return Promise.reject(new Error('interaction_response_missing'));
     return child.submit({ ...base(), type: 'interaction.respond', runId: interaction.runId, interactionId: interaction.interactionId, response });
   };
   const respondApproval = (decision: 'allow' | 'deny', authorizationScope?: ShellAuthorizationScope) => {
-    const approval = projection.pendingApproval;
-    if (!approval) return Promise.reject(new Error('approval_response_missing'));
-    return child.submit({ ...base(), type: 'approval.respond', runId: approval.runId, callId: approval.callId,
-      approvalId: approval.approvalId, decision, ...(authorizationScope ? { authorizationScope } : {}) });
+    if (!pendingApproval) return Promise.reject(new Error('approval_response_missing'));
+    return child.submit({ ...base(), type: 'approval.respond', runId: pendingApproval.runId, callId: pendingApproval.callId,
+      approvalId: pendingApproval.approvalId, decision, ...(authorizationScope ? { authorizationScope } : {}) });
   };
   const setPermissions = (patches: UserSettings) => child.submit({ ...base(), type: 'session.permissions.set', patches });
   const disabled = child.submitting || Boolean(child.readError);
@@ -198,9 +203,9 @@ export function ChildDecisions({ child, projection, language }: {
       <h4><MarkdownInline>{pendingPlan.title}</MarkdownInline></h4>
       <PlanCardContent plan={pendingPlan} previousPlan={previousPlan} workspaceBindings={projection.workspaceBindings} language={language} />
     </>}
-    <ComposerDecisionPanels language={language} onSetPermissions={setPermissions} composer={{
+    <ComposerDecisionPanels language={language} onSetPermissions={setPermissions} approvalInDialog={only?.kind === 'approval'} composer={{
       pendingPlan, pendingScopeAddition: pendingPlan ? planScopeAddition(previousPlan, pendingPlan) : null,
-      pendingInteraction: null, pendingApproval: projection.pendingApproval, projection, submitting: disabled,
+      pendingInteraction: null, pendingApproval, projection, submitting: disabled,
       respondInteraction, respondApproval, submitPlanDecision: async response => { try { await respondPlan(response); } catch { /* Shown above. */ } },
     }} />
     {pendingPlan && <form className="agent-tasks__revision" onSubmit={event => {
@@ -212,7 +217,7 @@ export function ChildDecisions({ child, projection, language }: {
       <div><button type="submit" disabled={disabled || !revisionText.trim()}>{t(language, 'agent.team.revise')}</button>
         <button type="button" disabled={disabled} onClick={() => void respondPlan({ kind: 'cancel' }).catch(() => {})}>{t(language, 'agent.plan.ignoreAndStop')}</button></div>
     </form>}
-    {projection.interactions.filter(interaction => interaction.status === 'pending').map(interaction => <InteractionCard
+    {interactions.map(interaction => <InteractionCard
       key={interaction.interactionId} interaction={interaction} language={language} disabled={disabled} onRespond={respondInteraction} />)}
   </div>;
 }

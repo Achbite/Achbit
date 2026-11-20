@@ -11,7 +11,7 @@ import { planOperationDetail } from './planReview';
 import { ApprovalOperationDetails } from './ApprovalOperationDetails';
 import { ApprovalReviewReason } from './ApprovalReviewReason';
 import { InteractionOptions } from './InteractionOptions';
-import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
+import { awaitsApprovalReviewer, isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
 import type { LocalAgentState } from '../../state/localAgentStore';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useConversationSessionId } from './ConversationSessionScope';
@@ -85,8 +85,8 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
   </>;
 }
 
-export function ComposerDecisionPanels({ language, composer, onSetPermissions }: {
-  language: UiLanguage; composer: DecisionComposer; onSetPermissions?: LocalAgentState['setPermissions'];
+export function ComposerDecisionPanels({ language, composer, onSetPermissions, approvalInDialog = false }: {
+  language: UiLanguage; composer: DecisionComposer; onSetPermissions?: LocalAgentState['setPermissions']; approvalInDialog?: boolean;
 }) {
   const {
     pendingPlan,
@@ -121,7 +121,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
   const [ruleSaving, setRuleSaving] = useState(false);
   const pendingRuleSave = useRef<symbol | null>(null);
   const [ruleError, setRuleError] = useState<string | null>(null);
-  const reviewing = isAutomaticApproval(pendingApproval, projection?.run);
+  const reviewing = approvalInDialog ? awaitsApprovalReviewer(pendingApproval) : isAutomaticApproval(pendingApproval, projection?.run);
   const reviewingPlan = isAutomaticPlanReview(pendingPlan, projection?.effectivePermissions);
   useLayoutEffect(() => {
     pendingRuleSave.current = null;
@@ -227,7 +227,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
           aria-labelledby={`approval-${pendingApproval.approvalId}`}
           onKeyDown={(event) => {
             if (event.repeat || event.nativeEvent.isComposing || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
-            if (event.key === 'Escape' || (event.key === 'Enter' && event.target === approvalRef.current)) {
+            // Escape belongs to the native parent dialog there: deferral is not a denial.
+            if ((event.key === 'Escape' && !approvalInDialog) || (event.key === 'Enter' && event.target === approvalRef.current)) {
               event.preventDefault();
               event.stopPropagation();
               void answerApproval(event.key === 'Escape' ? 'deny' : 'allow', event.key === 'Enter' ? primaryScope : undefined);
@@ -286,10 +287,10 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions }:
               {...identity.action('deny', 'click')}
               type="button"
               aria-label={t(language, 'agent.approval.deny')}
-              aria-keyshortcuts="Escape"
+              aria-keyshortcuts={approvalInDialog ? undefined : 'Escape'}
               disabled={submitting || reviewing}
               onClick={() => void answerApproval('deny')}
-            ><span>{t(language, 'agent.approval.deny')}</span><kbd aria-hidden="true">Esc</kbd></button>
+            ><span>{t(language, 'agent.approval.deny')}</span>{!approvalInDialog && <kbd aria-hidden="true">Esc</kbd>}</button>
             <button
               {...identity.action('allow', 'click')}
               type="button"

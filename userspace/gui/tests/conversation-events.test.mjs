@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { installGuiFetch, loadGuiModules } from './gui-projection-contract.mjs';
-import { waitUntil } from '../../session-core/tests/local-agent-fixtures.mjs';
+import { createSession, readEvents, runtimeSnapshot, waitUntil } from '../../session-core/tests/local-agent-fixtures.mjs';
+import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
+import { projectSession, recoverSession } from '../../session-core/dist/local-agent/reducer.js';
 
 function events(signal) {
   let controller, closed = false;
@@ -75,6 +77,45 @@ test('an opened idle nested Reader refreshes on reassignment and coalesces chang
   assert.equal(reads, 3, 'changes received during a read trigger one fresh canonical read');
   controller.abort(); await waiting;
   assert.equal(hostSignal.aborted, true);
+});
+
+test('a child-only change shows and withdraws an approval in the current main store without a parent revision or polling', async t => {
+  const root = 'session:owner', middle = 'session:member', leaf = 'session:executor', runId = 'run:owner';
+  const journal = new InMemoryCommandJournal();
+  await createSession(journal, root);
+  await journal.appendBatch([
+    { type: 'message.committed', sessionId: root, payload: { messageId: 'm:delegate', role: 'user', content: 'Delegate the task.' } },
+    { type: 'run.started', sessionId: root, runId, payload: { inputMessageId: 'm:delegate', workspaceBindings: [], runtimeSnapshot: runtimeSnapshot(runId) } },
+    { type: 'agent.task.created', sessionId: root, runId, callId: 'call:spawn', payload: { taskId: 'task:member', agentSessionId: middle,
+      displayName: 'Member', text: 'Delegate a check.', delivery: 'wait', createsAgent: true, capabilities: { messaging: true, continuation: true, delegation: true } } },
+    { type: 'agent.task.started', sessionId: root, runId, payload: { taskId: 'task:member', childRunId: 'run:member' } },
+  ]);
+  const baseline = projectSession(recoverSession(root, await readEvents(journal, root)));
+  const route = { agentSessionId: leaf, displayName: 'Executor', runId: 'run:executor', interactionIds: [], approval: { approvalId: 'approval:private', callId: 'call:gated' } };
+  let stream, projections = 0, pending = false;
+  installGuiFetch(t, (url, init) => {
+    if (url.pathname === '/api/conversation/events') { stream = events(init.signal); return stream.response; }
+    if (url.pathname === '/api/conversation/statuses') return Response.json({ ok: true, data: [{ sessionId: root, revision: baseline.revision, run: { runId, status: 'running' } }] });
+    assert.equal(url.pathname, `/api/conversation/sessions/${encodeURIComponent(root)}/projection`);
+    projections++;
+    return Response.json({ ok: true, data: { ...baseline, ...(pending ? { pendingAgentDecisions: [route] } : {}) } });
+  });
+  const [{ startConversationUpdates }, { createLocalAgentStore }] = await loadGuiModules(t, [
+    '/src/components/local-agent/useConversationUpdates.ts', '/src/state/localAgentStore.ts',
+  ]);
+  const store = createLocalAgentStore(), errors = [];
+  store.setState({ sessionId: root });
+  const stop = startConversationUpdates(store.getState().refresh, true, error => errors.push(error));
+  t.after(stop);
+  await waitUntil(() => stream); stream.send('ready');
+  await waitUntil(() => store.getState().projection?.revision === baseline.revision);
+  pending = true; stream.send('change', { sessionId: leaf });
+  await waitUntil(() => store.getState().projection?.pendingAgentDecisions?.length === 1);
+  assert.deepEqual(store.getState().projection.pendingAgentDecisions, [route]);
+  pending = false; stream.send('change', { sessionId: leaf });
+  await waitUntil(() => !store.getState().projection.pendingAgentDecisions?.length);
+  assert.equal(store.getState().projection.revision, baseline.revision);
+  await tick(); assert.equal(projections, 3); assert.deepEqual(errors, []);
 });
 
 test('a failed Host stream surfaces the original error to all views and a new subscription can retry', async t => {

@@ -70,6 +70,26 @@ interface ActiveRun {
 
 const MAX_FILESYSTEM_REFERENCE_COUNT = 8;
 
+/** Select only an actionable identity; do not copy a child's operation or transcript into its owner. */
+export function humanApprovalRoute(snapshot: LoopSnapshot, runId: string): { approvalId: string; callId: string } | undefined {
+  const { run, pendingApprovals } = snapshot.state;
+  if (!run || run.runId !== runId || !['running', 'waiting'].includes(run.status)) return;
+  for (const approval of pendingApprovals) {
+    if (approval.runId !== runId) continue;
+    if (approval.preview.approvalReviewer === 'agent') {
+      if (approval.preview.review?.decision !== 'ask') continue;
+      const reviews = snapshot.events.filter((event): event is Extract<SessionEvent, { type: 'approval.reviewed' }> =>
+        event.type === 'approval.reviewed' && event.runId === runId && event.callId === approval.callId
+        && event.payload.approvalId === approval.approvalId);
+      // The first invalid reply is recorded before the reviewer's single format correction.
+      // It is not a final handoff. Another call's wait must not make it actionable.
+      const last = reviews.at(-1);
+      if (!last || last.payload.error?.code === 'approval_review_invalid' && reviews.length === 1) continue;
+    }
+    return { approvalId: approval.approvalId, callId: approval.callId };
+  }
+}
+
 export class SessionActor {
   readonly #timing: RunTiming;
   readonly #observation?: SessionObservationSink;
@@ -210,6 +230,10 @@ export class SessionActor {
       }
     }
     return projection;
+  }
+
+  async humanApprovalRoute(runId: string) {
+    return humanApprovalRoute(await this.loadSnapshot(), runId);
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */

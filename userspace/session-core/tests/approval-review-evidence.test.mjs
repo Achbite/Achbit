@@ -63,6 +63,32 @@ test('review budgets unrelated receipts before script evidence and preserves ori
   assert.ok(request.messages.reduce((n, message) => n + message.content.length, 0) <= 18000);
 });
 
+test('a child review receives prior coordinator updates as evidence, not user instructions or permission', () => {
+  const f = fixture('container', { action: 'exec', container: 'fixture', command: 'make check' }, []);
+  const { snapshot } = f, { sessionId, run } = snapshot.state;
+  const owner = 'session:coordinator', parent = 'session:parent';
+  snapshot.state.agentContext = { ownerSessionId: owner, parentSessionId: parent };
+  const call = snapshot.events.pop();
+  const update = (sourceSessionId, text, runId = run.runId) => ({ type: 'agent.message.received', sessionId,
+    runId, sequence: snapshot.events.length + 1, payload: { sourceSessionId, text } });
+  snapshot.events.push(update(owner, 'The fixture is ready.', 'run:previous'));
+  snapshot.events.push(update('session:peer', 'Peer report.'));
+  snapshot.events.push(update(owner, 'The input is ready.'));
+  snapshot.events.push(update(parent, 'Use the fixture already built.'));
+  snapshot.events.push({ ...call, sequence: snapshot.events.length + 1 });
+  snapshot.events.push(update(owner, 'Arrived after this request.'));
+  const { packet, receipt } = f.prepare();
+  assert.deepEqual(packet.delegation.updates.map(({ sourceSessionId, text }) => [sourceSessionId, text]),
+    [[owner, 'The input is ready.'], [parent, 'Use the fixture already built.']]);
+  assert.equal(packet.userMessages.length, 1);
+  assert.equal(packet.userMessages[0].source, 'delegatedTask');
+  assert.deepEqual(packet.grant, 'thisCallOnly');
+  assert.deepEqual(JSON.parse(receipt.reviewInput.content).delegation, packet.delegation);
+  assert.doesNotMatch(JSON.stringify(packet), /Peer report|after this request|fixture is ready/);
+  delete snapshot.state.agentContext;
+  assert.equal(f.prepare().packet.delegation, undefined, 'ordinary review does not import collaborator history');
+});
+
 test('capture review uses the exact window from the latest current-run list, without exposing unrelated windows', () => {
   const window = { windowId: 42, owner: 'Achbit-Debug', pid: 123, title: 'Debug test', bounds: { x: 0, y: 0, width: 900, height: 600 } };
   const listed = windows => ({ toolName: 'computer.control', input: { action: 'listWindows' }, output: { windows } });

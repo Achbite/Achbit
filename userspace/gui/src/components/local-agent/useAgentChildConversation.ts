@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConversationCommand, SessionProjection } from '@achbit/protocol';
+import type { ApprovalProjection, ConversationCommand, PendingAgentDecision, SessionProjection } from '@achbit/protocol';
+import { awaitsApprovalReviewer } from './composerDecisions';
 import { getLocalAgentProjection, submitLocalAgentCommand } from '../../services/localAgentApi';
 import { watchConversationChanges } from '../../services/conversationEvents';
 import useAppStatusStore from '../../state/appStatusStore';
@@ -8,8 +9,18 @@ export type ChildDecisionCommand = Extract<ConversationCommand, {
   type: 'interaction.respond' | 'approval.respond' | 'plan.respond' | 'session.permissions.set';
 }>;
 
+export function pendingChildApproval(projection: SessionProjection | null, id: Pick<ApprovalProjection, 'runId' | 'callId' | 'approvalId'>,
+  route?: PendingAgentDecision) {
+  if (!projection?.run || projection.run.runId !== id.runId || !['running', 'waiting'].includes(projection.run.status)) return null;
+  if (route && (route.agentSessionId !== projection.sessionId || route.runId !== id.runId
+    || route.approval?.approvalId !== id.approvalId || route.approval?.callId !== id.callId)) return null;
+  const pending = projection.pendingApprovals ?? (projection.pendingApproval ? [projection.pendingApproval] : []);
+  const approval = pending.find(item => item.runId === id.runId && item.callId === id.callId && item.approvalId === id.approvalId) ?? null;
+  return route && awaitsApprovalReviewer(approval) ? null : approval;
+}
+
 /** This is a view of a child Session, not a child execution owner. */
-export function useAgentChildConversation(sessionId: string, expanded: boolean) {
+export function useAgentChildConversation(sessionId: string, expanded: boolean, approvalRoute?: PendingAgentDecision) {
   const hostReady = useAppStatusStore(state => state.apiStatus === 'connected');
   const [projection, setProjection] = useState<SessionProjection | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
@@ -79,12 +90,16 @@ export function useAgentChildConversation(sessionId: string, expanded: boolean) 
 
   const submit = useCallback(async (command: ChildDecisionCommand) => {
     if (command.sessionId !== sessionId) throw new Error('child_decision_session_mismatch');
+    const controller = lifetime.current;
+    if (!controller || controller.signal.aborted) throw new Error('child_conversation_view_disposed');
     if (deciding.current) throw new Error('child_decision_in_flight');
     deciding.current = true;
     setSubmitting(true);
     setCommandError(null);
-    const controller = lifetime.current;
     try {
+      if (command.type === 'approval.respond' && !pendingChildApproval(latest.current, command, approvalRoute)) {
+        throw new Error('approval_response_missing');
+      }
       const reply = await submitLocalAgentCommand(command);
       const rejection = reply.status === 'rejected' ? reply.error?.message ?? 'conversation_command_rejected' : null;
       try { await read(reply.revision, controller?.signal); }
@@ -103,7 +118,7 @@ export function useAgentChildConversation(sessionId: string, expanded: boolean) 
         setSubmitting(false);
       }
     }
-  }, [sessionId, read]);
+  }, [sessionId, read, approvalRoute]);
 
   return { projection: projection?.sessionId === sessionId ? projection : null,
     readError: watchError ?? readError, commandError, submitting,
