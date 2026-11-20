@@ -5,7 +5,7 @@ description: Create and deliver standalone HTML, PDF or Markdown documents.
 
 # Document output
 
-Use this workflow for a requested document file. Preserve its content, language, audience and format. For an interactive component within a reply, use the frontend design Skill and [references/interactive-previews.md](references/interactive-previews.md). Inline Mermaid diagrams and Markdown tables can go directly in the reply.
+Use this workflow to create a new document. To read an existing PDF instead, look for a PDF reader in the enabled catalog; the renderer does not extract text. Preserve the requested content, language, audience and output format. For an interactive component within a reply, use the frontend design Skill and [references/interactive-previews.md](references/interactive-previews.md). Inline Mermaid diagrams and Markdown tables can go directly in the reply.
 
 Read relevant resources with `skill.read`, name `achbit-documents`:
 

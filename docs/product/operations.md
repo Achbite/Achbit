@@ -24,7 +24,7 @@ In Achbit, **global prompt** (全局提示词) means the user's saved **Settings
 
 For self-development and installation, use the current Host CLI: `plugins capabilities`, then the needed `plugins guide` / `plugins template`; `plugins inspect`, `install`, `update`, `enable`, `disable`, `remove`, and `status` share the Settings operations. Target an existing instance with `--host-data-dir`. Read both registration and actual application state. New registrations enter discovery at the next model request in the same run; installation does not grant task activation or permission. The built-in `achbit-iteration` Skill includes the complete development/update workflow.
 
-Use `plugin.search` for enabled task plugins and file-backed Skills. All keywords must match; if nothing matches, try fewer keywords or browse without `query`. Follow `nextOffset` only when needed. Core tools such as [`process`](managed-processes.md) and [`session.read`](#models-and-context) have no plugin to install or activate: check the current task’s tool declarations.
+Use `plugin.search` for enabled task plugins and file-backed Skills. Search for the file format or operation before installing a helper. All keywords must match the same entry; if none of the results does the job, even when others matched, shorten the query or browse without `query`. Follow `nextOffset` only when needed. Core tools such as [`process`](managed-processes.md) and [`session.read`](#models-and-context) have no plugin to install or activate: check the current task’s tool declarations.
 
 Activate relevant enabled results with `plugin.activate` alone, using their exact URIs. Tools and guidance enter the next request. Search does not start programs; activation neither installs/enables plugins nor grants permissions. For these discoverable plugins, user `@` mentions are optional. Read current schemas rather than guessing names or arguments.
 
@@ -130,6 +130,8 @@ CLI chat/TUI use `/sessions`, `/resume <number|full-id>` and `/new`. Numbers ref
 The execution disclosure opens intermediate text/tools and shows measured response-to-settlement duration when available, in both normal and Debug builds. Missing historical timing is not estimated. HTML/Markdown document readers are read-only; ordinary HTML document preview does not run scripts. Explicit `achbit-preview` fences render archived HTML components interactively in the conversation, with source, reload and sidebar controls. Read `achbit-documents` → `references/interactive-previews.md` for the reference format. Complete applications and live sites use the native browser.
 
 File-tool arrows open the preview in one step. Edits show changed lines with nearby context; large changes use a bounded preview. Read tools preview the current file, labeled as such. Click the filename in the tool heading or preview header to open it in the right-hand Reader; deleted files open their recorded comparison. Expanding or collapsing keeps the clicked heading in place, and scrolling past a preview's top or bottom continues through the conversation.
+
+For an existing PDF, search for `pdf` and select **PDF Reader** for page text. Use the attachment’s logical path or a verified PDF path in a bound workspace. A link alone is not a local file: obtain it through an authorized download before reading it. For diagrams, scanned pages or layout, inspect the relevant page visually; a screenshot or empty text layer does not establish the full document’s contents.
 
 ## Document output
 
