@@ -5,6 +5,11 @@ const builtinText: Record<string, string> = {
   'plugin://github@first-party': 'github',
   'plugin://pdf@first-party': 'pdf',
   'plugin://arxiv@first-party': 'arxiv',
+  'plugin://computer-use@builtin': 'computerUse',
+  'plugin://chrome-devtools@builtin': 'chrome',
+  'plugin://containers@builtin': 'containers',
+  'plugin://session-diagnostics@builtin': 'sessionDiagnostics',
+  'plugin://achbit-iteration@builtin': 'iteration',
 };
 
 /** Translate bundled product labels without changing catalog identity or user plugin metadata. */

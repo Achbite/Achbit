@@ -113,7 +113,7 @@ export function useAgentComposer(
   const [pluginSelections, setPluginSelections] = useState<PluginSelectionInput[]>(initialComposer.pluginSelections);
   const [pluginPickerOpen, setPluginPickerOpen] = useState(false);
   const [pluginQuery, setPluginQuery] = useState('');
-  const [pluginTriggerStart, setPluginTriggerStart] = useState<number | null>(null);
+  const [pluginTrigger, setPluginTrigger] = useState<{ start: number; end: number } | null>(null);
   const [pluginActiveIndex, setPluginActiveIndex] = useState(0);
   const [readingImages, setReadingImages] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -439,11 +439,11 @@ export function useAgentComposer(
 
   const openPluginPicker = () => {
     setAttachmentMenuOpen(false);
-    setPluginTriggerStart(null);
+    setPluginTrigger(null);
     setPluginQuery('');
     setPluginActiveIndex(0);
     setPluginPickerOpen(true);
-    window.requestAnimationFrame(() => textareaRef.current?.focus());
+    window.requestAnimationFrame(() => pluginPickerRef.current?.querySelector<HTMLInputElement>('[role="combobox"]')?.focus());
   };
 
   const updateDraft = (value: string, cursor: number) => {
@@ -456,38 +456,32 @@ export function useAgentComposer(
       !draft.includes(`@${selection.label}`) || value.includes(`@${selection.label}`)
     )));
     const prefix = value.slice(0, cursor);
-    const match = prefix.match(/(^|\s)@([^\s@/]*)$/u);
+    // Chinese prose does not require a space before a mention. Keep addresses and paths literal.
+    const match = prefix.match(/(?:^|[\s\p{Script_Extensions=Han}，。！？：；、（）【】《》「」『』“”‘’…—])[@＠]([^\s@＠/]*)$/u);
     if (!match) {
       setPluginPickerOpen(false);
-      setPluginTriggerStart(null);
+      setPluginTrigger(null);
       setPluginQuery('');
       setPluginActiveIndex(0);
       return;
     }
-    setPluginTriggerStart(cursor - match[2]!.length - 1);
-    setPluginQuery(match[2]!);
+    const query = match[1]!;
+    setPluginTrigger({ start: cursor - query.length - 1, end: cursor });
+    setPluginQuery(query);
     setPluginActiveIndex(0);
     setPluginPickerOpen(true);
   };
 
   const selectPlugin = (plugin: (typeof pluginCatalog.plugins)[number]) => {
     if (!plugin.enabled || !plugin.available) return;
-    const cursor = textareaRef.current?.selectionStart ?? draft.length;
-    const mention = `@${plugin.displayName}`;
-    const alreadySelected = pluginSelections.some((selection) => selection.uri === plugin.uri);
-    const insertionStart = pluginTriggerStart ?? (
-      draft.length + (draft && !/\s$/u.test(draft) ? 1 : 0)
-    );
-    const nextDraft = alreadySelected
-      ? (pluginTriggerStart === null
-          ? draft
-          : `${draft.slice(0, pluginTriggerStart)}${draft.slice(cursor)}`)
-      : pluginTriggerStart === null
-        ? `${draft}${draft && !/\s$/u.test(draft) ? ' ' : ''}${mention} `
-        : `${draft.slice(0, pluginTriggerStart)}${mention} ${draft.slice(cursor)}`;
-    const nextCursor = alreadySelected
-      ? insertionStart
-      : insertionStart + mention.length + 1;
+    // A click in the search field must still replace just the original @query in the draft.
+    const before = pluginTrigger ? draft.slice(0, pluginTrigger.start) : draft;
+    const after = pluginTrigger ? draft.slice(pluginTrigger.end) : '';
+    const gap = !pluginTrigger && before && !/\s$/u.test(before) ? ' ' : '';
+    const alreadySelected = pluginSelections.some(selection => selection.uri === plugin.uri);
+    const inserted = alreadySelected ? '' : `${gap}@${plugin.displayName} `;
+    const nextDraft = before + inserted + after;
+    const nextCursor = before.length + inserted.length;
     setDraft(nextDraft);
     setPluginSelections((current) => (
       current.some((selection) => selection.uri === plugin.uri)
@@ -499,7 +493,7 @@ export function useAgentComposer(
           }]
     ));
     setPluginPickerOpen(false);
-    setPluginTriggerStart(null);
+    setPluginTrigger(null);
     setPluginQuery('');
     setPluginActiveIndex(0);
     window.requestAnimationFrame(() => {
@@ -565,7 +559,8 @@ export function useAgentComposer(
   };
 
   const handlePluginPickerKey = (event: React.KeyboardEvent<HTMLElement>, allowTab = false): boolean => {
-    if (!pluginPickerOpen || event.nativeEvent.isComposing || compositionActiveRef.current || compositionCommitPendingRef.current) return false;
+    if (!pluginPickerOpen || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
+      || compositionActiveRef.current || compositionCommitPendingRef.current) return false;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopPropagation(); setPluginPickerOpen(false); textareaRef.current?.focus(); return true;
     }
