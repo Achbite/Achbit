@@ -6,7 +6,7 @@ import { installGuiFetch, loadGuiModule, loadGuiModules } from './gui-projection
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-async function bodyLinks(t) {
+async function bodyLinks(t, root = '/work/A') {
   const [{ useConversationBodyLinks }, { useConversationHost }] = await loadGuiModules(t, [
     '/src/components/local-agent/useConversationBodyLinks.tsx', '/src/components/local-agent/ConversationHost.tsx',
   ]);
@@ -29,10 +29,10 @@ async function bodyLinks(t) {
   host.resolveResource = async (session, workspace, path) => {
     assert.equal(session, projection.sessionId); reads.push([workspace, path]);
     if (workspace === 'B') throw offline;
-    if (path === '.') return { path: '/work/A', kind: 'directory' };
+    if (path === '.') return { path: root, kind: 'directory' };
     if (path === 'denied') throw denied;
     if (path === 'missing') throw missing;
-    return { path: '/work/A/' + path, kind: 'directory' };
+    return { path: root + '/' + path, kind: 'directory' };
   };
   host.locatePath = async path => { locations.push(path); };
   let open;
@@ -61,6 +61,30 @@ test('an exact absolute link can use healthy A; unknown or denied targets never 
     assert.ok(errors.at(-1)?.includes(message), href + ': ' + errors.at(-1));
     assert.deepEqual(locations, ['/work/A/dir']);
   }
+});
+
+test('WebView2 drive links follow the bound Windows resource, not the external HTTP handler', async t => {
+  const root = String.raw`\\?\E:\Work`;
+  const { click, host, reads, locations, errors } = await bodyLinks(t, root);
+  const external = [];
+  t.mock.method(host, 'openExternalLink', async href => { external.push(href); });
+  const base = 'http://achbit-gui.localhost/';
+  const link = base + 'e:/Work/%E8%B5%84%E6%96%99%20%231?view=1#L12C3';
+  await click(link);
+  assert.deepEqual(external, [], 'the workspace link must never launch a browser');
+  assert.ok(reads.some(([workspace, path]) => workspace === 'A' && path === '资料 #1'));
+  assert.deepEqual(locations, [root + '/资料 #1']);
+  await click(base + 'e:/Work/denied');
+  assert.match(errors.at(-1), /original target permission denied/);
+  assert.deepEqual(locations, [root + '/资料 #1']);
+  const { parseLocalTarget, readableResourceLinks } = await loadGuiModule(t, '/src/components/local-agent/resourceLinks.ts');
+  assert.deepEqual(parseLocalTarget(link), { path: 'e:/Work/资料 #1', absolute: true, line: 12, column: 3 });
+  const tree = { type: 'root', children: [{ type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value: link }] }] };
+  assert.equal(readableResourceLinks(tree).children[0].properties.href, link, 'do not escape an already encoded URL a second time');
+  const other = [base + 'index.html', 'http://localhost/e:/Work/dir', 'http://achbit-gui.localhost:8080/e:/Work/dir',
+    'https://achbit-gui.localhost/e:/Work/dir', 'http://user@achbit-gui.localhost/e:/Work/dir'];
+  for (const href of other) { assert.equal(parseLocalTarget(href), null); await click(href); }
+  assert.deepEqual(external, other);
 });
 
 test('starting a click clears obsolete feedback; only the current native failure can publish an error', async t => {

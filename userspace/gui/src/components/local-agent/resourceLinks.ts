@@ -17,8 +17,11 @@ export function fileLinkLocation(reference: string): ({ path: string } & SourceP
   } catch { return null; }
 }
 
+// WebView2 exposes the desktop scheme as HTTP. Only its drive-qualified paths name local files.
+const webViewDrivePrefix = /^http:\/\/achbit-gui\.localhost\/(?=[a-z]:\/)/iu;
+
 export function parseLocalTarget(href: string, allowRelative = true, sameDocument = false): LocalTarget | null {
-  let reference = href.replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, '');
+  let reference = href.replace(webViewDrivePrefix, '').replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, '');
   if (/^(file|achbit-gui):\/\//i.test(href)) {
     try {
       const url = new URL(href);
@@ -148,7 +151,7 @@ function locationLabel(target: LocalTarget, name = resourceFilename(target.path)
 
 /** Only links synthesized from physical paths need their URI delimiters escaped. */
 function physicalPathHref(raw: string): string {
-  if (/^(?:file|achbit-gui):\/\//iu.test(raw)) return raw;
+  if (/^(?:file|achbit-gui):\/\//iu.test(raw) || webViewDrivePrefix.test(raw)) return raw;
   const path = raw.replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, '');
   return path.replace(/[%?]|#(?!L[1-9]\d*(?:C[1-9]\d*)?$)/gu, encodeURIComponent);
 }
