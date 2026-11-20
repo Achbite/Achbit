@@ -3,7 +3,7 @@
   "id": "pdf",
   "uri": "plugin://pdf@first-party",
   "displayName": "PDF 阅读",
-  "shortDescription": "提取文档内容，按页阅读。",
+  "shortDescription": "按页读取 PDF 文档、提取文本，支持附件和已保存到工作区的文件。",
   "activationMediaTypes": [
     "application/pdf"
   ],
@@ -11,19 +11,19 @@
   "capabilityRefs": [
     "pdf:paged-text-read"
   ],
-  "capabilitySummary": "Reads bounded page ranges from PDF files attached through the current workspace binding.",
+  "capabilitySummary": "Read an existing PDF document as a paged text view. Extract text from papers and reports attached or downloaded as files in the selected workspace.",
   "tools": [
     {
       "remoteName": "read",
       "canonicalName": "pdf.read",
-      "description": "Extract text from a PDF in the current workspace binding. Pages are 1-indexed; each call returns up to 50 pages and 128 KiB of text from a file up to 16 MiB. Use the returned page range and truncation flags to continue with a smaller range when needed. Scanned page images require a separate visual or OCR workflow.",
+      "description": "Read existing PDF files in the selected workspace and extract their text by page; this tool takes a local path, not a URL. Pages are 1-indexed; each call returns up to 50 pages and 128 KiB of text from a file up to 16 MiB. Use the returned page range and truncation flags to continue with a smaller range when needed. Scanned page images require a separate visual or OCR workflow.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "path": {
             "type": "string",
             "minLength": 1,
-            "description": "Workspace-relative path from an attached filesystem reference."
+            "description": "Path from the selected workspace binding: use the attachment’s logical path or the verified relative path of an existing PDF file."
           },
           "startPage": {
             "type": "integer",
@@ -49,10 +49,10 @@
       "toolContributionRef": "tool-contribution:first-party:pdf.read",
       "promptContribution": {
         "contributionRef": "tool-prompt-contribution:first-party:pdf.read",
-        "promptSnippet": "Read bounded page ranges from a PDF attached to the current workspace binding.",
+        "promptSnippet": "Read page text from an attached PDF or one already saved in a bound workspace without installing a parser.",
         "usageGuidelines": [
-          "Use the logical workspace handle and workspace-relative path shown in the message's filesystem references.",
-          "Read another bounded page range when the result reports remaining pages or truncated output."
+          "For an attachment, use its supplied workspace handle and path. For a PDF link, first obtain the file through an authorized download into a writable workspace; then pass its verified relative path, not the URL.",
+          "Use the returned page numbers and truncation flags to continue. Text extraction does not verify layout or perform OCR; inspect the relevant page visually when those matter."
         ]
       }
     }

@@ -829,7 +829,7 @@
     "plugins.builtin.github.name": "GitHub",
     "plugins.builtin.github.description": "Read GitHub repositories, issues and pull requests.",
     "plugins.builtin.pdf.name": "PDF Reader",
-    "plugins.builtin.pdf.description": "Extract document text and read by page.",
+    "plugins.builtin.pdf.description": "Read PDF documents by page and extract text from attachments or files saved in the workspace.",
     "plugins.builtin.arxiv.name": "arXiv",
     "plugins.builtin.arxiv.description": "Search papers and read full text by section or page.",
     "plugins.builtin.computerUse.name": "Computer Use",

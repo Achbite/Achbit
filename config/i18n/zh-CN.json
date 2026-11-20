@@ -829,7 +829,7 @@
     "plugins.builtin.github.name": "GitHub",
     "plugins.builtin.github.description": "读取 GitHub 仓库、Issue 和 PR。",
     "plugins.builtin.pdf.name": "PDF 阅读",
-    "plugins.builtin.pdf.description": "提取文档内容，按页阅读。",
+    "plugins.builtin.pdf.description": "按页读取 PDF 文档、提取文本，支持附件和已保存到工作区的文件。",
     "plugins.builtin.arxiv.name": "arXiv",
     "plugins.builtin.arxiv.description": "搜索论文，按章节或页码阅读原文。",
     "plugins.builtin.computerUse.name": "Computer Use",

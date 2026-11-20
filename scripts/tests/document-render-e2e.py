@@ -22,7 +22,7 @@ HTML = (fixture.ROOT / "skills/achbit-documents/assets/document.html").read_text
     "替换为用户要求的正文。根据实际内容增删章节，不保留示例文字。",
     "Document rendering verification. 中文正文、标题层级和留白。<strong>重点信息</strong>保持清晰。").replace(
     "</main>", '<section style="break-before:page"><h2>第二页 · Second page</h2><p>Selectable PDF text.</p></section></main>')
-TYPST = (fixture.ROOT / "skills/achbit-documents/assets/document.typ").read_text()
+TYPST = (fixture.ROOT / "skills/achbit-documents/assets/document.typ").read_text() + "\nPAGETEXTALPHA\n"
 MARKDOWN = "# 文档报告\n\n清晰的 **Markdown** 正文。\n\n| 格式 | 用途 |\n| --- | --- |\n| PDF | 分享 |\n| HTML | 浏览 |\n"
 
 
@@ -33,7 +33,8 @@ class State:
         self.title_requests = []
 
     def record_failure(self, error):
-        self.failure = error
+        if self.failure is None:
+            self.failure = error
 
     def assert_healthy(self):
         if self.failure:
@@ -51,36 +52,55 @@ class Handler(fixture.MockProviderHandler):
             functions = [entry["function"] for entry in body["tools"]]
             skill = next(entry["name"] for entry in functions if "achbit-documents" in entry["parameters"].get("properties", {}).get("name", {}).get("enum", []))
             renderers = [entry["name"] for entry in functions if "pdf" in entry["parameters"].get("properties", {}).get("format", {}).get("enum", [])]
-            if state.calls == 1:
-                require(not renderers, "Renderer must be absent before plugin activation")
+            pdf_readers = [entry["name"] for entry in functions if "startPage" in entry["parameters"].get("properties", {}) and "endPage" in entry["parameters"].get("properties", {})]
+            if state.calls <= 2:
+                require(not renderers and not pdf_readers, "Discovery must not activate document tools")
             else:
-                require(len(renderers) == 1, "Activated document plugin must expose exactly one renderer")
+                require(len(renderers) == len(pdf_readers) == 1, "Expected distinct document writer and PDF reader after activation")
             renderer = renderers[0] if renderers else None
             activate = next(entry["name"] for entry in functions if "pluginUris" in entry["parameters"].get("properties", {}))
             reader = next(entry["name"] for entry in functions if "startByte" in entry["parameters"].get("properties", {}))
             results = {message["tool_call_id"]: fixture.tool_content(message["content"]) for message in body["messages"] if message["role"] == "tool"}
-            if state.calls == 3:
+            if state.calls == 2:
+                def found(call_id, uri):
+                    candidates = {item["uri"]: item for item in results[call_id]["plugins"]}
+                    require(uri in candidates, f"{call_id}: {uri} was not discoverable: {list(candidates)}")
+                    return candidates[uri]["uri"]
+                pdf_uri = found("document-input", "plugin://pdf@first-party")
+                found("read-file", pdf_uri)
+                found("read-zh", pdf_uri)
+                output_uri = found("document-output", "plugin://documents@builtin")
+            elif state.calls == 4:
                 require(isinstance(results["skill"], str), "Built-in document Skill failed")
                 require("document.render" in results["skill"], "Skill content missing")
-            elif state.calls == 4:
+            elif state.calls == 5:
                 for name in ["html", "pdf", "markdown"]:
                     require(bool(results[name]["artifacts"]), f"Document export failed: {results[name]}")
                 require(bool(results["missing"]["error"]["message"]), "Read failure was not preserved")
+            elif state.calls == 6:
+                require("PAGETEXTALPHA" in fixture.message_text(results["read-page"]), "Selected reader did not return the second page of the saved PDF")
             self.send_response(200)
             self.send_header("content-type", "text/event-stream; charset=utf-8")
             self.send_header("connection", "close")
             self.end_headers()
             if state.calls == 1:
-                self._send_tool_calls([("activate", activate, {"pluginUris": ["plugin://documents@builtin"]})])
+                search = next(entry["name"] for entry in functions if {"query", "offset"} <= entry["parameters"].get("properties", {}).keys())
+                self._send_tool_calls([(key, search, {"query": query}) for key, query in (
+                    ("document-input", "pdf document"), ("read-file", "view read file"),
+                    ("read-zh", "PDF 提取文本"), ("document-output", "create PDF"))])
             elif state.calls == 2:
-                self._send_tool_calls([("skill", skill, {"name": "achbit-documents"})])
+                self._send_tool_calls([("activate", activate, {"pluginUris": [output_uri, pdf_uri]})])
             elif state.calls == 3:
+                self._send_tool_calls([("skill", skill, {"name": "achbit-documents"})])
+            elif state.calls == 4:
                 self._send_tool_calls([
                     ("html", renderer, {"path": "报告.html", "format": "html", "content": HTML}),
                     ("pdf", renderer, {"path": "报告.pdf", "format": "pdf", "content": TYPST}),
                     ("markdown", renderer, {"path": "报告.md", "format": "markdown", "content": MARKDOWN}),
                     ("missing", reader, {"path": "missing.txt"}),
                 ])
+            elif state.calls == 5:
+                self._send_tool_calls([("read-page", pdf_readers[0], {"path": "报告.pdf", "startPage": 2, "endPage": 2})])
             else:
                 self._send_text("文档已生成，缺失文件的读取错误已保留。\n\n在产物中打开 `报告.html`、`报告.pdf` 或 `报告.md` 预览。")
         except BaseException as error:
@@ -158,9 +178,9 @@ def main():
             session = fixture.create_session(daemon, workspace)
             fixture.cli(daemon, session["sessionId"], "请将报告排版为 HTML、PDF 和 Markdown。")
             state.assert_healthy()
-            require(state.calls == 4 and len(state.title_requests) == 1, "Document Agent turns and auxiliary title request were not independently served")
+            require(state.calls == 6 and len(state.title_requests) == 1, "Document Agent turns and auxiliary title request were not independently served")
             verify_resources(daemon, fixture.projection(daemon, session["sessionId"]), workspace)
-            print("[documents-e2e] PASS: actual CLI, built-in Skill, HTML/PDF/Markdown tools, artifacts, resource bytes, and continuation after a read failure (fixture Provider)", flush=True)
+            print("[documents-e2e] PASS: CLI discovery and activation of separate document reader/writer, second-page PDF readback, built-in Skill, three exports, resource bytes and preserved read failure (fixture Provider)", flush=True)
             if args.preview_port:
                 preview(daemon, args.preview_port)
             daemon.shutdown()
