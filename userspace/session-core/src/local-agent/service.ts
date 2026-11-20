@@ -25,7 +25,7 @@ import type {
 import { SessionActor } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { combineTokenUsage, projectSession, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
+import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
 import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
@@ -354,7 +354,7 @@ export class SessionService implements ConversationPort {
     let pending = this.#historyReads.get(sessionId);
     if (!pending || pending.version !== version) {
       const result = readSessionEvents(this.journal, sessionId).then(async events => {
-        const projection = projectSession(recoverSession(sessionId, events));
+        const projection = projectSessionHistory(sessionId, events);
         // A commit during replay must never bind an older projection to a newer
         // version. Ignore a read that another version or disposal superseded.
         if (version !== undefined && await this.journal.historyVersion?.() === version
