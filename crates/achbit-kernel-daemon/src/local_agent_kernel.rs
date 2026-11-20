@@ -3474,14 +3474,18 @@ impl LocalToolRecordStore {
         let attempts = serde_json::to_string(attempts).map_err(|error| {
             LocalAgentKernelError::new("tool_record_encode_failed", error.to_string())
         })?;
+        // `operation` comes from the prepared effect, even when process.start is the outer tool.
+        // A create job's terminal result does not release its container. Only inspect and exec
+        // are known not to acquire a persistent container; a missing action is not such evidence.
         connection.query_row(
             "SELECT NOT EXISTS(SELECT 1 FROM json_each(?3) a LEFT JOIN tool_records r
                ON r.call_id=json_extract(a.value,'$[0]') AND r.attempt_id=json_extract(a.value,'$[1]')
                  AND r.session_id=?1 AND r.run_id=?2
                WHERE r.record_id IS NULL OR r.outcome='indeterminate')
              AND NOT EXISTS(SELECT 1 FROM tool_records WHERE session_id=?1 AND run_id=?2
-               AND tool_name='container' AND json_extract(record_json,'$.input.action')='create'
-               AND outcome<>'denied')",
+               AND operation='container' AND outcome<>'denied'
+               AND COALESCE(json_extract(record_json,'$.preparedEffect.canonicalInvocation.arguments.request.action'),'')
+                   NOT IN ('inspect','exec'))",
             params![session_id,run_id,attempts], |row| row.get(0),
         ).map_err(|error| LocalAgentKernelError::new("tool_record_read_failed", error.to_string()))
     }
@@ -6250,6 +6254,133 @@ mod attempt_control_tests {
                 .unwrap()
                 .released_run_bindings
                 .is_empty());
+        }
+    }
+
+    #[test]
+    fn restart_checks_the_prepared_container_effect_for_direct_and_managed_calls() {
+        struct Workspace(PathBuf);
+        impl WorkspaceResolverPort for Workspace {
+            fn resolve(&self, _: &str) -> Result<ResolvedWorkspace, LocalAgentKernelError> {
+                Ok(ResolvedWorkspace {
+                    root: self.0.to_string_lossy().into_owned(),
+                    access: WorkspaceAccess::Project,
+                })
+            }
+        }
+        // Preparation only: register the real container binding without executing Docker.
+        let root = tempfile::tempdir().unwrap();
+        let name = if cfg!(windows) {
+            "docker.exe"
+        } else {
+            "docker"
+        };
+        std::fs::write(root.path().join(name), b"").unwrap();
+        let resolver: Arc<dyn WorkspaceResolverPort> = Arc::new(Workspace(root.path().to_owned()));
+        for (tool, archived_action, managed, denied, may_finish) in [
+            ("container", Some("create"), false, true, true),
+            ("process", Some("create"), false, true, true),
+            ("container", Some("exec"), false, false, true),
+            ("process", Some("exec"), true, false, true),
+            ("container", Some("create"), false, false, false),
+            ("container", Some("create"), true, false, false),
+            ("process", Some("create"), true, false, false),
+            ("process", None, true, false, false),
+        ] {
+            let action = archived_action.unwrap_or("exec");
+            let mut product = crate::local_agent_product_tools::test_product_tools();
+            let config = Arc::get_mut(&mut product).unwrap();
+            config.container_instance = Some("plugin-instance:recovery".into());
+            config.container_runtime = Some(Arc::new(
+                crate::container_tools::Containers::new(root.path().to_str().unwrap()).unwrap(),
+            ));
+            let args = if action == "create" {
+                json!({"action":"create","image":"fixture"})
+            } else {
+                json!({"action":"exec","container":"existing","command":"pwd"})
+            };
+            let mut input = if tool == "process" {
+                json!({"action":"start","tool":"container","input":args})
+            } else {
+                args
+            };
+            input["workspaceId"] = json!("workspace:test");
+            let (mut kernel, request, catalog) =
+                kernel_with_product_tools(resolver.clone(), tool, input, product);
+            let archive = tempfile::tempdir().unwrap();
+            let path = archive.path().join("records.sqlite");
+            kernel.records = LocalToolRecordStore::open(&path).unwrap();
+            let effect = kernel.prepare_tool_target(&request).unwrap();
+            let journal = kernel.journal.clone();
+            journal.append(&json!({"type":"tool.requested","sessionId":request.session_id,"runId":request.run_id,"callId":request.call_id,
+                "payload":{"providerCallId":"provider:archive","attemptId":request.attempt_id,"toolName":tool,"input":request.input}})).unwrap();
+            let result = if action == "create" {
+                json!({"containerId":"created"})
+            } else {
+                json!({"stdout":"/work"})
+            };
+            let output = if denied {
+                None
+            } else {
+                journal.append(&json!({"type":"tool.started","sessionId":request.session_id,"runId":request.run_id,"callId":request.call_id,
+                    "payload":{"attemptId":request.attempt_id,"startedAt":"1"}})).unwrap();
+                if managed {
+                    let mut job = json!({"jobId":"job:container","sessionId":request.session_id,"runId":request.run_id,
+                        "callId":request.call_id,"attemptId":request.attempt_id,"toolName":"container","status":"active","revision":1});
+                    let start = json!({"job":job});
+                    for status in ["active", "completed"] {
+                        if status == "completed" {
+                            job["revision"] = json!(2);
+                            job["status"] = json!(status);
+                            job["result"] = result.clone();
+                        }
+                        journal.append(&json!({"type":"process.updated","sessionId":request.session_id,"runId":request.run_id,"callId":request.call_id,
+                            "payload":{"job":job}})).unwrap();
+                    }
+                    Some(start)
+                } else {
+                    Some(result)
+                }
+            };
+            let outcome = if denied { "denied" } else { "completed" };
+            let mut record = tool_record(
+                &request,
+                &effect,
+                json!({"decision":if denied {"deny"} else {"allow"}}),
+                "1",
+                "2",
+                outcome,
+                output,
+                denied.then(|| json!({"code":"fixture_denied","message":"Not executed"})),
+            )
+            .unwrap();
+            if archived_action.is_none() {
+                // The original input says exec, but it is not proof of the prepared action.
+                record["preparedEffect"]["canonicalInvocation"]["arguments"]["request"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("action");
+            }
+            kernel.records.insert(&record).unwrap();
+            journal.append(&json!({"type":"run.finishing","sessionId":request.session_id,"runId":request.run_id,"payload":{"outcome":"cancelled"}})).unwrap();
+            drop(effect);
+            drop(kernel);
+            let restored = LocalAgentKernel::open(&path, journal, resolver.clone()).unwrap();
+            let release = restored.release_catalog(ReleaseToolCatalogRequest::new(
+                &request.session_id,
+                &request.run_id,
+                catalog["kernelCatalogSnapshotRef"].as_str().unwrap(),
+            ));
+            let case = format!("{tool}/{archived_action:?}, managed={managed}, denied={denied}");
+            if may_finish {
+                assert_eq!(release.unwrap()["recoveredAfterRestart"], true, "{case}");
+            } else {
+                assert_eq!(
+                    release.expect_err(&case).code,
+                    "run_runtime_cleanup_unconfirmed",
+                    "{case}"
+                );
+            }
         }
     }
 
