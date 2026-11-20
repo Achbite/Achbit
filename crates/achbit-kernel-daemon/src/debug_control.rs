@@ -282,7 +282,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
                 value.to_string()
             }
             None => {
-                let request = serde_json::from_value(json!({"workspacePaths":[selected.workspace],"profileId":params["profileId"],"recipe":params["recipe"]})).map_err(|e| e.to_string())?;
+                let request = serde_json::from_value(json!({"workspacePaths":[selected.workspace],"profileId":params["profileId"],"recipe":params["recipe"],"subagentSettings":params["subagentSettings"]})).map_err(|e| e.to_string())?;
                 let projection = data(
                     crate::conversation_api::conversation_session_create(
                         ReadyState(state.clone()),

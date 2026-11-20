@@ -77,6 +77,51 @@ pub(crate) fn parse(value: Value) -> Result<Input, String> {
     Ok(input)
 }
 
+// Publish the real PGID before running caller code. Close descendants before they
+// can hold Docker's output transport open; only the independent verifier removes the marker.
+const EXEC_GROUP: &str = r#"command -v setsid >/dev/null || { echo 'container exec requires setsid' >&2; exit 127; }
+setsid /bin/sh -c '
+    (umask 077; printf "%s\n" "$$" > "$2") || exit 1
+    exec /bin/sh -c "$1"
+' achbit "$1" "$2" &
+wait "$!"; status=$?
+if ! stop_group "$2"; then printf '%s\n' 'container exec initial cleanup unconfirmed; awaiting independent verification' >&2; fi
+exit "$status""#;
+
+// Shared by the in-container wrapper and the post-client verification attempt.
+// A subshell keeps cleanup's exit/diagnostics separate from the workload's exit code.
+const GROUP_CONTROL: &str = r#"stop_group() (
+export LC_ALL=C
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+[ -f "$1" ] || fail 'container exec group marker missing; exit unconfirmed'
+IFS= read -r pgid < "$1" || fail 'could not read container exec group marker'
+case "$pgid" in ''|0*|1|*[!0-9]*) fail 'invalid container exec group marker';; esac
+[ "$pgid" -le 2147483647 ] || fail 'invalid container exec group ID'
+# A permission error is not proof of absence. Accept only ESRCH from a signal-0
+# probe in the C locale; unfamiliar diagnostics are explicit cleanup failures.
+group_alive() {
+    cause=$(kill -0 "-$pgid" 2>&1) && return 0
+    case "$cause" in *[Nn]o\ such\ process*) return 1;; esac
+    fail "cannot confirm container exec group $pgid exit: $cause"
+}
+signal_group() {
+    signal_error=$(kill "-$1" "-$pgid" 2>&1) && return 0
+    if group_alive; then fail "cannot signal container exec group $pgid ($1): $signal_error"; fi
+}
+if group_alive; then
+    signal_group TERM
+    if group_alive; then signal_group KILL; fi
+    attempts=0
+    while group_alive; do
+        [ "$attempts" -lt 40 ] || fail "container exec group $pgid still present after KILL"
+        sleep 0.05 || fail 'failed waiting for container exec group exit'
+        attempts=$((attempts + 1))
+    done
+fi
+)"#;
+
+const CLEANUP_GROUP: &str = r#"stop_group "$1" && rm -f -- "$1""#;
+
 pub(crate) struct Containers {
     executable: PathBuf,
     // The Kernel run owns this adapter across replaceable tool catalog views.
@@ -251,9 +296,15 @@ impl Containers {
             args.extend(["--workdir".into(), cwd.clone()]);
         }
         // Command is an argument, not interpolated into the wrapper. Cancellation owns this group only.
-        args.extend([container.into(),"/bin/sh".into(),"-c".into(),
-            "command -v setsid >/dev/null || { echo 'container exec requires setsid' >&2; exit 127; }; setsid /bin/sh -c \"$1\" & child=$!; printf '%s' \"$child\" > \"$2\"; wait \"$child\"; status=$?; kill -TERM -\"$child\" 2>/dev/null || :; kill -KILL -\"$child\" 2>/dev/null || :; rm -f -- \"$2\"; exit \"$status\"".into(),
-            "achbit".into(),input.command.clone().expect("validated command"),marker.clone()]);
+        args.extend([
+            container.into(),
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("{GROUP_CONTROL}\n{EXEC_GROUP}"),
+            "achbit".into(),
+            input.command.clone().expect("validated command"),
+            marker.clone(),
+        ]);
         let mut result = execute_cli_command(
             id.into(),
             self.cli(Some(docker_context), &args),
@@ -264,15 +315,35 @@ impl Containers {
         )
         .map_err(|e| e.to_string());
         // Killing the Docker client doesn't stop docker exec on the daemon.
-        let cleanup = self.metadata(Some(docker_context), &["exec".into(),container.into(),"/bin/sh".into(),"-c".into(),
-            "if [ -f \"$1\" ]; then read -r pid < \"$1\" || :; kill -TERM -\"$pid\" 2>/dev/null || :; kill -KILL -\"$pid\" 2>/dev/null || :; rm -f -- \"$1\"; fi".into(),"achbit".into(),marker]);
+        let cleanup = self.metadata(
+            Some(docker_context),
+            &[
+                "exec".into(),
+                container.into(),
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("{GROUP_CONTROL}\n{CLEANUP_GROUP}"),
+                "achbit".into(),
+                marker,
+            ],
+        );
         if let Err(error) = cleanup {
             let cleanup = format!("container process cleanup: {error}");
             match &mut result {
                 Ok(result) => {
                     result.outcome = KernelToolExecutionOutcome::Failed;
                     match &mut result.error {
-                        Some(error) => error.message.push_str(&format!("; {cleanup}")),
+                        Some(error) => {
+                            if error.code == "tool_execution_cancelled" {
+                                // The client exited; the in-container group is unconfirmed.
+                                // Jobs recognises only a confirmed cancellation by this code.
+                                error.message =
+                                    format!("{}: {}; {cleanup}", error.code, error.message);
+                                error.code = "container_cleanup_failed".into();
+                            } else {
+                                error.message.push_str(&format!("; {cleanup}"));
+                            }
+                        }
                         None => {
                             result.error = Some(KernelToolExecutionFailure {
                                 code: "container_cleanup_failed".into(),
@@ -495,6 +566,206 @@ esac
         added.as_array_mut().unwrap().push(mounts[0].clone());
         assert_ne!(first, prepare(added).unwrap(), "do not drop mount entries");
         assert!(prepare(Value::Null).unwrap_err().contains("mounts missing"));
+    }
+
+    #[test]
+    fn container_exec_managed_cancel_requires_confirmed_cleanup() {
+        use crate::managed_processes::Jobs;
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        use std::time::{Duration, Instant};
+
+        // The fake client and the fixture-owned target have independent lifetimes, as
+        // with Docker exec. Never use a daemon or signal a process outside this test.
+        for mode in [
+            "confirmed",
+            "cleanup-unreachable",
+            "no-marker",
+            "signal-denied",
+        ] {
+            let root = MetadataArchive(
+                std::env::temp_dir().join(
+                    crate::utils::new_runtime_ref("container-cancel-test")
+                        .unwrap()
+                        .replace(':', "-"),
+                ),
+            );
+            std::fs::create_dir_all(&root.0).unwrap();
+            let docker = root.0.join("docker");
+            std::fs::write(&docker, r#"#!/bin/sh
+root=${0%/*}
+if [ "$9" = owned-command ]; then
+  echo original-stdout; echo original-stderr >&2
+  : > "$root/client-ready"
+  exec sleep 8
+fi
+case "$(cat "$root/mode")" in
+  cleanup-unreachable) echo fixture-daemon-unreachable >&2; exit 9;;
+  signal-denied) prefix='kill() { if [ "$1" = -0 ]; then command kill "$@"; else echo fixture-signal-denied >&2; return 1; fi; };';;
+esac
+# Run the actual container-side cleanup shell against an isolated path.
+exec /bin/sh -c "$prefix $7" achbit "$root/marker"
+"#).unwrap();
+            std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(root.0.join("mode"), mode).unwrap();
+            let target_process = if matches!(mode, "confirmed" | "signal-denied") {
+                let mut child = Command::new("sleep")
+                    .arg("5")
+                    .process_group(0)
+                    .spawn()
+                    .unwrap();
+                std::fs::write(root.0.join("marker"), format!("{}\n", child.id())).unwrap();
+                Some(std::thread::spawn(move || child.wait().unwrap()))
+            } else {
+                None
+            };
+            let adapter = Containers::new(root.0.to_str().unwrap()).unwrap();
+            let target = json!({"engine":{"context":"fixture"},"id":"fixture-container"});
+            let input = parse(json!({"action":"exec","container":"fixture-container","command":"owned-command","timeout":8})).unwrap();
+            let output = root.0.join("archive");
+            let jobs = Jobs::default();
+            jobs.start(json!({"jobId":"job:exec", "sessionId":"session:fixture", "runId":"run:fixture", "attemptId":"attempt:exec", "callId":"call:exec", "toolName":"container"}),
+                move |cancellation, progress| adapter.invoke("attempt:exec", &input, &target, &KernelToolExecutionContext {
+                    output_directory: Some(output), workspace_root: None, workspace_id: None, private_resolved_targets: vec![],
+                    workspace_write_targets: None, file_access: Default::default(), cancellation, progress,
+                })).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !root.0.join("client-ready").exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let job = jobs
+                .control(
+                    "session:fixture",
+                    "run:fixture",
+                    "job:exec",
+                    "cancel",
+                    Some(10),
+                    &Default::default(),
+                )
+                .unwrap();
+            jobs.release_run("session:fixture", "run:fixture").unwrap();
+            let exit = target_process.map(|thread| thread.join().unwrap());
+            assert!(
+                root.0.join("client-ready").exists(),
+                "{mode}: client never started"
+            );
+            assert_eq!(job["result"]["exitCode"], Value::Null);
+            assert_eq!(job["result"]["timedOut"], false);
+            assert_eq!(job["result"]["stdout"], "original-stdout\n");
+            assert_eq!(job["result"]["stderr"], "original-stderr\n");
+            assert!(job["result"]["fullOutput"]["stdout"]["path"].is_string());
+            let message = job["error"]["message"].as_str().unwrap();
+            assert!(message.contains("cancelled"), "{mode}: {message}");
+            if mode == "confirmed" {
+                assert_eq!(job["status"], "cancelled");
+                assert_eq!(job["error"]["code"], "tool_execution_cancelled");
+                assert!(
+                    matches!(exit.unwrap().signal(), Some(15 | 9)),
+                    "owned group did not receive a signal"
+                );
+            } else {
+                assert_eq!(job["status"], "failed", "{mode}: {job}");
+                assert_eq!(job["error"]["code"], "container_cleanup_failed");
+                let cause = match mode {
+                    "cleanup-unreachable" => "fixture-daemon-unreachable",
+                    "signal-denied" => "fixture-signal-denied",
+                    _ => "marker",
+                };
+                assert!(message.contains(cause), "{mode}: {message}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn container_exec_group_leader_preserves_direct_exit_and_timeout_facts() {
+        let root = MetadataArchive(
+            std::env::temp_dir().join(
+                crate::utils::new_runtime_ref("container-exit-test")
+                    .unwrap()
+                    .replace(':', "-"),
+            ),
+        );
+        std::fs::create_dir_all(&root.0).unwrap();
+        let docker = root.0.join("docker");
+        std::fs::write(
+            &docker,
+            r#"#!/bin/sh
+root=${0%/*}
+if [ "$#" -eq 10 ]; then
+    read -r pid comm state ppid pgid rest < /proc/self/stat || exit 90
+    [ "$pid" = "$pgid" ] || { echo 'fixture client not a process group leader' >&2; exit 91; }
+    if [ "$9" = timeout-probe ]; then
+        echo timed-output; echo timed-stderr >&2
+        : > "$root/timed-out-client"
+        exec sleep 4
+    fi
+    # Docker's output transport remains open until descendants close the pipes.
+    # Start the actual wrapper as a PG leader; collect to EOF, not just its wait status.
+    exec python3 -c '
+import os, subprocess, sys
+script, command, marker = sys.argv[1:]
+check = "read -r pid comm state ppid pgid rest < /proc/self/stat && [ \"$pid\" = \"$pgid\" ] || exit 92\n"
+p = subprocess.run(["/bin/sh", "-c", check + script, "achbit", command, marker], cwd=os.path.dirname(marker), start_new_session=True, capture_output=True, timeout=5)
+sys.stdout.buffer.write(p.stdout); sys.stderr.buffer.write(p.stderr); sys.exit(p.returncode)
+' "$7" "$9" "$root/marker"
+fi
+if [ -f "$root/timed-out-client" ]; then echo timeout-cleanup-unavailable >&2; exit 9; fi
+exec /bin/sh -c "$7" achbit "$root/marker"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let adapter = Containers::new(root.0.to_str().unwrap()).unwrap();
+        let target = json!({"engine":{"context":"fixture"},"id":"fixture-container"});
+        for (i, code) in [Some(0), Some(7), None].into_iter().enumerate() {
+            let cmd = code
+                .map(|n| format!("(sleep 0.8; echo lingering-child; : > late-work) & sleep 0.05; echo done; echo diagnostic >&2; exit {n}"))
+                .unwrap_or_else(|| "timeout-probe".into());
+            let input = parse(json!({"action":"exec","container":"fixture-container","command":cmd,"timeout":if code.is_some() { 5 } else { 1 }})).unwrap();
+            let result = adapter
+                .invoke(
+                    "direct",
+                    &input,
+                    &target,
+                    &KernelToolExecutionContext {
+                        output_directory: Some(root.0.join(format!("out-{i}"))),
+                        workspace_root: None,
+                        workspace_id: None,
+                        private_resolved_targets: vec![],
+                        workspace_write_targets: None,
+                        file_access: Default::default(),
+                        cancellation: Default::default(),
+                        progress: Default::default(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(result.output["exitCode"], json!(code));
+            assert_eq!(result.output["timedOut"], code.is_none());
+            if code.is_some() {
+                assert_eq!(result.output["stdout"], "done\n");
+                assert!(!root.0.join("late-work").exists(), "background work outlived the foreground command while Docker was draining its pipe");
+                assert_eq!(result.output["stderr"], "diagnostic\n");
+                assert!(
+                    !root.0.join("marker").exists(),
+                    "confirmed group marker was not removed"
+                );
+            }
+            match code {
+                Some(0) => assert!(result.error.is_none(), "{:?}", result.error),
+                Some(_) => assert_eq!(result.error.unwrap().code, "process_exit_nonzero"),
+                None => {
+                    assert_eq!(result.output["stdout"], "timed-output\n");
+                    assert_eq!(result.output["stderr"], "timed-stderr\n");
+                    assert!(result.output["fullOutput"]["stdout"]["path"].is_string());
+                    let error = result.error.unwrap();
+                    assert_eq!(error.code, "process_timed_out");
+                    assert!(
+                        error.message.contains("1-second timeout")
+                            && error.message.contains("timeout-cleanup-unavailable")
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -2,9 +2,9 @@
 
 ## Configure a model
 
-Settings → Models & services contains API connections and Coding Plans. A connection owns the endpoint and credential; profiles select its model, context window, output budget and capabilities. In a connection, **Add model** opens its searchable provider catalog. Select a row and confirm, or choose **Custom model** and enter a model ID and display name. Adding a model does not change the last-used selection. **Save changes** saves pending text and numeric edits together. Enter in a numeric field saves that field; Enter in a text field saves the text edits. Switches and selectors still save immediately without submitting other drafts. A run keeps its captured configuration.
+Settings → Models & services contains API connections and Coding Plans. A connection owns the endpoint and credential; profiles select its model, context window, output budget and capabilities. In a connection, **Add model** opens its searchable provider catalog. Select a row and confirm, or choose **Custom model** and enter a model ID and display name. Adding a model does not change the new-conversation default. **Save changes** saves pending text and numeric edits together. Enter in a numeric field saves that field; Enter in a text field saves the text edits. Switches and selectors still save immediately without submitting other drafts. A run keeps its captured configuration.
 
-The last profile used for a submitted task becomes the new-conversation default. Reasoning effort is selected in the conversation picker and remembered per model. The execution approval model has separate settings; an empty selection uses the run's model in an independent review context. It reviews an execution request, not a Plan or user question.
+Choose a model and reasoning effort in the conversation picker. Each root conversation remembers its own settings. Explicitly changing its model, effort or subagent settings makes that conversation’s complete selection the default for new conversations. Reading or sending a message in an older conversation, including `/focus`, does not change this default. The execution approval model has separate settings; an empty selection uses the run's model in an independent review context. It reviews an execution request, not a Plan or user question.
 
 Codex Coding Plan supports browser or device authentication through the Host, without requiring an installed Codex CLI. Credentials stay in the local secret store. Login is a user action; do not copy credentials between ordinary and Debug instances without authorization.
 
@@ -18,7 +18,7 @@ achbit-cli quota CONNECTION_ID
 achbit-cli --model PROFILE_ID ask "Explain this code."
 ```
 
-TUI `/model` or `/connection` opens selection; `/model PROFILE_ID` selects directly. For DeepSeek setup, see the [DeepSeek setup guide](deepseek.md).
+In the TUI, `/model` or `/connection` opens the terminal picker; `/model PROFILE_ID` selects directly. CLI chat and TUI `/model` select the profile to send with subsequent input in that terminal conversation. Neither this terminal override nor `--model … ask` is an edit to the new-conversation default. To explicitly change the default profile from the CLI, use `models default PROFILE_ID`. For DeepSeek setup, see the [DeepSeek setup guide](deepseek.md).
 
 ## Configure through the CLI
 
@@ -161,7 +161,7 @@ The Host installs product contributions in the Session configuration registry. T
 
 The built-in `analysis` preset selects `{"kernel":["fs.read"],"controls":["agent","session"],"plugins":false}`. Give it a reading task and exact file references; it can send findings or questions to its task owner and wait for replies. Use `collaboration` for editing and teamwork with inherited installed capabilities. `fs.read` reads known paths.
 
-Subagent settings are global within the configuration root. The settings page and model-panel switch save the same values. Every new task captures its own configuration, including tasks started in existing conversations; an active task keeps its snapshot through later requests and delegation. Individual subagent model/effort overrides do not write back to the global settings.
+A root conversation stores its subagent configuration alongside its model choice. New conversations start with the configuration from the last explicit edit. Sending a message in another conversation does not overwrite this default; that conversation continues to use its own saved selection. Each run freezes that conversation's configuration through later requests and delegation. A delegated child starts with its assigning run’s settings; child model/effort overrides do not write back to the user's new-conversation defaults.
 
 Full subagent configuration is off by default. The model selects a template and an allowed profile. Enabling **Full configuration** (`agent.subagents.allowFullConfiguration`) exposes per-task model effort, context, controls, compaction, tools, capabilities, installed runner, product components, permission policy and sandbox choices to the coordinator through `agent` → `models`. This setting is independent of the **Full access** execution-permission preset. The built-in runner is `standard`; additional runners must already be installed, and recipes do not load executable code. Children retain the parent tool and permission limits. Explicit saved settings are preserved. Configuration catalogs and current contacts stay in discovery results; tool declarations remain stable while task progress changes.
 

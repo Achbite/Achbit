@@ -350,6 +350,40 @@ impl LocalAgentJournal {
         read_agent_context(&*self.lock()?, session_id)
     }
 
+    /// Read the selected Session's facts, not Host defaults. A recorded run has its
+    /// own frozen value; an older run without that field can only see earlier facts.
+    pub(crate) fn subagent_settings_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Option<Value>, LocalAgentStoreError> {
+        let connection = self.lock()?;
+        let encoded: Option<String> = connection.query_row(
+            "WITH started AS (
+               SELECT sequence, json_extract(payload_json,'$.runtimeSnapshot.subagentSettings') AS frozen
+               FROM session_events WHERE session_id=?1 AND run_id=?2 AND event_type='run.started'
+               ORDER BY sequence DESC LIMIT 1
+             ), cutoff AS (SELECT COALESCE((SELECT sequence FROM started), ?3) AS seq)
+             SELECT COALESCE(
+               (SELECT frozen FROM started),
+               (SELECT json_extract(payload_json, CASE event_type WHEN 'session.created' THEN '$.subagentSettings' ELSE '$.settings' END)
+                FROM session_events WHERE session_id=?1 AND sequence < (SELECT seq FROM cutoff)
+                  AND event_type IN ('session.created','session.subagent-settings.updated') ORDER BY sequence DESC LIMIT 1),
+               (SELECT json_extract(payload_json,'$.runtimeSnapshot.subagentSettings') FROM session_events
+                WHERE session_id=?1 AND sequence < (SELECT seq FROM cutoff) AND event_type='run.started'
+                  AND json_type(payload_json,'$.runtimeSnapshot.subagentSettings') IS NOT NULL ORDER BY sequence DESC LIMIT 1)
+             )",
+            params![session_id, run_id, i64::MAX], |row| row.get(0),
+        ).map_err(sql_error("session_subagent_settings_read_failed"))?;
+        encoded
+            .map(|text| {
+                let value = decode_json(&text, "session_subagent_settings_corrupt")?;
+                validate_subagent_settings(&value)?;
+                Ok(value)
+            })
+            .transpose()
+    }
+
     /// A started run retains its selection after a later Session mode command.
     pub(crate) fn mode_for_run(
         &self,
@@ -4199,7 +4233,7 @@ fn validate_reasoning_override(value: &Value) -> Result<(), LocalAgentStoreError
     ))
 }
 
-fn validate_model_settings(value: &Value) -> Result<(), LocalAgentStoreError> {
+pub(crate) fn validate_model_settings(value: &Value) -> Result<(), LocalAgentStoreError> {
     exact_object(value, &["profileId", "reasoningEffortOverride"], &[])?;
     validate_id("profileId", required_string(value, "profileId")?)?;
     validate_reasoning_override(&value["reasoningEffortOverride"])
@@ -7029,6 +7063,106 @@ mod tests {
                 .get("subagentSettings")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn subagent_settings_freeze_each_run_and_keep_sessions_isolated_after_reopen() {
+        let store = Store::new();
+        let a = json!({"enabled":false,"profileId":"gpt","reasoningEffort":"max",
+            "maxConcurrent":4,"maxCallsPerRun":8,"maxMembersPerSession":12,
+            "allowMemberAnalysis":true,"allowFullConfiguration":false,"presets":"[]"});
+        let mut b = a.clone();
+        b["enabled"] = json!(true);
+        b["profileId"] = json!("deepseek");
+        b["reasoningEffort"] = json!("medium");
+        {
+            let journal = LocalAgentJournal::open(&store.path()).unwrap();
+            for session in ["session:a", "session:b"] {
+                journal
+                    .create_session_with_recipe(
+                        session,
+                        session,
+                        &json!([]),
+                        None,
+                        None,
+                        None,
+                        Some(&a),
+                    )
+                    .unwrap();
+            }
+            let start = |session: &str, run: &str, selected: Option<&Value>| {
+                let mut runtime = runtime_snapshot();
+                if let Some(selected) = selected {
+                    runtime["subagentSettings"] = selected.clone();
+                }
+                journal.append(&json!({"type":"run.started","sessionId":session,"runId":run,
+                    "payload":{"inputMessageId":"message:fixture","workspaceBindings":[],"runtimeSnapshot":runtime}})).unwrap();
+            };
+            let change = |session: &str| {
+                journal
+                    .append(
+                        &json!({"type":"session.subagent-settings.updated","sessionId":session,
+                    "payload":{"commandId":"command:change","settings":b}}),
+                    )
+                    .unwrap();
+            };
+            start("session:b", "run:b-active", Some(&a));
+            change("session:b");
+            journal
+                .create_session_with_recipe(
+                    "session:c",
+                    "C",
+                    &json!([]),
+                    None,
+                    None,
+                    None,
+                    Some(&b),
+                )
+                .unwrap();
+
+            // Sessions from the per-run-only version need no migration. A later
+            // update cannot change a started run which omitted this optional field.
+            journal
+                .create_session("session:legacy", "Legacy", &json!([]), None, None)
+                .unwrap();
+            assert!(journal
+                .subagent_settings_for_run("session:legacy", "run:new")
+                .unwrap()
+                .is_none());
+            start("session:legacy", "run:legacy-one", Some(&a));
+            start("session:legacy", "run:legacy-two", Some(&b));
+            assert_eq!(
+                journal
+                    .subagent_settings_for_run("session:legacy", "run:new")
+                    .unwrap(),
+                Some(b.clone())
+            );
+            start("session:legacy", "run:legacy-omitted", None);
+            journal
+                .append(
+                    &json!({"type":"session.subagent-settings.updated","sessionId":"session:legacy",
+                "payload":{"commandId":"command:legacy","settings":a}}),
+                )
+                .unwrap();
+        }
+        let restored = LocalAgentJournal::open(&store.path()).unwrap();
+        for (session, run, expected) in [
+            ("session:a", "run:new", &a),
+            ("session:b", "run:b-active", &a),
+            ("session:b", "run:new", &b),
+            ("session:c", "run:new", &b),
+            ("session:legacy", "run:legacy-omitted", &b),
+            ("session:legacy", "run:new", &a),
+        ] {
+            assert_eq!(
+                restored
+                    .subagent_settings_for_run(session, run)
+                    .unwrap()
+                    .as_ref(),
+                Some(expected),
+                "{session} {run}"
+            );
+        }
     }
 
     #[test]

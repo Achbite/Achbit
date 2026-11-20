@@ -4,8 +4,8 @@ import type { SessionMode } from '@achbit/protocol';
 import { providerNeedsContinuation, type ProviderContinuation } from '@achbit/protocol';
 import { sameModelContext } from './modelContext.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
-import { decodeAgentCapabilities, isLlmReasoningEffort } from '@achbit/protocol';
-import { DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
+import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
+import { agentPresets, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
 import type { SessionOperation, JsonObject } from '@achbit/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { activeProcessWait, PROCESS_WAIT_REVIEW_MS } from './processWait.js';
@@ -69,6 +69,26 @@ interface ActiveRun {
 }
 
 const MAX_FILESYSTEM_REFERENCE_COUNT = 8;
+
+/** Select only an actionable identity; do not copy a child's operation or transcript into its owner. */
+export function humanApprovalRoute(snapshot: LoopSnapshot, runId: string): { approvalId: string; callId: string } | undefined {
+  const { run, pendingApprovals } = snapshot.state;
+  if (!run || run.runId !== runId || !['running', 'waiting'].includes(run.status)) return;
+  for (const approval of pendingApprovals) {
+    if (approval.runId !== runId) continue;
+    if (approval.preview.approvalReviewer === 'agent') {
+      if (approval.preview.review?.decision !== 'ask') continue;
+      const reviews = snapshot.events.filter((event): event is Extract<SessionEvent, { type: 'approval.reviewed' }> =>
+        event.type === 'approval.reviewed' && event.runId === runId && event.callId === approval.callId
+        && event.payload.approvalId === approval.approvalId);
+      // The first invalid reply is recorded before the reviewer's single format correction.
+      // It is not a final handoff. Another call's wait must not make it actionable.
+      const last = reviews.at(-1);
+      if (!last || last.payload.error?.code === 'approval_review_invalid' && reviews.length === 1) continue;
+    }
+    return { approvalId: approval.approvalId, callId: approval.callId };
+  }
+}
 
 export class SessionActor {
   readonly #timing: RunTiming;
@@ -210,6 +230,10 @@ export class SessionActor {
       }
     }
     return projection;
+  }
+
+  async humanApprovalRoute(runId: string) {
+    return humanApprovalRoute(await this.loadSnapshot(), runId);
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
@@ -705,8 +729,15 @@ export class SessionActor {
   private async handleSubagentSettings(
     command: Extract<ConversationCommand, { type: 'session.subagent-settings.set' }>,
   ): Promise<CommandReply> {
-    return this.recordRejection(command, 'session_subagent_settings_unsupported',
-      'Subagent settings are global. Save agent.subagents settings; the next task captures them.');
+    let settings;
+    try {
+      settings = decodeAgentSettings(command.settings);
+      agentPresets(settings);
+    } catch (error) {
+      return this.recordRejection(command, 'agent_settings_invalid', error instanceof Error ? error.message : String(error));
+    }
+    return this.commitCommand(command, [{ type: 'session.subagent-settings.updated', sessionId: this.sessionId,
+      payload: { commandId: command.commandId, settings } }], acceptedReply(command));
   }
 
   private async handleWorkspaceBindings(

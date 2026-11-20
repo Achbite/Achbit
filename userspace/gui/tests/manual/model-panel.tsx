@@ -19,13 +19,14 @@ import '../../src/components/shared/focus.css';
 installPaletteDefaults();
 const connection = { id: 'connection:fixture', name: 'Fixture', adapterId: 'custom', billingMode: 'metered' as const,
   baseUrl: 'https://example.test/v1', credentialKind: 'apiKey' as const, authStatus: 'ready' as const };
-const profiles: LlmProviderProfile[] = [
+let profiles: LlmProviderProfile[] = [
   { id: 'model:three', connectionId: connection.id, name: '三档模型', model: 'glm-5.3', providerFlavor: 'zhipu', kind: 'openaiCompatible', enabled: true, thinking: 'enabled', reasoningEffort: 'high' },
   { id: 'model:five', connectionId: connection.id, name: '带有很长显示名称的模型用于检查截断而不是溢出', model: 'gpt-5.4', providerFlavor: 'openai', kind: 'responses', enabled: true, reasoningEffort: 'high' },
   { id: 'model:fixed', connectionId: connection.id, name: '固定强度模型', model: 'kimi-for-coding-highspeed', providerFlavor: 'moonshot', kind: 'responses', enabled: true },
   { id: 'model:unset', connectionId: connection.id, name: '未选强度模型', model: 'glm-5.3', providerFlavor: 'zhipu', kind: 'openaiCompatible', enabled: true },
   { id: 'model:disabled', connectionId: connection.id, name: '关闭思考模型', model: 'gpt-5.4', providerFlavor: 'openai', kind: 'responses', enabled: true, thinking: 'disabled' },
 ];
+let defaultProfileId = profiles[0]!.id;
 const defaults: AgentSettings = { enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 3, maxCallsPerRun: 11,
   maxMembersPerSession: 2, allowMemberAnalysis: true, allowFullConfiguration: true, presets: '[]' };
 let settings: UserSettings = { ...DEFAULT_USER_SETTINGS, ...Object.fromEntries(Object.entries(defaults).map(([key, value]) => [`agent.subagents.${key}`, value])) };
@@ -53,12 +54,25 @@ window.fetch = async (input, init) => {
   }
   if (path.endsWith('/commands')) {
     const command = JSON.parse(String(init?.body)); writes.push(command);
+    if (failSettings) return Response.json({ ok: false, message: 'fixture settings write failed' });
     if (command.type === 'session.model-settings.set') projection = { ...projection, modelSettings: command.settings, revision: projection.revision + 1 };
+    else if (command.type === 'session.subagent-settings.set') projection = { ...projection, subagentSettings: command.settings, revision: projection.revision + 1 };
     else throw new Error(`Unexpected fixture command: ${command.type}`);
+    const selected = projection.modelSettings!;
+    defaultProfileId = selected.profileId;
+    profiles = profiles.map(item => item.id === defaultProfileId ? { ...item, reasoningEffort: selected.reasoningEffortOverride ?? item.reasoningEffort } : item);
+    settings = { ...settings, ...Object.fromEntries(Object.entries(projection.subagentSettings!).map(([key, value]) => [`agent.subagents.${key}`, value])) };
     return result({ schemaVersion: COMMAND_REPLY_VERSION, status: 'accepted', commandId: command.commandId, sessionId: projection.sessionId, revision: projection.revision });
   }
   if (path.endsWith('/projection')) return result(projection);
-  if (path === '/api/llm/profiles') return result({ profiles, connections: [connection], defaultProfileId: profiles[0].id });
+  if (path === '/api/llm/profiles') {
+    if (init?.method === 'PATCH') {
+      const update = JSON.parse(String(init.body));
+      if (update.profile) profiles = profiles.map(item => item.id === update.profile.id ? update.profile : item);
+      if (update.defaultProfileId) defaultProfileId = update.defaultProfileId;
+    }
+    return result({ profiles, connections: [connection], defaultProfileId });
+  }
   if (path === '/api/llm/connections') return result({ connections: [connection], adapters: [{ id: 'custom', name: 'Fixture', billingModes: ['metered'], authMethods: ['apiKey'], protocols: ['openaiCompatible', 'responses'], models: [], defaultBaseUrl: connection.baseUrl, source: 'builtin' }] });
   if (path.includes('/usage')) return result({ connections: [], totals: {}, days: [], models: [] });
   throw new Error(`Unexpected fixture request: ${path}`);

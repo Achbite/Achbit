@@ -59,6 +59,9 @@ export function projectComputerActivity(record: ToolExecutionRecord, artifacts: 
       ...(interfaceSnapshot ? { interface: interfaceSnapshot } : {}) };
   }
   const result: JsonObject = {};
+  if (record.toolName === 'computer.control' && detail.action === 'listApps' && Array.isArray(output.applications)) {
+    result.applications = structuredClone(output.applications);
+  }
   for (const key of ['apps', 'windows', 'pages', 'executor', 'permissions', 'capabilities', 'status', 'mode', 'coordinateSpace', 'width', 'height', 'capturedAt', 'readiness', 'valueVerification', 'actionError', 'observationError']) {
     if (output[key] !== undefined) result[key] = structuredClone(output[key]);
   }

@@ -1,6 +1,6 @@
 {
   "name": "@achbit/chrome-devtools-runtime",
-  "version": "0.7.86",
+  "version": "0.7.87",
   "private": true,
   "license": "MIT",
   "dependencies": {

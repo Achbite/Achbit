@@ -1,6 +1,7 @@
 import { deserialize, serialize } from 'node:v8';
 import type { SessionObservationSink } from './observation.js';
-import { decodeAgentRecipe } from '@achbit/protocol';
+import { decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
+import { agentPresets } from './agentConfiguration.js';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
 import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
@@ -22,10 +23,10 @@ import type {
   PendingAgentDecision,
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
-import { SessionActor } from './actor.js';
+import { SessionActor, humanApprovalRoute } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { combineTokenUsage, projectSession, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
+import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
 import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
@@ -126,7 +127,14 @@ export class SessionService implements ConversationPort {
 
   async createSession(input: SessionCreationInput): Promise<SessionProjection> {
     this.assertOpen();
-    if ('subagentSettings' in input) throw new Error('session_subagent_settings_unsupported');
+    // Children inherit the assigning run, never a default changed by an unrelated conversation.
+    if (input.agentContext && !input.subagentSettings) throw new Error('agent_settings_missing');
+    const selected = input.subagentSettings ?? await this.agentHost?.settings();
+    if (selected !== undefined) {
+      const settings = decodeAgentSettings(selected);
+      agentPresets(settings);
+      input = { ...input, subagentSettings: settings };
+    }
     if (input.recipe) {
       const recipe = decodeAgentRecipe(input.recipe);
       if (input.profileId && recipe.profileId && input.profileId !== recipe.profileId) throw new Error('agent_recipe_model_conflict');
@@ -140,6 +148,7 @@ export class SessionService implements ConversationPort {
     admitSessionEvents(loopSnapshot(input.sessionId, []), [{
       type: 'session.created', sessionId: input.sessionId,
       payload: { displayTitle: input.displayTitle, workspaceBindings: input.workspaceBindings,
+        ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
         ...(input.recipe ? { recipe: input.recipe } : {}),
         ...(input.agentContext ? { agentContext: input.agentContext } : {}),
         ...(input.profileId ? { profileId: input.profileId } : {}) },
@@ -147,6 +156,7 @@ export class SessionService implements ConversationPort {
     await this.journal.createSession({
       sessionId: input.sessionId,
       displayTitle: input.displayTitle,
+      ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
       ...(input.recipe ? { recipe: input.recipe } : {}),
       workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
       ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
@@ -262,7 +272,7 @@ export class SessionService implements ConversationPort {
     return this.withActor(command.sessionId, async actor => {
       this.assertOpen();
       const projection = await actor.agentSnapshot();
-      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'session.mode.set', 'run.host.rebind', 'provider.continue'].includes(command.type)) {
+      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'session.subagent-settings.set', 'session.mode.set', 'run.host.rebind', 'provider.continue'].includes(command.type)) {
         throw new Error('agent_session_requires_managed_task');
       }
       if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
@@ -354,7 +364,7 @@ export class SessionService implements ConversationPort {
     let pending = this.#historyReads.get(sessionId);
     if (!pending || pending.version !== version) {
       const result = readSessionEvents(this.journal, sessionId).then(async events => {
-        const projection = projectSession(recoverSession(sessionId, events));
+        const projection = projectSessionHistory(sessionId, events);
         // A commit during replay must never bind an older projection to a newer
         // version. Ignore a read that another version or disposal superseded.
         if (version !== undefined && await this.journal.historyVersion?.() === version
@@ -405,7 +415,14 @@ export class SessionService implements ConversationPort {
         // The current task/run owns its decision route; the creation tree still owns archival.
         if (child.run?.runId !== task.childRunId) continue;
         const plan = child.run.status === 'waiting' && child.pendingPlan?.runId === task.childRunId ? child.pendingPlan : null;
-        const approval = child.pendingApproval?.runId === task.childRunId ? child.pendingApproval : null;
+        let approval: PendingAgentDecision['approval'];
+        if (child.pendingApproval?.runId === task.childRunId) {
+          // A run-level wait can predate a replacement approval for the same call. Route
+          // only an actionable request, without opening a child Actor merely to read it.
+          const actor = this.#actors.get(child.sessionId);
+          approval = actor ? await (await actor).humanApprovalRoute(task.childRunId)
+            : humanApprovalRoute(loopSnapshot(child.sessionId, await readSessionEvents(this.journal, child.sessionId)), task.childRunId);
+        }
         const interactionIds = child.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
         if (plan || approval || interactionIds.length) decisions.push({ agentSessionId: child.sessionId,
           displayName: task.displayName, runId: task.childRunId, interactionIds,

@@ -53,6 +53,7 @@ test('Session production observations retain canonical lineage, idle child updat
       } }, async dispose() {},
     } };
   } }, {
+    async settings() { return settings; },
     async models() { return [{ profileId: 'profile:default', name: 'Fixture', model: 'fixture-model',
       parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100_000,
         maxOutputTokens: 4096, imageInput: false, temperature: null, hostedWebSearch: null }, reasoningEfforts: ['low', 'medium', 'high'] }]; },

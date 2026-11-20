@@ -42,6 +42,7 @@ let profiles = [
   { id: 'profile:unset', connectionId: 'connection:preview', name: '未设档位模型', enabled: true, thinking: 'enabled' },
   { id: 'profile:off', connectionId: 'connection:preview', name: '非推理模型', enabled: true, thinking: 'disabled' },
 ] as LlmProviderProfile[];
+let defaultProfileId = profiles[0]!.id;
 let subagentDefaults: AgentSettings = { enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 4,
   maxCallsPerRun: 16, maxMembersPerSession: 4, allowMemberAnalysis: true, allowFullConfiguration: true, presets: '[]' };
 const emptyUsage = () => ({ providerCallCount: 0, reportedCallCount: 0, inputTokens: 0, outputTokens: 0,
@@ -66,15 +67,23 @@ window.fetch = async (input, init) => {
   }
   if (url.pathname === '/api/llm/profiles') {
     if (init?.method === 'PATCH') {
-      const { profile } = JSON.parse(String(init.body));
-      profiles = profiles.map(item => item.id === profile.id ? profile : item);
+      const update = JSON.parse(String(init.body));
+      profiles = profiles.map(item => item.id === update.profile.id ? update.profile : item);
+      defaultProfileId = update.defaultProfileId;
     }
-    return Response.json({ ok: true, data: { profiles, defaultProfileId: useLocalAgentStore.getState().defaultProfileId } });
+    return Response.json({ ok: true, data: { profiles, defaultProfileId } });
   }
   if (url.pathname.endsWith('/commands')) {
     const command = JSON.parse(String(init?.body));
     if (command.type === 'session.model-settings.set') currentProjection = { ...currentProjection, modelSettings: command.settings };
+    else if (command.type === 'session.subagent-settings.set') currentProjection = { ...currentProjection, subagentSettings: command.settings };
     else throw new Error(`Unexpected fixture command: ${command.type}`);
+    subagentDefaults = { ...currentProjection.subagentSettings! };
+    if (currentProjection.modelSettings) {
+      const selected = currentProjection.modelSettings;
+      defaultProfileId = selected.profileId;
+      profiles = profiles.map(item => item.id === defaultProfileId ? { ...item, reasoningEffort: selected.reasoningEffortOverride ?? item.reasoningEffort } : item);
+    }
     currentProjection = { ...currentProjection, revision: currentProjection.revision + 1 };
     return Response.json({ ok: true, data: reply(command.commandId) });
   }
@@ -163,9 +172,9 @@ function Preview() {
         currentProjection = { ...emptyProjection(), modelSettings: {
           profileId: state.selectedProfileId!, reasoningEffortOverride: state.reasoningEffortOverride,
         } };
-        useLocalAgentStore.setState({ sessionId, projection: currentProjection, defaultProfileId: state.selectedProfileId });
+        useLocalAgentStore.setState({ sessionId, projection: currentProjection });
         setText(`已接收：${text}`);
-        setNotice(`已使用 ${state.profiles.find(item => item.id === state.selectedProfileId)?.name}；可新建对话检查继承`);
+        setNotice(`已发送：${state.profiles.find(item => item.id === state.selectedProfileId)?.name}，新对话默认设置未改变`);
         return reply('command:preview:message');
       },
     });
@@ -202,7 +211,7 @@ function Preview() {
       }}>{status === 'failed' ? '消息恢复场景' : status === 'cancelled' ? '停止场景' : '结果待确认场景'}</button>)}
       <button onClick={() => viewport.scrollToAnchor('blank:3')}>查看历史</button>
       <button onClick={() => setText(current => `${current}\n${'新增执行消息。\n'.repeat(8)}`)}>追加执行消息</button>
-      <button onClick={() => { setStreaming(false); useLocalAgentStore.getState().startNewSession(); setText(''); setNotice('新对话：已继承最近使用模型及保存的档位'); }}>新建对话</button>
+      <button onClick={() => { setStreaming(false); useLocalAgentStore.getState().startNewSession(); setText(''); setNotice('新对话：已复制新对话默认模型、推理强度与子代理设置'); }}>新建对话</button>
       <label><input type="checkbox" checked={showChanges} onChange={event => setShowChanges(event.target.checked)} />预览修改：2 文件 / +88 行</label>
       <label><input type="checkbox" checked={oldStack} onChange={event => setOldStack(event.target.checked)} />对照旧层级</label>
       <label>预览宽度<select aria-label="预览宽度" value={previewWidth} onChange={event => setPreviewWidth(event.target.value)}><option value="900px">900px</option><option value="680px">680px</option><option value="520px">520px</option><option value="360px">360px</option><option value="260px">260px</option></select></label>

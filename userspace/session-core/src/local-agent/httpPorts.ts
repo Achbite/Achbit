@@ -286,6 +286,10 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
 }
 
 export class HttpAgentHostPort extends LocalAgentHttpPort implements AgentHostPort {
+  async settings(): Promise<AgentSettings> {
+    return decodeAgentSettings(await this.json('/api/local-agent/agents/settings'));
+  }
+
   async models(): Promise<readonly AgentModel[]> {
     const value: unknown = await this.json('/api/local-agent/agents/models');
     if (!Array.isArray(value)) throw new Error('agent_models_invalid');

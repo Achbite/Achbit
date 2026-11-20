@@ -17,8 +17,11 @@ export function fileLinkLocation(reference: string): ({ path: string } & SourceP
   } catch { return null; }
 }
 
+// WebView2 exposes the desktop scheme as HTTP. Only its drive-qualified paths name local files.
+const webViewDrivePrefix = /^http:\/\/achbit-gui\.localhost\/(?=[a-z]:\/)/iu;
+
 export function parseLocalTarget(href: string, allowRelative = true, sameDocument = false): LocalTarget | null {
-  let reference = href.replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, '');
+  let reference = href.replace(webViewDrivePrefix, '').replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, '');
   if (/^(file|achbit-gui):\/\//i.test(href)) {
     try {
       const url = new URL(href);
@@ -86,6 +89,16 @@ export function bindLocalTarget(target: LocalTarget, roots: { workspaceId: strin
   return { workspaceId: binding.workspaceId, logicalPath: path.slice(binding.root.length).replace(/^\//u, '') || '.',
     line: target.line, column: target.column, ...(target.fragment && { fragment: target.fragment }) };
 }
+
+/** A failed root is not evidence of absence. Only a verified absolute binding can proceed with an incomplete root list. */
+export async function resolveLinkRoots(target: LocalTarget, workspaceIds: Iterable<string>, readRoot: (workspaceId: string) => Promise<string>) {
+  const results = await Promise.allSettled(Array.from(workspaceIds, async workspaceId => ({ workspaceId, root: await readRoot(workspaceId) })));
+  const roots = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+  const unavailable = results.find(result => result.status === 'rejected');
+  if (unavailable && !(target.absolute && bindLocalTarget(target, roots))) throw unavailable.reason;
+  return roots;
+}
+
 export interface ResolvedLocalTarget extends SourcePosition {
   workspaceId: string;
   logicalPath: string;
@@ -114,7 +127,7 @@ export async function resolveLocalTargets(
       const identity = canonicalFileKey(resolved.path);
       if (!matches.has(identity)) matches.set(identity, { ...candidate, ...resolved });
     } catch (error) {
-      if (typeof error !== 'object' || error === null || !('code' in error)
+      if (target.absolute || typeof error !== 'object' || error === null || !('code' in error)
         || !['host_inspection_path_not_found', 'conversation_resource_not_found'].includes(String(error.code))) throw error;
       missing.push(error instanceof Error ? error.message : String(error));
     }
@@ -138,7 +151,7 @@ function locationLabel(target: LocalTarget, name = resourceFilename(target.path)
 
 /** Only links synthesized from physical paths need their URI delimiters escaped. */
 function physicalPathHref(raw: string): string {
-  if (/^(?:file|achbit-gui):\/\//iu.test(raw)) return raw;
+  if (/^(?:file|achbit-gui):\/\//iu.test(raw) || webViewDrivePrefix.test(raw)) return raw;
   const path = raw.replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, '');
   return path.replace(/[%?]|#(?!L[1-9]\d*(?:C[1-9]\d*)?$)/gu, encodeURIComponent);
 }

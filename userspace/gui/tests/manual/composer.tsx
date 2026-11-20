@@ -1,7 +1,7 @@
 // Isolated visual fixture. Uses production composer state and components, with no backend calls.
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { COMMAND_REPLY_VERSION, type CommandReply, type InteractionProjection, type ModelInteractionRequest } from '@achbit/protocol';
+import { COMMAND_REPLY_VERSION, type CommandReply, type InteractionProjection, type ModelInteractionRequest, type PluginSelectionInput } from '@achbit/protocol';
 import { ConversationComposer } from '../../src/components/local-agent/ConversationComposer';
 import { InteractionCard } from '../../src/components/local-agent/InteractionCard';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
@@ -53,10 +53,23 @@ useLocalAgentStore.setState({ sessionId: 'session:composer-preview', loading: fa
   projection: { sessionId: 'session:composer-preview', revision: 0, contextCompositions: [], queuedInputs: [], plans: [], interactions: [], pendingApproval: approval } as never,
 });
 
+const firstMessage = new URLSearchParams(location.search).has('pluginMentions');
+if (firstMessage) {
+  const entries = [
+    { uri: 'plugin://computer-use@builtin', displayName: 'Computer Use', shortDescription: '桌面操作', contributionKind: 'host' },
+    { uri: 'plugin://chrome-devtools@builtin', displayName: 'Chrome', shortDescription: '浏览器操作', contributionKind: 'mcp' },
+  ] as const;
+  useLocalAgentStore.setState({ sessionId: null, projection: null, pluginCatalog: { revision: 'mention-fixture',
+    plugins: entries.map(entry => ({ ...entry, source: 'builtin', category: 'functional', discovery: 'default',
+      enabled: true, available: true, activationMediaTypes: [] })),
+  } });
+}
+
 function Preview() {
   useEffect(() => installTextSelectionBoundary(document), []);
   const [mode, setMode] = useState('approval');
   const [result, setResult] = useState('');
+  const [sends, setSends] = useState<Array<{ text: string; pluginSelections?: PluginSelectionInput[] }>>([]);
   const [compact, setCompact] = useState(false);
   const initialized = useRef(false);
   const setDecision = (next: string) => {
@@ -125,7 +138,13 @@ function Preview() {
         } });
         setResult(`问题：${interactionId} → ${text}`); return accepted();
       },
-      sendMessage: async (text) => { setResult(`消息：${text}`); return accepted(); },
+      sendMessage: async (text, _files, pluginSelections) => {
+        if (firstMessage) {
+          setSends(calls => [...calls, { text, pluginSelections }]);
+          return { schemaVersion: COMMAND_REPLY_VERSION, status: 'accepted', commandId: 'command:mention-preview', sessionId: 'session:mention-preview', revision: 1 };
+        }
+        setResult(`消息：${text}`); return accepted();
+      },
       cancelRun: async () => {
         const projection = useLocalAgentStore.getState().projection!;
         useLocalAgentStore.setState({ projection: { ...projection, pendingInteraction: null,
@@ -136,6 +155,11 @@ function Preview() {
     });
   }
   const composer = useAgentComposer('zh-CN', () => {});
+  const input = <ConversationComposer language="zh-CN" composer={composer} uiActionError={null}
+    onDismissUiActionError={() => {}} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} />;
+  if (firstMessage) return <main className="local-agent local-agent--workbench local-agent--empty" style={{ height: '100dvh' }}>
+    {input}<output id="mention-sends">{JSON.stringify(sends)}</output>
+  </main>;
   const projection = composer.projection!;
   const advance = (waiting: boolean) => useLocalAgentStore.setState({ projection: { ...projection,
     run: { ...projection.run, runId: 'run:preview', status: waiting ? 'waiting' : 'running', waitingReason: waiting ? 'userInput' : undefined },
@@ -162,8 +186,7 @@ function Preview() {
         answerInComposer={item.interactionId === composer.foregroundInteractionId} onFocusComposer={composer.focusInteraction} />)}
       {projection.interactions.length > 0 && <p>已继续完成与这些答案无关的检查。</p>}
     </div>
-      <ConversationComposer language="zh-CN" composer={composer} uiActionError={null}
-        onDismissUiActionError={() => {}} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} />
+      {input}
     </main><p className="fixture-result" role="status">{result}</p>
   </>;
 }

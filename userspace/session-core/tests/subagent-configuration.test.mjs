@@ -6,7 +6,7 @@ import { agentOperationDefinitions, sessionControlToolDefinitions, decodeSession
 import { agentPresets } from '../dist/local-agent/agentConfiguration.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
-import { emptyKernel, fakeRunPreparation, messageCommand, providerEvent, readEvents, waitUntil, workspaceBinding } from './local-agent-fixtures.mjs';
+import { emptyKernel, fakeRunPreparation, messageCommand, providerEvent, readEvents, recordedSubagentSettings, waitUntil, workspaceBinding } from './local-agent-fixtures.mjs';
 
 const caps = { messaging: true, continuation: true, delegation: true };
 const customFields = ['capabilities','reasoningEffort','context','loop','tools','productComponents','permissions','runner','permissionPolicy','workspaceSandbox'];
@@ -27,9 +27,10 @@ async function fixture(t, handler, full = false, recipe, settingsOverrides = {})
     availability:'callable', possibleEffects:[], inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']} };
   let service;
   service = new SessionService(journal, { async create({sessionId,promptContributions}) {
-    const preparation = fakeRunPreparation({ contextWindowTokens:100_000, tools:[read], subagentSettings: () => settings });
+    const preparation = fakeRunPreparation({ contextWindowTokens:100_000, tools:[read] });
     return { composition:{ async dispose(){}, kernel:emptyKernel(), runPreparation:{...preparation.port, async prepare(input) {
       const prepared = await preparation.port.prepare(input);
+      prepared.runtimeSnapshot.subagentSettings = await recordedSubagentSettings(journal, sessionId, input.runId);
       const creation = (await readEvents(journal, sessionId))[0].payload;
       prepared.runtimeSnapshot.instructions.push(...promptContributions);
       prepared.runtimeSnapshot.agentToolsEnabled = true;
@@ -44,7 +45,8 @@ async function fixture(t, handler, full = false, recipe, settingsOverrides = {})
       yield* handler({owner,sessionId,request,signal,turn:history.length,service,journal,settings});
       yield providerEvent(request.requestId,'completed',{});
     }}} };
-  }}, { async models(){return ['profile:default','profile:chosen'].map(profileId => ({
+  }}, { async settings(){return structuredClone(settings);},
+    async models(){return ['profile:default','profile:chosen'].map(profileId => ({
     profileId, name:profileId, model:profileId, parameters:{adapterId:'openai',kind:'responses',providerFlavor:null,
       contextWindowTokens:100_000,maxOutputTokens:4096,imageInput:false,temperature:null,hostedWebSearch:null},reasoningEfforts:['low','high'] }));},
     async createSession(input){return service.createSession(input);}
@@ -184,11 +186,11 @@ test('template discovery and admission share all allowed model profiles', async 
   assert.equal((await readEvents(f.journal,f.owner)).filter(event=>event.type==='session.control.rejected').length,0);
 });
 
-test('child delegation discovery, guidance and admission retain the task snapshot after a global change', async t => {
+test('child delegation discovery, guidance and admission retain the assigning run snapshot after its owner changes settings', async t => {
   const f=await fixture(t,async function*({owner,sessionId,request,turn,service,settings}){
     if(sessionId===owner){
       if(turn===1)yield call(request,'delegation:spawn',{action:'spawn',preset:'analysis',name:'Research owner',
-        task:'Update your delegation setting, report evidence, then finish.',delivery:'wait',capabilities:{delegation:true}});
+        task:'Check the delegation boundary, report evidence, then finish.',delivery:'wait',capabilities:{delegation:true}});
       else if(textOf(request).includes('Delegation check complete.')
         || (await service.snapshot(owner)).agentTasks.some(task=>task.status!=='running'))yield answer(request,'Delegation evidence integrated.');
       else yield call(request,`delegation:wait:${turn}`,{action:'wait'});
@@ -196,12 +198,19 @@ test('child delegation discovery, guidance and admission retain the task snapsho
     }
     const current=await service.snapshot(sessionId);
     if(current.agentContext.parentSessionId!==owner){
-      assert.equal(current.subagentSettings.allowMemberAnalysis,false);
-      yield answer(request,'Nested task captured the new global value.');return;
+      assert.equal(current.subagentSettings.allowMemberAnalysis,true, 'nested assignment inherits the running child, not the latest defaults');
+      assert.equal(current.agentContext.capabilities.delegation,false, 'inheriting settings does not elevate the analysis template');
+      yield answer(request,'Nested task retained the assigning configuration.');return;
     }
     if(turn===1){
-      settings.allowMemberAnalysis=false;
-      assert.equal(current.subagentSettings.allowMemberAnalysis,true);
+      const selected = { ...current.subagentSettings, allowMemberAnalysis:false };
+      const change = {schemaVersion:'achbit.command.v3', type:'session.subagent-settings.set', settings:selected};
+      await assert.rejects(service.submit({...change, sessionId, commandId:'command:child-setting'}), /agent_session_requires_managed_task/);
+      assert.equal(settings.allowMemberAnalysis,true, 'a child cannot publish a new root default');
+      assert.equal((await service.submit({...change, sessionId:owner, commandId:'command:owner-setting'})).status,'accepted');
+      assert.equal((await service.snapshot(owner)).subagentSettings.allowMemberAnalysis,false, 'the root preference is committed');
+      assert.equal(settings.allowMemberAnalysis,true, 'the Session command does not write Host creation defaults');
+      assert.equal((await service.snapshot(sessionId)).subagentSettings.allowMemberAnalysis,true);
       yield call(request,'child:models',{action:'models'});
     }else if(turn===2){
       const choices=JSON.parse(request.messages.findLast(message=>message.role==='tool').content);
@@ -210,7 +219,7 @@ test('child delegation discovery, guidance and admission retain the task snapsho
       assert.match(request.tools.find(tool=>tool.name==='agent').description,/delegat/iu);
       yield call(request,'child:allowed-spawn',{action:'spawn',name:'Nested child',task:'Read the evidence.',delivery:'wait'});
     }else if(turn===3){
-      assert.match(textOf(request),/Nested task captured the new global value/u);
+      assert.match(textOf(request),/Nested task retained the assigning configuration/u);
       assert.equal(((await service.snapshot(sessionId)).agentTasks??[]).length,1);
       yield call(request,'child:send',{action:'send',agentId:owner,text:'CHILD_SETTING_FINDING'});
     }else yield answer(request,'Delegation check complete.');

@@ -5,7 +5,7 @@ import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useSettingsStore } from '../../state/settingsStore';
 import { useConversationHost, type ConversationHost } from './ConversationHost';
 import { documentFormat, imageMediaType, workspaceResourceLink } from './documentResources';
-import { bindLocalTarget, parseLocalTarget, relativeToDocument, resolveLocalTargets, type ResolvedLocalTarget, type SourcePosition } from './resourceLinks';
+import { bindLocalTarget, parseLocalTarget, relativeToDocument, resolveLinkRoots, resolveLocalTargets, type ResolvedLocalTarget, type SourcePosition } from './resourceLinks';
 import { artifactReaderTarget, requestReader, type ReaderTarget } from './readerState';
 import type { ResourceReference } from '../../services/conversationResources';
 import { getLocalAgentProjection } from '../../services/localAgentApi';
@@ -60,6 +60,7 @@ export function useConversationBodyLinks(source: SessionProjection | ReaderLinkS
     const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
     if (!anchor || !event.currentTarget.contains(anchor)) return;
     const href = anchor.getAttribute('href') ?? '';
+    if (!href.trim()) { event.preventDefault(); return; }
     const local = parseLocalTarget(href, true, !!document);
     const resource = workspaceResourceLink(href);
     if (!local && !resource && !href.startsWith('artifact://') && !/^https?:\/\//i.test(href)) return;
@@ -67,6 +68,7 @@ export function useConversationBodyLinks(source: SessionProjection | ReaderLinkS
     const id = ++requestId.current;
     const { sessionId } = source;
     setChoices(null);
+    setError(null); // Withdraw the previous click's feedback; the new Host operation has not completed.
     const displayed = useLocalAgentStore.getState().projection;
     const owner = projection ?? (displayed?.sessionId === sessionId ? displayed : null);
     const navigate = async () => {
@@ -86,11 +88,11 @@ export function useConversationBodyLinks(source: SessionProjection | ReaderLinkS
         else if (document && !owner) {
           const accessible = await host.resources.listResourceRoots(sessionId);
           for (const entry of accessible) {
-            if (entry.kind === 'directory' && 'workspaceId' in entry.resource) workspaces.add(entry.resource.workspaceId);
+            if (entry.kind !== 'file' && 'workspaceId' in entry.resource) workspaces.add(entry.resource.workspaceId);
           }
         }
-        const roots = await Promise.all([...workspaces].map(async workspaceId => ({ workspaceId,
-          root: (await host.resolveResource(sessionId, workspaceId, '.')).path })));
+        const roots = await resolveLinkRoots(target, workspaces, async workspaceId =>
+          (await host.resolveResource(sessionId, workspaceId, '.')).path);
         if (id !== requestId.current) return;
         if (revealUnbound && target.absolute && !bindLocalTarget(target, roots)) {
           if (!host.locatePath) throw new Error('Manual file location requires the desktop Host.');
@@ -112,7 +114,7 @@ export function useConversationBodyLinks(source: SessionProjection | ReaderLinkS
         else if (artifact.workspaceId && artifact.logicalPath) await openBound(sessionId, artifact.workspaceId, artifact.logicalPath, id);
       } else await host.openExternalLink(href);
     };
-    void navigate().then(() => { if (id === requestId.current) setError(null); }).catch(error => failure(id, error, local?.path));
+    return navigate().catch(error => failure(id, error, local?.path));
   };
   const selection = choices && choices.sessionId === source?.sessionId && <ResourceLinkChoices
     language={language} targets={choices.targets} onClose={() => setChoices(null)}

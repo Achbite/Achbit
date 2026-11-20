@@ -1,5 +1,36 @@
 import assert from 'node:assert/strict';
 
+export async function checkReaderFileMenu({ navigate, evaluate, until, click, key, record }) {
+  // Use a fresh workbench so these external opens do not feed other routing scenarios.
+  await navigate('reader-workbench');
+  const menu = '.reader-external-open', summary = menu + ' summary';
+  const tab = '.reader-tab--active [role=tab]';
+  await until(`document.querySelector('${tab}')?.textContent.includes('Agent.md')`);
+  const actions = [];
+  for (const [index, calls] of [[1, 'opened'], [2, 'folders']]) {
+    await click(summary);
+    const item = `${menu} [role=menuitem]:nth-child(${index})`;
+    // macOS WebKit may blur the summary without focusing the pressed button.
+    await evaluate(`(() => { const trigger = document.querySelector('${summary}'); trigger.focus();
+      document.querySelector('${item}').addEventListener('mousedown', event => {
+        event.preventDefault(); trigger.blur();
+      }, { once: true }); })()`);
+    await click(item);
+    const targets = await evaluate(`window.readerWorkbench.${calls}`);
+    assert.deepEqual(targets, ['/fixture/Agent.md'], 'activate exactly the selected action on the current file');
+    assert.equal(await evaluate(`document.querySelector('${menu}').open`), false);
+    actions.push({ calls, targets });
+  }
+  await click(summary); await click(tab);
+  assert.equal(await evaluate(`document.querySelector('${menu}').open`), false, 'outside click closes the menu');
+  await evaluate(`document.querySelector('${summary}').focus()`); await key('Enter');
+  assert.equal(await evaluate(`document.querySelector('${menu}').open`), true);
+  await key('Escape');
+  assert.equal(await evaluate(`document.querySelector('${menu}').open`), false, 'Escape closes the keyboard-opened menu');
+  assert.equal(await evaluate(`document.activeElement === document.querySelector('${summary}')`), true);
+  await record('reader-file-menu-dispatch', actions, true);
+}
+
 export async function checkReaderSplit({ navigate, evaluate, cmd, until, frame, click, record }) {
   const separator = '.reader-resize';
   const expand = '.local-agent__header-actions [data-ui-action$="toggle-expanded"]';

@@ -115,7 +115,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
     <ConfirmedNumberInput {...constraints} name={key} value={selected[key]} language={language} label={label} disabled={busy}
       onCommit={value => choose({ [key]: value })} onDraftChange={value => set(key, value)} />;
   return <details ref={details} className="model-editor" data-profile-id={profile.id} open={onRemove || reveal ? true : undefined}>
-    <DisclosureSummary><strong>{confirmed.name}</strong><span>{confirmed.model}{profile.id === defaultId ? ` · ${text('最近使用', 'Last used')}` : ''}</span></DisclosureSummary>
+    <DisclosureSummary><strong>{confirmed.name}</strong><span>{confirmed.model}{profile.id === defaultId ? ` · ${text('新对话默认', 'New chat default')}` : ''}</span></DisclosureSummary>
     <form noValidate={!onRemove} onKeyDown={event => {
       const input = event.target as HTMLInputElement;
       if (event.key !== 'Enter' || event.defaultPrevented || event.nativeEvent.isComposing || event.keyCode === 229 || event.repeat
@@ -157,7 +157,7 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
         </div></details>
         <div className="model-actions"><label className="model-check"><ToggleSwitch checked={selected.enabled} onChange={event => void choose({ enabled: event.target.checked })} />{text('启用', 'Enabled')}</label>
           <Button variant="secondary" disabled={!!onRemove} onClick={() => void perform(async () => { const result = data(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</Button><Hint>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</Hint>
-          {!onRemove && profile.id !== defaultId && <Button variant="secondary" disabled={!confirmed.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为最近使用', 'Use by default')}</Button>}
+          {!onRemove && profile.id !== defaultId && <Button variant="secondary" disabled={!confirmed.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为新对话默认', 'Set as new chat default')}</Button>}
           <Button className="model-danger" onClick={() => onRemove ? onRemove() : void perform(async () => { data(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</Button>
           <Button className="model-primary model-push" type={onRemove || dirty ? 'submit' : 'button'} disabled={busy || !onRemove && !dirty}
             onClick={event => {

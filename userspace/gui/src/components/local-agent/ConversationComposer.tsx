@@ -318,7 +318,10 @@ export function ConversationComposer({
             <div className="local-agent__plugin-picker-heading">
               {t(language, 'agent.plugin.picker')}
             </div>
-            <input className="local-agent__plugin-search" aria-label={language === 'zh-CN' ? '搜索工具' : 'Search tools'} placeholder={language === 'zh-CN' ? '搜索工具' : 'Search tools'} value={pluginQuery} onChange={(event) => setPluginQuery(event.target.value)} role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls={pickerId} aria-activedescendant={pluginActiveIndex >= 0 ? `${pickerId}-${pluginActiveIndex}` : undefined} onKeyDown={(event) => composer.handlePluginPickerKey(event)} />
+            <input className="local-agent__plugin-search" aria-label={t(language, 'agent.plugin.search')} placeholder={t(language, 'agent.plugin.search')}
+              value={pluginQuery} onChange={event => setPluginQuery(event.target.value)} role="combobox" aria-expanded="true" aria-autocomplete="list"
+              aria-controls={pickerId} aria-activedescendant={filteredPlugins[pluginActiveIndex] ? `${pickerId}-${pluginActiveIndex}` : undefined}
+              onCompositionStart={beginComposition} onCompositionEnd={endComposition} onKeyDown={event => composer.handlePluginPickerKey(event)} />
             <div id={pickerId} role="listbox" aria-label={t(language, 'agent.plugin.picker')}>
             {filteredPlugins.length ? filteredPlugins.map((plugin, index) => (
               <button
@@ -496,8 +499,9 @@ export function ConversationComposer({
           id={inputId}
           ref={textareaRef}
           value={draft}
-          aria-controls={commandSuggestions.length ? commandMenuId : undefined}
-          aria-activedescendant={commandSuggestions.length && commandActiveIndex >= 0 ? `${commandMenuId}-${commandActiveIndex}` : undefined}
+          aria-controls={pluginPickerOpen ? pickerId : commandSuggestions.length ? commandMenuId : undefined}
+          aria-activedescendant={pluginPickerOpen && filteredPlugins[pluginActiveIndex] ? `${pickerId}-${pluginActiveIndex}`
+            : commandSuggestions.length && commandActiveIndex >= 0 ? `${commandMenuId}-${commandActiveIndex}` : undefined}
           rows={compactInput || readerInputCollapsed ? 1 : 3}
           wrap={readerInputCollapsed ? 'off' : 'soft'}
           placeholder={t(language, pendingPlan ? 'agent.composer.placeholder.plan'

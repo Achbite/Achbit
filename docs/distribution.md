@@ -74,8 +74,8 @@ If Windows Setup cannot replace program files, it retains the previous applicati
 | Compiled UI plugin entrypoint or manifest at its installed path | The current GUI reloads it after saving. Source-directory changes require reinstalling through the plugin's Update action. TypeScript must be compiled to the declared JavaScript entrypoint. |
 | Selected Skill or CLI plugin content | Prepared again before the next model request. In-flight requests, pending approvals, and executing calls retain their original content and bindings. |
 | CLI plugin registration, Skill mounts, MCP configuration, and tool plugin enablement | Refreshed before the next model request in the current run. Already-issued calls retain their bindings. |
-| Model defaults, permission defaults, and execution environment settings | The next run. |
-| Global subagent settings | All conversations share one saved configuration. Each new task captures it; an active task retains its declaration, delegation and quota snapshot through later requests. Saving does not cancel tasks or alter historical facts. |
+| Provider profile configuration, permission defaults, and execution environment settings | The next run, subject to the conversation's saved selection and permissions. |
+| Conversation model, reasoning effort and subagent settings | New root conversations copy the last explicitly edited selection. Sending in an older conversation does not change the defaults. Each existing conversation retains its saved configuration; a new run captures that conversation’s values. An active run retains its declaration, delegation and quota snapshot. Saving does not cancel tasks or rewrite other conversations. |
 | Updated GUI resources | Reload with Cmd+Shift+R on macOS or Ctrl+Shift+R elsewhere. |
 | TUI binary, bundled terminal fonts, or native launcher scripts | Update the platform package and reopen the TUI. Reloading the GUI does not replace a running TUI. |
 | Session, Kernel, native programs, or built-in product guides | Install the corresponding build and restart the affected processes. Source edits do not change the running application. |

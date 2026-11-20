@@ -48,6 +48,38 @@ test('negotiated journal reads validate all frames before exposing events or per
   assert.equal((await journal.read(sid,1)[Symbol.asyncIterator]().next()).done,true);
 });
 
+test('sequence framing reads only the byte windows published by the transport', async () => {
+  const journal = new HttpCommandJournal({apiBase:'http://fixture',serviceToken:'fixture',fetchImpl:async () => {
+    const bytes = Buffer.from(frame(event)+frame({count:1,permissions}));
+    // Both excluded ends contain invalid record bytes. Split inside multibyte text too.
+    return new Response(new ReadableStream({start(out) {
+      for (let at=0; at<bytes.length; at+=37) {
+        const part = bytes.subarray(at,at+37);
+        const slab = new Uint8Array(part.length+8).fill(0x1e);
+        slab.set(part,3); out.enqueue(slab.subarray(3,3+part.length));
+      }
+      out.close();
+    }}), {headers:{'content-type':'application/json-seq'}});
+  }});
+  const seen=[]; journal.subscribePermissions(sid, settings=>seen.push(settings));
+  assert.deepEqual(await Array.fromAsync(journal.read(sid,1)), [event]);
+  assert.equal(seen.length,1);
+});
+
+test('a malformed byte window cancels an unfinished response without publishing permissions', async () => {
+  let cancellations=0;
+  const slab=Uint8Array.of(0,30,255,10,30,0);
+  const body=new ReadableStream({
+    start(controller) { controller.enqueue(slab.subarray(1,5)); },
+    cancel() { cancellations++; },
+  });
+  const journal=new HttpCommandJournal({apiBase:'http://fixture',serviceToken:'fixture',fetchImpl:async () =>
+    new Response(body,{headers:{'content-type':'application/json-seq'}})});
+  const seen=[]; journal.subscribePermissions(sid,settings=>seen.push(settings));
+  await assert.rejects(journal.read(sid)[Symbol.asyncIterator]().next(),/journal_sequence_invalid/);
+  assert.equal(cancellations,1); assert.equal(body.locked,false); assert.deepEqual(seen,[]);
+});
+
 test('legacy JSON responses, missing version capability and original journal errors remain usable', async () => {
   let reply;
   const journal = new HttpCommandJournal({apiBase:'http://fixture',serviceToken:'secret',fetchImpl:async () => reply});

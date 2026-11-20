@@ -245,6 +245,8 @@ export interface AgentModel {
 
 /** Host assembly only. All delegation policy and task facts belong to Session. */
 export interface AgentHostPort {
+  /** The last selection seeds new root conversations; a resumed Session uses its own journal. */
+  settings(): Promise<AgentSettings>;
   models(): Promise<readonly AgentModel[]>;
   createSession(input: SessionCreationInput & { profileId: string; agentContext: AgentContext }): Promise<SessionProjection>;
 }
@@ -1810,7 +1812,7 @@ export interface SessionProjection {
   /** Saved selection for the next run. */
   mode?: SessionMode;
   contextHandoff?: { runId: string; historyThroughSequence: number; previousProfileId: string; profileId: string; status: 'reading' | 'ready' };
-  /** Captured configuration of the current/last run, not editable Session preferences. */
+  /** This Session’s saved selection for future runs. An in-flight run retains its separate snapshot. */
   subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
   agentContext?: AgentContext;
@@ -2114,7 +2116,7 @@ export interface ProviderToolAlias {
 }
 
 export interface RunRuntimeSnapshot {
-  /** Global delegation settings captured for this task; later saves affect only new runs. */
+  /** Delegation settings captured from this Session when the run started. */
   subagentSettings?: AgentSettings;
   /** Captured at run preparation, independent of later Session selections. */
   mode?: SessionMode;
@@ -2579,6 +2581,7 @@ export interface StoredCommand {
 }
 
 export interface SessionCreationInput {
+  subagentSettings?: AgentSettings;
   recipe?: AgentRecipe;
   agentContext?: AgentContext;
   sessionId: string;

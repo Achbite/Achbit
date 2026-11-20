@@ -27,6 +27,7 @@ pub(crate) struct CreateConversationSessionRequest {
     project_id: Option<String>,
     profile_id: Option<String>,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +39,7 @@ pub(crate) struct CreateAgentSessionRequest {
     profile_id: String,
     agent_context: Value,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1216,6 +1218,11 @@ pub(crate) async fn conversation_session_create(
     ReadyState(state): ReadyState,
     Json(mut body): Json<CreateConversationSessionRequest>,
 ) -> Json<ApiResponse> {
+    if let Some(settings) = body.subagent_settings.as_ref() {
+        if let Err(error) = crate::local_agent_store::validate_subagent_settings(settings) {
+            return ApiResponse::error(error.code, error.message);
+        }
+    }
     let recipe = match body
         .recipe
         .as_ref()
@@ -1258,7 +1265,9 @@ pub(crate) async fn conversation_session_create(
     }
 
     let now = crate::now_text();
-    let (profile_id, bindings, recipe) = {
+    let (profile_id, bindings, recipe, subagent_settings) = {
+        // A root copies one completed preference edit; never mix A's model with B's delegation.
+        let _preferences = state.local_agent.conversation_preferences.lock().await;
         let mut gui = state.gui.lock().expect("gui state lock");
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error);
@@ -1297,11 +1306,49 @@ pub(crate) async fn conversation_session_create(
             }
             bindings
         };
-        let recipe = recipe.or_else(|| {
-            (gui.user_settings["agent.minimalMode"] == true)
-                .then(crate::local_agent_recipe::AgentRecipe::minimal_coding)
-        });
-        (profile_id, bindings, recipe)
+        let draft_effort_only = body.subagent_settings.is_some()
+            && body
+                .recipe
+                .as_ref()
+                .and_then(Value::as_object)
+                .is_some_and(|fields| fields.len() == 1 && fields.contains_key("reasoningEffort"));
+        let mut recipe = if gui.user_settings["agent.minimalMode"] == true
+            && (recipe.is_none() || draft_effort_only)
+        {
+            // An explicit draft effort does not replace the Host-selected work mode.
+            let mut minimal = crate::local_agent_recipe::AgentRecipe::minimal_coding();
+            minimal.reasoning_effort = recipe.and_then(|value| value.reasoning_effort);
+            Some(minimal)
+        } else {
+            recipe
+        };
+        if recipe
+            .as_ref()
+            .and_then(|value| value.reasoning_effort.as_ref())
+            .is_none()
+        {
+            let profiles = gui
+                .llm_profiles
+                .usable()
+                .expect("validated selected profile");
+            if let Some(effort) = profiles["profiles"]
+                .as_array()
+                .expect("validated profiles")
+                .iter()
+                .find(|profile| profile["id"] == profile_id && profile["thinking"] != "disabled")
+                .and_then(|profile| profile["reasoningEffort"].as_str())
+            {
+                recipe.get_or_insert_with(Default::default).reasoning_effort = Some(effort.into());
+            }
+        }
+        let subagent_settings = match body.subagent_settings {
+            Some(selected) => selected,
+            None => match crate::local_agent_api::subagent_defaults(&gui.user_settings) {
+                Ok(defaults) => defaults,
+                Err(error) => return ApiResponse::error(error.code, error.message),
+            },
+        };
+        (profile_id, bindings, recipe, subagent_settings)
     };
 
     create_registered_session(
@@ -1318,6 +1365,7 @@ pub(crate) async fn conversation_session_create(
         },
         None,
         recipe.map(|recipe| json!(recipe)),
+        Some(subagent_settings),
     )
     .await
 }
@@ -1328,6 +1376,7 @@ async fn create_registered_session(
     session: ConversationSessionRecord,
     agent_context: Option<Value>,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 ) -> Json<ApiResponse> {
     let session_id = session.id.clone();
     let mut creation = json!({
@@ -1341,6 +1390,9 @@ async fn create_registered_session(
     }
     if let Some(context) = agent_context {
         creation["agentContext"] = context;
+    }
+    if let Some(settings) = subagent_settings {
+        creation["subagentSettings"] = settings;
     }
     let projection =
         match request_service(state.session_service.clone(), "createSession", creation).await {
@@ -1408,6 +1460,11 @@ pub(crate) async fn create_agent_session(
         crate::local_agent_store::validate_agent_context(&body.agent_context, &body.session_id)
     {
         return ApiResponse::error(error.code, error.message);
+    }
+    if let Some(settings) = body.subagent_settings.as_ref() {
+        if let Err(error) = crate::local_agent_store::validate_subagent_settings(settings) {
+            return ApiResponse::error(error.code, error.message);
+        }
     }
     let title = match clean_title(&body.display_title) {
         Ok(title) => title,
@@ -1540,6 +1597,7 @@ pub(crate) async fn create_agent_session(
         session,
         Some(body.agent_context),
         Some(json!(recipe)),
+        body.subagent_settings,
     )
     .await;
     if !created.0.ok {
@@ -2129,6 +2187,15 @@ pub(crate) async fn conversation_command_submit(
             return session_service_error(error);
         }
     }
+    let settings_edit = matches!(
+        command["type"].as_str(),
+        Some("session.model-settings.set" | "session.subagent-settings.set")
+    );
+    let _preferences = if settings_edit {
+        Some(state.local_agent.conversation_preferences.lock().await)
+    } else {
+        None
+    };
     let reply = match request_service(
         state.session_service.clone(),
         "submit",
@@ -2140,11 +2207,46 @@ pub(crate) async fn conversation_command_submit(
         Err(error) => return session_service_error(error),
     };
     if reply.get("status").and_then(Value::as_str) == Some("accepted") {
+        // Session returns `replayed`, not `accepted`, for a repeated commandId.
+        if settings_edit {
+            let saved = match request_service(
+                state.session_service.clone(),
+                "snapshot",
+                json!({"sessionId":session_id}),
+            )
+            .await
+            {
+                Ok(projection)
+                    if projection["sessionId"] == session_id
+                        && projection["agentContext"].is_null() =>
+                {
+                    let state = state.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::settings_api::save_conversation_defaults(&state, &projection)
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result)
+                }
+                Ok(projection) if projection["sessionId"] == session_id => Ok(()), // child never owns user defaults
+                Ok(_) => Err("session_projection_identity_mismatch".into()),
+                Err(error) => Err(format!("{}: {}", error.code, error.message)),
+            };
+            if let Err(error) = saved {
+                return ApiResponse::error_with_data(
+                    "conversation_defaults_save_failed",
+                    format!("会话设置已保存，但新会话默认值未能确认保存：{error}"),
+                    json!({"sessionCommitted":true,"defaultsSaved":false,"commandReply":reply}),
+                );
+            }
+        }
         let submitted_task = matches!(
             command["type"].as_str(),
             Some("message.submit" | "context.focus")
         );
-        let chosen_profile = if submitted_task {
+        // The session's effective model serves its title request. An ordinary
+        // message/focus is not a preference edit for future conversations.
+        let title_profile = if submitted_task {
             match request_service(
                 state.session_service.clone(),
                 "snapshot",
@@ -2168,7 +2270,7 @@ pub(crate) async fn conversation_command_submit(
         };
         if let (Some(text), Some(profile_id), Some(command_id)) = (
             title_input.as_deref(),
-            chosen_profile.as_deref(),
+            title_profile.as_deref(),
             command["commandId"].as_str(),
         ) {
             if let Err(error) = schedule_conversation_title(
@@ -2180,19 +2282,6 @@ pub(crate) async fn conversation_command_submit(
                 &command["filesystemReferences"],
             ) {
                 eprintln!("[conversation-title] session={session_id} command={command_id} {error}");
-            }
-        }
-        if let Some(profile_id) = chosen_profile.as_deref() {
-            let result = (|| {
-                let _transition = state.local_agent.runtime_transition()?;
-                let mut gui = state.gui.lock().expect("gui state lock");
-                let path = gui.paths.llm_profiles_path.clone();
-                gui.llm_profiles.select_default(&path, profile_id)
-            })();
-            if let Err(error) = result {
-                eprintln!(
-                    "[conversation-profile] session={session_id} select_default_llm_profile_failed: {error}"
-                );
             }
         }
     }

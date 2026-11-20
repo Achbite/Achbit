@@ -175,7 +175,8 @@ export function emptySessionState(sessionId: string): SessionState {
 }
 
 type WritableRecordKey = 'activities' | 'providerAttempts' | 'providerCallFacts' | 'providerTurns'
-  | 'providerUsageRequestIds' | 'processes' | 'artifacts' | 'tokenUsageHistory';
+  | 'providerUsageRequestIds' | 'processes' | 'artifacts' | 'tokenUsageHistory'
+  | 'runTimings' | 'runRuntimeSnapshots' | 'runRuntimeReleases';
 // Ownership lasts for one synchronous reducer call. It is neither a history cache
 // nor a property of the returned state. Public reductions copy each touched map
 // once; a private replay can reuse maps because no intermediate state escapes.
@@ -196,6 +197,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
 // These indexes live only for one ordered replay. They select the same facts as
 // incremental reduction without repeatedly scanning all earlier requests/calls.
 interface ReplayIndexes {
+  borrowReceiptMessages: boolean;
   compositions: Map<string, number>;
   attempts: Map<string, Map<string, SessionState['providerAttempts'][string]>>;
   calls: [string, ProviderCallFactState][];
@@ -247,7 +249,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
     }
     case 'run.timing.updated':
       assertCurrentRun(next, event.runId, 'run_timing_run_mismatch');
-      next.runTimings = { ...next.runTimings, [event.runId]: { ...structuredClone(event.payload), runId: event.runId } };
+      // Same own data property as a computed object-literal key, including unusual IDs.
+      Object.defineProperty(writableRecord(next, 'runTimings'), event.runId, {
+        value: { ...structuredClone(event.payload), runId: event.runId }, enumerable: true, writable: true, configurable: true,
+      });
       break;
     case 'run.failure.recorded':
       assertCurrentRun(next, event.runId, 'failure_snapshot_run_mismatch');
@@ -355,7 +360,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       }
       writableRecord(next, 'activities');
       writableRecord(next, 'tokenUsageHistory');
-      next.runRuntimeSnapshots = { ...next.runRuntimeSnapshots };
+      writableRecord(next, 'runRuntimeSnapshots');
       {
         const inputMessage = next.messages.find((message) => (
           message.messageId === event.payload.inputMessageId && message.role === 'user'
@@ -913,13 +918,12 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         purpose: event.payload.purpose,
         responseConstraint: event.payload.responseConstraint,
         dynamicInstructionBytes: event.payload.dynamicInstructionBytes,
-        messages: event.payload.messages.map((message) => ({
-          ...message,
-          blocks: message.blocks.map((block) => ({ ...block })),
-          filesystemReferences: message.filesystemReferences.map((reference) => ({
-            ...reference,
+        messages: replay?.borrowReceiptMessages && canBorrowReceiptMessages(event.payload.messages)
+          ? event.payload.messages : event.payload.messages.map((message) => ({
+            ...message,
+            blocks: message.blocks.map((block) => ({ ...block })),
+            filesystemReferences: message.filesystemReferences.map((reference) => ({ ...reference })),
           })),
-        })),
         workspaceBindings: event.payload.workspaceBindings.map((binding) => ({ ...binding })),
         tools: event.payload.tools.map((tool) => ({ ...tool })),
         partitions: event.payload.partitions.map((partition) => ({ ...partition })),
@@ -1225,7 +1229,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     }
     case 'run.runtime.released': {
-      next.runRuntimeReleases = { ...next.runRuntimeReleases };
+      writableRecord(next, 'runRuntimeReleases');
       assertCurrentRun(next, event.runId, 'run_runtime_release_identity_mismatch');
       const runtime = requiredRunRuntimeSnapshot(next, event.runId);
       if (
@@ -1333,6 +1337,15 @@ function recordAgentMessageActivity(state: SessionState,
 
 
 export function recoverSession(sessionId: string, events: readonly SessionEvent[]): SessionState {
+  return replaySession(sessionId, events, false);
+}
+
+/** No intermediate state escapes this synchronous read; projectSession copies the public receipts. */
+export function projectSessionHistory(sessionId: string, events: readonly SessionEvent[]): SessionProjection {
+  return projectSession(replaySession(sessionId, events, true));
+}
+
+function replaySession(sessionId: string, events: readonly SessionEvent[], borrowReceiptMessages: boolean): SessionState {
   let agents: AgentLifetime = { agentTasks: [], agentChildren: [] };
   for (const [index, event] of events.entries()) {
     if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
@@ -1343,7 +1356,7 @@ export function recoverSession(sessionId: string, events: readonly SessionEvent[
   // Archived child identities also label received messages during history-only replay.
   state.agentChildren = agents.agentChildren;
   const active = activeConversationEvents(events);
-  const replay: ReplayIndexes = { compositions: new Map(), attempts: new Map(), calls: [] };
+  const replay: ReplayIndexes = { borrowReceiptMessages, compositions: new Map(), attempts: new Map(), calls: [] };
   for (const event of active) {
     // The lifetime stream above has already reduced these facts exactly once.
     if (isAgentLifetimeEvent(event)) {
@@ -1391,9 +1404,10 @@ export function projectSession(
   for (const block of draft?.blocks ?? []) {
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
-  const capturedSubagents = state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined;
+  // Journals without an explicit Session preference can still show their recorded task selection.
+  const savedSubagents = state.subagentSettings ?? (state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined);
   return {
-    ...(capturedSubagents ? { subagentSettings: structuredClone(capturedSubagents) } : {}),
+    ...(savedSubagents ? { subagentSettings: structuredClone(savedSubagents) } : {}),
     ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
     ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
     ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
@@ -2029,6 +2043,16 @@ function cloneTodoList(todoList: SessionProjection['todoList']): SessionProjecti
     ...todoList,
     items: todoList.items.map((item) => ({ ...item })),
   };
+}
+
+type ReceiptMessages = SessionState['contextCompositions'][number]['messages'];
+
+// Only reuse ordinary decoded receipt trees. Anything the original copy would reject or
+// normalize must still go through that copy, even on an old receipt not shown by the UI.
+function canBorrowReceiptMessages(messages: ReceiptMessages): boolean {
+  return Array.isArray(messages) && messages.every(message => isRecord(message)
+    && Array.isArray(message.blocks) && message.blocks.every(isRecord)
+    && Array.isArray(message.filesystemReferences) && message.filesystemReferences.every(isRecord));
 }
 
 function cloneContextComposition(

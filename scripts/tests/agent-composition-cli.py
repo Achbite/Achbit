@@ -30,6 +30,16 @@ class Provider(fixture.MockProviderHandler):
             body = json.loads(self.rfile.read(int(self.headers['content-length'])))
             if self.respond_to_title(body):
                 return
+            last_user = next((fixture.message_text(m.get('content')) for m in reversed(body['messages']) if m.get('role') == 'user'), '')
+            if last_user.endswith('VERIFY_LAST_EDITED_A'):
+                require(body['model'] == 'mock-main', 'Old A did not send with its own model')
+                state.requests.append(body)
+                self.send_response(200)
+                self.send_header('content-type', 'text/event-stream')
+                self.send_header('connection', 'close')
+                self.end_headers()
+                self._send_text('old-A-sent-without-edit')
+                return
             lane = next((lane for message in reversed(body['messages']) if message.get('role') == 'user'
                          for lane in ['COMPOSE_CHILD', 'COMPOSE_RESUME', 'COMPOSE_ROOT', 'PERMISSION_ROOT',
                                       'PERMISSION_CONTINUE', 'PERMISSION_CHILD', 'PERMISSION_CHILD_RESUME']
@@ -162,7 +172,92 @@ class Provider(fixture.MockProviderHandler):
             self.close_connection = True
 
 
-def run():
+def check_last_edited(daemon, workspace):
+    """Use only the two user commands: no compensating PATCH or re-selection before D."""
+    def root():
+        return fixture.create_session(daemon, workspace)
+
+    def edit(sid, kind, name, selection):
+        command = {'schemaVersion': fixture.COMMAND_VERSION, 'type': f'session.{kind}-settings.set',
+                   'sessionId': sid, 'commandId': 'pref:' + name, 'settings': selection}
+        result = fixture.api_json(daemon.base_url, f'/api/conversation/sessions/{sid}/commands',
+                                  token=daemon.token, method='POST', body=command)
+        require(result['status'] == 'accepted', json.dumps(result))
+        return command
+
+    def model(profile, effort):
+        return {'profileId': profile, 'reasoningEffortOverride': effort}
+
+    def expect(p, selected_model, agents):
+        require(p['modelSettings'] == selected_model and p['subagentSettings'] == agents,
+                f'{p.get("sessionId")}: wrong model/delegation tuple: {p.get("modelSettings")}, {p.get("subagentSettings")}')
+
+    a = root()['sessionId']
+    am, bm = model('e2e-main', 'max'), model('e2e-child', 'medium')
+    aset = dict(fixture.projection(daemon, a)['subagentSettings'], enabled=False)
+    edit(a, 'model', 'A-initial-model', model('e2e-main', 'high'))
+    edit(a, 'subagent', 'A-disabled', aset)
+    b = root()['sessionId']
+    edit(b, 'model', 'B-model', bm)
+    bset = dict(aset, enabled=True)
+    edit(b, 'subagent', 'B-enabled', bset)
+    # Editing ONLY A's model must remember A's delegation, not the last B settings.
+    replay = edit(a, 'model', 'A-max', am)
+    expect(root(), am, aset)
+    # Editing ONLY B's delegation must remember B's model/effort, not A's default model.
+    bset = dict(bset, maxConcurrent=bset['maxConcurrent'] + 1)
+    edit(b, 'subagent', 'B-last-edit', bset)
+    c = root()
+    expect(c, bm, bset)
+    expect(fixture.projection(daemon, a), am, aset)
+    expect(fixture.projection(daemon, b), bm, bset)
+    sent = fixture.cli(daemon, a, 'VERIFY_LAST_EDITED_A')
+    require('old-A-sent-without-edit' in sent.stdout, sent.stdout)
+    d = root()  # Deliberately no defaults PATCH, explicit selection or prompt between A and D.
+    expect(d, bm, bset)
+    started = next(row['payload']['runtimeSnapshot'] for row in reversed(events(daemon))
+                   if row['sessionId'] == a and row['type'] == 'run.started')
+    require(started['provider']['profileId'] == am['profileId'] and started['provider']['reasoningEffort'] == 'max'
+            and started['subagentSettings'] == aset, 'A did not retain its frozen runtime configuration')
+    duplicate = fixture.api_json(daemon.base_url, f'/api/conversation/sessions/{a}/commands', token=daemon.token,
+                                 method='POST', body=replay)
+    require(duplicate['status'] == 'replayed', json.dumps(duplicate))
+    expect(root(), bm, bset)
+    # Fail the second preference document after the Session edit was committed. Check both stores/receipts.
+    settings_path = daemon.config_root / 'config/user/local/settings/user-settings.json'
+    backup = settings_path.with_name('last-edited-fixture-backup.json')
+    settings_path.rename(backup)
+    settings_path.mkdir()
+    try:
+        failed_model = model('e2e-main', 'low')
+        partial = fixture.api_envelope(daemon.base_url, f'/api/conversation/sessions/{a}/commands', token=daemon.token,
+            method='POST', body=dict(replay, commandId='pref:A-fault', settings=failed_model))
+        require(not partial.get('ok') and partial['error'] == 'conversation_defaults_save_failed'
+                and partial['data']['sessionCommitted'] and partial['data']['defaultsSaved'] is False
+                and partial['data']['commandReply']['status'] == 'accepted' and str(settings_path) in partial['message'],
+                json.dumps(partial))
+        expect(fixture.projection(daemon, a), failed_model, aset)
+        saved_profiles = json.loads((settings_path.parent / 'llm-profiles.json').read_text())
+        require(saved_profiles['defaultProfileId'] == bm['profileId'] and
+                next(p for p in saved_profiles['profiles'] if p['id'] == am['profileId'])['reasoningEffort'] == 'max',
+                'First preference file was not rolled back after the second failed')
+    finally:
+        settings_path.rmdir()
+        backup.rename(settings_path)
+    expect(root(), bm, bset)
+    # Draft preferences overlay effort without replacing an enabled minimal coding policy.
+    fixture.api_json(daemon.base_url, '/api/user-settings', token=daemon.token, method='PATCH',
+                     body={'patches': {'agent.minimalMode': True}})
+    minimal = fixture.api_json(daemon.base_url, '/api/conversation/sessions', token=daemon.token,
+        method='POST', body={'workspacePaths': [str(workspace)], 'profileId': am['profileId'],
+                             'recipe': {'reasoningEffort': 'max'}, 'subagentSettings': aset})
+    expect(minimal, am, aset)
+    require(minimal['recipe']['tools']['plugins'] is False and minimal['recipe']['tools']['controls'] == [],
+            'An effort-only explicit draft replaced the minimal coding recipe')
+    print('[agent-composition-cli] PASS: A/max/off and B/medium/on, model-only and delegation-only edits, C/D inherit B, real old-A send, idempotent replay and partial-save compensation')
+
+
+def run(preferences_only=False):
     with tempfile.TemporaryDirectory(prefix='achbit-agent-composition-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
@@ -231,9 +326,9 @@ def run():
                                            method='PATCH', body={'patches': {'agent.subagents.enabled': enabled}})
             require(response['ok'] is True, json.dumps(response))
 
-        def session_settings(sid, enabled, label):
+        def session_settings(sid, enabled, label, **edits):
             current = fixture.projection(daemon, sid)['subagentSettings']
-            changed = dict(current, enabled=enabled)
+            changed = dict(current, enabled=enabled, **edits)
             response = fixture.api_json(daemon.base_url, f'/api/conversation/sessions/{sid}/commands',
                 token=daemon.token, method='POST', body={
                     'schemaVersion': fixture.COMMAND_VERSION, 'type': 'session.subagent-settings.set',
@@ -244,9 +339,18 @@ def run():
             defaults = fixture.api_json(daemon.base_url, '/api/user-settings', token=daemon.token)['settings']
             require(all(defaults[f'agent.subagents.{key}'] == value for key, value in changed.items()),
                     'Session configuration did not become the complete new-session defaults')
+            return changed
+
+        def last_run_settings(sid):
+            return next(row['payload']['runtimeSnapshot']['subagentSettings'] for row in reversed(events(daemon))
+                        if row['sessionId'] == sid and row['type'] == 'run.started')
 
         try:
             daemon.start()
+            if preferences_only:
+                check_last_edited(daemon, workspace)
+                state.assert_healthy()
+                return
             initial = create_with_recipe(recipe, 'COMPOSE_ROOT')
             state.assert_healthy()
             require(initial.returncode == 5, f'Expected parent Plan confirmation: {initial.stdout}\n{initial.stderr}')
@@ -318,6 +422,8 @@ def run():
                 require(fixture.projection(daemon, future['sessionId'])['subagentSettings']['enabled'] is False,
                         'New Session did not copy current defaults')
                 session_settings(parent, False, 'disable-parent')
+                require(last_run_settings(parent)['enabled'] and last_run_settings(child)['enabled'],
+                        'Saving the parent Session changed its already started run or the assigning run inherited by its child')
                 require(fixture.projection(daemon, child)['subagentSettings']['enabled'] is True
                         and fixture.projection(daemon, child)['run']['status'] == 'waiting',
                         'Disabling the parent changed or cancelled its waiting child')
@@ -357,10 +463,18 @@ def run():
                 fixture.cli(daemon, sid, '/permissions ' + json.dumps({'agent.permissions.engineeringDecisions': 'ask'}))
                 require(fixture.projection(daemon, sid)['subagentSettings']['enabled'] is (sid == child),
                         'Restart overwrote Session-specific subagent settings')
-            session_settings(parent, True, 'enable-after-restart')
+            own_settings = session_settings(parent, True, 'enable-after-restart')
+            other_settings = session_settings(future['sessionId'], False, 'last-explicit-edit',
+                                              maxConcurrent=own_settings['maxConcurrent'] + 1)
+            new_root = fixture.api_json(daemon.base_url, '/api/conversation/sessions', token=daemon.token,
+                method='POST', body={'workspacePaths': [str(workspace)]})
+            require(fixture.projection(daemon, new_root['sessionId'])['subagentSettings'] == other_settings,
+                    'New root did not copy the most recently edited configuration once at creation')
             resumed = fixture.cli(daemon, parent, 'PERMISSION_CONTINUE')
             state.assert_healthy()
             require('tightening-restored' in resumed.stdout, resumed.stdout)
+            require(last_run_settings(parent) == own_settings and last_run_settings(child)['enabled'],
+                    'An existing parent or its continued child recaptured the unrelated new-root defaults')
             require(all(json.loads(line)['after'] == 0 for line in reads.read_text().splitlines()),
                     'Active Actor polled journal revisions instead of publishing its writes')
             require(not (workspace / 'after-restart.txt').exists(), 'Continuation restored the old permission ceiling')
@@ -379,6 +493,8 @@ def run():
             require(denied.returncode != 0 and 'agent_plugin_isolation_required' in denied.stdout + denied.stderr, denied.stdout + denied.stderr)
             require(not marker.exists(), 'MCP process started before policy admission')
             require(len(state.requests) == count, 'Invalid composition reached Provider')
+            check_last_edited(daemon, workspace)
+            state.assert_healthy()
             print('[agent-composition-cli] PASS: root/child drivers, model choices, restart, parent Plan scope, active/continued child tightening and prompts, Session settings/default isolation and restart, lost parent commit acknowledgement, write publications, Host denial, MCP pre-start denial')
         except BaseException:
             print(daemon.log_tail())
@@ -397,4 +513,6 @@ def run():
 
 
 if __name__ == '__main__':
-    run()
+    if sys.argv[1:] not in ([], ['--preferences-only']):
+        raise SystemExit('Usage: agent-composition-cli.py [--preferences-only]')
+    run(preferences_only=bool(sys.argv[1:]))

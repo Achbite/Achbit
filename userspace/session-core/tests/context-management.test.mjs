@@ -7,7 +7,7 @@ import { agentOperationDefinitions, decodeSessionControlCall } from '../dist/loc
 import { readConversation } from '../dist/local-agent/conversationRead.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { actorWith, createSession, emptyKernel, fakeRunPreparation, completedExecutionReply,
-  messageCommand, providerEvent, readEvents, waitForProjection, waitUntil, workspaceBinding } from './local-agent-fixtures.mjs';
+  messageCommand, providerEvent, readEvents, runtimeSnapshot, waitForProjection, waitUntil, workspaceBinding } from './local-agent-fixtures.mjs';
 
 const answer = (request, text) => providerEvent(request.requestId, 'text.delta', { text });
 const done = request => providerEvent(request.requestId, 'completed', {});
@@ -354,6 +354,7 @@ async function agentService(t, ownerId, stream) {
       return prepared;
     } }, provider: { async *stream(request) { yield* stream({ sessionId, request, service, journal }); } }, async dispose() {} } };
   } }, {
+    async settings() { return { ...runtimeSnapshot('run:fixture').subagentSettings, allowFullConfiguration: true }; },
     async models() { return [{ profileId: 'profile:default', name: 'Default', model: 'fixture', reasoningEfforts: ['low'],
       parameters: { adapterId: 'openai', kind: 'responses', providerFlavor: null, contextWindowTokens: 100_000,
         maxOutputTokens: 512, imageInput: false, temperature: null, hostedWebSearch: null } }]; },

@@ -3,19 +3,29 @@ import { useCallback, useEffect, useState } from 'react';
 import type { PendingAgentDecision, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { ModalDialog } from '../../ui-components';
-import { ChildDecisions } from './AgentTasksPanel';
+import { ChildDecisions, type ChildReviewItem } from './AgentTasksPanel';
 import { ConversationSessionScope } from './ConversationSessionScope';
-import { useAgentChildConversation } from './useAgentChildConversation';
+import { pendingChildApproval, useAgentChildConversation } from './useAgentChildConversation';
+import { awaitsApprovalReviewer } from './composerDecisions';
 import './agentPlanReview.css';
 
-function planKey(decision: PendingAgentDecision): string {
-  return JSON.stringify([decision.agentSessionId, decision.runId, decision.plan?.planId, decision.plan?.revision]);
-}
+type ReviewKind = ChildReviewItem['kind'];
+type ReviewRoute = { decision: PendingAgentDecision; kind: ReviewKind; key: string };
 
-/** Dismissal is view state only; the original child Plan remains pending. */
-export function nextAgentPlanReview(decisions: readonly PendingAgentDecision[], dismissed: ReadonlySet<string>) {
-  const decision = decisions.find(item => item.plan && !dismissed.has(planKey(item)));
-  return decision ? { decision, key: planKey(decision) } : null;
+/** A single child route can carry both a Plan and permission. Deferral is local to one item. */
+export function nextAgentPlanReview(decisions: readonly PendingAgentDecision[], dismissed: ReadonlySet<string>): ReviewRoute | null {
+  for (const decision of decisions) {
+    const owner = [decision.agentSessionId, decision.runId];
+    if (decision.plan) {
+      const key = JSON.stringify([...owner, 'plan', decision.plan.planId, decision.plan.revision]);
+      if (!dismissed.has(key)) return { decision, kind: 'plan', key };
+    }
+    if (decision.approval) {
+      const key = JSON.stringify([...owner, 'approval', decision.approval.callId, decision.approval.approvalId]);
+      if (!dismissed.has(key)) return { decision, kind: 'approval', key };
+    }
+  }
+  return null;
 }
 
 export function matchesAgentPlanReview(decision: PendingAgentDecision, projection: SessionProjection): boolean {
@@ -34,28 +44,38 @@ export function AgentPlanReview({ decisions, language, refresh }: {
     if (key) setDismissed(current => new Set([...current, key]));
   }, [key]);
   const resolved = useCallback(() => { dismiss(); void refresh(); }, [dismiss, refresh]);
-  return review ? <AgentPlanReviewDialog key={review.key} decision={review.decision} language={language}
+  return review ? <AgentReviewRoute key={review.key} decision={review.decision} kind={review.kind} language={language}
     onDismiss={dismiss} onResolved={resolved} /> : null;
 }
 
-function AgentPlanReviewDialog({ decision, language, onDismiss, onResolved }: {
-  decision: PendingAgentDecision; language: UiLanguage; onDismiss(): void; onResolved(): void;
+type ReviewProps = Pick<ReviewRoute, 'decision' | 'kind'> & { language: UiLanguage; onDismiss(): void; onResolved(): void };
+function AgentReviewRoute(props: ReviewProps) {
+  const child = useAgentChildConversation(props.decision.agentSessionId, true, props.kind === 'approval' ? props.decision : undefined);
+  return <AgentReviewDialog {...props} child={child} />;
+}
+
+export function AgentReviewDialog({ child, decision, kind, language, onDismiss, onResolved }: ReviewProps & {
+  child: ReturnType<typeof useAgentChildConversation>;
 }) {
-  const child = useAgentChildConversation(decision.agentSessionId, true);
   const projection = child.projection;
   const [linkError, setLinkError] = useState<string | null>(null);
   const bodyLinks = useConversationBodyLinks(projection, language, setLinkError);
-  const matches = projection && matchesAgentPlanReview(decision, projection);
-  useEffect(() => {
-    if (projection && !matches && !child.readError) onResolved();
-  }, [projection, matches, child.readError, onResolved]);
-  if (projection && !matches && !child.readError) return null;
+  const plan = kind === 'plan' && projection && matchesAgentPlanReview(decision, projection) ? projection.pendingPlan : null;
+  const approval = kind === 'approval' && decision.approval && projection?.sessionId === decision.agentSessionId
+    ? pendingChildApproval(projection, { runId: decision.runId, ...decision.approval }) : null;
+  const item: ChildReviewItem | null = plan ? { kind: 'plan', plan } : approval ? { kind: 'approval', approval } : null;
+  const stale = !!projection && !item && !child.readError;
+  useEffect(() => { if (stale) onResolved(); }, [stale, onResolved]);
+  // Session only routes final human handoffs. A sibling may still be running; this child read
+  // must match the exact item and, for a delegated review, contain its ask before showing it.
+  if (stale || (kind === 'approval' && !projection && !child.readError) || awaitsApprovalReviewer(approval)) return null;
+  const title = t(language, kind === 'plan' ? 'agent.plan.review' : 'agent.approval.toolPermission');
   return <ConversationBodyLinkScope.Provider value={bodyLinks.open}><ConversationSessionScope.Provider value={decision.agentSessionId}>
-    <ModalDialog className="agent-plan-review" aria-label={t(language, 'agent.plan.review')}
+    <ModalDialog className="agent-plan-review" aria-label={title}
       busy={child.submitting} onClose={onDismiss}>
       <section className="local-agent agent-plan-review__card">
         <header className="agent-plan-review__heading">
-          <div><h2>{t(language, 'agent.plan.review')}</h2><p>{decision.displayName}</p></div>
+          <div><h2>{title}</h2><p>{decision.displayName}</p></div>
           <button type="button" disabled={child.submitting} onClick={onDismiss}>{t(language, 'agent.team.reviewLater')}</button>
         </header>
         <div className="agent-plan-review__body">
@@ -65,7 +85,7 @@ function AgentPlanReviewDialog({ decision, language, onDismiss, onResolved }: {
             <button type="button" onClick={() => void child.refresh()}>{t(language, 'agent.team.refresh')}</button></div>}
           {child.commandError && <p role="alert" className="agent-tasks__error">{child.commandError}</p>}
           {!projection && !child.readError && <p role="status">{t(language, 'agent.team.loading')}</p>}
-          {projection && matches && <ChildDecisions child={child} projection={projection} language={language} />}
+          {projection && item && <ChildDecisions child={child} projection={projection} language={language} only={item} />}
         </div>
       </section>
     </ModalDialog>

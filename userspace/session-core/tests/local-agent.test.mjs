@@ -5516,7 +5516,7 @@ test('the real Session bridge persists model commands and passes effort through 
       for await (const chunk of request) body += chunk;
       const input = body ? JSON.parse(body) : null;
       let data;
-      if (url.pathname === '/api/local-agent/agents/settings') data = { enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 4, maxCallsPerRun: 10, maxMembersPerSession: 10, allowMemberAnalysis: false, allowFullConfiguration: true, presets: '[]' };
+      if (url.pathname === '/api/local-agent/agents/settings' && request.method === 'GET') data = { enabled: false, profileId: '', reasoningEffort: '', maxConcurrent: 4, maxCallsPerRun: 10, maxMembersPerSession: 10, allowMemberAnalysis: false, allowFullConfiguration: true, presets: '[]' };
       else if (url.pathname === '/api/local-agent/journal/events') data = { value: await journal.append(input), permissions: {} };
       else if (url.pathname === '/api/local-agent/journal/sessions') data = await journal.createSession(input);
       else if (parts[6] === 'events') {
@@ -5593,6 +5593,13 @@ test('the real Session bridge persists model commands and passes effort through 
   const projection = (await send('snapshot', { sessionId })).data;
   assert.deepEqual(projection.modelSettings, command.settings);
   assert.equal(projection.run, null);
+  const team = { ...command, type: 'session.subagent-settings.set', commandId: 'command:wire-team', settings: { ...projection.subagentSettings, enabled: true } };
+  const recorded = await send('submit', { command: team });
+  assert.equal(recorded.data?.status, 'accepted', JSON.stringify(recorded));
+  const pair = (await send('snapshot', { sessionId })).data;
+  assert.deepEqual([pair.modelSettings, pair.subagentSettings], [command.settings, team.settings]);
+  assert.equal(pair.revision, recorded.data.revision);
+  assert.deepEqual((await send('submit', { command: team })).data, { ...recorded.data, status: 'replayed' });
   assert.ok(notifications.some(value => value.kind === 'change' && value.sessionId === sessionId),
     'the ordinary bridge pushes committed changes without a debug subscription');
   assert.ok(notifications.every(value => !('content' in value) && !('messages' in value)));

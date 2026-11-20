@@ -8,7 +8,8 @@ import { resolve, join, extname, relative, isAbsolute, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { checkReaderSplit } from './reader-split-check.mjs';
+import { checkReaderFileMenu, checkReaderSplit } from './reader-split-check.mjs';
+import { checkComposerPluginMentions } from './composer-plugin-mentions-check.mjs';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
 import { checkAttachmentThumbnails } from './attachment-thumbnails-check.mjs';
 import { checkPluginMarketplace } from './plugin-marketplace-check.mjs';
@@ -87,6 +88,8 @@ try {
     const image = await cmd('Page.captureScreenshot', { format: 'png' }); await writeFile(join(out, name + '.png'), Buffer.from(image.data, 'base64'));
     console.log(`${pass ? 'PASS' : 'FAIL'} ${name}: ${JSON.stringify(actual)}`);
   };
+  await checkComposerPluginMentions({ navigate, evaluate, cmd, frame, click, key, type, record });
+  await checkReaderFileMenu({ navigate, evaluate, until, click, key, record });
   await checkReaderSplit({ navigate, evaluate, cmd, until, frame, click, record });
   await checkAttachmentThumbnails({ navigate, evaluate, cmd, until, frame, click, key, record });
   await navigate('ui-components');

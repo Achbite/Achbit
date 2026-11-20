@@ -107,7 +107,7 @@ for (const ending of ['completed', 'failed', 'cancelled']) test(`managed ${endin
       } },
       async dispose() {},
     } };
-  } }, { async models() { return [model]; },
+  } }, { async settings() { return settings; }, async models() { return [model]; },
     async createSession(input) { return service.createSession(input); } });
   t.after(async () => { childGate.resolve(); if (job?.status === 'active') update('cancelled'); wake(); await service.dispose(); });
   await service.createSession({ sessionId: ownerId, displayTitle: 'Mixed resource wake', workspaceBindings: [workspaceBinding] });

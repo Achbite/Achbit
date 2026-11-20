@@ -22,16 +22,17 @@ test('composer switches from adjustable reasoning to a fixed-effort service-defa
   const fixed = { id: 'profile:fixed', connectionId, name: 'Kimi Highspeed', model: 'kimi-for-coding-highspeed',
     enabled: true, thinking: 'enabled', kind: 'responses', providerFlavor: 'moonshot' };
   assert.deepEqual(modelReasoningEfforts(fixed), []);
-  let profiles = [adjustable, fixed];
+  let profiles = [adjustable, fixed], defaultProfileId = adjustable.id;
   const requests = [];
   installGuiFetch(t, (url, init) => {
     assert.equal(url.pathname, '/api/llm/profiles');
     requests.push({ method: init.method ?? 'GET', body: init.body && JSON.parse(init.body) });
     if (init.method === 'PATCH') {
-      const { profile } = JSON.parse(init.body);
-      profiles = profiles.map(item => item.id === profile.id ? profile : item);
+      const update = JSON.parse(init.body);
+      profiles = profiles.map(item => item.id === update.profile.id ? update.profile : item);
+      defaultProfileId = update.defaultProfileId;
     }
-    return Response.json({ ok: true, data: { profiles, defaultProfileId: adjustable.id } });
+    return Response.json({ ok: true, data: { profiles, defaultProfileId } });
   });
   store.setState({ sessionId: null, projection: null, profiles, selectedProfileId: adjustable.id,
     defaultProfileId: adjustable.id, reasoningEffortOverride: 'high', runtimeReady: true,
@@ -43,6 +44,7 @@ test('composer switches from adjustable reasoning to a fixed-effort service-defa
   assert.equal(composer.selectedProfileId, adjustable.id);
   await composer.selectModel(fixed.id, null);
   assert.equal(store.getState().selectedProfileId, fixed.id);
+  assert.equal(store.getState().defaultProfileId, fixed.id, 'an explicit fixed-effort choice sets the future conversation default without sending');
   assert.equal(store.getState().reasoningEffortOverride, null);
   assert.equal(requests.filter(request => request.method === 'PATCH').length, 1);
 });
