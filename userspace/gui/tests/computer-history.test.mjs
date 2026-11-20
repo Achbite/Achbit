@@ -4,8 +4,61 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { loopSnapshot, projectSession } from '../../session-core/dist/index.js';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
-import { createSession, readEvents, workspaceBinding } from '../../session-core/tests/local-agent-fixtures.mjs';
+import { actorWith, createSession, readEvents, workspaceBinding, fakeRunPreparation, emptyKernel,
+  completedExecutionReply, failedExecutionReply, providerEvent, messageCommand, waitForProjection } from '../../session-core/tests/local-agent-fixtures.mjs';
 import { decodeGuiProjection, installGuiFetch, loadGuiModules } from './gui-projection-contract.mjs';
+
+// TCR: .task-artifacts/T-010-Plugin_Review-20261120/closeout/apps-TCR.md
+test('listApps receipts retain native application identities in expanded history; empty is not failure', async t => {
+  const [{ ComputerActivity }, { ConversationVirtualRow }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ComputerActivity.tsx', '/src/components/local-agent/ConversationVirtualRow.tsx',
+  ]);
+  const mac = [{ app: 'com.apple.TextEdit', name: 'TextEdit' }];
+  const win = [{ app: 'C:\\Windows\\System32\\notepad.exe', name: 'notepad', pids: [410, 411] }];
+  const failure = { code: 'native_browser_failed', message: 'Window enumeration failed.' };
+  for (const [scenario, applications] of [['mac', mac], ['windows', win], ['empty', []], ['failed', undefined]]) {
+    const sessionId = `session:list-apps-${scenario}`, journal = new InMemoryCommandJournal();
+    await createSession(journal, sessionId, [workspaceBinding]);
+    const output = applications === undefined ? null : { applications, unprojectedDetail: 'only-in-the-tool-record' };
+    const uri = 'plugin://computer-use@builtin';
+    const preparation = fakeRunPreparation({ contextWindowTokens: 65536, tools: [{ name: 'computer.control', toolBindingRef: 'binding:desktop',
+      origin: 'extension', pluginUri: uri, availability: 'callable', description: 'Inspect the desktop.', possibleEffects: ['external'], inputSchema: { type: 'object' } }] });
+    let calls = 0;
+    const actor = actorWith(journal, sessionId, { async *stream(request) {
+      if (!calls) yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:listApps', name: 'computer_control', input: { action: 'listApps' } });
+      else yield providerEvent(request.requestId, 'text.delta', { text: 'Finished.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    } }, emptyKernel({ async execute(request) {
+      assert.equal(++calls, 1);
+      const reply = applications === undefined ? failedExecutionReply(request, output, failure) : completedExecutionReply(request, output);
+      reply.record.preparedEffect.origin = 'extension'; reply.record.preparedEffect.pluginInstanceRef = `instance:${uri}`;
+      return reply;
+    } }), preparation.port, `list-apps-${scenario}`);
+    t.after(() => actor.dispose());
+    await actor.submit({ ...messageCommand(sessionId, 'command:start', 'List the desktop apps.'),
+      pluginSelections: [{ selectionId: 'selection:desktop', uri, label: 'Computer Use' }] });
+    await waitForProjection(actor, state => state.run?.status === 'completed');
+    const events = await readEvents(journal, sessionId);
+    const record = events.find(event => event.type === 'tool.completed').payload.record;
+    assert.deepEqual(record.output, output, 'the original receipt is retained');
+    const projection = await decodeGuiProjection(projectSession(loopSnapshot(sessionId, events).state));
+    const activity = projection.activities.find(item => item.tool?.recordId === record.recordId);
+    assert.equal(activity.tool.computer.action, 'listApps');
+    assert.equal(activity.status, applications === undefined ? 'failed' : 'completed');
+    assert.deepEqual(activity.tool.computer.result, applications === undefined ? undefined : { applications });
+    assert.equal(activity.tool.computer.observation, undefined, 'an app list is not an observation');
+    const render = expanded => renderToStaticMarkup(createElement(ConversationVirtualRow, { rowKey: scenario, eager: true,
+      virtualizer: { layout: () => ({ state: new Map([[`computer:${activity.activityId}:details`, expanded]]) }) },
+      children: () => createElement(ComputerActivity, { activity, computer: activity.tool.computer, artifacts: [], language: 'en-US', statusLabel: activity.status, onExpand() {} }) }));
+    assert.doesNotMatch(render(false), /TextEdit|notepad|applications|Window enumeration failed/);
+    const expanded = render(true);
+    assert.doesNotMatch(expanded, /only-in-the-tool-record/);
+    if (applications === undefined) {
+      assert.deepEqual(activity.tool.error, failure); assert.match(expanded, /Window enumeration failed/); assert.doesNotMatch(expanded, /&quot;applications&quot;/);
+    } else if (!applications.length) assert.match(expanded, /&quot;applications&quot;: \[\]/);
+    else { assert.ok(expanded.includes(applications[0].name)); assert.ok(expanded.includes(JSON.stringify(applications[0].app).slice(1, -1))); }
+  }
+});
 
 test('computer history uses the shared tool group and reveals only selected archived evidence with accurate feedback', async t => {
   const [{ ComputerActivity, computerInterfaceText, computerActivitySummary }, { readConversationArtifact }, { ToolActivityGroup }, { ConversationVirtualRow }, { projectionItems }, { AgentConversationHistory }] = await loadGuiModules(t, [
