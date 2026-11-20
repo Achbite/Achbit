@@ -441,18 +441,20 @@ test('body link activation uses the owning Session, file preference, directory a
   });
   async function click(workspaceId, href, document) {
     const projection = { sessionId: 'session:' + workspaceId, workspaceBindings: [{ workspaceId }], messages: [], artifacts: [] };
-    let open, settle;
-    const complete = new Promise(resolve => { settle = resolve; });
+    let open;
+    const feedback = [];
     function View() {
-      open = useConversationBodyLinks(document ? { sessionId: projection.sessionId, document } : projection, 'en-US', settle, workspaceId === 'main').open;
+      open = useConversationBodyLinks(document ? { sessionId: projection.sessionId, document } : projection, 'en-US', message => feedback.push(message), workspaceId === 'main').open;
       return null;
     }
     renderToStaticMarkup(createElement(View));
     const anchor = new Link(href);
     const event = { target: anchor, currentTarget: anchor, button: 0, preventDefault() { this.defaultPrevented = true; } };
-    open(event);
+    const complete = open(event);
     assert.equal(event.defaultPrevented, true);
-    return complete;
+    assert.deepEqual(feedback, [null], 'starting a request clears obsolete feedback, not a completion receipt');
+    await complete;
+    return feedback.at(-1);
   }
   useSettingsStore.setState({ effectiveSettings: { ...settings, 'gui.defaultFileOpen': 'reader' } });
   assert.equal(await click('child', 'file:///child/笔记%20A.md#L4C2'), null);

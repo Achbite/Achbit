@@ -319,13 +319,18 @@ export async function readConversationArtifact(sessionId: string, artifactId: st
   const response = await fetch(`${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/content`, {
     signal, headers: getHostConnectionHeaders(),
   });
-  if (!response.ok || response.headers.get('content-type')?.startsWith('application/json')) {
-    const detail = await response.text();
-    let message = detail;
-    try { const error = JSON.parse(detail) as ApiEnvelope<never>; message = error.message ?? error.error ?? detail; } catch { /* Keep the original response. */ }
-    throw new Error(message || `artifact_read_failed:HTTP ${response.status}`);
+  const blob = await response.blob();
+  const immutable = response.headers.get('cache-control')?.split(',').some(directive => directive.trim().toLowerCase() === 'immutable');
+  // The Host marks archived bytes immutable, even when a saved JSON report is itself an error envelope.
+  if (response.ok && (immutable || blob.type.split(';', 1)[0] !== 'application/json')) return blob;
+  const detail = await blob.text();
+  let envelope: ApiEnvelope<never> | null = null;
+  try { envelope = JSON.parse(detail); } catch { /* Non-JSON transport errors keep their original text. */ }
+  if (envelope?.ok === false && typeof envelope.error === 'string') {
+    throw new ConversationRequestError(envelope.error, envelope.message ?? envelope.error);
   }
-  return response.blob();
+  if (!response.ok) throw new Error(envelope?.message || envelope?.error || detail || `artifact_read_failed:HTTP ${response.status}`);
+  return blob;
 }
 
 export async function readConversationImage(sessionId: string, workspaceId: string, logicalPath: string, signal?: AbortSignal): Promise<Blob> {

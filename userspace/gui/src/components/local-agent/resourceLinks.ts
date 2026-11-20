@@ -86,6 +86,16 @@ export function bindLocalTarget(target: LocalTarget, roots: { workspaceId: strin
   return { workspaceId: binding.workspaceId, logicalPath: path.slice(binding.root.length).replace(/^\//u, '') || '.',
     line: target.line, column: target.column, ...(target.fragment && { fragment: target.fragment }) };
 }
+
+/** A failed root is not evidence of absence. Only a verified absolute binding can proceed with an incomplete root list. */
+export async function resolveLinkRoots(target: LocalTarget, workspaceIds: Iterable<string>, readRoot: (workspaceId: string) => Promise<string>) {
+  const results = await Promise.allSettled(Array.from(workspaceIds, async workspaceId => ({ workspaceId, root: await readRoot(workspaceId) })));
+  const roots = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+  const unavailable = results.find(result => result.status === 'rejected');
+  if (unavailable && !(target.absolute && bindLocalTarget(target, roots))) throw unavailable.reason;
+  return roots;
+}
+
 export interface ResolvedLocalTarget extends SourcePosition {
   workspaceId: string;
   logicalPath: string;
@@ -114,7 +124,7 @@ export async function resolveLocalTargets(
       const identity = canonicalFileKey(resolved.path);
       if (!matches.has(identity)) matches.set(identity, { ...candidate, ...resolved });
     } catch (error) {
-      if (typeof error !== 'object' || error === null || !('code' in error)
+      if (target.absolute || typeof error !== 'object' || error === null || !('code' in error)
         || !['host_inspection_path_not_found', 'conversation_resource_not_found'].includes(String(error.code))) throw error;
       missing.push(error instanceof Error ? error.message : String(error));
     }
