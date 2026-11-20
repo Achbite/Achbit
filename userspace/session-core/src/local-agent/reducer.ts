@@ -175,7 +175,8 @@ export function emptySessionState(sessionId: string): SessionState {
 }
 
 type WritableRecordKey = 'activities' | 'providerAttempts' | 'providerCallFacts' | 'providerTurns'
-  | 'providerUsageRequestIds' | 'processes' | 'artifacts' | 'tokenUsageHistory';
+  | 'providerUsageRequestIds' | 'processes' | 'artifacts' | 'tokenUsageHistory'
+  | 'runTimings' | 'runRuntimeSnapshots' | 'runRuntimeReleases';
 // Ownership lasts for one synchronous reducer call. It is neither a history cache
 // nor a property of the returned state. Public reductions copy each touched map
 // once; a private replay can reuse maps because no intermediate state escapes.
@@ -248,7 +249,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
     }
     case 'run.timing.updated':
       assertCurrentRun(next, event.runId, 'run_timing_run_mismatch');
-      next.runTimings = { ...next.runTimings, [event.runId]: { ...structuredClone(event.payload), runId: event.runId } };
+      // Same own data property as a computed object-literal key, including unusual IDs.
+      Object.defineProperty(writableRecord(next, 'runTimings'), event.runId, {
+        value: { ...structuredClone(event.payload), runId: event.runId }, enumerable: true, writable: true, configurable: true,
+      });
       break;
     case 'run.failure.recorded':
       assertCurrentRun(next, event.runId, 'failure_snapshot_run_mismatch');
@@ -356,7 +360,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       }
       writableRecord(next, 'activities');
       writableRecord(next, 'tokenUsageHistory');
-      next.runRuntimeSnapshots = { ...next.runRuntimeSnapshots };
+      writableRecord(next, 'runRuntimeSnapshots');
       {
         const inputMessage = next.messages.find((message) => (
           message.messageId === event.payload.inputMessageId && message.role === 'user'
@@ -1225,7 +1229,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     }
     case 'run.runtime.released': {
-      next.runRuntimeReleases = { ...next.runRuntimeReleases };
+      writableRecord(next, 'runRuntimeReleases');
       assertCurrentRun(next, event.runId, 'run_runtime_release_identity_mismatch');
       const runtime = requiredRunRuntimeSnapshot(next, event.runId);
       if (

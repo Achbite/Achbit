@@ -34,6 +34,23 @@ test('history replay keeps incremental facts, errors and input ownership across 
   assert.equal(events.filter(event => event.type === 'tool.completed').length, 4);
   const incremental = history => history.reduce(reduceSession, emptySessionState(sessionId));
   const expected = incremental(events);
+  // Published incremental states stay immutable; only unobservable replay-owned maps can be reused.
+  const runRecords = { 'run.timing.updated': 'runTimings', 'run.started': 'runRuntimeSnapshots',
+    'run.runtime.released': 'runRuntimeReleases' };
+  const touched = new Set();
+  let held = emptySessionState(sessionId);
+  for (const event of events) {
+    const key = runRecords[event.type];
+    const before = key && structuredClone(held[key]);
+    const next = reduceSession(held, event);
+    if (key) {
+      touched.add(key);
+      assert.notEqual(next[key], held[key], key + ': incremental states do not share the written map');
+      assert.deepEqual(held[key], before, key + ': later events cannot change a prior state');
+    }
+    held = next;
+  }
+  assert.equal(touched.size, 3);
   assert.deepEqual(recoverSession(sessionId, events), expected);
   assert.deepEqual(projectSession(recoverSession(sessionId, events)), await actor.snapshot());
   assert.deepEqual(recoverSession(sessionId, events), expected, 'replay indexes do not outlive a read');
@@ -67,6 +84,8 @@ test('history replay keeps incremental facts, errors and input ownership across 
     history => { history.find(event => event.type === 'provider.attempt.updated').payload.providerRequestId = 'request:missing'; },
     history => { delete history.find(event => event.type === 'context.composed').payload.messages[0].blocks; },
     history => { history.find(event => event.type === 'context.composed').payload.messages = {}; },
+    history => { history.find(event => event.type === 'run.timing.updated').runId = 'run:not-current'; },
+    history => { history.find(event => event.type === 'run.runtime.released').payload.runRuntimeSnapshotRef = 'snapshot:wrong'; },
   ];
   for (const mutate of mutations) {
     const history = structuredClone(events); mutate(history);
