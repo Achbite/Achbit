@@ -20,6 +20,8 @@ User images and GUI observations supply pixels for one successful request. Later
 
 ## Settings and extensions
 
+In Achbit, **global prompt** (全局提示词) means the user's saved **Settings → Agent behavior → System prompt** (设置 → Agent 行为 → 系统提示词), key `agent.systemPrompt`, unless the user specifies otherwise. To review or shorten it, run `achbit-cli --host-data-dir <hostDataDirectory> instance` and read just that field from the returned `settingsPath`. The assembled model instructions, project `AGENTS.md` and Skills are separate. Keep this Achbit-specific lookup in product documentation so the user's prompt stays portable.
+
 For self-development and installation, use the current Host CLI: `plugins capabilities`, then the needed `plugins guide` / `plugins template`; `plugins inspect`, `install`, `update`, `enable`, `disable`, `remove`, and `status` share the Settings operations. Target an existing instance with `--host-data-dir`. Read both registration and actual application state. New registrations enter discovery at the next model request in the same run; installation does not grant task activation or permission. The built-in `achbit-iteration` Skill includes the complete development/update workflow.
 
 Use `plugin.search` for enabled task plugins and file-backed Skills. All keywords must match; if nothing matches, try fewer keywords or browse without `query`. Follow `nextOffset` only when needed. Core tools such as [`process`](managed-processes.md) and [`session.read`](#models-and-context) have no plugin to install or activate: check the current task’s tool declarations.
