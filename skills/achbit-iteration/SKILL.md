@@ -14,8 +14,8 @@ Preserve the requested scope: analysis, implementation, Debug verification or re
 ## Choose the entrypoint
 
 - To control a Debug product, read `debug-control.md` under the `productDocsPath` in the Achbit product resources attached to the selection message, plugin activation or Skill read result. It lists launch, direct tool/UI calls, task observation and result queries. Use these interfaces before searching implementation details.
-- For UI design or interaction changes, discover and read the Frontend Design Skill and its Achbit UI reference. Start from the existing design and production components; use the user's request and applicable user Skills to identify intended changes.
-- To create, diagnose, repair or update a plugin, read [references/plugin-development.md](references/plugin-development.md). Use the current Host CLI for discovery and management.
+- For UI design or interaction changes, search for `frontend`, activate the file-backed Frontend Design Skill and use `fs.read` on its returned entry and linked Achbit UI reference. Start from the existing design and production components; use the user's request and applicable user Skills to identify intended changes.
+- To review a built-in capability or develop an importable plugin, read [plugin development](references/plugin-development.md). Identify whether the user needs guidance, a task tool or a Host-managed service before choosing the discovery, update and verification path.
 - To locate code for a change, read [references/implementation-map.md](references/implementation-map.md), then inspect the relevant producer and consumer.
 - To load edited code, use [references/update-modes.md](references/update-modes.md). A successful build does not update an existing process.
 
@@ -35,7 +35,7 @@ Write reusable lessons as context, recommended approach, reason and expected eff
 
 For tools, plugins, CLI/Debug and Provider-facing interfaces, trace the declaration, input adapter, permission check, executor and returned result together. Compare the relevant local PI implementation when available: keep one execution path for single and multiple calls, and normalize unambiguous equivalent inputs at the boundary. Preserve the original request and errors; permissions, exact targets and effect boundaries still apply. Serialization belongs to the runtime where needed, rather than extra model formatting rules.
 
-Write positive, clear descriptions of capabilities, inputs, outputs and meaningful limits. Include necessary detail without optimizing for word count. Keep discovery, activation, permission, execution and verified completion distinct. PATH discovery establishes a command location; sandbox dependencies and service readiness need evidence from that execution environment. Check the actual packaged entrypoint as well as source, and record unverified interfaces explicitly.
+Write positive, clear descriptions of capabilities, inputs, outputs and meaningful limits. Include necessary detail without optimizing for word count. Keep discovery, activation, permission, execution and verified completion distinct. For delegated work, separate the coordinator's readiness or scope messages from a tool grant. Exercise the human or configured reviewer path against the original child call; a message to the child is not an approval response. PATH discovery establishes a command location; sandbox dependencies and service readiness need evidence from that execution environment. Check the actual packaged entrypoint as well as source, and record unverified interfaces explicitly.
 
 ## Verify only what changed
 

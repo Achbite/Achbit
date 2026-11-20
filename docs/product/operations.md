@@ -12,7 +12,7 @@ Quick directions for using Achbit. Read only the section needed for the task; cu
 - Live output is bounded. Inspect the returned full-output paths when needed; do not rerun a command just to recover its log.
 - For Achbit Debug control, read [Debug control](debug-control.md). Direct tool/UI operations do not need an Agent task.
 
-Computer Use is an optional plugin. Embedded browser tools need the originating GUI; desktop control needs its native helper and reported OS permissions. Inspect before acting, reuse the returned target identities, and use foreground observation for coordinate input. Unsupported actions do not automatically switch input methods. Never replay dispatched input solely because its screenshot failed.
+Choose **Computer Use** for a page in Achbit’s Reader or a native window. Reader tools need the originating GUI; desktop control needs its helper and OS permissions. Inspect the target first. Native coordinate input needs a foreground observation; if input was dispatched but its screenshot failed, observe again rather than repeating it. For a tab already open in the user’s Chrome, choose **Chrome** instead: allow Chrome’s connection prompt if intended, then identify the tab by its returned `pageId`.
 
 Paste PNG, JPEG, GIF or WebP images into the GUI composer to add removable thumbnail attachments (up to 8 MiB each, within the shared eight-attachment limit). Upload occurs when the message is sent, including image-only messages; a failed upload preserves the draft for retry.
 
@@ -22,14 +22,16 @@ User images and GUI observations supply pixels for one successful request. Later
 
 For self-development and installation, use the current Host CLI: `plugins capabilities`, then the needed `plugins guide` / `plugins template`; `plugins inspect`, `install`, `update`, `enable`, `disable`, `remove`, and `status` share the Settings operations. Target an existing instance with `--host-data-dir`. Read both registration and actual application state. New registrations enter discovery at the next model request in the same run; installation does not grant task activation or permission. The built-in `achbit-iteration` Skill includes the complete development/update workflow.
 
-Discover a missing capability with `plugin.search`, using a short product/capability query. All keywords must match. Zero matches means that query did not match; shorten it or browse without `query`. Follow `nextOffset` only when more results are needed.
+Use `plugin.search` for enabled task plugins and file-backed Skills. All keywords must match; if nothing matches, try fewer keywords or browse without `query`. Follow `nextOffset` only when needed. Core tools such as [`process`](managed-processes.md) and [`session.read`](#models-and-context) have no plugin to install or activate: check the current task’s tool declarations.
 
-Activate relevant enabled results with `plugin.activate` alone, using their exact URIs. Tools and guidance enter the next request. Search does not start programs; activation neither installs/enables plugins nor grants permissions. User `@` mentions are optional. Read current schemas rather than guessing names or arguments.
+Activate relevant enabled results with `plugin.activate` alone, using their exact URIs. Tools and guidance enter the next request. Search does not start programs; activation neither installs/enables plugins nor grants permissions. For these discoverable plugins, user `@` mentions are optional. Read current schemas rather than guessing names or arguments.
+
+In the GUI, type `@` in a message (including directly after Chinese text), or choose **+ → Plugins**. Search by name and select an item by clicking it or pressing Enter. Its chip confirms the draft contains a reference; it does not grant permission. A compiled-in reference such as `achbit-iteration` names the Skill to read with `skill.read`; selecting it does not load its text. A file-backed Skill instead supplies an entry path to read after activation. Typing or pasting a name without selecting a candidate does not create a reference.
 
 | Source | Registration |
 | --- | --- |
 | Local CLI tools | `plugins.sources`, `achbit-tool.json` |
-| Hosted services | `plugins.services`, `achbit-service.json`; enabled processes are owned and stopped by Host |
+| Hosted services | `plugins.services`, `achbit-service.json`; manage in Settings → Plugins, not in the task picker. Host owns the process while enabled. |
 | External MCP | `mcp.servers`; include a useful capability `description` |
 | Custom Skills | `skills.mounts`; folder or `SKILL.md` |
 | Display plugins | `workbench.uiPlugins`, `achbit-ui.json`; see [UI plugins](ui-plugins.md) |
@@ -70,7 +72,9 @@ Use `spawn` with `delivery: async` to overlap independent work after child start
 
 Await final results and verify them. Completed tasks release execution automatically; the coordinator uses `assign` to give an idle retained member another task with its original Session, model and configuration. `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message to an active task, not authorization or a new assignment.
 
-Subagent settings are global within the configuration root. Settings and the model-panel shortcut write the same `agent.subagents.*` values. Each new task captures them; changing them does not alter declarations, quotas or subsequent delegation in an already running task. Disabling takes effect for newly started tasks, without cancelling existing tasks or removing history. Child Plan/approval decisions belong to that child's Session.
+Each root conversation retains its own model, reasoning effort and subagent settings. A new conversation copies the last explicitly edited configuration. Viewing, resuming, sending a message or using `/focus` in an older conversation does not replace that default. Changing one conversation does not rewrite its peers. A running task keeps its captured declarations, quotas and delegation settings. Changing the conversation selection takes effect on its next task, without cancelling existing subtasks or removing history.
+
+If a subagent needs execution permission, the main GUI presents the original child request for a human decision. With delegated review, the configured approval model acts first; only a request handed back for human review needs attention. Accept or deny the actual child operation. Deferring its dialog does not deny it or grant access, and unrelated work can continue. A coordinator’s message can confirm that work is ready, but cannot grant execution permission.
 
 Reader's Subagents view inspects recorded work without resuming it. Closing that view does not cancel the task. Review a child's actual pending decision rather than treating its report as approval.
 
@@ -95,13 +99,13 @@ Use [model services](model-services.md) for profiles, authentication, images, co
 
 To read another conversation from an Agent task, include its exact `session:…` ID in your message. For a caller-assigned ID use `sessionId="..."`. The history reader targets those user references. Archived images and child workdir resources have their own scoped views.
 
-For diagnostics of the current task, explicitly select **Session Diagnostics** in the composer plugin picker, or start the task with `achbit-cli ask --plugin plugin://session-diagnostics@builtin "Inspect this conversation's context"`. Its `session.diagnostics` operation uses the current session. Normal tasks do not advertise that operation. CLI, GUI and Debug user-facing inspection use the Session query API directly.
+For diagnostics of the current task, explicitly select **Session Diagnostics** in the composer plugin picker, or start the task with `achbit-cli ask --plugin plugin://session-diagnostics@builtin "Inspect this conversation's context"`. Its `session.diagnostics` operation uses the current session. The model cannot discover this plugin by itself. After the user selects it, later plugin-enabled runs in the same conversation inherit the selection while it remains enabled. Other conversations do not inherit it. CLI, GUI and Debug user-facing inspection use the Session query API directly.
 
 Use `/plan <task>` to request a plan for one task. Read the proposed work and confirm, request changes, or cancel. Confirmation continues the same task and keeps its other tool permissions. The next task uses the saved Plan preference.
 
 The composer’s **Workflow & permissions** menu groups Plan confirmation and engineering decisions under **Workflow**. **Tool access** covers reads in bound directories, command approval, execution scope, network reads, and external actions. Active grants can be revoked from the menu. In Settings, change the workflow defaults under **Agent behavior**, and change tool policies or command rules under **Tool permissions**.
 
-Use `/focus <task>` after completion to summarize prior work and continue. Compression does not delete history. Read historical facts with `session.read`, starting from summary and narrowing to messages, tools or context; check truncation and pagination instead of repeatedly requesting full snapshots.
+Use `/focus <task>` after completion to summarize prior work and continue. Compression does not delete history or grant the model new read access. For the current conversation use the diagnostics or user-facing read interface above. When `session.read` offers a historical target, start with its summary and use the returned IDs and cursors for the relevant messages or tool results.
 
 Summary/tools views include input rejections and permission-review decisions. Use an exact `providerRequestId` in the context view for recorded review details. `contextPrepared: false` identifies a preparation failure, not a model response. Approval resolution still needs the linked execution record to establish the tool outcome.
 
