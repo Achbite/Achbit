@@ -51,7 +51,13 @@ export async function readJournalSequence(body: ReadableStream<Uint8Array> | nul
     for (;;) {
       const chunk = await reader.read();
       if (chunk.done) { exhausted = true; break; }
-      const bytes = chunk.value;
+      // Search separators with Buffer's native byte scan. A fetch chunk can be
+      // a slice of a larger slab: borrow only that view, without copying it.
+      const { buffer, byteOffset, byteLength } = chunk.value;
+      // Buffer.indexOf clamps its starting offset to int32; a larger single
+      // chunk must still be able to advance past every separator.
+      const bytes = byteLength <= 0x7fff_ffff
+        ? Buffer.from(buffer, byteOffset, byteLength) : new Uint8Array(buffer, byteOffset, byteLength);
       let offset = 0;
       while (offset < bytes.length) {
         const separator = bytes.indexOf(0x1e, offset);
