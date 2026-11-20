@@ -171,7 +171,7 @@
     "settings.subagents.allowMemberAnalysis": "允许子代理继续委派任务",
     "settings.subagents.allowFullConfiguration": "允许 Agent 完全配置子代理",
     "settings.subagents.fullConfigurationHelp": "允许主 Agent 在继承权限内配置子代理的模型、工具、Loop 组件和任务能力；关闭时使用已配置的模板。",
-    "settings.subagents.activation": "所有对话共用；修改在下一次任务启动时生效，当前任务及其委派配置保持不变。",
+    "settings.subagents.activation": "已有对话分别保存设置。新对话继承最近的选择，运行中的任务不受影响。",
     "settings.approvalReview.effortUnavailable": "此档位不适用于所选模型。请选择沿用模型设置，或修改模型配置。",
     "agent.approval.browser": "内置浏览器",
     "agent.approval.toolPermission": "工具权限",

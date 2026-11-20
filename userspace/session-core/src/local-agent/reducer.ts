@@ -1404,9 +1404,10 @@ export function projectSession(
   for (const block of draft?.blocks ?? []) {
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
   }
-  const capturedSubagents = state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined;
+  // Journals without an explicit Session preference can still show their recorded task selection.
+  const savedSubagents = state.subagentSettings ?? (state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined);
   return {
-    ...(capturedSubagents ? { subagentSettings: structuredClone(capturedSubagents) } : {}),
+    ...(savedSubagents ? { subagentSettings: structuredClone(savedSubagents) } : {}),
     ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
     ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
     ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),

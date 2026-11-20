@@ -326,6 +326,16 @@ export async function createSession(journal, sessionId, workspaceBindings = []) 
   });
 }
 
+// In-memory equivalent of the Kernel's per-Session, per-run settings lookup.
+export async function recordedSubagentSettings(journal, sessionId, runId) {
+  const events = await readEvents(journal, sessionId);
+  const captured = events.find(event => event.type === 'run.started' && event.runId === runId)?.payload.runtimeSnapshot.subagentSettings;
+  const saved = events.findLast(event => event.type === 'session.subagent-settings.updated')?.payload.settings
+    ?? events[0]?.payload.subagentSettings
+    ?? events.findLast(event => event.type === 'run.started')?.payload.runtimeSnapshot.subagentSettings;
+  return structuredClone(captured ?? saved);
+}
+
 export async function readEvents(journal, sessionId) {
   const events = [];
   for await (const event of journal.read(sessionId)) events.push(event);

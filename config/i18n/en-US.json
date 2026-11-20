@@ -171,7 +171,7 @@
     "settings.subagents.allowMemberAnalysis": "Allow subagents to delegate tasks",
     "settings.subagents.allowFullConfiguration": "Allow agents to fully configure subagents",
     "settings.subagents.fullConfigurationHelp": "Let the coordinator customize subagent models, tools, Loop components and task capabilities within inherited permissions. Off uses configured templates.",
-    "settings.subagents.activation": "Shared by all conversations. Changes apply when the next task starts; running tasks and their delegation settings remain unchanged.",
+    "settings.subagents.activation": "Each conversation keeps its own settings. A new conversation inherits the latest selection; running tasks stay unchanged.",
     "settings.approvalReview.effortUnavailable": "This effort is unavailable for the selected model. Use the model’s setting or update its configuration.",
     "agent.approval.browser": "Browser",
     "agent.approval.toolPermission": "Tool permission",

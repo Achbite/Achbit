@@ -22,6 +22,8 @@ pub(crate) struct LocalAgentRuntime {
     provider_runtimes: ProviderRuntimeRegistry,
     pub(crate) provider_transport: crate::provider_transport::ProviderTransport,
     runtime_transition: Arc<Mutex<()>>,
+    // Keep separately committed edits in order until their new-root defaults are published.
+    pub(crate) conversation_preferences: Arc<tokio::sync::Mutex<()>>,
     run_transitions: Arc<Mutex<HashMap<PreparedRunKey, std::sync::Weak<Mutex<()>>>>>,
     prepared_runs: Arc<Mutex<HashMap<PreparedRunKey, Vec<PreparedRunRecord>>>>,
     active_runtime_settings: Arc<Mutex<Value>>,
@@ -55,6 +57,7 @@ impl LocalAgentRuntime {
             provider_transport: crate::provider_transport::ProviderTransport::new()
                 .map_err(|error| format!("provider_client_init_failed: {error}"))?,
             runtime_transition: Arc::new(Mutex::new(())),
+            conversation_preferences: Arc::default(),
             run_transitions: Arc::new(Mutex::new(HashMap::new())),
             prepared_runs: Arc::new(Mutex::new(HashMap::new())),
             active_runtime_settings: Arc::new(Mutex::new(settings.clone())),
@@ -236,7 +239,6 @@ impl LocalAgentRuntime {
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
         merge_object(&mut settings, &permissions);
         let settings = &settings;
-        let subagent_settings = capture_subagent_settings(settings)?;
         if request.restore_environment {
             return prepared_runs
                 .get(&key)
@@ -340,6 +342,31 @@ impl LocalAgentRuntime {
                 return Ok(existing.response.clone());
             }
         }
+        // Catalog changes cannot recapture an active run's delegation settings.
+        let subagent_settings = if let Some(prepared) = &previous {
+            prepared
+                .response
+                .get("subagentSettings")
+                .cloned()
+                .ok_or_else(|| {
+                    RunPreparationError::new(
+                        "prepared_run_registry_corrupt",
+                        "Missing prepared subagent settings",
+                    )
+                })?
+        } else {
+            match self
+                .journal
+                .subagent_settings_for_run(&request.session_id, &request.run_id)
+                .map_err(|error| RunPreparationError::new(error.code, error.message))?
+            {
+                Some(selected) => selected,
+                // No saved selection or prior run in this old/standalone Session. Never
+                // borrow an unrelated conversation's mutable new-session defaults.
+                None => subagent_defaults(&crate::settings_api::default_user_settings())
+                    .map_err(|error| RunPreparationError::new(error.code, error.message))?,
+            }
+        };
         let mut environment_settings = settings.clone();
         if let Some(project_id) = gui
             .conversation_catalog
@@ -1105,6 +1132,7 @@ pub(crate) struct CreateLocalSessionRequest {
     profile_id: Option<String>,
     agent_context: Option<Value>,
     recipe: Option<Value>,
+    subagent_settings: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1325,14 +1353,30 @@ pub(crate) async fn local_agent_session_create(
         body.profile_id.as_deref(),
         body.agent_context.as_ref(),
         body.recipe.as_ref(),
-        None,
+        body.subagent_settings.as_ref(),
     ) {
         Ok(event) => ApiResponse::ok(event),
         Err(error) => store_error(error),
     }
 }
 
-fn capture_subagent_settings(settings: &Value) -> Result<Value, RunPreparationError> {
+pub(crate) async fn local_agent_settings_get(
+    ReadyState(state): ReadyState,
+    headers: HeaderMap,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    let gui = state.gui.lock().expect("gui state lock");
+    match subagent_defaults(&gui.user_settings) {
+        Ok(defaults) => ApiResponse::ok(defaults),
+        Err(error) => ApiResponse::error(error.code, error.message),
+    }
+}
+
+pub(crate) fn subagent_defaults(
+    settings: &Value,
+) -> Result<Value, crate::local_agent_store::LocalAgentStoreError> {
     let mut result = serde_json::Map::new();
     for field in [
         "enabled",
@@ -1347,7 +1391,7 @@ fn capture_subagent_settings(settings: &Value) -> Result<Value, RunPreparationEr
     ] {
         let key = format!("agent.subagents.{field}");
         let value = settings.get(&key).ok_or_else(|| {
-            RunPreparationError::new(
+            LocalAgentStoreError::new(
                 "agent_settings_missing",
                 format!("缺少子 Agent 设置：{key}"),
             )
@@ -1355,8 +1399,7 @@ fn capture_subagent_settings(settings: &Value) -> Result<Value, RunPreparationEr
         result.insert(field.into(), value.clone());
     }
     let captured = Value::Object(result);
-    crate::local_agent_store::validate_subagent_settings(&captured)
-        .map_err(|error| RunPreparationError::new(error.code, error.message))?;
+    crate::local_agent_store::validate_subagent_settings(&captured)?;
     Ok(captured)
 }
 
@@ -2682,24 +2725,21 @@ mod tests {
     }
 
     #[test]
-    fn subagent_settings_capture_validates_and_owns_the_run_copy() {
+    fn subagent_settings_defaults_are_validated_and_copied() {
         let mut settings = crate::settings_api::default_user_settings();
-        let captured = capture_subagent_settings(&settings).unwrap();
+        let captured = subagent_defaults(&settings).unwrap();
         assert_eq!(captured["enabled"], false);
         settings["agent.subagents.enabled"] = json!(true);
         assert_eq!(captured["enabled"], false);
-        assert_eq!(
-            capture_subagent_settings(&settings).unwrap()["enabled"],
-            true
-        );
+        assert_eq!(subagent_defaults(&settings).unwrap()["enabled"], true);
         settings["agent.subagents.maxConcurrent"] = json!(0);
-        assert!(capture_subagent_settings(&settings).is_err());
+        assert!(subagent_defaults(&settings).is_err());
         settings
             .as_object_mut()
             .unwrap()
             .remove("agent.subagents.enabled");
         assert_eq!(
-            capture_subagent_settings(&settings).unwrap_err().code,
+            subagent_defaults(&settings).unwrap_err().code,
             "agent_settings_missing"
         );
     }

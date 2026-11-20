@@ -4,8 +4,8 @@ import type { SessionMode } from '@achbit/protocol';
 import { providerNeedsContinuation, type ProviderContinuation } from '@achbit/protocol';
 import { sameModelContext } from './modelContext.js';
 import type { SessionObservationInput, SessionObservationSink } from './observation.js';
-import { decodeAgentCapabilities, isLlmReasoningEffort } from '@achbit/protocol';
-import { DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
+import { decodeAgentCapabilities, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
+import { agentPresets, DEFAULT_AGENT_CONFIGURATION } from './agentConfiguration.js';
 import type { SessionOperation, JsonObject } from '@achbit/protocol';
 import { inputAfter, pendingWakeups, type ControlWait } from './sessionWake.js';
 import { activeProcessWait, PROCESS_WAIT_REVIEW_MS } from './processWait.js';
@@ -705,8 +705,15 @@ export class SessionActor {
   private async handleSubagentSettings(
     command: Extract<ConversationCommand, { type: 'session.subagent-settings.set' }>,
   ): Promise<CommandReply> {
-    return this.recordRejection(command, 'session_subagent_settings_unsupported',
-      'Subagent settings are global. Save agent.subagents settings; the next task captures them.');
+    let settings;
+    try {
+      settings = decodeAgentSettings(command.settings);
+      agentPresets(settings);
+    } catch (error) {
+      return this.recordRejection(command, 'agent_settings_invalid', error instanceof Error ? error.message : String(error));
+    }
+    return this.commitCommand(command, [{ type: 'session.subagent-settings.updated', sessionId: this.sessionId,
+      payload: { commandId: command.commandId, settings } }], acceptedReply(command));
   }
 
   private async handleWorkspaceBindings(

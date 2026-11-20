@@ -276,6 +276,7 @@ export class AgentManager {
     try {
       if (!existingChild) {
         await this.host.createSession({ sessionId: task.agentSessionId, displayTitle: task.displayName,
+          subagentSettings: structuredClone(settings),
           workspaceBindings: caller.run!.workspaceBindings, profileId: modelSelection!.profileId, recipe,
           agentContext: { capabilities, model: instanceModel, ownerSessionId: ownerId, parentSessionId: caller.sessionId,
             parentRunId: runId, parentCallId: callId } });

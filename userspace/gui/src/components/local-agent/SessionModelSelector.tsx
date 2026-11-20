@@ -13,6 +13,7 @@ import { REASONING_CONTROL_SETTING, reasoningControlStyle, type ReasoningControl
 import { useOpenModelSettings } from '../settings-center/modelSettingsNavigation';
 import { useSettingsHelp } from '../settings-center/SettingsHelp';
 import { useSettingsStore } from '../../state/settingsStore';
+import { useConversationSubagents } from '../shared/useConversationSubagents';
 import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useViewportBounds } from '../shared/useViewportBounds';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
@@ -50,9 +51,8 @@ export default function SessionModelSelector({ language, profiles, connections =
     setChoosingModel(requestedPanel.kind === 'model');
   }, [requestedPanel]);
   const defaults = useSettingsStore(state => state.effectiveSettings);
-  const defaultsLoading = useSettingsStore(state => state.loading);
-  const [subagentBusy, setSubagentBusy] = useState(false);
-  useInterfaceReloadGuard(false, t(language, 'settings.subagents.title'), subagentBusy);
+  const subagents = useConversationSubagents();
+  useInterfaceReloadGuard(false, t(language, 'settings.subagents.title'), subagents.saving);
   let controlStyle: ReasoningControlStyle | null = null, styleError: string | null = null;
   try { controlStyle = reasoningControlStyle(defaults[REASONING_CONTROL_SETTING]); } catch (cause) { styleError = String(cause); }
   const rootRef = useRef<HTMLDivElement>(null), menuRef = useRef<HTMLDivElement>(null), triggerRef = useRef<HTMLButtonElement>(null);
@@ -63,20 +63,16 @@ export default function SessionModelSelector({ language, profiles, connections =
   const candidate = profiles.find(profile => profile.id === (candidateId ?? selectedProfileId));
   const candidateEffort = candidate?.thinking === 'disabled' ? null
     : candidate?.id === selectedProfileId ? effectiveEffort : candidate?.reasoningEffort ?? null;
-  const subagentsEnabled = defaults['agent.subagents.enabled'] === true;
+  const subagentsEnabled = subagents.settings?.enabled === true;
   const subagentLabel = t(language, subagentsEnabled ? 'settings.subagents.disable' : 'settings.subagents.enable');
   const subagentHelp = useSettingsHelp(open && !choosingModel
     ? `${subagentLabel} · ${t(language, 'settings.subagents.activation')}` : undefined, { compact: true });
   const efforts = connectedModelReasoningEfforts(candidate, connections);
   const toggleSubagents = async () => {
-    if (subagentBusy || defaultsLoading) return;
-    setActionError(null); setSubagentBusy(true);
-    try {
-      const store = useSettingsStore.getState();
-      const saved = await store.patchUserSettingsBatch({ 'agent.subagents.enabled': !store.effectiveSettings['agent.subagents.enabled'] });
-      if (!saved) throw new Error(useSettingsStore.getState().errorMessage ?? t(language, 'settings.common.saveFailed'));
-    } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setSubagentBusy(false); }
+    if (subagents.busy || !subagents.settings) return;
+    setActionError(null);
+    try { await subagents.save({ enabled: !subagents.settings.enabled }); }
+    catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); }
   };
   const title = (selected?.name ?? selectedProfileId ?? (chinese ? '选择模型' : 'Choose model')) + (selectedProfileId && !selected?.enabled ? ` · ${t(language, selected ? 'agent.profile.disabled' : 'agent.profile.missing')}` : '');
   const effortLabel = selected?.thinking === 'disabled'
@@ -158,7 +154,7 @@ export default function SessionModelSelector({ language, profiles, connections =
           <div className="achbit-session-model__heading">
             <IconButton {...identity.action('subagents', 'click')} {...subagentHelp.helpEvents} icon="subagents" className="achbit-session-model__subagents" aria-label={subagentLabel}
               title="" aria-describedby={subagentHelp.helpId} aria-pressed={subagentsEnabled}
-              disabled={subagentBusy || defaultsLoading} onClick={() => void toggleSubagents()} />
+              disabled={subagents.busy} onClick={() => void toggleSubagents()} />
             {subagentHelp.help}
             <button {...identity.action('models', 'click')} type="button" className="achbit-session-model__current" aria-haspopup="menu" onClick={() => setChoosingModel(true)}>
               <strong>{candidate?.thinking === 'disabled' ? t(language, 'agent.profile.thinkingDisabled')

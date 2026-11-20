@@ -106,6 +106,10 @@ pub(crate) fn build_app(state: HostState) -> Router {
             post(local_agent_session_create),
         )
         .route(
+            "/api/local-agent/agents/settings",
+            get(local_agent_settings_get),
+        )
+        .route(
             "/api/local-agent/agents/models",
             get(local_agent_models_get),
         )

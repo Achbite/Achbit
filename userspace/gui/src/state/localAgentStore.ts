@@ -3,6 +3,7 @@ import type { UserSettings, ShellAuthorizationScope, FilesystemReference, Guidan
 import { takeRestoredInterfaceView } from '../services/interfaceReload';
 import { create } from 'zustand';
 import type {
+  AgentSettings,
   CommandReply,
   ConversationCatalog,
   ConversationCommand,
@@ -18,7 +19,7 @@ import type {
   SessionProjection,
   HostWindowBinding,
 } from '@achbit/protocol';
-import { CONVERSATION_COMMAND_VERSION, connectedModelReasoningEfforts } from '@achbit/protocol';
+import { CONVERSATION_COMMAND_VERSION, connectedModelReasoningEfforts, decodeAgentSettings } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
@@ -31,6 +32,7 @@ import {
   attachConversationDirectoryIndex,
   createConversationProject as createProjectRequest,
   createLocalAgentSession,
+  ConversationRequestError,
   detachConversationDirectoryIndex,
   deleteConversationProject as deleteProjectRequest,
   deleteConversationSession as deleteSessionRequest,
@@ -85,6 +87,8 @@ export interface LocalAgentState {
   selectedProfileId: string | null;
   reasoningEffortOverride: LlmReasoningEffort | null;
   modelSettingsBusy: boolean;
+  draftSubagentSettings: AgentSettings | null;
+  subagentSettingsBusy: boolean;
   profiles: LlmProviderProfile[];
   connections: ModelConnection[];
   defaultProfileId: string | null;
@@ -112,6 +116,7 @@ export interface LocalAgentState {
   startNewSession(projectId?: string | null): void;
   activateSession(sessionId: string): Promise<void>;
   selectModel(profileId: string, effort: LlmReasoningEffort | null): Promise<boolean>;
+  setSubagentSettings(patches: Partial<AgentSettings>): Promise<void>;
   setMode(mode: 'minimal' | 'full'): Promise<CommandReply>;
   refresh(): Promise<void>;
   sendMessage(
@@ -166,6 +171,12 @@ type StoreSet = (
   state: Partial<LocalAgentState> | ((state: LocalAgentState) => Partial<LocalAgentState>),
 ) => void;
 type StoreGet = () => LocalAgentState;
+
+export function subagentDefaults(settings: UserSettings): AgentSettings {
+  const prefix = 'agent.subagents.';
+  return decodeAgentSettings(Object.fromEntries(Object.entries(settings)
+    .filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key.slice(prefix.length), value])));
+}
 
 export function createLocalAgentStore() {
 let initialization: Promise<void> | null = null;
@@ -275,6 +286,8 @@ const store = create<LocalAgentState>((set, get) => ({
   selectedProfileId: null,
   reasoningEffortOverride: null,
   modelSettingsBusy: false,
+  draftSubagentSettings: null,
+  subagentSettingsBusy: false,
   profiles: [],
   connections: [],
   defaultProfileId: null,
@@ -436,7 +449,8 @@ const store = create<LocalAgentState>((set, get) => ({
   },
 
   startNewSession: (projectId = null) => {
-    advanceView();
+    const draftGeneration = advanceView();
+    const defaults = useSettingsStore.getState();
     activeSubmissionCount = 0;
     set({
       welcomeIndex: get().sessionId === null ? get().welcomeIndex : Math.floor(Math.random() * 4),
@@ -444,6 +458,8 @@ const store = create<LocalAgentState>((set, get) => ({
       projection: null,
       openingHistory: null,
       draftProjectId: projectId,
+      draftSubagentSettings: defaults.storePath && !defaults.errorMessage ? subagentDefaults(defaults.effectiveSettings) : null,
+      subagentSettingsBusy: false,
       modelSettingsBusy: false,
       selectedProfileId: get().defaultProfileId,
       reasoningEffortOverride: get().profiles.find(profile => profile.id === get().defaultProfileId)?.reasoningEffort ?? null,
@@ -452,7 +468,12 @@ const store = create<LocalAgentState>((set, get) => ({
       error: null,
       errorSource: null,
     });
-    if (get().runtimeReady) void useSettingsStore.getState().loadUserSettings();
+    if (!get().draftSubagentSettings && get().runtimeReady) void defaults.loadUserSettings().then(() => {
+      const loaded = useSettingsStore.getState();
+      if (generation === draftGeneration && !get().sessionId && !get().draftSubagentSettings && !loaded.errorMessage) {
+        set({ draftSubagentSettings: subagentDefaults(loaded.effectiveSettings) });
+      }
+    });
   },
 
   activateSession: async (sessionId) => {
@@ -488,6 +509,8 @@ const store = create<LocalAgentState>((set, get) => ({
     set({
       submitting: false,
       modelSettingsBusy: false,
+      subagentSettingsBusy: false,
+      draftSubagentSettings: null,
       loading: !visibleCached,
       loadingPurpose: visibleCached ? null : 'session',
       error: null,
@@ -550,6 +573,37 @@ const store = create<LocalAgentState>((set, get) => ({
     if (!profile || (profile.thinking !== 'disabled' && connectedModelReasoningEfforts(profile, get().connections).length > 0
       && !(reasoningEffortOverride ?? profile.reasoningEffort))) return false;
     return saveModelSettings(set, get, { profileId, reasoningEffortOverride });
+  },
+  setSubagentSettings: async patches => {
+    const { sessionId, projection, draftSubagentSettings, subagentSettingsBusy, submitting } = get();
+    if (subagentSettingsBusy || submitting) throw new Error('subagent_settings_busy');
+    const defaults = useSettingsStore.getState();
+    const current = sessionId ? projection?.subagentSettings : draftSubagentSettings ?? subagentDefaults(defaults.effectiveSettings);
+    if (!current) throw new Error('session_subagent_settings_unavailable');
+    const settings = decodeAgentSettings({ ...current, ...patches });
+    const owner = generation;
+    set({ subagentSettingsBusy: true });
+    try {
+      if (sessionId) {
+        await submitCommandAndReconcile(set, get, { schemaVersion: CONVERSATION_COMMAND_VERSION,
+          type: 'session.subagent-settings.set', sessionId, commandId: nextId('command'), settings });
+        await readNewConversationDefaults(set);
+      } else {
+        // Only explicit fields reach the global settings port. The draft itself keeps a complete copy.
+        const activation = await defaults.patchUserSettingsBatch(Object.fromEntries(
+          Object.entries(patches).map(([key, value]) => [`agent.subagents.${key}`, value])));
+        if (!activation) throw new Error(useSettingsStore.getState().errorMessage ?? 'subagent_defaults_save_failed');
+        if (generation === owner) set({ draftSubagentSettings: settings });
+      }
+      const readError = useSettingsStore.getState().errorMessage;
+      if (readError) throw new Error(readError);
+      if (generation === owner) set({ error: null, errorSource: null });
+    } catch (error) {
+      if (generation === owner) set({ error: errorMessage(error), errorSource: 'command' });
+      throw error;
+    } finally {
+      if (generation === owner) set({ subagentSettingsBusy: false });
+    }
   },
 
   refresh: async () => {
@@ -974,7 +1028,9 @@ async function submitNewRun(
   try {
     if (filesystemPaths.length + pastedTexts.length + pastedImages.length + (retained.filesystemReferences?.length ?? 0) > 8) throw new Error('message_filesystem_reference_limit');
     const messageProfileId = get().selectedProfileId;
-    const reasoningEffortOverride = get().reasoningEffortOverride;
+    const profile = get().profiles.find(item => item.id === messageProfileId);
+    const reasoningEffortOverride = get().reasoningEffortOverride
+      ?? (!get().sessionId && profile?.thinking !== 'disabled' ? profile?.reasoningEffort ?? null : null);
     const activeRun = get().projection?.run;
     const queuedMessage = type === 'message.submit' && activeRun && ['running', 'waiting'].includes(activeRun.status);
     if (queuedMessage && planMode) throw new Error('plan_run_active');
@@ -995,14 +1051,18 @@ async function submitNewRun(
     }
     let { sessionId } = get();
     if (!sessionId) {
-      const { draftProjectId } = get();
+      const { draftProjectId, draftSubagentSettings } = get();
+      // Materialize the visible draft, not a newer profile from another window before the first message.
       const created = await createLocalAgentSession({
+        profileId: messageProfileId!,
+        ...(reasoningEffortOverride ? { recipe: { reasoningEffort: reasoningEffortOverride } } : {}),
         ...(draftProjectId ? { projectId: draftProjectId } : {}),
+        ...(draftSubagentSettings ? { subagentSettings: draftSubagentSettings } : {}),
       });
       if (generation !== submissionGeneration) throw new Error('conversation_session_changed');
       sessionId = created.sessionId;
       onSessionCreated?.(sessionId);
-      set({ sessionId, projection: created, draftProjectId: null });
+      set({ sessionId, projection: created, draftProjectId: null, draftSubagentSettings: null });
       await get().refreshCatalog();
     }
     const filesystemReferences = [...(retained.filesystemReferences ?? []), ...(filesystemPaths.length
@@ -1109,7 +1169,15 @@ async function submitCommandAndReconcile(
     && previousProjection?.sessionId === command.sessionId
     ? previousProjection.queuedInputs?.filter(input => input.status === 'notApplied').map(input => input.commandId) ?? []
     : [];
-  const reply = await submitLocalAgentCommand(command);
+  const reply = await submitLocalAgentCommand(command).catch(async error => {
+    // This Host error acknowledges a Session edit while reporting a failed save of future defaults.
+    if ((command.type === 'session.subagent-settings.set' || command.type === 'session.model-settings.set')
+      && error instanceof ConversationRequestError && error.code === 'conversation_defaults_save_failed') {
+      try { await reconcileProjectionAfterReply(set, get, command.sessionId, 0, commandGeneration); }
+      catch (readError) { throw new Error(`${errorMessage(error)};conversation_projection_reconcile_failed:${errorMessage(readError)}`); }
+    }
+    throw error;
+  });
   if ((reply.status === 'accepted' || reply.status === 'replayed') && previousReminders.length
     && typeof sessionStorage !== 'undefined') {
     try {
@@ -1120,10 +1188,6 @@ async function submitCommandAndReconcile(
       uiEvents.publish({ key: `unapplied-dismissal:${command.commandId}`, sessionId: command.sessionId, tone: 'warning',
         text: `${zh ? '消息已提交，但未能保存旧提醒的关闭状态' : 'Message submitted, but the previous reminders could not be dismissed'}: ${errorMessage(error)}` });
     }
-  }
-  if (reply.status === 'accepted') {
-    const profileId = command.type === 'message.submit' || command.type === 'context.focus' ? command.profileId : undefined;
-    if (profileId) set({ defaultProfileId: profileId });
   }
   const rejection = reply.status === 'rejected' ? commandRejectionMessage(reply) : null;
   try {
@@ -1164,6 +1228,16 @@ function projectModelSettings(projection: SessionProjection | null): Partial<Loc
   } : {};
 }
 
+// An explicit edit on an existing Session publishes the whole tuple through the Host command.
+// Read both preference owners; never write a second time or change the currently displayed Session.
+async function readNewConversationDefaults(set: StoreSet): Promise<void> {
+  const [models] = await Promise.all([getLlmProfiles(), useSettingsStore.getState().loadUserSettings()]);
+  if (!models.ok || !models.data) throw new Error(models.message ?? models.error ?? 'llm_profiles_unavailable');
+  set({ profiles: models.data.profiles, defaultProfileId: models.data.defaultProfileId ?? null });
+  const error = useSettingsStore.getState().errorMessage;
+  if (error) throw new Error(error);
+}
+
 async function saveModelSettings(set: StoreSet, get: StoreGet, settings: SessionModelSettings): Promise<boolean> {
   if (get().modelSettingsBusy) return false;
   const sessionId = get().sessionId;
@@ -1175,14 +1249,16 @@ async function saveModelSettings(set: StoreSet, get: StoreGet, settings: Session
         schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'session.model-settings.set',
         sessionId, commandId: nextId('command'), settings,
       });
+      await readNewConversationDefaults(set);
+      return generation === settingsGeneration;
     }
     const profile = get().profiles.find(item => item.id === settings.profileId);
     if (!profile) throw new Error('llm_profile_unavailable');
     const remembered = { ...profile, reasoningEffort: profile.thinking === 'disabled'
       ? undefined : settings.reasoningEffortOverride ?? profile.reasoningEffort };
-    const saved = await patchLlmProfiles({ profile: remembered });
-    if (!saved.ok) throw new Error(saved.message ?? saved.error ?? 'reasoning_preference_save_failed');
-    set(state => ({ profiles: state.profiles.map(item => item.id === profile.id ? remembered : item) }));
+    const saved = await patchLlmProfiles({ profile: remembered, defaultProfileId: profile.id });
+    if (!saved.ok || !saved.data) throw new Error(saved.message ?? saved.error ?? 'reasoning_preference_save_failed');
+    set({ profiles: saved.data.profiles, defaultProfileId: saved.data.defaultProfileId ?? null });
     if (!sessionId && generation === settingsGeneration && !get().sessionId) {
       set({ selectedProfileId: settings.profileId, reasoningEffortOverride: settings.reasoningEffortOverride,
         error: null, errorSource: null });

@@ -222,7 +222,7 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
     {loading && <div role="status">{text('正在读取…', 'Loading…')}</div>}
     {page.kind === 'list' && <>
       <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-connection-entry"><button ref={addButton} onClick={() => setPage({ kind: 'new', mode: 'metered' })}>+ {text('API 连接', 'API connection')}</button><button onClick={() => setPage({ kind: 'new', mode: 'subscription' })}>+ Coding Plan</button></div></div>
-      <div className="model-actions model-subheading"><span>{text('最近使用', 'Last used')} · {profiles?.profiles.find(p => p.id === profiles.defaultProfileId)?.name ?? '—'}</span><button className="model-push" onClick={() => setPage({ kind: 'usage' })}>{text('用量统计', 'Usage')} ↗</button></div>
+      <div className="model-actions model-subheading"><span>{text('新对话默认', 'New chat default')} · {profiles?.profiles.find(p => p.id === profiles.defaultProfileId)?.name ?? '—'}</span><button className="model-push" onClick={() => setPage({ kind: 'usage' })}>{text('用量统计', 'Usage')} ↗</button></div>
       {profiles && <ApprovalReviewerModel profiles={profiles.profiles} connections={profiles.connections} />}
       {profiles && <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />}
       {catalog && (['metered', 'subscription'] as const).map(mode => {

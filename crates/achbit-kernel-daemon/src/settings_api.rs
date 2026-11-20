@@ -38,7 +38,7 @@ pub(crate) async fn workspace_sandbox_setup(ReadyState(state): ReadyState) -> Js
 }
 
 fn setting_activates_at_next_run(key: &str) -> bool {
-    // Service and extension registration changes retain their request-time lifecycle.
+    // agent.subagents.* are new-conversation defaults, not pending changes to existing runs.
     if key == "plugins.services" || crate::local_agent_plugins::REGISTRATION_KEYS.contains(&key) {
         return false;
     }
@@ -50,7 +50,6 @@ fn setting_activates_at_next_run(key: &str) -> bool {
         || key == "agent.systemPrompt"
         || key.starts_with("agent.approvalReview.")
         || key.starts_with("agent.contextManagement.")
-        || key.starts_with("agent.subagents.")
         || key.starts_with("agent.permissions.")
         || key.starts_with("agent.windows.")
         || key == "agent.environmentRevision"
@@ -253,6 +252,91 @@ pub(crate) fn apply_user_settings_patch_locked(state: &AppState, body: Value) ->
         "changedKeys": changed_keys,
         "activation": if has_next_run_activation { "nextRun" } else if changed_keys.iter().any(|key| crate::local_agent_plugins::REGISTRATION_KEYS.contains(&key.as_str())) { "nextRequest" } else { "immediate" }
     }))
+}
+
+/// Publish the complete last-edited root preference from one committed Session projection.
+/// The settings documents keep their existing owners; readers see both updates together.
+/// On a second-file failure compensate the first and preserve both errors if compensation fails.
+pub(crate) fn save_conversation_defaults(
+    state: &AppState,
+    projection: &Value,
+) -> Result<(), String> {
+    let model = &projection["modelSettings"];
+    crate::local_agent_store::validate_model_settings(model)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let subagents = match projection.get("subagentSettings") {
+        Some(value) => value.clone(),
+        None => crate::local_agent_api::subagent_defaults(&default_user_settings())
+            .map_err(|error| format!("{}: {}", error.code, error.message))?,
+    };
+    crate::local_agent_store::validate_subagent_settings(&subagents)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let patch = Value::Object(
+        subagents
+            .as_object()
+            .expect("validated settings")
+            .iter()
+            .map(|(field, value)| (format!("agent.subagents.{field}"), value.clone()))
+            .collect(),
+    );
+    let _transition = state.local_agent.runtime_transition()?;
+    let mut gui = state
+        .gui
+        .lock()
+        .map_err(|_| "settings_publication_lock_failed")?;
+    let previous_profiles = gui.llm_profiles.usable()?;
+    let mut profiles = previous_profiles.clone();
+    let profile = profiles["profiles"]
+        .as_array_mut()
+        .expect("validated profiles")
+        .iter_mut()
+        .find(|item| item["id"] == model["profileId"] && item["enabled"] == true)
+        .ok_or_else(|| format!("llm_profile_unavailable: {}", model["profileId"]))?;
+    if let Some(effort) = model["reasoningEffortOverride"].as_str() {
+        if profile["thinking"] == "disabled" {
+            return Err("Reasoning effort is unavailable for this profile".into());
+        }
+        profile["reasoningEffort"] = json!(effort);
+    }
+    profiles["defaultProfileId"] = model["profileId"].clone();
+    crate::llm_profiles::validate_llm_profile_store(&profiles)?;
+    let mut settings = gui.user_settings.clone();
+    merge_object(&mut settings, &patch);
+    validate_agent_runtime_settings(&settings)?;
+    if subagents["enabled"] == true {
+        if let Some(id) = subagents["profileId"].as_str().filter(|id| !id.is_empty()) {
+            crate::local_agent_provider_runtime::ProviderRuntimeRegistry::prepare(
+                &gui,
+                Some(id),
+                subagents["reasoningEffort"]
+                    .as_str()
+                    .filter(|effort| !effort.is_empty()),
+            )
+            .map_err(|cause| format!("subagent_profile_unavailable: {cause}"))?;
+        }
+    }
+    let model_changed = previous_profiles != &profiles;
+    let settings_changed = gui.user_settings != settings;
+    state.local_agent.publish_runtime_settings(&patch, || {
+        if model_changed {
+            atomic_write_json(&gui.paths.llm_profiles_path, &profiles)?;
+        }
+        if settings_changed {
+            if let Err(error) = atomic_write_json(&gui.paths.settings_path, &settings) {
+                if model_changed {
+                    atomic_write_json(&gui.paths.llm_profiles_path, previous_profiles).map_err(
+                        |rollback| format!("{error}; model defaults rollback failed: {rollback}"),
+                    )?;
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    })?;
+    gui.llm_profiles = crate::llm_profiles::LlmProfileStore::Ready(profiles);
+    gui.user_settings = settings;
+    gui.settings_changes.send_replace(());
+    Ok(())
 }
 
 pub(crate) async fn llm_profiles_get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
@@ -575,10 +659,14 @@ mod context_management_tests {
         for key in [
             "agent.contextManagement.enabled",
             "agent.contextManagement.thresholdTokens",
+        ] {
+            assert!(setting_activates_at_next_run(key));
+        }
+        for key in [
             "agent.subagents.enabled",
             "agent.subagents.allowFullConfiguration",
         ] {
-            assert!(setting_activates_at_next_run(key));
+            assert!(!setting_activates_at_next_run(key));
         }
         assert_eq!(defaults["agent.contextManagement.enabled"], false);
         assert_eq!(defaults["agent.contextManagement.thresholdTokens"], 500_000);

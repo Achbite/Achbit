@@ -1,6 +1,7 @@
 import { deserialize, serialize } from 'node:v8';
 import type { SessionObservationSink } from './observation.js';
-import { decodeAgentRecipe } from '@achbit/protocol';
+import { decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
+import { agentPresets } from './agentConfiguration.js';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
 import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
@@ -126,7 +127,14 @@ export class SessionService implements ConversationPort {
 
   async createSession(input: SessionCreationInput): Promise<SessionProjection> {
     this.assertOpen();
-    if ('subagentSettings' in input) throw new Error('session_subagent_settings_unsupported');
+    // Children inherit the assigning run, never a default changed by an unrelated conversation.
+    if (input.agentContext && !input.subagentSettings) throw new Error('agent_settings_missing');
+    const selected = input.subagentSettings ?? await this.agentHost?.settings();
+    if (selected !== undefined) {
+      const settings = decodeAgentSettings(selected);
+      agentPresets(settings);
+      input = { ...input, subagentSettings: settings };
+    }
     if (input.recipe) {
       const recipe = decodeAgentRecipe(input.recipe);
       if (input.profileId && recipe.profileId && input.profileId !== recipe.profileId) throw new Error('agent_recipe_model_conflict');
@@ -140,6 +148,7 @@ export class SessionService implements ConversationPort {
     admitSessionEvents(loopSnapshot(input.sessionId, []), [{
       type: 'session.created', sessionId: input.sessionId,
       payload: { displayTitle: input.displayTitle, workspaceBindings: input.workspaceBindings,
+        ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
         ...(input.recipe ? { recipe: input.recipe } : {}),
         ...(input.agentContext ? { agentContext: input.agentContext } : {}),
         ...(input.profileId ? { profileId: input.profileId } : {}) },
@@ -147,6 +156,7 @@ export class SessionService implements ConversationPort {
     await this.journal.createSession({
       sessionId: input.sessionId,
       displayTitle: input.displayTitle,
+      ...(input.subagentSettings ? { subagentSettings: input.subagentSettings } : {}),
       ...(input.recipe ? { recipe: input.recipe } : {}),
       workspaceBindings: input.workspaceBindings.map((binding) => ({ ...binding })),
       ...(input.agentContext ? { agentContext: structuredClone(input.agentContext) } : {}),
@@ -262,7 +272,7 @@ export class SessionService implements ConversationPort {
     return this.withActor(command.sessionId, async actor => {
       this.assertOpen();
       const projection = await actor.agentSnapshot();
-      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'session.mode.set', 'run.host.rebind', 'provider.continue'].includes(command.type)) {
+      if (projection.agentContext && ['message.submit', 'message.edit', 'context.focus', 'session.model-settings.set', 'session.subagent-settings.set', 'session.mode.set', 'run.host.rebind', 'provider.continue'].includes(command.type)) {
         throw new Error('agent_session_requires_managed_task');
       }
       if (this.#deletingSessionIds.has(command.sessionId)) throw new Error('session_delete_in_progress');
