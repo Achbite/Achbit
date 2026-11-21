@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Confirmed manual update cancels a real waiting Session before Host shutdown."""
+"""Verified Host shutdown: active work, unknown activity and failed execution initialization."""
 from contextlib import closing
 import http.server
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
+import urllib.request
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('support', Path(__file__).with_name('support.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -58,6 +62,7 @@ def run():
                 return fixture.api_json(daemon.base_url, '/api/host/update', token=daemon.token, method='POST',
                                         body=dict(action=action, expectedIdentity=daemon.identity, **extra), timeout=90)
             require(update('status')['active'] is True, 'Waiting Session was reported idle')
+            require(update('quitStatus') == {'status': 'ready', 'active': True}, 'Explicit quit did not report the waiting task')
             require(update('prepare')['prepared'] is False, 'Automatic update stopped a busy Host')
             require(update('prepare', manual=True)['reason'] == 'tasks', 'Unconfirmed manual update stopped work')
             prepared = update('prepare', manual=True, confirmed=True)
@@ -83,5 +88,100 @@ def run():
             thread.join(timeout=5)
 
 
+def failed_start_quit(via_cli):
+    # Leave the catalog and discovery publication intact. Only the execution store fails to open.
+    with tempfile.TemporaryDirectory(prefix='achbit-host-quit-failed-') as directory:
+        root = Path(directory)
+        (root / 'data/agent-runtime/tool-record.sqlite3').mkdir(parents=True)
+        daemon = fixture.OwnedDaemon(root)
+        try:
+            with patch.dict(os.environ, {'ACHBIT_HOST_LIFETIME': 'automatic'}):
+                daemon.start(wait_for_execution=False)
+            def readiness():
+                return fixture.api_json(daemon.base_url, '/api/host/readiness', token=daemon.token)
+            failed = fixture.wait_until(lambda: (r if (r := readiness())['kernel'] == 'failed' else None), 10,
+                                        'Failed execution never published its terminal initialization result')
+            original = failed['runtimeError']
+            require(original['code'] and original['message'] and failed['session'] == 'failed', 'No original failure')
+            def update(action, identity):
+                return fixture.api_envelope(daemon.base_url, '/api/host/update', token=daemon.token, method='POST',
+                                            body={'action': action, 'expectedIdentity': identity})
+            # Attach as a desktop (the GUI binds on catalog readiness), then close only its socket.
+            request = urllib.request.Request(f'{daemon.base_url}/api/host/client?mode=client&desktop=true',
+                                             headers={fixture.HOST_TOKEN_HEADER: daemon.token})
+            with fixture.URL_OPENER.open(request, timeout=3) as stream:
+                require(stream.readline().strip() == b'attached', 'Desktop was not registered')
+            if via_cli:
+                environment = {**os.environ, 'ACHBIT_USER_ROOT': str(root), 'ACHBIT_KERNEL_AUTO_START': '1'}
+                command = [str(fixture.CLI_BINARY), '--host-data-dir', str(root / 'data')]
+                ordinary = subprocess.run([*command, 'status'], capture_output=True, text=True, env=environment, timeout=10)
+                require(ordinary.returncode != 0 and original['code'] in ordinary.stderr,
+                        f'Ordinary CLI lost its original health gate: {ordinary.stderr}')
+                stop = subprocess.run([*command, 'stop-host'], capture_output=True, text=True, env=environment, timeout=15)
+                require(stop.returncode == 0 and original['code'] in stop.stderr,
+                        f'stop-host could not close its failed instance while retaining the failure: {stop.stderr}')
+            else:
+                # Ordinary update admission still fails; quit management is explicitly separate.
+                require(not update('status', daemon.identity)['ok'], 'Failed initialization was reported as idle')
+                conflict = update('quitStatus', {**daemon.identity, 'pid': daemon.identity['pid'] + 1})
+                require(conflict.get('error') == 'host_identity_conflict', 'Quit preflight accepted the wrong identity')
+                checked = update('quitStatus', daemon.identity)
+                require(checked.get('data') == {'status': 'initializationFailed', **original},
+                        f'Explicit quit could not distinguish the failed runtime: {checked}')
+                require(readiness()['runtimeError'] == original, 'Quit preflight stopped the Host or erased its error')
+                receipt = fixture.api_json(daemon.base_url, '/api/host/shutdown?cancelActiveRuns=true', token=daemon.token,
+                                           method='POST', body={'expectedIdentity': daemon.identity})
+                require(receipt['accepted'] and receipt['identity'] == daemon.identity and receipt['cleanupComplete'] is True,
+                        f'Incorrect shutdown receipt: {receipt}')
+            require(daemon.process.wait(timeout=10) == 0, 'Failed Host did not exit normally')
+            print(f"[host-quit] PASS: {'CLI' if via_cli else 'desktop control'} stopped the exact failed Host; {original['code']}")
+        finally:
+            daemon.close()
+
+
+def unknown_quit_activity():
+    # The real Session bridge's factory hook gives us a deterministic startup boundary, then
+    # an ordinary activity failure from a successfully initialized service, not a failed Host.
+    with tempfile.TemporaryDirectory(prefix='achbit-host-quit-unknown-') as directory:
+        root = Path(directory)
+        gate = root / 'start'
+        module = root / 'service.mjs'
+        module.write_text(f"""import {{ existsSync }} from 'node:fs';
+import {{ setTimeout as delay }} from 'node:timers/promises';
+import {{ createSessionService as real }} from {json.dumps((fixture.SESSION_BRIDGE.parent / 'local-agent/service.js').as_uri())};
+export async function createSessionService(input) {{
+  while (!existsSync({json.dumps(str(gate))})) await delay(10);
+  const service = await real(input);
+  service.activity = async () => {{ throw new Error('fixture_activity_unavailable'); }};
+  return service;
+}}
+""")
+        daemon = fixture.OwnedDaemon(root / 'state')
+        try:
+            with patch.dict(os.environ, {'ACHBIT_SESSION_SERVICE_MODULE': str(module)}):
+                daemon.start(wait_for_execution=False)
+            def preflight():
+                return fixture.api_envelope(daemon.base_url, '/api/host/update', token=daemon.token, method='POST',
+                                            body={'action': 'quitStatus', 'expectedIdentity': daemon.identity})
+            starting = preflight()
+            require(not starting['ok'] and 'still starting' in starting['message'], f'Quit admitted a starting Host: {starting}')
+            gate.touch()
+            require(fixture.api_json(daemon.base_url, '/api/health', token=daemon.token)['session'] == 'ready', 'Host did not become ready')
+            unknown = preflight()
+            require(not unknown['ok'] and 'fixture_activity_unavailable' in unknown['message'],
+                    f'Quit turned an activity error into a known state: {unknown}')
+            stop = subprocess.run([str(fixture.CLI_BINARY), '--host-data-dir', str(daemon.config_root / 'data'), 'stop-host'],
+                                  capture_output=True, text=True, timeout=10)
+            require(stop.returncode != 0 and 'fixture_activity_unavailable' in stop.stderr and daemon.process.poll() is None,
+                    f'Activity failure was lost or stopped a running Host: {stop.stderr}')
+            print('[host-quit] PASS: startup and activity failure stay errors; live Host was not stopped')
+        finally:
+            gate.touch(exist_ok=True)
+            daemon.close()
+
+
 if __name__ == '__main__':
     run()
+    for cli_stop in [False, True]:
+        failed_start_quit(cli_stop)
+    unknown_quit_activity()

@@ -3,7 +3,9 @@
 use super::{HostApiEnvelope, HostProcessGroup};
 use achbit_host_connection::installation::wait_for_process_exit;
 use achbit_host_connection::loopback_http::request_loopback_json_until;
-use achbit_kernel_abi::{HostProcessIdentity, HostShutdownReceipt, HOST_SHELL_TOKEN_HEADER};
+use achbit_kernel_abi::{
+    HostProcessIdentity, HostQuitStatus, HostShutdownReceipt, HOST_SHELL_TOKEN_HEADER,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -79,11 +81,20 @@ fn quit_local_host(
         host_id: id.clone(),
         active,
     };
-    if confirmation.is_none() && unsaved {
-        let active = host.request("status", None, false, false)?["active"]
-            .as_bool()
-            .ok_or("Invalid Host activity response")?;
-        return Ok(ask(active));
+    if confirmation.is_none() {
+        let status: HostQuitStatus =
+            serde_json::from_value(host.request("quitStatus", None, false, false)?)
+                .map_err(|error| error.to_string())?;
+        match status {
+            HostQuitStatus::InitializationFailed { code, message } => {
+                eprintln!("{code}: {message}");
+                // Nothing can be submitted to this failed runtime. Leave the decision (including
+                // any unsaved edits) to the user and retain the original expected identity.
+                return Ok(ask(false));
+            }
+            HostQuitStatus::Ready { active } if active || unsaved => return Ok(ask(active)),
+            HostQuitStatus::Ready { .. } => {} // The atomic prepare still rechecks work below.
+        }
     }
     let result = if confirmation.is_some() {
         host.post(
@@ -113,10 +124,7 @@ fn quit_local_host(
         host.request("commit", Some(token), true, false)?
     };
     let receipt: HostShutdownReceipt = serde_json::from_value(result).map_err(|e| e.to_string())?;
-    if !receipt.accepted
-        || receipt.identity != host.identity
-        || receipt.owner != achbit_kernel_abi::HOST_SHUTDOWN_OWNER
-    {
+    if !receipt.accepts_shutdown_of(&host.identity) {
         return Err("The Host shutdown receipt did not match the requested instance".into());
     }
     wait_for_process_exit(host.identity.pid, Duration::from_secs(30)).map_err(|e| e.to_string())?;

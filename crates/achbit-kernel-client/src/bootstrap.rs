@@ -20,6 +20,7 @@ pub struct KernelBootstrapOptions {
     pub api: Option<String>,
     pub auto_start: bool,
     pub persistent: bool,
+    for_shutdown: bool,
     pub host_data_dir: Option<PathBuf>,
     host_shell_token: Option<HostShellToken>,
 }
@@ -44,6 +45,7 @@ impl KernelBootstrapOptions {
             api,
             auto_start: true,
             persistent: false,
+            for_shutdown: false,
             host_data_dir: None,
             host_shell_token: None,
         }
@@ -58,6 +60,13 @@ impl KernelBootstrapOptions {
 
     pub fn auto_start(mut self, auto_start: bool) -> Self {
         self.auto_start = auto_start;
+        self
+    }
+
+    /// Explicit stop only targets an already selected local Host; no environment setting
+    /// can turn this into a startup or turn failed execution into a healthy client session.
+    pub fn for_shutdown(mut self, for_shutdown: bool) -> Self {
+        self.for_shutdown = for_shutdown;
         self
     }
 
@@ -116,6 +125,7 @@ impl KernelBootstrap {
     }
 
     pub async fn connect(mut options: KernelBootstrapOptions) -> KernelClientResult<Self> {
+        let mut selected_identity = None;
         if let Some(directory) = &options.host_data_dir {
             // An explicit directory overrides inherited endpoint variables (Host
             // Shell carries these). Only two explicit CLI selectors conflict.
@@ -134,6 +144,7 @@ impl KernelBootstrap {
             })?;
             options.api = Some(connection.identity.address.clone());
             options.host_shell_token = Some(HostShellToken::new(connection.shell_token()));
+            selected_identity = Some(connection.identity);
             options.auto_start = false;
         }
         let deadline = Instant::now() + startup::STARTUP_BUDGET;
@@ -164,6 +175,11 @@ impl KernelBootstrap {
             if !config.has_host_shell_token() {
                 config = config.with_host_shell_token(connection.shell_token());
             }
+            selected_identity = Some(connection.identity);
+        } else if implicit_endpoint && options.for_shutdown {
+            return Err(KernelClientError::Bootstrap(
+                "No running Host in the selected data directory".into(),
+            ));
         } else if implicit_endpoint && kernel_auto_start_enabled(options.auto_start) {
             // A different config root may already use the conventional port.
             // New shared Hosts receive a private port; other shells discover it.
@@ -187,6 +203,40 @@ impl KernelBootstrap {
                 base_url: config.base_url.clone(),
                 reason: "Host connection is restricted to a local Kernel URL".to_string(),
             });
+        }
+        if options.for_shutdown {
+            let mut client = HttpKernelClient::new(config.clone())?;
+            let remaining = || {
+                startup::remaining(deadline)
+                    .map_err(|error| KernelClientError::Bootstrap(error.to_string()))
+            };
+            let identity = match selected_identity {
+                Some(identity) => identity,
+                None => client.host_identity(remaining()?).await?,
+            };
+            let reply = client
+                .http
+                .post(client.url("/api/host/update"))
+                .timeout(remaining()?)
+                .json(&json!({"action":"quitStatus", "expectedIdentity":identity}))
+                .send()
+                .await?
+                .json()
+                .await?;
+            let status: achbit_kernel_abi::HostQuitStatus = decode_api_data(reply)?;
+            if let achbit_kernel_abi::HostQuitStatus::InitializationFailed { code, message } =
+                status
+            {
+                eprintln!("{code}: {message}");
+            }
+            client.shutdown_identity = Some(identity);
+            return Self::attached(
+                client,
+                KernelBootstrapGuard::external(),
+                &config,
+                false,
+                deadline,
+            );
         }
         if let Some(client) = probe_existing_kernel(&config, deadline).await? {
             return Self::attached(

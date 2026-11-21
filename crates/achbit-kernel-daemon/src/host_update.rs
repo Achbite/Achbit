@@ -2,7 +2,9 @@
 use crate::prelude::*;
 use crate::*;
 use achbit_host_connection::installation::Installation;
-use achbit_kernel_abi::{HostProcessIdentity, HostShutdownReceipt, HOST_SHUTDOWN_OWNER};
+use achbit_kernel_abi::{
+    HostProcessIdentity, HostQuitStatus, HostShutdownReceipt, HOST_SHUTDOWN_OWNER,
+};
 use axum::{extract::Request, middleware::Next};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
@@ -105,12 +107,18 @@ pub(crate) async fn update(
     }
 }
 
-async fn has_active_work(host: &HostState) -> Result<bool, String> {
-    let services = host
-        .execution
-        .current()
-        .ok_or("Host is still starting")?
-        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+async fn quit_status(host: &HostState) -> Result<HostQuitStatus, String> {
+    // Only the initialization owner's final publication qualifies. An unavailable activity
+    // probe on a successfully initialized runtime is still an error, never permission to quit.
+    let services = match host.execution.current().ok_or("Host is still starting")? {
+        Ok(services) => services,
+        Err(error) => {
+            return Ok(HostQuitStatus::InitializationFailed {
+                code: error.code,
+                message: error.message,
+            })
+        }
+    };
     let service = services.session_service;
     let activity = tokio::task::spawn_blocking(move || service.request("activity", json!({})))
         .await
@@ -125,11 +133,21 @@ async fn has_active_work(host: &HostState) -> Result<bool, String> {
         .kernel
         .has_active_work()
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
-    Ok(active || executing)
+    Ok(HostQuitStatus::Ready {
+        active: active || executing,
+    })
+}
+
+async fn has_active_work(host: &HostState) -> Result<bool, String> {
+    match quit_status(host).await? {
+        HostQuitStatus::Ready { active } => Ok(active),
+        HostQuitStatus::InitializationFailed { code, message } => Err(format!("{code}: {message}")),
+    }
 }
 
 async fn handle(host: &HostState, request: UpdateRequest) -> Result<Value, String> {
     match request.action.as_str() {
+        "quitStatus" => Ok(json!(quit_status(host).await?)),
         "status" => Ok(json!({"active":has_active_work(host).await?})),
         "prepare" => {
             let Ok(guard) = host.updates.admission.clone().try_write_owned() else {
