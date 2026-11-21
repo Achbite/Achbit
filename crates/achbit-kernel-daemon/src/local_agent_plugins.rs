@@ -998,6 +998,7 @@ mod tests {
         });
         for (query, uri) in [
             ("LIST_INVENTORY", "plugin://warehouse@cli"),
+            ("warehouse.list_inventory", "plugin://warehouse@cli"),
             ("stock counts", "plugin://warehouse@cli"),
             ("ambient temperature", "plugin://lab@mcp"),
         ] {

@@ -10,15 +10,17 @@ import { InteractionCard } from './InteractionCard';
 import { PlanCardContent } from './PlanCard';
 import { planScopeAddition } from './planReview';
 import { useAgentChildConversation } from './useAgentChildConversation';
+import { selectPendingApproval, isAutomaticApproval } from './composerDecisions';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ArtifactLinks } from './ArtifactLinks';
 import { requestWorkspacePreview, type AgentReaderTarget } from './readerState';
 import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
-import { projectionItems, assistantDraftItems } from './conversationItems';
-import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
+import { projectionItems, assistantDraftItems, conversationRounds } from './conversationItems';
+import { ToolActivityGroup } from './ToolActivityDetails';
 import PlanCard from './PlanCard';
+import { PlanPreviewCard } from './PlanPreviewCard';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useConversationHost } from './ConversationHost';
 import { AgentOverviewList } from './AgentOverview';
@@ -134,12 +136,11 @@ export function AgentPageInformation({ name, sessionId, projection, language, on
 export function agentDecisionKey(projection: SessionProjection | null): string | null {
   if (!projection) return null;
   const plan = projection.pendingPlan;
-  const approval = projection.pendingApproval;
+  const approval = selectPendingApproval(projection);
   const pending = [
     ...(plan ? [`plan:${plan.planId}:${plan.revision}`] : []),
     ...projection.interactions.filter(item => item.status === 'pending').map(item => `interaction:${item.interactionId}`),
-    ...(approval && !(approval.preview.approvalReviewer === 'agent' && projection.run?.status === 'running')
-      ? [`approval:${approval.approvalId}`] : []),
+    ...(approval ? [`approval:${approval.approvalId}`] : []),
   ];
   return pending.length ? pending.join('|') : null;
 }
@@ -150,35 +151,42 @@ export function AgentConversationHistory({ projection, name, language, expanded 
 }) {
   if (!expanded) return null;
   const openResource = (workspaceId: string, path: string) => requestWorkspacePreview(projection.sessionId, workspaceId, path);
-  const items = projectionItems(projection);
+  const rounds = conversationRounds(projectionItems(projection), assistantDraftItems(projection.assistantDraft), projection.run?.runId);
   return <div className="agent-tasks__conversation">
-    {items.map(item => item.type === 'toolGroup'
-      ? <ToolActivityGroup key={item.groupId} activities={item.values} artifacts={projection.artifacts} language={language} onExpand={() => {}}
-          pendingApproval={projection.pendingApproval} reviewingApproval={projection.run?.status === 'running'} onOpenWorkspaceResource={openResource} />
-      : item.type === 'plan' ? <PlanCard key={`plan:${item.sequence}`} plan={item.value} active={false} language={language} workspaceBindings={projection.workspaceBindings} />
-      : item.type === 'interaction' ? <InteractionCard key={`interaction:${item.sequence}`} interaction={item.value} language={language} disabled />
-      : <article key={`${item.type}:${item.sequence}`}>
-          <header>{item.type === 'message' && item.value.role === 'user' ? t(language, 'agent.team.input') : name}</header>
-          <MarkdownContent>{item.value.displayContent ?? item.value.content}</MarkdownContent>
-        </article>)}
-    {assistantDraftItems(projection.assistantDraft).map(item => item.type === 'text'
-      ? <article key={item.block.streamId}><MarkdownContent streaming>{item.block.displayContent ?? item.block.content}</MarkdownContent></article>
-      : item.type === 'providerHostedGroup' ? <ProviderHostedDraftGroup key={item.groupId} blocks={item.blocks} language={language} onExpand={() => {}} /> : null)}
+    {rounds.flatMap(round => round.rows).map(({ key, item, draft }) => {
+      if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
+        const group = item?.type === 'toolGroup' ? item : undefined;
+        return <ToolActivityGroup key={key} activities={group?.values ?? []} hostedKeys={group?.hostedKeys}
+          hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection.artifacts} language={language} onExpand={() => {}}
+          pendingApproval={projection.pendingApproval} reviewingApproval={isAutomaticApproval(projection.pendingApproval, projection.run)} onOpenWorkspaceResource={openResource} />;
+      }
+      if (!item) return draft?.type === 'text'
+        ? <article key={key}><MarkdownContent streaming>{draft.block.displayContent ?? draft.block.content}</MarkdownContent></article>
+        : draft?.type === 'planPreview' ? <PlanPreviewCard key={key} preview={draft.value} language={language} /> : null;
+      if (item.type === 'plan') return <PlanCard key={key} plan={item.value} active={false} language={language} workspaceBindings={projection.workspaceBindings} />;
+      if (item.type === 'interaction') return <InteractionCard key={key} interaction={item.value} language={language} disabled />;
+      return <article key={key}>
+        <header>{item.type === 'message' && item.value.role === 'user' ? t(language, 'agent.team.input') : name}</header>
+        <MarkdownContent>{item.value.displayContent ?? item.value.content}</MarkdownContent>
+      </article>;
+    })}
     {projection.fileChangeRounds?.map(round => <FileChanges key={round.runId} activities={roundChangeActivities(projection, round.runId)} />)}
   </div>;
 }
 
 /** A parent dialog handles one decision; the child Reader still shows its full decision history. */
 export type ChildReviewItem = { kind: 'plan'; plan: NonNullable<SessionProjection['pendingPlan']> }
-  | { kind: 'approval'; approval: NonNullable<SessionProjection['pendingApproval']> };
+  | { kind: 'approval'; approval: NonNullable<SessionProjection['pendingApproval']> }
+  | { kind: 'interaction'; interaction: SessionProjection['interactions'][number] };
 
 export function ChildDecisions({ child, projection, language, only }: {
   child: ReturnType<typeof useAgentChildConversation>; projection: SessionProjection; language: UiLanguage; only?: ChildReviewItem;
 }) {
   const [revisionText, setRevisionText] = useState('');
   const pendingPlan = only ? (only.kind === 'plan' ? only.plan : null) : projection.pendingPlan;
-  const pendingApproval = only ? (only.kind === 'approval' ? only.approval : null) : projection.pendingApproval;
-  const interactions = only ? [] : projection.interactions.filter(item => item.status === 'pending');
+  const pendingApproval = only ? (only.kind === 'approval' ? only.approval : null)
+    : selectPendingApproval(projection) ?? (isAutomaticApproval(projection.pendingApproval, projection.run) ? projection.pendingApproval : null);
+  const interactions = only ? (only.kind === 'interaction' ? [only.interaction] : []) : projection.interactions.filter(item => item.status === 'pending');
   const previousPlan = pendingPlan ? projection.plans.find(plan => plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1) : undefined;
   const base = () => ({ schemaVersion: CONVERSATION_COMMAND_VERSION, commandId: `command:${crypto.randomUUID()}`, sessionId: projection.sessionId });
   const respondPlan = (response: PlanResponse) => {

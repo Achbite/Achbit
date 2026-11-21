@@ -13,6 +13,7 @@ import { projectRunLifecycleEvent, reduceRunLifecycle } from './runLifecycle.js'
 import { projectDraftSourceContent, projectSourceContent } from './sourceReferences.js';
 import type {
   ActivityProjection,
+  ContextCompositionReceipt,
   ManagedProcessSnapshot,
   AssistantDraftProjection,
   ArtifactProjection,
@@ -226,7 +227,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
 
   switch (event.type) {
     case 'provider.attempt.updated': {
-      assertRunningRun(next, event.runId, 'provider_attempt_run_not_active');
+      assertProviderRun(next, event.runId, event.payload.purpose, 'provider_attempt_run_not_active');
       const fact = event.payload;
       const previousAttempt = next.providerAttempts[fact.providerAttemptId];
       const related = replay ? [...(replay.attempts.get(fact.providerRequestId)?.values() ?? [])]
@@ -307,10 +308,15 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
     case 'approval.reviewed': {
       if (!next.pendingApprovals.some(item => item.approvalId === event.payload.approvalId && item.callId === event.callId)) throw new Error('approval_review_request_missing');
       const review = { decision: event.payload.decision, reason: event.payload.reason };
-      next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
-        ? { ...item, preview: { ...item.preview, review } } : item);
       const activityId = approvalActivityId(event.payload.approvalId);
-      writableRecord(next, 'activities')[activityId] = { ...next.activities[activityId], approvalReview: review };
+      const activity = next.activities[activityId];
+      // A first malformed reply gets one format correction. Keep its diagnostic on the
+      // activity; only the final verdict belongs in the pending decision shown to people.
+      if (event.payload.error?.code !== 'approval_review_invalid' || activity.approvalReview) {
+        next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
+          ? { ...item, preview: { ...item.preview, review } } : item);
+      }
+      writableRecord(next, 'activities')[activityId] = { ...activity, approvalReview: review };
       break;
     }
     case 'session.mode.updated':
@@ -908,7 +914,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     case 'context.composed':
       if (!replay) next.contextCompositions = [...next.contextCompositions];
-      assertRunningRun(next, event.runId, 'provider_request_run_not_active');
+      assertProviderRun(next, event.runId, event.payload.purpose, 'provider_request_run_not_active');
       if (compositionIndex(next, event.payload.providerRequestId, replay) >= 0) throw new Error('provider_request_receipt_duplicate');
       validateContextPartitions(event.payload.partitions);
       next.contextCompositions.push({
@@ -936,7 +942,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       writableRecord(next, 'activities');
       writableRecord(next, 'providerTurns');
       writableRecord(next, 'tokenUsageHistory');
-      assertRunningRun(next, event.runId, 'provider_turn_run_not_active');
+      assertProviderRun(next, event.runId, event.payload.purpose, 'provider_turn_run_not_active');
       const runtime = requiredRunRuntimeSnapshot(next, event.runId);
       if (event.payload.providerRuntimeRef !== providerRuntimeForPurpose(runtime, event.payload.purpose).providerRuntimeRef) {
         throw new Error('provider_turn_runtime_identity_mismatch');
@@ -1139,7 +1145,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (!replay) next.contextCompositions = [...next.contextCompositions];
       writableRecord(next, 'providerUsageRequestIds');
       writableRecord(next, 'tokenUsageHistory');
-      assertRunningRun(next, event.runId, 'provider_usage_run_not_active');
+      assertProviderRun(next, event.runId, next.providerTurns[event.payload.providerRequestId]?.purpose, 'provider_usage_run_not_active');
       const providerRequestId = event.payload.providerRequestId;
       const turn = requiredProviderTurn(next, event.runId, providerRequestId);
       const provider = providerRuntimeForPurpose(requiredRunRuntimeSnapshot(next, event.runId), turn.purpose);
@@ -2187,6 +2193,14 @@ function recordProviderCallFact(
 ): void {
   if (state.providerCallFacts[callId] !== undefined) throw new Error('provider_call_fact_duplicate');
   writableRecord(state, 'providerCallFacts')[callId] = { runId, providerCallId, toolName, sequence };
+}
+
+/** The working agent remains blocked on the gate. Its independently owned review
+ * can run on that same call after an inherited policy replaces the original gate. */
+function assertProviderRun(state: SessionState, runId: string, purpose: ContextCompositionReceipt['purpose'] | undefined, code: string): void {
+  if (purpose === 'approvalReview' && state.run?.runId === runId && state.run.status === 'waiting'
+    && state.run.waitingReason === 'approval' && state.pendingApprovals.some(item => item.runId === runId && item.preview.approvalReviewer === 'agent')) return;
+  assertRunningRun(state, runId, code);
 }
 
 function assertRunningRun(state: SessionState, runId: string, code: string): void {

@@ -400,6 +400,8 @@ pub enum AgentMessagingScope {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentContext {
+    pub peer_group: Option<String>,
+    pub helpers: Option<Vec<Value>>,
     pub capabilities: AgentCapabilities,
     pub configuration: Option<AgentConfiguration>,
     pub model: Option<AgentModelConfiguration>,
@@ -472,6 +474,7 @@ pub struct AgentTaskResult {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentTaskProjection {
+    pub helper_id: Option<String>,
     pub task_id: String,
     pub agent_session_id: String,
     pub capabilities: AgentCapabilities,
@@ -510,6 +513,33 @@ pub struct QueuedInputProjection {
 }
 
 impl SessionProjection {
+    /// Terminal pickers select a child run, not each of its pending tool calls.
+    pub fn pending_decision_children(&self) -> impl Iterator<Item = &PendingAgentDecision> {
+        let mut seen = HashSet::new();
+        self.pending_agent_decisions
+            .iter()
+            .flatten()
+            .filter(move |item| seen.insert((&item.agent_session_id, &item.run_id)))
+    }
+
+    pub fn current_approvals(&self) -> impl Iterator<Item = &ApprovalProjection> {
+        self.pending_approvals
+            .as_deref()
+            .unwrap_or(self.pending_approval.as_slice())
+            .iter()
+            .filter(|item| {
+                self.run.as_ref().is_some_and(|run| {
+                    run.run_id == item.run_id
+                        && matches!(run.status.as_str(), "running" | "waiting")
+                })
+            })
+    }
+
+    pub fn human_approvals(&self) -> impl Iterator<Item = &ApprovalProjection> {
+        self.current_approvals()
+            .filter(|item| !item.is_model_reviewing(self.run.as_ref()))
+    }
+
     pub fn file_changes_for_run(&self, run_id: &str) -> Vec<(&str, usize, &FileChangeProjection)> {
         self.file_change_rounds
             .iter()
@@ -2001,9 +2031,17 @@ pub struct ApprovalProjection {
 }
 
 impl ApprovalProjection {
+    /// Only the review of this approval can hand it off; a sibling may already be waiting.
     pub fn is_model_reviewing(&self, run: Option<&RunProjection>) -> bool {
-        self.preview.approval_reviewer.as_deref() == Some("agent")
-            && run.is_some_and(|run| run.run_id == self.run_id && run.status == "running")
+        run.is_some_and(|run| {
+            run.run_id == self.run_id && matches!(run.status.as_str(), "running" | "waiting")
+        }) && self.preview.approval_reviewer.as_deref() == Some("agent")
+            && self
+                .preview
+                .review
+                .as_ref()
+                .and_then(|r| r["decision"].as_str())
+                != Some("ask")
     }
 }
 
@@ -3106,6 +3144,26 @@ mod tests {
             .unwrap()
             .validate()
             .is_err());
+    }
+
+    #[test]
+    fn child_picker_groups_routes_but_keeps_the_first_child_decision() {
+        let mut value = projection_value();
+        value["pendingAgentDecisions"] = json!([
+            {"agentSessionId":"session:a","runId":"run:a","displayName":"A","interactionIds":["question:a"],"approval":{"approvalId":"first","callId":"call:1"}},
+            {"agentSessionId":"session:a","runId":"run:a","displayName":"A","interactionIds":[],"approval":{"approvalId":"second","callId":"call:2"}},
+            {"agentSessionId":"session:b","runId":"run:b","displayName":"B","interactionIds":["question:b"]}
+        ]);
+        let projection: SessionProjection = serde_json::from_value(value).unwrap();
+        projection.validate().unwrap();
+        let members: Vec<_> = projection.pending_decision_children().collect();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].approval.as_ref().unwrap().approval_id, "first");
+        assert_eq!(members[1].agent_session_id, "session:b");
+        assert_eq!(
+            projection.pending_agent_decisions.as_ref().unwrap().len(),
+            3
+        );
     }
 
     #[test]

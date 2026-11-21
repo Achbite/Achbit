@@ -52,6 +52,15 @@ pub struct HostShutdownRequest {
     pub expected_identity: HostProcessIdentity,
 }
 
+/// Explicit quit can stop the selected Host after execution initialization definitively failed.
+/// That failure is not a successful idle/activity reading.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum HostQuitStatus {
+    Ready { active: bool },
+    InitializationFailed { code: String, message: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostShutdownReceipt {
@@ -62,10 +71,12 @@ pub struct HostShutdownReceipt {
 }
 
 impl HostShutdownReceipt {
+    /// Accepting shutdown of this exact process is distinct from successful resource cleanup.
+    pub fn accepts_shutdown_of(&self, expected_identity: &HostProcessIdentity) -> bool {
+        self.accepted && self.owner == HOST_SHUTDOWN_OWNER && &self.identity == expected_identity
+    }
+
     pub fn confirms_shutdown_of(&self, expected_identity: &HostProcessIdentity) -> bool {
-        self.accepted
-            && self.owner == HOST_SHUTDOWN_OWNER
-            && self.cleanup_complete
-            && &self.identity == expected_identity
+        self.accepts_shutdown_of(expected_identity) && self.cleanup_complete
     }
 }

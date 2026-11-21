@@ -18,9 +18,10 @@ import ProviderStageStatus from './ProviderStageStatus';
 import { RunTiming } from './RunTiming';
 import { SourceReferences } from './SourceReferences';
 import { BufferedMarkdown, MarkdownContent, MarkdownInline } from './BufferedMarkdown';
+import { StreamingMarkdownParser } from './streamingMarkdown';
 import PlanCard from './PlanCard';
-import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
-import { conversationRounds, type ProjectionItem, type AssistantDraftItem } from './conversationItems';
+import { ToolActivityGroup } from './ToolActivityDetails';
+import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow } from './conversationItems';
 import type { ConversationViewport } from './useConversationViewport';
 import { ConversationNavigation } from './ConversationNavigation';
 import { conversationNavigation } from './conversationWindow';
@@ -101,11 +102,16 @@ export function ConversationTranscript({
     }
     setLatestFollowMode(false);
   };
+  const selectedSession = useLocalAgentStore((state) => state.sessionId);
   const opening = useLocalAgentStore((state) => state.openingHistory);
-  useLayoutEffect(() => {
-    const body = viewport.bodyRef.current;
-    if (opening && !projection && body) body.scrollTop = body.scrollHeight;
-  }, [opening, projection, viewport.bodyRef]);
+  // Use the bounded page to prepare the last complete answer, never as a second
+  // transcript. Only an exact text match can reuse the parser's bounded tree cache.
+  useEffect(() => {
+    if (!opening || projection || !viewport.followingLatest) return;
+    const last = opening.messages.at(-1);
+    if (!last || last.role !== 'assistant' || last.truncated) return;
+    new StreamingMarkdownParser().update(last.content, false);
+  }, [opening, projection, viewport.followingLatest]);
   const assistantDraft = projection?.assistantDraft ?? null;
   const submitting = useLocalAgentStore((state) => state.submitting);
   const welcomeIndex = useLocalAgentStore((state) => state.welcomeIndex);
@@ -170,7 +176,7 @@ export function ConversationTranscript({
     }
   };
 
-  const renderItem = (item: ProjectionItem): React.ReactNode => item.type === 'message' ? (
+  const renderItem = (item: Exclude<ProjectionItem, { type: 'toolGroup' }>): React.ReactNode => item.type === 'message' ? (
         <article
           className={`local-agent__message local-agent__message--${item.value.role}`}
         >
@@ -223,24 +229,13 @@ export function ConversationTranscript({
           language={language}
           onToggle={onPlanToggle}
         />
-      ) : item.type === 'interaction' ? (
+      ) : (
         <InteractionCard interaction={item.value} language={language}
           answerInComposer={item.value.interactionId === foregroundInteractionId}
           onFocusComposer={onFocusInteraction} draft={readInteractionDraft?.(item.value.interactionId)}
           onDraftChange={onInteractionDraftChange} />
-      ) : (
-        <ToolActivityGroup
-          activities={item.values}
-          artifacts={projection?.artifacts}
-          pendingApproval={projection?.pendingApproval}
-          reviewingApproval={isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run)}
-          key={item.groupId}
-          language={language}
-          onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}
-          onOpenWorkspaceResource={openWorkspaceResource}
-        />
       );
-  const renderDraft = (item: AssistantDraftItem): React.ReactNode => item.type === 'text' ? (
+  const renderDraft = (item: Exclude<AssistantDraftItem, { type: 'providerHostedGroup' }>): React.ReactNode => item.type === 'text' ? (
         <article
           className={item.block.kind === 'narrative'
             ? 'local-agent__narrative local-agent__narrative--draft'
@@ -256,14 +251,18 @@ export function ConversationTranscript({
             />
           </div>
         </article>
-      ) : item.type === 'planPreview' ? <PlanPreviewCard preview={item.value} key={item.key} language={language} onToggle={onPlanToggle} /> : (
-        <ProviderHostedDraftGroup
-          blocks={item.blocks}
-          key={item.groupId}
-          language={language}
-          onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}
-        />
-      );
+      ) : <PlanPreviewCard preview={item.value} key={item.key} language={language} onToggle={onPlanToggle} />;
+  const renderRow = ({ item, draft }: ConversationRow) => {
+    if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
+      const group = item?.type === 'toolGroup' ? item : undefined;
+      return <ToolActivityGroup activities={group?.values ?? []} hostedKeys={group?.hostedKeys}
+        hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection?.artifacts}
+        pendingApproval={projection?.pendingApproval} reviewingApproval={isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run)}
+        language={language} onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}
+        onOpenWorkspaceResource={openWorkspaceResource} />;
+    }
+    return item ? renderItem(item) : renderDraft(draft!);
+  };
   const currentActivity = assistantDraft?.runId === projection?.run?.runId ? assistantDraft?.activity : undefined;
   const providerStatus = <>
       {automaticReview}
@@ -324,14 +323,9 @@ export function ConversationTranscript({
         }}>{language === 'zh-CN' ? '复制路径' : 'Copy path'}</button>
       </div>}
       {loading && !projection && (
-        opening?.messages.length ? <section aria-label={t(language, 'agent.chat.recentMessages')}>
-          <p role="status">{t(language, 'agent.chat.loadingHistory')}</p>
-          {opening.messages.map(message => <article key={message.id} className={`local-agent__message local-agent__message--${message.role}`}>
-            <div className="local-agent__message-text local-agent__opening-text">{message.content}{message.truncated && '…'}</div>
-          </article>)}
-        </section> : <div className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
+        <div role="status" className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
       )}
-      {!hasConversationContent && !loading && (
+      {!hasConversationContent && !loading && (!selectedSession || projection) && (
         <div className="local-agent__empty local-agent__empty--welcome">
           <strong>
             {activeProject
@@ -354,7 +348,7 @@ export function ConversationTranscript({
           live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
           content: () => <RichContentScope.Provider value={row.item?.type === 'message' || row.item?.type === 'narrative' || row.draft?.type === 'text'
             ? { sessionId: sessionKey, rowKey: row.key, contentKey: 'body' } : null}>
-            {row.item ? renderItem(row.item) : renderDraft(row.draft!)}
+            {renderRow(row)}
           </RichContentScope.Provider>,
         }));
         if (showReasoning && projection) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false,

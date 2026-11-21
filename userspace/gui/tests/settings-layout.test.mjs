@@ -28,7 +28,7 @@ function fixture(t, store, language) {
   t.after(() => Object.assign(initial, original));
   return initial;
 }
-const generalKeys = ['workbench.language', 'gui.navigationDensity', 'gui.showContextRail', 'gui.showReasoning', 'gui.autoUpdate', 'gui.completionSound.foreground',
+const generalKeys = ['workbench.language', 'gui.navigationDensity', 'gui.showContextRail', 'gui.showReasoning', 'gui.autoUpdate', 'workbench.preventIdleSleep', 'gui.completionSound.foreground',
   'gui.usageWidget.enabled', 'gui.usageWidget.visibility', 'gui.usageWidget.currency', 'gui.defaultFileOpen', 'gui.showRuntimeFiles'];
 const agentKeys = ['agent.responseLanguage', 'agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens', 'agent.systemPrompt',
   'agent.minimalMode', 'agent.permissions.workspaceMutation', 'agent.permissions.engineeringDecisions'];
@@ -68,6 +68,11 @@ for (const language of ['zh-CN', 'en-US']) test(`settings retain their eight pag
   const general = capture(GuiSettingsSection, { category: 'general', apiStatus: 'connected' });
   const agent = capture(AgentSettingsSection, { category: 'agent' });
   assert.deepEqual(fieldKeys(general.tree), generalKeys);
+  const power = findReactElement(general.tree, node => node.props.definition?.key === 'workbench.preventIdleSleep');
+  assert.equal(power.props.value, true);
+  assert.equal(power.props.definition.control, 'boolean');
+  const entry = settingsSearchDefinitions(language, 'macos').filter(item => item.id === power.props.definition.key);
+  assert.deepEqual(entry.map(item => [item.category, item.title]), [['general', language === 'zh-CN' ? '任务运行时防止自动休眠' : 'Prevent idle sleep during tasks']]);
   assert.deepEqual(fieldKeys(capture(AgentSettingsSection, { category: 'permissions' }).tree), accessKeys);
   assert.deepEqual(fieldKeys(agent.tree), agentKeys);
   for (const page of [general, agent]) {

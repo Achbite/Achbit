@@ -39,6 +39,12 @@ impl MainThread {
         Ok(())
     }
 
+    pub fn owns_observation(&self, id: &str) -> bool {
+        id.rsplit_once('-').is_some_and(|(prefix, _)| {
+            prefix.strip_prefix("computer-") == Some(self.instance.as_str())
+        })
+    }
+
     pub fn resource_id(&self) -> String {
         protocol::resource_id(&self.instance)
     }
@@ -149,6 +155,15 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
         let response = match result {
             Ok(data) => json!({"ok":true,"data":data}),
             Err(message) => {
+                let sck = crate::sharing::take_failure();
+                let recovery = if sck.is_some()
+                    || request["input"]["action"] == "computer:capture"
+                    || request["input"]["observationType"] == "pixels"
+                {
+                    "Inspect the executor PID, screen recording preflight and the reported capture stage. A preflight is not proof that this capture succeeded. Do not retry unchanged or substitute a preview."
+                } else {
+                    "Inspect the reported stage and original error. For stale input observe the exact window again. Executor permissions do not prove target AX availability."
+                };
                 let mut native = match crate::driver::status() {
                     Ok(status) => status,
                     Err(error) => json!({"statusError":error}),
@@ -160,7 +175,7 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
                 json!({"ok":false,"message":message,"diagnostics":{
                     "phase":request["input"]["action"],"native":native,
                     "target":if crate::protocol::binding_matches(binding, host) {crate::driver::diagnostics(gui)} else {json!({})},
-                    "recovery":"Inspect target-specific errors. Executor permission does not prove target AX availability. After an AX failure, an explicit pixels observation is available with an exact windowId; do not retry unchanged input."}})
+                    "screenCaptureKit":sck,"recovery":recovery}})
             }
         };
         writeln!(stream, "{response}").map_err(|e| e.to_string())?;

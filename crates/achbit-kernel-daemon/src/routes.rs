@@ -118,6 +118,10 @@ pub(crate) fn build_app(state: HostState) -> Router {
             post(local_agent_child_session_create),
         )
         .route(
+            "/api/local-agent/journal/check-deletion",
+            post(local_agent_check_deletion),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id",
             delete(local_agent_session_delete),
         )

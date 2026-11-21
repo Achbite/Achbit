@@ -8,7 +8,7 @@ import type { AgentTaskSummary, AgentLifecycleState } from './agentLifecycle.js'
 import { agentOperationDefinitions } from './sessionControls.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
 import type { ControlWait } from './sessionWake.js';
-import { agentPresets, agentPermissionPatches, allowedAgentProfiles, canSpawnAgent, resolveAgentCapabilities } from './agentConfiguration.js';
+import { agentPresets, helperPresets, type AgentPreset, agentPermissionPatches, allowedAgentProfiles, canSpawnAgent, resolveAgentCapabilities } from './agentConfiguration.js';
 import { SessionConfigurationRegistry } from './sessionConfiguration.js';
 import { AgentLoopRegistry } from './loopRegistry.js';
 
@@ -17,6 +17,8 @@ export interface AgentWait extends ControlWait { taskIds?: string[] }
 export interface AgentSessionRuntime {
   execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
   wait(runId: string, signal: AbortSignal, acceptedWait?: AgentWait): Promise<void>;
+  /** Restore result delivery, without joining children or changing an inbox wait's wake conditions. */
+  reattach(runId: string, tasks: readonly AgentTaskSummary[]): void;
   cancel(runId: string): Promise<void>;
 }
 
@@ -58,6 +60,11 @@ export class AgentManager {
     return {
       execute: (runId, callId, operation, signal) => this.execute(sessionId, runId, callId, operation, signal),
       wait: (runId, signal, acceptedWait) => this.wait(sessionId, runId, acceptedWait?.taskIds, signal, acceptedWait),
+      reattach: (runId, tasks) => {
+        for (const task of tasks) {
+          if (task.parentRunId === runId && task.status === 'running' && task.childRunId) this.track(sessionId, task);
+        }
+      },
       cancel: runId => this.cancelRun(sessionId, runId),
     };
   }
@@ -75,14 +82,20 @@ export class AgentManager {
       case 'models': {
         if (!caller.subagentSettings) throw new Error('agent_settings_missing');
         const settings = caller.subagentSettings;
-        const presets = agentPresets(settings).map(preset => ({ ...preset,
+        const menu = caller.agentContext?.helpers;
+        const templates = agentPresets(settings);
+        const used = (id: string) => (caller.agentTasks ?? []).filter(t => t.parentRunId === runId && t.helperId === id).length;
+        const presets = (menu ? helperPresets(templates, menu.filter(s => used(s.id) < s.maxCalls)) : templates).map(preset => ({ ...preset,
+          ...(menu ? { remainingCalls:menu.find(s => s.id === preset.id)!.maxCalls - used(preset.id) } : {}),
           capabilities: resolveAgentCapabilities(preset, undefined, capabilities, settings.allowMemberAnalysis) }));
         const fullConfiguration = !caller.agentContext && settings.allowFullConfiguration === true;
         const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
         const owner = await this.snapshot(ownerId);
-        const profileIds = allowedAgentProfiles(settings, presets, owner.run?.profileId);
-        const canSpawn = canSpawnAgent(settings, capabilities, !!caller.agentContext);
-        const operations = agentOperationDefinitions(capabilities, { fullConfiguration, canSpawn, coordinator: !caller.agentContext,
+        const defaultProfileId = settings.profileId || owner.run?.profileId;
+        const profileIds = menu ? [...new Set(presets.map(p => p.profileId || defaultProfileId).filter((id): id is string => Boolean(id)))]
+          : allowedAgentProfiles(settings, presets, owner.run?.profileId);
+        const canSpawn = canSpawnAgent(settings, capabilities, !!caller.agentContext) && presets.length > 0;
+        const operations = agentOperationDefinitions(capabilities, { fullConfiguration, helperMenu:menu !== undefined, canSpawn, coordinator: !caller.agentContext,
           allowChildDelegation: settings.allowMemberAnalysis,
           presetIds: presets.map(preset => preset.id), productComponentIds: this.configurations.productComponents().map(item => item.id as string),
           ...(!fullConfiguration ? { profileIds } : {}) });
@@ -92,9 +105,11 @@ export class AgentManager {
         const managed = activeTaskSessions(family, caller.sessionId, runId);
         const parentId = caller.agentContext ? taskOwner(family, caller.sessionId, runId).sessionId : undefined;
         const contacts = family.flatMap(item => item.agentChildren ?? [])
-          .filter(child => child.agentSessionId !== caller.sessionId && !child.closed
-            && (!caller.agentContext || managed.has(child.agentSessionId) || child.agentSessionId === parentId
-              || capabilities.messaging === true && child.capabilities.messaging === true))
+          .filter(child => {
+            const target = family.find(item => item.sessionId === child.agentSessionId);
+            return child.agentSessionId !== caller.sessionId && !child.closed && target
+              && !contactError(caller,capabilities,target,managed,parentId,owner.run?.runId);
+          })
           .map(child => {
             const target = family.find(item => item.sessionId === child.agentSessionId);
             const active = target?.run && ['running', 'waiting'].includes(target.run.status);
@@ -111,8 +126,8 @@ export class AgentManager {
           ...(parentId ? { parentAgentId: parentId } : {}),
           ...(capabilities.messaging === true || capabilities.delegation ? { agents: contacts } : {}),
           ...(canSpawn ? { models, presets, fullConfiguration,
-            defaultProfileId: settings.profileId || owner.run?.profileId,
-            ...(fullConfiguration ? { runners: this.loops.describe(), productComponents: this.configurations.productComponents(),
+            ...(menu ? {} : {defaultProfileId}),
+            ...(fullConfiguration ? { workspaces: caller.run.workspaceBindings, runners: this.loops.describe(), productComponents: this.configurations.productComponents(),
             permissionPolicies: [
               { id: 'local-standard', description: 'Keep Kernel admission and automatic Plan/file gates. Parameters can only restrict the inherited policy.',
                 parametersSchema: { type: 'object', additionalProperties: false, properties: {
@@ -201,7 +216,7 @@ export class AgentManager {
     if (!settings.enabled) throw new Error('agent_disabled');
     const customConfiguration = [operation.capabilities, operation.permissions, operation.runner,
       operation.permissionPolicy, operation.workspaceSandbox, operation.tools, operation.productComponents,
-      operation.context, operation.loop, operation.reasoningEffort].some(value => value !== undefined);
+      operation.context, operation.loop, operation.reasoningEffort, operation.peerGroup, operation.helpers, operation.fileScope].some(value => value !== undefined) || operation.preset === null;
     if (!existingChild && customConfiguration) {
       if (caller.agentContext) throw new Error('agent_coordinator_configuration_required');
       if (!settings.allowFullConfiguration) throw new Error('agent_full_configuration_required');
@@ -209,9 +224,23 @@ export class AgentManager {
     const ownerId = caller.agentContext?.ownerSessionId ?? caller.sessionId;
     if (this.#blockedOwners.has(ownerId)) throw new Error('agent_owner_deleting');
     const owner = await this.snapshot(ownerId);
-    const presets = agentPresets(settings);
-    const preset = presets.find(item => item.id === (operation.preset ?? 'analysis'));
+    const templates = agentPresets(settings);
+    const menu = caller.agentContext?.helpers;
+    const presets = menu ? helperPresets(templates, menu) : templates;
+    const selectedId = operation.preset ?? (menu ? undefined : 'analysis');
+    const entry = menu?.find(spec => spec.id === selectedId);
+    if (menu && !entry) throw new Error('agent_helper_not_allowed');
+    if (entry && (caller.agentTasks ?? []).filter(task => task.parentRunId === runId && task.helperId === entry.id).length >= entry.maxCalls) throw new Error('agent_helper_call_limit');
+    const preset: AgentPreset | undefined = operation.preset === null
+      ? {id:'', name:operation.name, capabilities:{messaging:'parent',continuation:true,delegation:false}}
+      : presets.find(item => item.id === selectedId);
     if (!preset) throw new Error('agent_preset_unavailable');
+    const helpers = entry ? entry.helpers ?? [] : operation.helpers;
+    if (helpers) {
+      const checkMenu = (tree: NonNullable<typeof helpers>) => { helperPresets(templates,tree); for (const h of tree) if (h.helpers) checkMenu(h.helpers); };
+      checkMenu(helpers);
+      if (helpers.length && (!settings.allowMemberAnalysis || operation.capabilities?.delegation === false)) throw new Error('agent_capability_not_grantable');
+    }
     const inheritedConfiguration = !existingChild
       ? await this.sessions.withActor(caller.sessionId, actor => actor.contextConfiguration(runId)) : undefined;
     const configuration = !existingChild ? this.configurations.resolve(
@@ -224,6 +253,7 @@ export class AgentManager {
       const ruleProfileId = preset.profileId || settings.profileId || owner.run?.profileId;
       const followsOwner = !preset.profileId && !settings.profileId && (operation.profileId === undefined || operation.profileId === ruleProfileId);
       if (followsOwner && !owner.run?.profileId) throw new Error('agent_owner_run_model_missing');
+      if (entry && operation.profileId !== undefined) throw new Error('agent_helper_profile_not_allowed');
       const profileId = operation.profileId ?? ruleProfileId;
       if (!profileId) throw new Error('agent_model_unavailable');
       if ((caller.agentContext || !settings.allowFullConfiguration) && (operation.reasoningEffort !== undefined
@@ -241,7 +271,7 @@ export class AgentManager {
     }
     const recipe = !existingChild ? inheritAgentRecipe(caller.recipe, {
       configuration, runner: this.loops.validate(operation.runner ?? preset.runner ?? caller.recipe?.runner),
-      tools: operation.tools ?? preset.tools,
+      tools: operation.tools ?? preset.tools, fileScope:operation.fileScope ?? preset.fileScope,
       productComponents: operation.productComponents ?? preset.productComponents,
       permissionPolicy: operation.permissionPolicy ?? preset.permissionPolicy,
       workspaceSandbox: operation.workspaceSandbox ?? preset.workspaceSandbox,
@@ -252,7 +282,11 @@ export class AgentManager {
     if (!existingChild && !canSpawnAgent(settings, callerCapabilities, !!caller.agentContext)) {
       throw new Error('agent_delegation_disabled');
     }
-    const capabilities = existingChild?.capabilities ?? resolveAgentCapabilities(preset, operation.capabilities, callerCapabilities, settings.allowMemberAnalysis);
+    const capabilities = existingChild?.capabilities ?? resolveAgentCapabilities(preset,
+      {...operation.capabilities, ...(helpers ? {delegation:helpers.length > 0} : {})}, callerCapabilities, settings.allowMemberAnalysis);
+    if (operation.peerGroup && capabilities.messaging !== true) throw new Error('agent_peer_group_requires_team_messaging');
+    if (operation.capabilities?.delegation === true && helpers?.length === 0) throw new Error('agent_helper_menu_empty');
+    if (recipe?.fileScope && !caller.run.workspaceBindings.some(b => b.workspaceId === recipe.fileScope!.workspaceId)) throw new Error('agent_file_scope_workspace_unavailable');
     if (existingChild && (!existingChild.capabilities.continuation || existingChild.closed)) throw new Error('agent_child_not_continuable');
     if ((caller.agentTasks ?? []).filter(task => task.parentRunId === runId).length >= settings.maxCallsPerRun) throw new LoopFailure('agent_run_call_limit', 'agent_run_call_limit');
     const family = await this.family(owner);
@@ -263,12 +297,12 @@ export class AgentManager {
 
     const task: AgentTaskProjection = {
       taskId: id('agent-task'), agentSessionId: existingChild?.agentSessionId ?? id('session'),
-      capabilities,
+      capabilities, ...(entry ? {helperId:entry.id} : {}),
       displayName: existingChild?.displayName ?? operation.name, text: operation.task,
       delivery: operation.delivery, parentRunId: runId, status: 'running',
     };
     await this.sessions.withActor(caller.sessionId, parent => parent.recordAgentEvents([{ type: 'agent.task.created', sessionId: caller.sessionId, runId, callId,
-      payload: { taskId: task.taskId, agentSessionId: task.agentSessionId, capabilities, createsAgent: !existingChild,
+      payload: { taskId: task.taskId, agentSessionId: task.agentSessionId, capabilities, createsAgent: !existingChild, ...(entry ? {helperId:entry.id} : {}),
         displayName: task.displayName, text: task.text, delivery: task.delivery } }]));
     let childCreated = Boolean(existingChild);
     let previousChildRunId: string | undefined;
@@ -278,7 +312,8 @@ export class AgentManager {
         await this.host.createSession({ sessionId: task.agentSessionId, displayTitle: task.displayName,
           subagentSettings: structuredClone(settings),
           workspaceBindings: caller.run!.workspaceBindings, profileId: modelSelection!.profileId, recipe,
-          agentContext: { capabilities, model: instanceModel, ownerSessionId: ownerId, parentSessionId: caller.sessionId,
+          agentContext: { capabilities, model: instanceModel, ...(operation.peerGroup ? {peerGroup:operation.peerGroup} : {}),
+            ...(helpers ? {helpers:structuredClone(helpers)} : {}), ownerSessionId: ownerId, parentSessionId: caller.sessionId,
             parentRunId: runId, parentCallId: callId } });
         childCreated = true;
       }
@@ -345,18 +380,12 @@ export class AgentManager {
     const snapshot = family.find(item => item.sessionId === targetId);
     if (!snapshot) throw new Error('agent_message_target_not_related');
     if (caller.run?.runId !== runId || caller.run.status !== 'running') throw new Error('agent_caller_run_not_active');
-    const managesTarget = !caller.agentContext || activeTaskSessions(family, caller.sessionId, runId).has(targetId);
+    const managed = activeTaskSessions(family, caller.sessionId, runId);
+    const managesTarget = !caller.agentContext || managed.has(targetId);
+    const parentId = caller.agentContext ? taskOwner(family,caller.sessionId,runId).sessionId : undefined;
     const callerCapabilities = await this.sessions.withActor(caller.sessionId, actor => actor.agentCapabilities(runId));
-    if (!managesTarget && !callerCapabilities.messaging) throw new Error('agent_messaging_disabled');
-    if (!managesTarget && callerCapabilities.messaging === 'parent'
-      && taskOwner(family, caller.sessionId, runId).sessionId !== targetId) {
-      throw new Error('agent_message_target_not_parent');
-    }
-    if (!managesTarget && snapshot.agentContext?.capabilities.messaging === 'parent' && snapshot.run
-      && !terminal(snapshot.run.status) && taskOwner(family, targetId, snapshot.run.runId).sessionId !== caller.sessionId) {
-      throw new Error('agent_message_source_not_parent');
-    }
-    if (!managesTarget && snapshot.agentContext?.capabilities.messaging === false) throw new Error('agent_message_target_unavailable');
+    const denied = contactError(caller,callerCapabilities,snapshot,managed,parentId,owner.run?.runId);
+    if (denied) throw new Error(denied);
     const relation = family.flatMap(item => item.agentChildren ?? []).find(child => child.agentSessionId === targetId);
     if (relation?.closed) throw new Error('agent_child_closed');
     if (snapshot.run && ['running', 'waiting'].includes(snapshot.run.status)) {
@@ -530,6 +559,23 @@ export class AgentManager {
     });
     this.#admissions = result.then(() => undefined, () => undefined);
     return result;
+  }
+}
+
+/** One contact predicate for discovery and send. Ownership follows live tasks; direct peer groups
+ * belong to root-created siblings in the same root run, never to their children or a later team. */
+function contactError(caller: AgentSnapshot, caps: AgentPreset['capabilities'], target: AgentManagementSnapshot,
+  managed: Set<string>, parentId?: string, rootRun?: string): string | undefined {
+  const a = caller.agentContext, b = target.agentContext;
+  if (!a || managed.has(target.sessionId)) return;
+  if (!caps.messaging) return 'agent_messaging_disabled';
+  if (target.sessionId === parentId) return b?.capabilities.messaging === false ? 'agent_message_target_unavailable' : undefined;
+  if (caps.messaging === 'parent') return 'agent_message_target_not_parent';
+  if (b?.capabilities.messaging === 'parent') return 'agent_message_source_not_parent';
+  if (b?.capabilities.messaging === false) return 'agent_message_target_unavailable';
+  if (a.peerGroup || b?.peerGroup) {
+    if (!a.peerGroup || a.peerGroup !== b?.peerGroup || a.parentSessionId !== a.ownerSessionId || b.parentSessionId !== a.ownerSessionId
+      || a.parentRunId !== rootRun || b.parentRunId !== rootRun) return 'agent_peer_group_mismatch';
   }
 }
 

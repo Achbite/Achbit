@@ -64,6 +64,31 @@ test('a pending human question keeps Host bindings without keeping the system aw
   assert.equal(requests, 2);
 });
 
+test('a recorded release failure alone does not keep an automatic Host alive', async t => {
+  const sessionId = 'session:power-release-failed';
+  const journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId);
+  let releases = 0, loopFinished;
+  const finished = new Promise(resolve => { loopFinished = resolve; });
+  const actor = new SessionActor(sessionId, journal, {
+    kernel: emptyKernel(), async dispose() {},
+    runPreparation: { ...fakeRunPreparation().port, async release() {
+      releases++; throw new Error('fixture resource cleanup failed');
+    } },
+    provider: { async *stream(request) { yield providerEvent(request.requestId, 'text.delta', { text: 'Done.' });
+      yield providerEvent(request.requestId, 'completed', {}); } },
+  }, { onLoopFinished: loopFinished });
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Complete this task.'));
+  await finished;
+  assert.equal((await actor.snapshot()).run.status, 'releaseFailed');
+  assert.deepEqual(await actor.activity(), { active: false, keepAwake: false });
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.find(e => e.type === 'run.runtime.release_failed').payload.error.message, 'fixture resource cleanup failed');
+  assert.equal(events.some(e => e.type === 'run.runtime.released' || e.type === 'run.settled'), false);
+  assert.equal(releases, 1, 'activity is observational, not a cleanup retry');
+});
+
 test('in-memory activity invalidates the existing change stream without a settlement fact', async () => {
   const frames = [];
   const notifications = new SessionNotifications(async frame => { frames.push(frame); });

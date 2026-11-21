@@ -8,7 +8,7 @@ import {
 } from './loopFacts.js';
 import {
   pendingToolRequests, commitToolRecord, expectedToolRecordIdentity, latestApproval, cancelRun,
-  dispatchPendingTools,
+  dispatchPendingTools, interruptedApprovalReviews,
 } from './loopTools.js';
 import {
   acquireCapabilities, ToolViewRetirementFailure, releaseCapabilities, CapabilityReleaseFailure,
@@ -78,6 +78,7 @@ export async function runAgentLoop(
   }
   let runtime = runRuntimeSnapshot(snapshot, runId);
   let lastRetainedCatalog: string | undefined;
+  let restoreApprovals: 'resume' | 'recover' | undefined = command.type === 'resume' || command.type === 'recover' ? command.type : undefined;
   try {
     if (command.type === 'fail') throw command.error;
     for (const requestEvent of pendingToolRequests(snapshot.events, runId)) {
@@ -94,8 +95,11 @@ export async function runAgentLoop(
     if (command.type === 'recover') {
       const pending = pendingToolRequests(snapshot.events, runId);
       const unresolved = pending.find(request => {
-        const approval = latestApproval(snapshot.events, runId, request.callId);
-        return !approval.requested || approval.resolved;
+        // An answer arriving during this Actor's record lookups is not an unknown
+        // dispatch by the old executor. Classify only work outstanding at restart.
+        const { requested, resolved } = latestApproval(initial.events, runId, request.callId);
+        return !requested || resolved || initial.events.some(event => event.type === 'tool.started'
+          && event.runId === runId && event.callId === request.callId && event.sequence > requested.sequence);
       });
       if (unresolved) {
         await commit({
@@ -118,7 +122,7 @@ export async function runAgentLoop(
           },
         });
       }
-      if (pending.length) return { status: 'waiting', runId, reason: 'approval', callId: pending[0]!.callId };
+      if (pending.length) await commit(current => interruptedApprovalReviews(current, runId, deps.nextId));
     }
 
     if (command.type === 'cancel') return await cancelRun(snapshot, command, deps, commit);
@@ -146,7 +150,8 @@ export async function runAgentLoop(
           await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
           continue;
         }
-        const waitingForTools = await dispatchPendingTools(deps, runId, signal);
+        const waitingForTools = await dispatchPendingTools(deps, runId, signal, restoreApprovals);
+        restoreApprovals = undefined;
         if (waitingForTools) return waitingForTools;
         if (deps.activity) await deps.activity.waitPending(await deps.readSnapshot(), signal);
 

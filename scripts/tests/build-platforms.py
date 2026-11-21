@@ -736,6 +736,8 @@ name=Path(__file__).name
 with (root/'calls.jsonl').open('a') as log:
     log.write(json.dumps({'name':name,'argv':sys.argv[1:],'tauriConfig':os.environ.get('TAURI_CONFIG')})+'\n')
 if name=='uname': print('Darwin' if sys.argv[1]=='-s' else 'arm64')
+if name=='xcrun' and sys.argv[1]=='clang' and '-o' in sys.argv:
+    output=Path(sys.argv[sys.argv.index('-o')+1]); output.write_text('#!/bin/sh\nexit 0\n'); output.chmod(0o755)
 if name=='package-runtime.py' and sys.argv[1]=='assemble':
     stage=Path(sys.argv[sys.argv.index('--stage')+1])
     (stage/('Achbit-Debug.app' if os.environ.get('ACHBIT_BUILD_KIND')=='debug' else 'Achbit.app')).mkdir()
@@ -769,6 +771,8 @@ if name=='package-runtime.py' and sys.argv[1]=='assemble':
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
+                    native_tests = [call for call in calls if call['name'] == 'xcrun' and 'plugins/computer-use/native/tests/sharing-stop.m' in call['argv']]
+                    self.assertEqual(len(native_tests), 1 if kind == 'debug' else 0)
                     cargo = [call for call in calls if call['name'] == 'cargo']
                     features = ['--features', 'achbit-kernel-daemon/debug-control,achbit-cli/debug-control'] if kind == 'debug' else []
                     gui_features = ['--features', 'debug-control'] if kind == 'debug' else []

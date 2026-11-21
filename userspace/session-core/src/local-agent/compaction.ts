@@ -37,6 +37,7 @@ export function prepareContextCompaction(input: {
   workspaceBindings: readonly WorkspaceBindingDisplay[];
   directoryBindings?: readonly WorkspaceBindingDisplay[];
   events: readonly SessionEvent[];
+  historyEvents?: readonly SessionEvent[];
   requestEvent: ContextCompactionRequestEvent;
   toolStage?: import('./plugins.js').SessionToolStage;
   optionalControlTools?: readonly string[];
@@ -54,6 +55,7 @@ export function prepareContextCompaction(input: {
     runtime: input.runtime,
     events: sourceEvents,
     modelViewEvents: input.events,
+    historyEvents: input.historyEvents,
     workspaceBindings: input.workspaceBindings,
     directoryBindings: input.directoryBindings,
     providerRequestId: input.requestEvent.payload.providerRequestId,

@@ -613,8 +613,9 @@ export function ConversationComposer({
               connections={connections}
               selectedProfileId={selectedProfileId}
               reasoningEffortOverride={reasoningEffortOverride}
-              contextUsage={projection?.contextUsage ?? null}
+              contextUsage={composer.retainedContextWindow ? null : projection?.contextUsage ?? null}
               contextCompositions={projection?.contextCompositions ?? []}
+              retainedReading={composer.retainedContextWindow}
               busy={loading || submitting || modelSettingsBusy}
               requestedPanel={composer.modelPanelRequest}
               confirmed={modelSelectionConfirmed}

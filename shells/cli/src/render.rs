@@ -358,6 +358,20 @@ impl CliRenderState {
         out: &mut impl Write,
         projection: &SessionProjection,
     ) -> io::Result<()> {
+        self.render_human_decisions(out, projection)?;
+        if projection.human_approvals().next().is_none() {
+            for approval in projection.current_approvals() {
+                render_approval(out, approval, None)?;
+            }
+        }
+        out.flush()
+    }
+
+    pub(crate) fn render_human_decisions(
+        &mut self,
+        out: &mut impl Write,
+        projection: &SessionProjection,
+    ) -> io::Result<()> {
         self.finish_text(out)?;
         if let Some(plan) = projection.pending_plan.as_ref() {
             let key = (plan.plan_id.clone(), plan.revision);
@@ -400,12 +414,10 @@ impl CliRenderState {
                 projection.session_id
             )?;
         }
-        if let Some(approval) = projection.pending_approval.as_ref() {
-            let reviewing = approval.is_model_reviewing(projection.run.as_ref());
-            render_approval(out, approval, reviewing)?;
-            if !reviewing {
-                writeln!(out, "继续：使用上面的 /reply 选项。")?;
-            }
+        let multiple = projection.human_approvals().nth(1).is_some();
+        for approval in projection.human_approvals() {
+            let prefix = crate::conversation_input::approval_reply_prefix(approval, multiple);
+            render_approval(out, approval, Some(&prefix))?;
         }
         out.flush()
     }
@@ -896,12 +908,12 @@ fn render_source_references(
 pub(crate) fn render_approval(
     out: &mut impl Write,
     approval: &ApprovalProjection,
-    reviewing: bool,
+    reply_prefix: Option<&str>,
 ) -> io::Result<()> {
     writeln!(
         out,
         "{}：{}",
-        if reviewing {
+        if reply_prefix.is_none() {
             "模型正在审查执行权限"
         } else {
             "需要你批准"
@@ -930,8 +942,13 @@ pub(crate) fn render_approval(
             writeln!(out, "审查结果：{reason}")?;
         }
     }
-    if !reviewing {
-        writeln!(out, "/reply 1 允许一次 · /reply 2 拒绝")?;
+    if let Some(prefix) = reply_prefix {
+        writeln!(
+            out,
+            "{} · {} · {}",
+            approval.run_id, approval.call_id, approval.approval_id
+        )?;
+        writeln!(out, "{prefix} 1 允许一次 · {prefix} 2 拒绝")?;
         for (scope, input) in achbit_kernel_client::AUTHORIZATION_OPTIONS {
             if approval
                 .preview
@@ -941,7 +958,7 @@ pub(crate) fn render_approval(
             {
                 writeln!(
                     out,
-                    "/reply {input} {}",
+                    "{prefix} {input} {}",
                     crate::i18n::Language::ZhCn.text(&format!("agent.permission.scope.{scope}"))
                 )?;
             }
@@ -1098,11 +1115,11 @@ mod tests {
     #[test]
     fn approval_review_keeps_the_exact_operation_without_requesting_human_input() {
         let mut p = projection();
-        let approval: ApprovalProjection = serde_json::from_value(json!({
+        let mut approval: ApprovalProjection = serde_json::from_value(json!({
             "approvalId":"approval:test", "runId":"run:test", "callId":"call:test", "sequence":2,"createdAt":"now",
             "preview":{"summary":"Inspect project", "effects":["process"],"logicalTargets":["."],"approvalReviewer":"agent",
                 "operation":{"toolName":"bash","arguments":{"command":"git status"},"workspaceRoot":"/project","executionScope":"workspace"},
-                "fileAccess":{"read":["/references"],"write":[]}, "review":{"decision":"ask","reason":"Please confirm the scope"}}
+                "fileAccess":{"read":["/references"],"write":[]}}
         })).unwrap();
         assert_eq!(
             approval.preview.operation.as_ref().unwrap().arguments["command"],
@@ -1110,7 +1127,7 @@ mod tests {
         );
         assert!(approval.is_model_reviewing(p.run.as_ref()));
         let mut out = Vec::new();
-        render_approval(&mut out, &approval, true).unwrap();
+        render_approval(&mut out, &approval, None).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("模型正在审查执行权限"));
         assert!(
@@ -1120,10 +1137,31 @@ mod tests {
         );
         assert!(!text.contains("/reply") && !text.contains("需要你批准"));
         p.run.as_mut().unwrap().status = "waiting".into();
-        assert!(!approval.is_model_reviewing(p.run.as_ref()));
+        assert!(approval.is_model_reviewing(p.run.as_ref()));
+        approval.preview.review =
+            Some(json!({"decision":"ask", "reason":"Please confirm the scope"}));
+        for status in ["running", "waiting"] {
+            p.run.as_mut().unwrap().status = status.into();
+            assert!(!approval.is_model_reviewing(p.run.as_ref()));
+        }
         let mut out = Vec::new();
-        render_approval(&mut out, &approval, false).unwrap();
+        render_approval(&mut out, &approval, Some("/reply")).unwrap();
         assert!(String::from_utf8(out).unwrap().contains("/reply 1"));
+    }
+
+    #[test]
+    fn terminal_approval_cli_only_displays_addressable_operations_and_their_own_options() {
+        let p = crate::conversation_input::fixtures::approval_projection(&["model", "one", "two"]);
+        let mut out = Vec::new();
+        render_action_required_if_any(&mut out, &p).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("Operation model") && !text.contains("/reply 1"));
+        for id in ["one", "two"] {
+            assert!(
+                text.contains(&format!("Operation {id}"))
+                    && text.contains(&format!("/reply --approval approval:{id} 2"))
+            );
+        }
     }
 
     #[test]

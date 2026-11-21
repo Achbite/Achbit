@@ -69,7 +69,7 @@ type ConversationRequestInput = {
   runId: string;
   runtime: RunRuntimeSnapshot;
   events: readonly SessionEvent[];
-  /** Full facts for explicitly requested archive images only; never native message replay. */
+  /** Full Session facts for read scope and explicitly requested archive images; never native message replay. */
   historyEvents?: readonly SessionEvent[];
   /** Compaction selects a prefix but reuses views already recorded by later receipts. */
   modelViewEvents?: readonly SessionEvent[];

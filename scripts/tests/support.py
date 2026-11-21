@@ -89,7 +89,7 @@ class OwnedDaemon:
         self.process: subprocess.Popen[bytes] | None = None
         self.identity: dict[str, Any] | None = None
 
-    def start(self) -> None:
+    def start(self, *, wait_for_execution: bool = True) -> None:
         node = shutil.which("node")
         require(node is not None, "找不到 Node runtime")
         require(DAEMON_BINARY.is_file(), f"缺少 Daemon：{DAEMON_BINARY}")
@@ -136,6 +136,9 @@ class OwnedDaemon:
         self.identity = wait_until(ready, 12, "Daemon 未提供 identity")
         require(self.identity.get("instanceId") == self.instance_id, "Daemon identity 不匹配")
         # Identity/catalog can be available while execution is still starting.
+        # Management-only tests can observe the original startup failure through readiness.
+        if not wait_for_execution:
+            return
         # Health waits on the Host's initialization notification and checks Session.
         health = api_json(self.base_url, "/api/health", token=self.token, timeout=12)
         require(isinstance(health, dict) and health.get("kernel") == "ready" and health.get("session") == "ready",

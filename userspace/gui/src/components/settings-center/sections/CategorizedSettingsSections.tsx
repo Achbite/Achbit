@@ -13,7 +13,8 @@ import {
 } from '../../../state/settingsStore';
 import GuiAppearanceSettings from '../GuiAppearanceSettings';
 import CompletionSoundSettings from '../CompletionSoundSettings';
-import { hasDesktopNotifications } from '../../../services/runtimeAdapter';
+import { canQuitAchbit, hasDesktopNotifications } from '../../../services/runtimeAdapter';
+import QuitAchbitAction from '../QuitAchbitAction';
 import SettingsField from '../SettingsField';
 import WorkspaceSandboxSettings from './WorkspaceSandboxSettings';
 import CommandDenylistSettings from './CommandDenylistSettings';
@@ -32,6 +33,7 @@ const GENERAL_KEYS = [
   'gui.showContextRail',
   'gui.showReasoning',
   'gui.autoUpdate',
+  'workbench.preventIdleSleep',
   'gui.completionSound.foreground',
   'gui.usageWidget.enabled',
   'gui.usageWidget.visibility',
@@ -86,6 +88,7 @@ export function settingsSearchDefinitions(language: ReturnType<typeof normalizeU
   return [
     ...Object.entries(groups).flatMap(([category, keys]) => definitionsFor(keys, available, language).map((definition) => ({ id: definition.key, title: definition.label, keywords: `${definition.key} ${definition.description}`, category }))),
     ...(hasDesktopNotifications() ? [{ id: 'gui.completionSound', title: t(language, 'settings.completion.title'), keywords: t(language, 'settings.completion.searchKeywords'), category: 'general' }] : []),
+    ...(canQuitAchbit() ? [{ id: 'about.quit', title: t(language, 'settings.quit.action'), keywords: t(language, 'settings.quit.search'), category: 'about' }] : []),
   ];
 }
 
@@ -120,6 +123,9 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   const updateAction = updatePhase === 'waiting' ? 'installNow'
     : ['preparing', 'installing'].includes(updatePhase) ? 'installing'
       : updateBusy ? updatePhase : 'check';
+  const reloadAction = <button type="button" className="settings-button" onClick={() => requestInterfaceReload()}>
+    {language === 'zh-CN' ? '重新加载界面' : 'Reload interface'}
+  </button>;
 
   return (
     <div>
@@ -171,9 +177,10 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
                 }}>
                 {t(language, `productUpdate.${updateAction}`, { version: update.version ?? '' })}
               </button>}
-              <button type="button" className="settings-button" onClick={() => requestInterfaceReload()}>
-                {language === 'zh-CN' ? '重新加载界面' : 'Reload interface'}
-              </button>
+              {canQuitAchbit() ? <div className="settings-actions settings-runtime-action-pair">
+                {reloadAction}
+                <QuitAchbitAction language={language} />
+              </div> : reloadAction}
             </div>
             {update.phase === 'current' && <p role="status">{t(language, 'productUpdate.current')}</p>}
             {(updateError || update.error) && <div className="settings-error" role="alert">{updateError || update.error}</div>}

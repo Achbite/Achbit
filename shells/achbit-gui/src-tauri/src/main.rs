@@ -6,6 +6,7 @@ mod file_reader;
 mod open_file;
 
 mod completion_sound;
+mod host_control;
 #[path = "../../../shared/native_browser/mod.rs"]
 mod native_browser;
 #[path = "../../../shared/native_path_dialog/mod.rs"]
@@ -340,6 +341,7 @@ fn main() {
         achbit_save_image,
         native_ui::achbit_set_ui_language,
         open_file::achbit_locate_path,
+        host_control::achbit_quit,
         product_update::achbit_update_status,
         product_update::achbit_update_check,
         product_update::achbit_update_configure,
@@ -1654,7 +1656,7 @@ fn spawn_host_processes_if_available(
         daemon_identity,
         client_lease: None,
     };
-    if let Err(error) = children.attach_client_until(deadline) {
+    if let Err(error) = children.attach_desktop_until(deadline) {
         let mut failure = startup_failure(
             "sharedHost",
             "host_client_attach_failed",

@@ -1001,7 +1001,7 @@ test('GUI receives and renders live tool output at the same journal revision bef
     children: () => createElement(ToolActivityGroup, { sessionId, activities: [current], language: 'zh-CN', onExpand() {}, onOpenWorkspaceResource() {} }),
   }));
   assert.equal(renderActivity().includes('<pre>'), false, 'output arriving does not expand details');
-  assert.match(renderActivity(), /正在调用 1 个工具/);
+  assert.match(renderActivity(), /<strong>读取文件<\/strong>/);
   layout.state.set('tool-group:expanded', true);
   layout.state.set(`tool:${activity.activityId}:expanded`, true);
   const html = renderActivity();
@@ -4779,11 +4779,18 @@ test('child decision positioning follows the current decision identity, not ever
   projection.pendingPlan.revision = 2;
   assert.notEqual(agentDecisionKey(projection), key);
   projection.pendingPlan = null;
-  projection.pendingApproval = { approvalId: 'approval:review', preview: { approvalReviewer: 'agent' } };
-  projection.run = { status: 'running' };
+  const reviewing = { runId: 'run:child', callId: 'call:A', approvalId: 'approval:A', preview: { approvalReviewer: 'agent' } };
+  projection.pendingApproval = reviewing;
+  projection.pendingApprovals = [reviewing];
+  projection.run = { runId: reviewing.runId, status: 'running' };
   assert.equal(agentDecisionKey(projection), null, 'automatic review does not request a human reply');
   projection.run.status = 'waiting';
-  assert.ok(agentDecisionKey(projection));
+  assert.equal(agentDecisionKey(projection), null, 'an old run-level wait is not a handoff for A');
+  const human = { runId: reviewing.runId, callId: 'call:B', approvalId: 'approval:B', preview: { approvalReviewer: 'user' } };
+  projection.pendingApprovals = [reviewing, human];
+  assert.equal(agentDecisionKey(projection), `approval:${human.approvalId}`, 'the Reader positions at the actual decision');
+  projection.pendingApprovals = [{ ...reviewing, preview: { ...reviewing.preview, review: { decision: 'ask', reason: 'Human decision needed' } } }];
+  assert.equal(agentDecisionKey(projection), `approval:${reviewing.approvalId}`, 'the final handoff for A is actionable');
 });
 
 test('a parent accepts changed child decision references at the same journal revision', async t => {
@@ -4823,7 +4830,9 @@ test('child conversation details mount their canonical messages only when expand
   ], narratives: [], timeline: [
     { kind: 'message', timelineId: 'timeline:1', messageId: 'first' },
     { kind: 'message', timelineId: 'timeline:2', messageId: 'second' },
-  ], assistantDraft: { blocks: [{ kind: 'text', streamId: 'draft:1', content: 'Live continuation' }] } };
+  ], run: {runId:'run:child'}, assistantDraft: { runId:'run:child', turnId:'request:child', blocks: [
+    { kind: 'narrative', streamId: 'draft:1', content: 'Live continuation' },
+  ] } };
   Object.assign(projection, { narratives: [], plans: [], activities: [], interactions: [], sessionId: 'session:child' });
   const before = structuredClone(projection);
   const expanded = renderToStaticMarkup(createElement(AgentConversationHistory, { ...base, projection, expanded: true }));
@@ -4898,8 +4907,8 @@ test('GUI hosted search projections preserve omitted action and reject invalid a
 test('tool groups and nested details keep manual disclosure across output and settlement', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const [{ ToolActivityGroup, ProviderHostedDraftGroup }, { ConversationVirtualRow }] = await loadGuiModules(t, [
-    '/src/components/local-agent/ToolActivityDetails.tsx', '/src/components/local-agent/ConversationVirtualRow.tsx',
+  const [{ ToolActivityGroup }, { ConversationVirtualRow }, { hostedEntryKey }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ToolActivityDetails.tsx', '/src/components/local-agent/ConversationVirtualRow.tsx', '/src/components/local-agent/conversationItems.ts',
   ]);
   const layout = {state:new Map()};
   const activities = ['A','B','C'].map((id,index) => ({activityId:id,runId:'run:manual',callId:id,sequence:index+1,
@@ -4908,9 +4917,9 @@ test('tool groups and nested details keep manual disclosure across output and se
     tool:{operation:'process',resources:[]}}));
   const render = (hosted = false) => renderToStaticMarkup(createElement(ConversationVirtualRow, {
     rowKey:'manual-tools', eager:true, virtualizer:{layout:()=>layout}, children:()=>hosted
-      ? createElement(ProviderHostedDraftGroup, {blocks:activities.slice(0,2).map((a,index)=>({kind:'providerHosted',
-        providerCallId:a.callId,providerToolType:'web_search',status:'completed',
-        ...(index === 0 ? {} : {action:{query:a.label}})})),language:'en-US',onExpand(){}})
+      ? createElement(ToolActivityGroup, {activities:[], hostedDraft:{type:'providerHostedGroup', runId:'run:manual',turnId:'request:manual',blocks:activities.slice(0,2).map((a,index)=>({kind:'providerHosted',
+        providerCallId:a.callId,providerToolType:'web_search',status:'completed',outputIndex:index,
+        ...(index === 0 ? {} : {action:{query:a.label}})}))},language:'en-US',onExpand(){},onOpenWorkspaceResource(){}})
       : createElement(ToolActivityGroup,{activities,language:'en-US',onExpand(){},onOpenWorkspaceResource(){}}),
   }));
   assert.equal(render().includes('tool-entry-heading'),false);
@@ -4931,9 +4940,9 @@ test('tool groups and nested details keep manual disclosure across output and se
   layout.state.set('tool-group:expanded',false);
   assert.equal(render().includes('original failure'),false);
   assert.equal(render(true).includes('tool-entry-heading'),false);
-  layout.state.set('hosted-group:expanded',true);
+  layout.state.set('tool-group:expanded',true);
   assert.equal((render(true).match(/tool-entry-heading/g)||[]).length,2);
-  layout.state.set('hosted:A:expanded',true);
+  layout.state.set(`hosted:${hostedEntryKey('run:manual','request:manual','A')}:expanded`,true);
   assert.match(render(true), /<code>A<\/code>/);
   assert.match(render(true), /<code>web_search<\/code>/);
 });
@@ -5065,10 +5074,7 @@ test('queued tools and permission review never claim that execution has started'
   assert.match(toolActivitySummary({ ...tool, status: 'waiting' }, 'zh-CN'), /等待中/);
   assert.match(toolActivitySummary({ ...tool, status: 'active' }, 'zh-CN'), /正在运行/);
   const mixed = toolGroupSummary([{ ...tool, status: 'active' }, tool, tool, tool], 'zh-CN');
-  assert.match(mixed, /4 个工具/);
-  assert.match(mixed, /调用中 1/);
-  assert.match(mixed, /已请求 3/);
-  assert.doesNotMatch(mixed, /正在调用 4/);
+  assert.equal(mixed, '运行命令', 'a mixed group describes commands without counts or a claim that queued calls have run');
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const renderApproval = reviewing => renderToStaticMarkup(createElement(ApprovalActivity, {

@@ -61,7 +61,7 @@ function MarkdownDocument({ content, location, active }: { content: string; loca
     follow(fragment);
   };
   return <div className="document-preview__markdown" ref={container} onClickCapture={followHeading} onAuxClickCapture={followHeading}>
-    <MarkdownContent active={active}>{content}</MarkdownContent>
+    <MarkdownContent active={active} documentPreview>{content}</MarkdownContent>
   </div>;
 }
 

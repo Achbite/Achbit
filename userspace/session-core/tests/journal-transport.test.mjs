@@ -91,6 +91,21 @@ test('legacy JSON responses, missing version capability and original journal err
   await assert.rejects(Array.fromAsync(journal.read(sid)),err => err.code==='session_event_corrupt' && err.message==='original row diagnostic');
 });
 
+test('archive owner preflight is a private non-deleting request and fails on an absent or invalid receipt', async () => {
+  const members = [sid, 'session:child']; let reply;
+  const journal = new HttpCommandJournal({ apiBase: 'http://fixture', serviceToken: 'private', fetchImpl: async (url, init) => {
+    assert.equal(new URL(url).pathname, '/api/local-agent/journal/check-deletion');
+    assert.equal(init.method, 'POST'); assert.equal(init.headers['x-achbit-session-service-token'], 'private');
+    assert.deepEqual(JSON.parse(init.body), members); return reply;
+  } });
+  reply = Response.json({ ok: false, error: 'session_delete_active_run', message: 'original owner error' });
+  await assert.rejects(journal.assertSessionsDeletable(members), e => e.code === 'session_delete_active_run' && e.message === 'original owner error');
+  reply = Response.json({ ok: true });
+  await assert.rejects(journal.assertSessionsDeletable(members), /session_delete_check_invalid/);
+  reply = Response.json({ ok: true, data: true });
+  await journal.assertSessionsDeletable(members);
+});
+
 test('a selected message publication requires its complete source revision before an observer receives permissions', async () => {
   let reply;
   const journal = new HttpCommandJournal({apiBase:'http://fixture',serviceToken:'fixture',fetchImpl:async () => reply});

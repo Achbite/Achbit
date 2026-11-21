@@ -13,6 +13,12 @@ pub fn foreground_requested(input: &Value) -> bool {
 
 /// Observations older than this must be refreshed before any action.
 pub const OBSERVATION_LIFETIME_SECONDS: u64 = 120;
+pub fn check_observation_age(age: std::time::Duration) -> Result<(), String> {
+    if age > std::time::Duration::from_secs(OBSERVATION_LIFETIME_SECONDS) {
+        return Err(format!("Observation expired (age {:.1}s; limit {OBSERVATION_LIFETIME_SECONDS}s); observe the exact window again. No input dispatched.", age.as_secs_f64()));
+    }
+    Ok(())
+}
 /// Longest edge of every archived screenshot supplied to the model.
 pub const IMAGE_EDGE_LIMIT: u32 = 1600;
 
@@ -151,6 +157,19 @@ mod tests {
             request["mode"] = serde_json::json!("foreground");
             assert!(foreground_requested(&request));
         }
+    }
+
+    #[test]
+    fn expired_observation_reports_the_real_limit_before_dispatch() {
+        use std::time::Duration;
+        check_observation_age(Duration::from_secs(120)).unwrap();
+        let error = check_observation_age(Duration::from_secs(223)).unwrap_err();
+        assert!(
+            error.contains("223.0s")
+                && error.contains("120s")
+                && error.contains("No input dispatched"),
+            "{error}"
+        );
     }
 
     fn arguments(endpoint: &str) -> Vec<String> {

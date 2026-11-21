@@ -17,7 +17,7 @@ export interface ConnectionSettingsPort {
 }
 /** Read-only values from the existing Session projection or Host view state. */
 export type UiRegionData =
-  | { kind: 'activities'; activities: readonly ActivityProjection[]; expanded: boolean }
+  | { kind: 'activities'; activities: readonly ActivityProjection[]; blocks?: readonly Extract<AssistantDraftBlockProjection, { kind: 'providerHosted' }>[]; expanded: boolean }
   | { kind: 'providerHosted'; blocks: readonly Extract<AssistantDraftBlockProjection, { kind: 'providerHosted' }>[]; expanded: boolean }
   | { kind: 'tasks'; todoList: SessionProjection['todoList']; run: SessionProjection['tokenUsageHistory'][number] | null }
   | { kind: 'artifacts'; artifacts: SessionProjection['artifacts']; expanded: boolean }

@@ -22,6 +22,10 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
   }
   if (!descriptions.length) return;
   if (expanded) rules.add('Honor declared tool permissions.');
+  const discovery = aliases.get('plugin.search');
+  if (shell && discovery && active.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'plugin.search')) {
+    rules.add(`Use a matching callable tool directly. Before recreating a capability with a shell script or dependency, check enabled plugins with ${discovery}. Use the shell for uncovered steps within its own permissions, not to bypass a denial.`);
+  }
   if (shell && active.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'process')) {
     rules.add('Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.');
     rules.add('Use dependency waiting when the next step needs a managed result, and status only for a current snapshot. A wait deadline leaves the command running; cancellation targets the returned job handle.');

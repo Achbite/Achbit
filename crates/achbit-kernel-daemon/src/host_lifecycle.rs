@@ -12,6 +12,8 @@ use std::sync::{Mutex, OnceLock};
 #[derive(Default)]
 struct Lifetime {
     persistent: bool,
+    // Desktop residency survives a window, but unlike start-host does not veto GUI updates.
+    desktop_resident: bool,
     admitted: bool,
     clients: usize,
     revision: u64,
@@ -21,11 +23,12 @@ struct Lifetime {
 }
 
 impl Lifetime {
-    fn attach(&mut self, persistent: bool) -> bool {
+    fn attach(&mut self, persistent: bool, desktop: bool) -> bool {
         if self.stopping {
             return false;
         }
         self.persistent |= persistent;
+        self.desktop_resident |= desktop;
         self.admitted = true;
         self.clients += 1;
         self.revision += 1;
@@ -38,7 +41,11 @@ impl Lifetime {
     }
 
     fn idle_revision(&self) -> Option<u64> {
-        (!self.persistent && self.admitted && self.clients == 0 && !self.stopping)
+        (!self.persistent
+            && !self.desktop_resident
+            && self.admitted
+            && self.clients == 0
+            && !self.stopping)
             .then_some(self.revision)
     }
 
@@ -84,6 +91,8 @@ impl Drop for RegisteredClient {
 #[derive(Deserialize)]
 pub(crate) struct ClientQuery {
     mode: String,
+    #[serde(default)]
+    desktop: bool,
 }
 
 pub(crate) async fn host_client(Query(query): Query<ClientQuery>) -> Response {
@@ -97,7 +106,7 @@ pub(crate) async fn host_client(Query(query): Query<ClientQuery>) -> Response {
         .expect("Host lifetime configured")
         .lock()
         .expect("Host lifetime lock")
-        .attach(persistent)
+        .attach(persistent, query.desktop)
     {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
@@ -287,27 +296,45 @@ mod tests {
     fn automatic_host_waits_for_clients_and_background_work() {
         let mut state = Lifetime::default();
         assert_eq!(state.idle_revision(), None);
-        assert!(state.attach(false));
-        assert!(state.attach(false));
+        assert!(state.attach(false, false));
+        assert!(state.attach(false, false));
         state.detach();
         assert_eq!(state.idle_revision(), None);
         state.detach();
         let revision = state.idle_revision().unwrap();
         assert!(!state.stop_if_idle(revision, true));
         assert!(state.stop_if_idle(revision, false));
-        assert!(!state.attach(false));
+        assert!(!state.attach(false, false));
+    }
+
+    #[test]
+    fn desktop_residency_outlives_its_window_without_marking_an_explicit_service() {
+        let mut state = Lifetime::default();
+        assert!(state.attach(false, false)); // CLI-started Host is initially automatic.
+        state.detach();
+        assert!(state.idle_revision().is_some());
+        assert!(state.attach(false, true)); // Local desktop joins the same Host.
+        state.detach();
+        assert!(state.idle_revision().is_none());
+        assert!(
+            !state.persistent,
+            "desktop residency must not disable automatic desktop updates"
+        );
+        assert!(state.attach(false, false));
+        state.detach();
+        assert!(state.idle_revision().is_none());
     }
 
     #[test]
     fn reconnect_and_explicit_service_prevent_idle_shutdown() {
         let mut state = Lifetime::default();
-        state.attach(false);
+        state.attach(false, false);
         state.detach();
         let revision = state.idle_revision().unwrap();
-        state.attach(false);
+        state.attach(false, false);
         state.detach();
         assert!(!state.stop_if_idle(revision, false));
-        state.attach(true);
+        state.attach(true, false);
         state.detach();
         assert_eq!(state.idle_revision(), None);
     }

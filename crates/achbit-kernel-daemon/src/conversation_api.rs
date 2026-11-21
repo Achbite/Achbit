@@ -1574,6 +1574,21 @@ pub(crate) async fn create_agent_session(
         &parent_recipe.tools,
         body.recipe.as_ref().and_then(|value| value.get("tools")),
     );
+    if recipe.file_scope.is_none() {
+        recipe.file_scope = parent_recipe.file_scope.clone();
+    }
+    recipe.restrict_file_tools();
+    if recipe.file_scope.as_ref().is_some_and(|scope| {
+        !session
+            .workspace_bindings
+            .iter()
+            .any(|b| b.workspace_id == scope.workspace_id)
+    }) {
+        return ApiResponse::error(
+            "agent_file_scope_workspace_unavailable",
+            "The file ceiling requires an inherited project workspace.",
+        );
+    }
     if let Err(error) = parent_recipe.validate_child(&recipe) {
         return ApiResponse::error("agent_policy_not_grantable", error);
     }

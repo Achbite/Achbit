@@ -106,7 +106,7 @@ export function MermaidContent({ source }: { source: string }) {
     {current && 'error' in current && <span role="status">{t(language, 'content.diagram.error', { error: current.error })}</span>}
     <div id={id + '-content'}>
       {showSource && <CodeContent code={source} language="mermaid" />}
-      {!showSource && !current && <span role="status">{t(language, 'content.diagram.loading')}</span>}
+      {!showSource && !current && <span role="status" data-conversation-pending>{t(language, 'content.diagram.loading')}</span>}
       {image && <div className="conversation-diagram__viewport">
         <ImageReview source={image.url} alt={title} className="conversation-diagram__open" title={t(language, 'content.diagram.expand')}
           createImage={() => diagramImage(image!.svg, title, 'png', theme === 'dark' ? '#1e1f22' : '#fff')}

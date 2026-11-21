@@ -5,6 +5,7 @@ import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent }
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
 import { admitModelView } from './modelView.js';
+import { approvalNeedsAgentReview } from './approvalReview.js';
 import { controlWait, pendingWakeups } from './sessionWake.js';
 import { requestResourceBindings } from './workspaceBindings.js';
 
@@ -275,6 +276,10 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       const runtime = state.runRuntimeSnapshots[event.runId];
       const view = state.runToolViews[event.runId] ?? runtime;
       if (event.payload.purpose === 'approvalReview') {
+        if (state.run?.status === 'waiting' && state.run.waitingReason === 'approval'
+          && !state.pendingApprovals.some(item => item.runId === event.runId && approvalNeedsAgentReview(events, item))) {
+          throw new Error('approval_review_context_invalid');
+        }
         const planReview = state.pendingPlan?.review?.status === 'reviewing'
           && state.pendingPlan.review.providerRequestId === event.payload.providerRequestId;
         const reading = event.payload.responseConstraint === 'normal' && event.payload.tools.length > 0 && !planReview;

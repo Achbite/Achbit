@@ -14,7 +14,7 @@ const model = { profileId: 'profile:default', name: 'Fixture', model: 'fixture-m
 
 // Replay an active call after a Kernel permission revalidation. The prior run.waiting is not
 // acceptance of manual input for the *new* approvalId on that call.
-async function checkReplacedApproval(source, root, leaf, requested) {
+async function checkArchivedApprovalRoutes(source, root, leaf, requested, scenario) {
   const journal = new InMemoryCommandJournal();
   for (const sessionId of [root, leaf]) {
     const [first, ...rest] = await readEvents(source, sessionId);
@@ -27,6 +27,17 @@ async function checkReplacedApproval(source, root, leaf, requested) {
   try {
     await journal.append({ type: 'run.waiting', sessionId: leaf, runId: requested.runId, payload: { reason: 'approval', detail: 'Waiting for the original request.' } });
     assert.deepEqual((await passive.snapshot(root)).pendingAgentDecisions[0].approval, { approvalId: requested.payload.approvalId, callId: requested.callId });
+    if (scenario === 'concurrent') {
+      // Deferring a dialog is client-local. A second pending call must be visible even before answering the first.
+      await journal.append({ ...original, type: 'approval.requested', callId: sibling.callId, payload: { approvalId: 'approval:concurrent', preview } });
+      const identities = async () => (await passive.snapshot(root)).pendingAgentDecisions.map(route => [route.agentSessionId, route.runId, route.approval]);
+      const first = [leaf, requested.runId, { approvalId: requested.payload.approvalId, callId: requested.callId }];
+      assert.deepEqual(await identities(), [first, [leaf, requested.runId, { approvalId: 'approval:concurrent', callId: sibling.callId }]],
+        'the root offers both pending human approvals for the same child run');
+      await journal.append({ ...original, type: 'approval.resolved', callId: sibling.callId, payload: { approvalId: 'approval:concurrent', commandId: 'command:concurrent', authorityId: 'authority:concurrent', decision: 'deny', source: 'user' } });
+      assert.deepEqual(await identities(), [first], 'answering the second call does not discard the first');
+      return;
+    }
     await journal.append({ ...original, type: 'approval.requested', payload: { approvalId: 'approval:replacement', preview: { ...preview, approvalReviewer: 'agent' } } });
     assert.equal((await passive.snapshot(leaf)).run.waitingReason, 'approval');
     assert.deepEqual((await passive.snapshot(root)).pendingAgentDecisions ?? [], [], 'the old wait does not route the replacement while the model reviews it');
@@ -111,14 +122,20 @@ for (const outcome of ['manual', 'ask', 'failure', 'allow']) test(`child executi
   await service.submit(messageCommand(root, 'command:start', 'Delegate the check and wait for its completion.'));
   const pending = await checkpoint(requested);
   await checkpoint(sibling);
-  if (outcome === 'manual') await checkReplacedApproval(journal, root, leaf, pending);
-  else {
+  if (outcome === 'manual') {
+    for (const scenario of ['concurrent', 'replacement']) await checkArchivedApprovalRoutes(journal, root, leaf, pending, scenario);
+  } else {
     await checkpoint(reviewing[0]);
     assert.deepEqual((await service.snapshot(root)).pendingAgentDecisions ?? [], [], 'active reviewer is not a human decision');
     releaseReview[0].resolve();
     if (nested) {
       await checkpoint(reviewing[1]);
       assert.deepEqual((await service.snapshot(root)).pendingAgentDecisions ?? [], [], 'a recorded first format failure is still being corrected');
+      const childView = await service.snapshot(leaf);
+      assert.equal(childView.pendingApproval.preview.review, undefined, 'the first format error is not a human handoff in the child preview either');
+      const correction = (await readEvents(journal, leaf)).find(event => event.type === 'approval.reviewed' && event.payload.approvalId === pending.payload.approvalId);
+      assert.equal(correction.payload.error.code, 'approval_review_invalid');
+      assert.ok(childView.activities.some(activity => activity.callId === pending.callId && activity.approvalReview?.reason === correction.payload.reason), 'the correction remains visible in approval diagnostics');
       releaseReview[1].resolve();
     }
     if (outcome !== 'allow') await checkpoint(handedOff);
@@ -132,7 +149,10 @@ for (const outcome of ['manual', 'ask', 'failure', 'allow']) test(`child executi
     if (nested) {
       assert.notEqual((await service.snapshot(leaf)).agentContext.parentSessionId, root);
       const passive = new SessionService(journal, { async create() { assert.fail('a route read must not reopen any Actor'); } });
-      try { assert.deepEqual((await passive.snapshot(root)).pendingAgentDecisions, projection.pendingAgentDecisions); }
+      try {
+        assert.deepEqual((await passive.snapshot(root)).pendingAgentDecisions, projection.pendingAgentDecisions);
+        assert.equal((await passive.snapshot(leaf)).pendingApproval.preview.review.decision, 'ask', 'the actual handoff is visible even after replay');
+      }
       finally { await passive.dispose(); }
     }
     assert.equal(agentTurns.get(root), 1, 'the parent stays in its existing wait');

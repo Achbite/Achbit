@@ -1,10 +1,11 @@
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { UiRegion } from '../../ui-plugins/UiRegion';
+import { hostedEntryKey, type HostedBlock, type HostedDraftGroup } from './conversationItems';
 import { isPendingShell, shellCommandPreview } from './shellProgress';
 import './shellProgress.css';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
-import type { ActivityProjection, ArtifactProjection, AssistantDraftBlockProjection, ProviderHostedActivityProjection, SessionProjection } from '@achbit/protocol';
+import type { ActivityProjection, ArtifactProjection, ProviderHostedActivityProjection, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
@@ -30,79 +31,27 @@ interface ToolActivityGroupProps {
   pendingApproval?: SessionProjection['pendingApproval'];
   reviewingApproval?: boolean;
   activities: ActivityProjection[];
+  hostedDraft?: HostedDraftGroup;
+  hostedKeys?: ReadonlyMap<string, string>;
   language: UiLanguage;
   onExpand(node?: HTMLElement): void;
   onOpenWorkspaceResource(workspaceId: string, logicalPath: string): void;
 }
 
-interface ProviderHostedDraftGroupProps {
-  blocks: Array<Extract<AssistantDraftBlockProjection, { kind: 'providerHosted' }>>;
-  language: UiLanguage;
-  onExpand(node?: HTMLElement): void;
-}
-
-export const ProviderHostedDraftGroup: React.FC<ProviderHostedDraftGroupProps> = ({
-  blocks,
-  language,
-  onExpand,
-}) => {
-  const [expanded, setExpanded] = useConversationRowState('hosted-group:expanded', false);
-  const identity = useUiOwner('conversation.hosted-group', undefined, {
-    sessionId: useConversationSessionId(), providerCallId: blocks[0]?.providerCallId,
-  });
-  const summaryRef = useRef<HTMLButtonElement>(null);
-  const changeExpanded = (next: React.SetStateAction<boolean>) => {
-    if (typeof next === 'boolean' && next === expanded) return;
-    onExpand(summaryRef.current ?? undefined);
-    setExpanded(next);
-  };
-  const summary = t(language, 'agent.tool.summary.usedMany', { count: blocks.length });
-  return (
-    <UiRegion slot="activity.row" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
-      <UiRegion slot="activity.summary" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded: changeExpanded }}><button
-        {...identity.action('toggle', 'click')} ref={summaryRef}
-        type="button"
-        className="local-agent__tool-group-summary"
-        aria-expanded={expanded}
-        title={summary}
-        data-conversation-disclosure={`hosted-group:${blocks[0]?.providerCallId}`}
-        onClick={() => changeExpanded(current => !current)}
-      >
-        <span className="local-agent__tool-group-icon">
-          <AchbitShellIcon name="search" />
-        </span>
-        <strong>{summary}</strong>
-        <span className="local-agent__tool-group-chevron" aria-hidden="true">
-          <AchbitShellIcon name="chevronRight" />
-        </span>
-      </button></UiRegion>
-      {expanded && (
-        <UiRegion slot="activity.detail" data={{ kind: 'providerHosted', blocks, expanded }} actions={{ setExpanded: changeExpanded }}><div className="local-agent__tool-group-items">
-          {blocks.map((block) => (
-            <ProviderHostedEntry
-              key={block.providerCallId}
-              hosted={block}
-              status={block.status}
-              language={language}
-              onExpand={onExpand}
-            />
-          ))}
-        </div></UiRegion>
-      )}
-    </article></UiRegion>
-  );
-};
-
 export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
   artifacts = [],
-  activities, pendingApproval, reviewingApproval = false,
+  activities, hostedDraft, hostedKeys, pendingApproval, reviewingApproval = false,
   language,
   onExpand,
   onOpenWorkspaceResource,
 }) => {
   const [expanded, setExpanded] = useConversationRowState('tool-group:expanded', false);
+  const first = activities[0];
+  const firstDraft = hostedDraft?.blocks[0];
+  const groupId = first ? (hostedKeys?.get(first.activityId) ?? first.activityId)
+    : hostedDraft && firstDraft && hostedEntryKey(hostedDraft.runId, hostedDraft.turnId, firstDraft.providerCallId);
   const identity = useUiOwner('conversation.tool-group', undefined, {
-    sessionId: useConversationSessionId(), groupId: activities[0]?.activityId,
+    sessionId: useConversationSessionId(), groupId,
   });
   const summaryRef = useRef<HTMLButtonElement>(null);
   const changeExpanded = (next: React.SetStateAction<boolean>) => {
@@ -111,16 +60,23 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
     setExpanded(next);
   };
   const tools = activities.filter(activity => !activity.agent);
-  const summary = toolGroupSummary(tools, language);
+  const blocks = hostedDraft?.blocks ?? [];
+  const hasTools = tools.length > 0 || blocks.length > 0;
+  const summary = toolGroupSummary(tools, language, blocks);
+  const regionData = (values: ActivityProjection[]) => !activities.length && hostedDraft
+    ? { kind: 'providerHosted' as const, blocks, expanded }
+    : { kind: 'activities' as const, activities: values, ...(blocks.length ? { blocks } : {}), expanded };
+  const hostedEntry = (key: string, hosted: ProviderHostedActivityProjection, status: ActivityProjection['status']) =>
+    <ProviderHostedEntry key={key} entryKey={key} hosted={hosted} status={status} language={language} onExpand={onExpand} />;
   return (
-    <UiRegion slot="activity.row" data={{ kind: 'activities', activities, expanded }} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
-      <div className="local-agent__tool-group-heading">{tools.length > 0 && <UiRegion slot="activity.summary" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded: changeExpanded }}><button
+    <UiRegion slot="activity.row" data={regionData(activities)} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
+      <div className="local-agent__tool-group-heading">{hasTools && <UiRegion slot="activity.summary" data={regionData(tools)} actions={{ setExpanded: changeExpanded }}><button
         {...identity.action('toggle', 'click')} ref={summaryRef}
         type="button"
         className="local-agent__tool-group-summary"
         aria-expanded={expanded}
         title={summary}
-        data-conversation-disclosure={`tool-group:${activities[0]?.activityId}`}
+        data-conversation-disclosure={`tool-group:${groupId}`}
         onClick={() => changeExpanded(current => !current)}
       >
         <span className="local-agent__tool-group-icon">
@@ -135,10 +91,11 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
           <AchbitShellIcon name="chevronRight" />
         </span>
       </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
-      {expanded && tools.length > 0 && (
-        <UiRegion slot="activity.detail" data={{ kind: 'activities', activities: tools, expanded }} actions={{ setExpanded: changeExpanded }}><div className="local-agent__tool-group-items">
-          {tools.map((activity) => (
-            activity.kind === 'approval' ? <ApprovalActivity key={activity.activityId} activity={activity} language={language}
+      {expanded && hasTools && (
+        <UiRegion slot="activity.detail" data={regionData(tools)} actions={{ setExpanded: changeExpanded }}><div className="local-agent__tool-group-items">
+          {[...tools.map((activity) => (
+            activity.providerHosted ? hostedEntry(hostedKeys?.get(activity.activityId) ?? activity.activityId, activity.providerHosted, activity.status)
+              : activity.kind === 'approval' ? <ApprovalActivity key={activity.activityId} activity={activity} language={language}
               pending={pendingApproval?.callId === activity.callId} reviewing={reviewingApproval} onExpand={onExpand} />
               : <ToolActivityEntry
               activity={activity}
@@ -148,7 +105,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
               onExpand={onExpand}
               onOpenWorkspaceResource={onOpenWorkspaceResource}
             />
-          ))}
+          )), ...(hostedDraft?.blocks.map(block => hostedEntry(hostedEntryKey(hostedDraft.runId, hostedDraft.turnId, block.providerCallId), block, block.status)) ?? [])]}
         </div></UiRegion>
       )}
     </article></UiRegion>
@@ -156,14 +113,15 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
 };
 
 interface ProviderHostedEntryProps {
+  entryKey: string;
   hosted: ProviderHostedActivityProjection;
   status: ActivityProjection['status'];
   language: UiLanguage;
   onExpand(node?: HTMLElement): void;
 }
 
-const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, status, language, onExpand }) => {
-  const [expanded, setExpanded] = useConversationRowState(`hosted:${hosted.providerCallId}:expanded`, false);
+const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ entryKey, hosted, status, language, onExpand }) => {
+  const [expanded, setExpanded] = useConversationRowState(`hosted:${entryKey}:expanded`, false);
   const identity = useUiOwner('conversation.hosted-tool', undefined, {
     sessionId: useConversationSessionId(), providerCallId: hosted.providerCallId,
   });
@@ -177,7 +135,7 @@ const ProviderHostedEntry: React.FC<ProviderHostedEntryProps> = ({ hosted, statu
   };
   return (
     <div className={`local-agent__tool-entry local-agent__tool-entry--${status}`}>
-      <button {...identity.action('toggle', 'click')} type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`hosted:${hosted.providerCallId}`} aria-expanded={expanded} onClick={(event) => {
+      <button {...identity.action('toggle', 'click')} type="button" className="local-agent__tool-entry-heading" data-conversation-disclosure={`hosted:${entryKey}`} aria-expanded={expanded} onClick={(event) => {
         onExpand(event.currentTarget);
         setExpanded((value) => !value);
       }}>
@@ -267,16 +225,6 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   };
   if (tool?.computer) return <ComputerActivity activity={activity} computer={tool.computer} artifacts={artifacts}
     language={language} statusLabel={toolActivityStatus(activity.status, language)} onExpand={onExpand} />;
-  if (activity.providerHosted) {
-    return (
-      <ProviderHostedEntry
-        hosted={activity.providerHosted}
-        status={activity.status}
-        language={language}
-        onExpand={onExpand}
-      />
-    );
-  }
   return (
     <div className={`local-agent__tool-entry local-agent__tool-entry--${activity.status}`}>
       <UiRegion slot="activity.summary">{filePath && sessionId ? <div className="local-agent__tool-file-heading">
@@ -492,15 +440,10 @@ function ToolElapsed({ startedAt, language }: { startedAt: string; language: UiL
 export function toolGroupSummary(
   activities: ActivityProjection[],
   language: UiLanguage,
+  blocks: readonly HostedBlock[] = [],
 ): string {
-  const status = toolGroupStatus(activities);
-  const completed = activities.every(activity => activity.status === 'completed');
-  const counts = new Map<ActivityProjection['status'], number>();
-  for (const activity of activities) counts.set(activity.status, (counts.get(activity.status) ?? 0) + 1);
-  const uniformPending = counts.size === 1 && ['active', 'requested', 'waiting'].includes(status);
-  const headline = t(language, uniformPending ? `agent.tool.summary.${status}Many` : 'agent.tool.summary.count', { count: activities.length });
-  // Keep operation context in every state. A rejected/failed member must not
-  // replace the whole group's description with a count or imply total success.
+  // Only use the past tense when every represented operation completed.
+  const completed = activities.every(activity => activity.status === 'completed') && blocks.every(block => block.status === 'completed');
   const descriptions: string[] = [];
   const describe = (kind: string) => descriptions.push(t(language, `agent.tool.summary.${completed ? '' : 'action.'}${kind}`));
   const operations = activities.map(activity => activity.tool?.operation ?? (activity.kind === 'tool' ? activity.label : ''));
@@ -508,17 +451,12 @@ export function toolGroupSummary(
   if (operations.some(operation => ['fs.read', 'fs.list', 'fs.search'].includes(operation))) describe('read');
   if (operations.some(isFileMutationOperation)) describe('edited');
   if (operations.some(operation => ['bash', 'powershell', 'process.start'].includes(operation))) describe('ran');
-  if (activities.some(activity => activity.kind === 'providerHosted')) describe('searched');
+  if (blocks.length || activities.some(activity => activity.kind === 'providerHosted')) describe('searched');
   if (activities.some(activity => activity.kind === 'agent')) describe('agents');
   if (activities.some(activity => activity.kind === 'approval')) describe('permissions');
   if (activities.some(activity => activity.tool?.computer)) describe('computer');
   if (!descriptions.length) describe('other');
-  const states = !uniformPending && !completed
-    ? Array.from(counts, ([state, count]) => t(language, 'agent.tool.summary.statusCount', {
-      status: ['requested', 'active', 'waiting', 'completed'].includes(state)
-        ? toolActivityStatus(state, language) : t(language, 'agent.tool.summary.ended'), count,
-    })) : [];
-  return [headline, descriptions.join(language === 'zh-CN' ? '、' : ', '), ...states].filter(Boolean).join(' · ');
+  return descriptions.join(language === 'zh-CN' ? '、' : ', ');
 }
 
 export function toolActivitySummary(activity: ActivityProjection, language: UiLanguage): string {
@@ -622,22 +560,4 @@ function toolActivityStatus(
   language: UiLanguage,
 ): string {
   return t(language, `agent.tool.status.${status}`);
-}
-
-function toolGroupStatus(
-  activities: ActivityProjection[],
-): ActivityProjection['status'] {
-  const priority: ActivityProjection['status'][] = [
-    'active',
-    'waiting',
-    'requested',
-    'failed',
-    'denied',
-    'rejected',
-    'indeterminate',
-    'cancelled',
-    'completed',
-  ];
-  return priority.find((status) => activities.some((activity) => activity.status === status))
-    ?? 'indeterminate';
 }

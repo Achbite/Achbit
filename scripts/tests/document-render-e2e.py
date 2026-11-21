@@ -68,6 +68,7 @@ class Handler(fixture.MockProviderHandler):
                     return candidates[uri]["uri"]
                 pdf_uri = found("document-input", "plugin://pdf@first-party")
                 found("read-file", pdf_uri)
+                found("read-operation", pdf_uri)
                 found("read-zh", pdf_uri)
                 output_uri = found("document-output", "plugin://documents@builtin")
             elif state.calls == 4:
@@ -87,7 +88,7 @@ class Handler(fixture.MockProviderHandler):
                 search = next(entry["name"] for entry in functions if {"query", "offset"} <= entry["parameters"].get("properties", {}).keys())
                 self._send_tool_calls([(key, search, {"query": query}) for key, query in (
                     ("document-input", "pdf document"), ("read-file", "view read file"),
-                    ("read-zh", "PDF 提取文本"), ("document-output", "create PDF"))])
+                    ("read-zh", "PDF 提取文本"), ("read-operation", "pdf.read"), ("document-output", "create PDF"))])
             elif state.calls == 2:
                 self._send_tool_calls([("activate", activate, {"pluginUris": [output_uri, pdf_uri]})])
             elif state.calls == 3:

@@ -3,6 +3,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import type { ContextCompositionProjection, ContextUsageProjection, LlmProviderProfile, ModelConnection, LlmReasoningEffort } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { ContextUsageControl } from './ContextUsageControl';
+import type { ContextWindowReading } from '../../state/contextWindowReading';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useDisplayTheme } from '../../ui-plugins/UiPlugins';
@@ -27,6 +28,7 @@ interface SessionModelSelectorProps {
   reasoningEffortOverride: LlmReasoningEffort | null;
   contextUsage: ContextUsageProjection | null;
   contextCompositions: readonly ContextCompositionProjection[];
+  retainedReading?: ContextWindowReading | null;
   busy?: boolean;
   confirmed: boolean;
   requestedPanel?: { kind: 'model' | 'context'; sequence: number } | null;
@@ -34,7 +36,7 @@ interface SessionModelSelectorProps {
 }
 
 export default function SessionModelSelector({ language, profiles, connections = [], selectedProfileId,
-  reasoningEffortOverride, contextUsage, contextCompositions, busy = false, confirmed, requestedPanel, onSelect }: SessionModelSelectorProps) {
+  reasoningEffortOverride, contextUsage, contextCompositions, retainedReading, busy = false, confirmed, requestedPanel, onSelect }: SessionModelSelectorProps) {
   const identity = useUiOwner('composer.modelSelector');
   const [open, setOpen] = useState(false);
   const interaction = useInteractionFocus();
@@ -95,7 +97,7 @@ export default function SessionModelSelector({ language, profiles, connections =
     finally { setCandidateId(null); }
   };
   return <div {...identity.part('root')} ref={rootRef} className="achbit-session-model">
-    <ContextUsageControl language={language} contextUsage={contextUsage} contextCompositions={contextCompositions}
+    <ContextUsageControl language={language} contextUsage={contextUsage} contextCompositions={contextCompositions} retainedReading={retainedReading}
       contextOpen={contextOpen} setContextOpen={setContextOpen} rootRef={rootRef}
       onToggle={() => { setOpen(false); setContextOpen(value => !value); }} />
     <UiRegion slot="composer.model" input={{ kind: 'composer.model', profiles, connections, selectedProfileId,

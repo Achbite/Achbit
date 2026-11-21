@@ -22,6 +22,7 @@ export interface SettingCatalogEntry {
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   'workbench.language': 'zh-CN',
+  'workbench.preventIdleSleep': true,
   'workbench.styleTokenOverrides': '{}',
   'workbench.uiPlugins': '[]',
   'gui.colorTheme': 'light',

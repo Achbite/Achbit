@@ -120,7 +120,7 @@ The GUI defaults to the last 30 local dates, not a calendar month. CLI date rang
 | Quantity | Scope |
 | --- | --- |
 | Cache hit rate | `cacheReadInputTokens / inputTokens`; output tokens are excluded |
-| Context indicator | Last settled Agent request |
+| Context indicator | Single-window usage from an Agent request. If the latest response has no single-window measurement (for example, after hosted search), the GUI shows **Last measured** for the same run. Reopening a completed conversation restores that reading from its request history; without a measured request the indicator stays empty. |
 | GUI total cache indicator | Current Session and descendants, counted once each, including closed members |
 | Own-session usage | This Session only; do not add it to a child-inclusive total |
 | Quota | Timestamped provider response, not a local token estimate |
@@ -159,10 +159,26 @@ Ordinary requests project the current tool contracts directly. Run status, wait 
 
 The Host installs product contributions in the Session configuration registry. The Session freezes their selected text in the run snapshot and continues to compose the same stage-specific tool contracts and journal. Internal compaction uses the shared prefix and accepts only text. The Host checks the creation recipe before scheduling a model-generated title. Ordinary first-message and manual titles use the catalog directly.
 
-The built-in `analysis` preset selects `{"kernel":["fs.read"],"controls":["agent","session"],"plugins":false}`. Give it a reading task and exact file references; it can send findings or questions to its task owner and wait for replies. Use `collaboration` for editing and teamwork with inherited installed capabilities. `fs.read` reads known paths.
+The built-in `analysis` preset selects `{"kernel":["fs.read"],"controls":["agent","session"],"plugins":false}`. Give it a reading task and exact file references; it can send findings or questions to its task owner and wait for replies. An assignment, including one to a retained member, identifies the sender but does not grant access to that or any other conversation's history. Share task evidence through readable files or archived resources; only a human input that names a historical session selects it for `session.read`. Use `collaboration` for editing and teamwork with inherited installed capabilities. `fs.read` reads known paths.
 
 A root conversation stores its subagent configuration alongside its model choice. New conversations start with the configuration from the last explicit edit. Sending a message in another conversation does not overwrite this default; that conversation continues to use its own saved selection. Each run freezes that conversation's configuration through later requests and delegation. A delegated child starts with its assigning run’s settings; child model/effort overrides do not write back to the user's new-conversation defaults.
 
 Full subagent configuration is off by default. The model selects a template and an allowed profile. Enabling **Full configuration** (`agent.subagents.allowFullConfiguration`) exposes per-task model effort, context, controls, compaction, tools, capabilities, installed runner, product components, permission policy and sandbox choices to the coordinator through `agent` → `models`. This setting is independent of the **Full access** execution-permission preset. The built-in runner is `standard`; additional runners must already be installed, and recipes do not load executable code. Children retain the parent tool and permission limits. Explicit saved settings are preserved. Configuration catalogs and current contacts stay in discovery results; tool declarations remain stable while task progress changes.
+
+### Task-local teams
+
+With **Full configuration**, the root can use a template unchanged, override it for one `spawn`, or pass `preset: null` to compose a fresh instance. Omission still selects `analysis` for ordinary unscoped callers. Fresh instances inherit permitted components and default to owner messaging, continuation, and no delegation. No choice here edits saved templates.
+
+Give root-created workers `capabilities.messaging: true` and the same `peerGroup` to open a direct channel for this root run. A grouped worker and an ungrouped or differently grouped peer cannot discover or message one another. Their helpers do not join the group. Contact with an actual task owner and management of owned work are separate. Sending to an idle member still does not start a task. Start a new team for a new root run; reassigning an old member retains its recipe, not the old peer channel in a new run.
+
+For example, create the front end with `preset: "collaboration"`, `peerGroup: "orders"`, and `helpers: []`. Spawn the back end with the same group and this additional field (use an actual inherited project `workspaceId` returned by `agent` → `models`):
+
+```json
+{"helpers":[{"id":"test-writer","preset":"collaboration","maxCalls":1,"recipe":{"tools":{"kernel":["fs.read","fs.write","fs.edit"],"controls":["agent","session"],"plugins":false},"fileScope":{"workspaceId":"workspace:example","read":["protocol","src"],"write":["tests"]}}}]}
+```
+
+Member delegation must be enabled to grant a nonempty `helpers` menu. The worker chooses `preset: "test-writer"` and supplies only a task, name and delivery. Discovery and admission use the same menu; its per-entry budget counts admitted creations for that worker run, including a later failed start. A helper contacts its task owner, not its owner's peers. It cannot create another helper unless its own entry has a nested menu. Existing family-wide capacity limits still apply. Omitting the menu preserves previous template behavior.
+
+`fileScope` is a **ceiling, not a grant**. Paths are files or subtrees relative to one already bound workspace. `.` means its root; `[]` selects no paths. Writes also permit reading the selected targets. A scoped recipe uses only selected built-in file tools and no plugins, Shell or Host tools. Kernel checks the actual resolved target even if a broader Plan exists; inside the ceiling the ordinary permission, Plan, and revocation checks still apply. File paths and workspace bindings are not transferable permission receipts.
 
 Kernel prepares only the selected callable bindings. Session sends those tools, the task, relevant file addresses and active usage guidance to the model. Unstarted modules, disabled tools, plugin registration lists and internal policy/runtime configuration remain diagnostic facts, not model instructions. Enabled delegation retains proactive delegation guidance. Managed process activity and plugin activation are optional Session contributions over the same Loop and journal; container and other extension tools use the existing Kernel catalog disposal lifecycle.

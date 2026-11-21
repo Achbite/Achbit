@@ -189,6 +189,13 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     });
   }
 
+  async assertSessionsDeletable(sessionIds: readonly string[]): Promise<void> {
+    const checked = await this.json('/api/local-agent/journal/check-deletion', {
+      method: 'POST', body: JSON.stringify(sessionIds),
+    });
+    if (checked !== true) throw new Error('session_delete_check_invalid');
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     await this.publication(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',

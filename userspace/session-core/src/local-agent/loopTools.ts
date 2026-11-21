@@ -11,7 +11,7 @@ import {
 } from './loopFacts.js';
 import { preparePlanReview } from './planReview.js';
 import {
-  decodeApprovalReview, MAX_APPROVAL_EVIDENCE_ROUNDS, prepareApprovalReview, ApprovalReviewFormatFailure,
+  approvalNeedsAgentReview, decodeApprovalReview, MAX_APPROVAL_EVIDENCE_ROUNDS, prepareApprovalReview, ApprovalReviewFormatFailure,
 } from './approvalReview.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
 import { consumeTextProvider, consumeProvider } from './loopProvider.js';
@@ -347,10 +347,30 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
   return 'terminal';
 }
 
+/** Called in the Actor's commit transaction, after Provider and Kernel reconciliation. */
+export function interruptedApprovalReviews(snapshot: LoopSnapshot, runId: string, nextId: AgentLoopDeps['nextId']): NewSessionEvent[] {
+  const reason = '自动审查已中断，未形成最终意见。请决定是否执行原操作。';
+  return snapshot.state.pendingApprovals.filter(approval => approval.runId === runId && approvalNeedsAgentReview(snapshot.events, approval))
+    .map(({ approvalId, callId }) => ({ type: 'approval.reviewed', sessionId: snapshot.state.sessionId, runId, callId,
+      // Like a preparation error, this local review has an identity but no Provider context, attempt, or turn.
+      payload: { approvalId, providerRequestId: nextId('provider-request'), decision: 'ask', reason,
+        error: { code: 'approval_review_interrupted', message: reason } } }));
+}
+
 /** Execution is concurrent; all facts still pass through the Actor's serial commit port. */
-export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: AbortSignal): Promise<LoopResult | undefined> {
+export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: AbortSignal, restore?: 'resume' | 'recover'): Promise<LoopResult | undefined> {
   let snapshot = await deps.readSnapshot();
   const pending = pendingToolRequests(snapshot.events, runId);
+  // Reuse live wait handling for the exact open gates. A user answer racing this
+  // snapshot is seen before dispatch; resuming one sibling does not re-gate another.
+  const priorWaits = new Map<string, string>();
+  if (restore && pending.length) {
+    const changedAt = restore === 'resume' ? snapshot.events.findLast(event => event.type === 'session.permissions.updated')?.sequence ?? 0 : 0;
+    const permissions = JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides);
+    for (const approval of snapshot.state.pendingApprovals) {
+      if (approval.runId === runId && approval.sequence > changedAt) priorWaits.set(approval.callId, permissions);
+    }
+  }
   const parallel = deps.toolExecution === 'parallel';
   const isRead = (event: ToolRequestEvent) => event.payload.toolName === 'fs.read';
   const isFile = (event: ToolRequestEvent) => event.payload.toolName === 'fs.write' || event.payload.toolName === 'fs.edit';
@@ -395,7 +415,7 @@ export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, s
         }
       }
       enteredSegmentEnd = end;
-      const waiting = await executeToolSegment(deps, segment, dependencies, signal);
+      const waiting = await executeToolSegment(deps, segment, dependencies, signal, priorWaits);
       if (waiting) return waiting;
       // Explicit waits are applied by RunActivity after this batch's actual
       // tool replies have been collected; no sibling needs model resubmission.
@@ -415,7 +435,7 @@ export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, s
 }
 
 async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent[], dependencies: Map<string, string[]>,
-  signal: AbortSignal): Promise<LoopResult | undefined> {
+  signal: AbortSignal, priorWaits: ReadonlyMap<string, string>): Promise<LoopResult | undefined> {
   const runId = segment[0]!.runId;
   const controller = new AbortController();
   const onAbort = () => controller.abort(signal.reason);
@@ -425,7 +445,7 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
     .filter(grant => grant.scope === 'runFiles' || grant.scope === 'sessionFiles').map(grant => grant.authorityId));
   type Completion = { event: ToolRequestEvent; permissions: string; fileGrants: string; reply?: ToolExecutionReply; error?: unknown };
   const active = new Map<string, Promise<Completion>>();
-  const approvals = new Map<string, { permissions: string }>();
+  const approvals = new Map(segment.flatMap(({ callId }) => priorWaits.has(callId) ? [[callId, priorWaits.get(callId)!] as const] : []));
   let failure: { error: unknown } | undefined;
   const markNotExecuted = async (event: ToolRequestEvent, predecessorCallId?: string) => {
     await deps.commit({ type: 'tool.not-executed', sessionId: event.sessionId, runId, callId: event.callId,
@@ -434,7 +454,7 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
   };
   try {
     while (true) {
-      let snapshot = await deps.readSnapshot();
+      const snapshot = await deps.readSnapshot();
       const pending = new Set(pendingToolRequests(snapshot.events, runId).map(event => event.callId));
       const remaining = segment.filter(event => pending.has(event.callId));
       if (!remaining.length && !active.size) break;
@@ -449,7 +469,7 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
         const waiting = approvals.get(event.callId);
         if (waiting) {
           const approval = latestApproval(snapshot.events, runId, event.callId);
-          if (!approval.resolved && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === waiting.permissions) continue;
+          if (!approval.resolved && JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides) === waiting) continue;
           approvals.delete(event.callId);
         }
         if (deps.toolExecution !== 'parallel' && active.size >= 4) continue;
@@ -460,14 +480,15 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
           .then(reply => ({ event, permissions, fileGrants: grantedFiles, reply }),
             error => ({ event, permissions, fileGrants: grantedFiles, error })));
       }
-      snapshot = await deps.readSnapshot();
+      // Subscribe from the revision used to decide which gates were blocked.
+      // A newer snapshot could already contain the only answer that wakes us.
       if (!active.size) {
-        const stillPending = segment.filter(event => pendingToolRequests(snapshot.events, runId).some(item => item.callId === event.callId));
-        if (!stillPending.length) break;
-        if (controller.signal.aborted) continue;
-        if (!approvals.size) continue; // A predecessor terminal was committed during this pass.
-        if (snapshot.state.run?.status !== 'waiting') snapshot = await deps.commit({ type: 'run.waiting', sessionId: snapshot.state.sessionId,
-          runId, payload: { reason: 'approval', detail: '等待工具执行审批。' } });
+        if (controller.signal.aborted || !approvals.size) continue;
+        if (snapshot.state.run?.status !== 'waiting') {
+          await deps.commit(current => current.state.revision !== snapshot.state.revision ? [] : [{ type: 'run.waiting',
+            sessionId: current.state.sessionId, runId, payload: { reason: 'approval', detail: '等待工具执行审批。' } }]);
+          continue;
+        }
         if (!deps.waitForChange) return { status: 'waiting', runId, reason: 'approval', callId: approvals.keys().next().value! };
         await deps.waitForChange(snapshot.state.revision, controller.signal, snapshot.state.publishedPermissions);
         continue;
@@ -505,7 +526,7 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
           && completed.fileGrants !== fileGrants(await deps.readSnapshot())) continue;
         const accepted = await acceptToolReply(deps, completed.event, completed.reply!, controller.signal);
         if (accepted === 'approval') {
-          approvals.set(completed.event.callId, { permissions: completed.permissions });
+          approvals.set(completed.event.callId, completed.permissions);
         }
       } catch (error) {
         failure ??= { error }; controller.abort(error);

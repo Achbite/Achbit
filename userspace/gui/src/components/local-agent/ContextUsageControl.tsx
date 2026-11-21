@@ -6,6 +6,7 @@ import { useViewportBounds } from '../shared/useViewportBounds';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { focusOpenedPanel, useInteractionFocus } from '../shared/interactionFocus';
 import { lastCallInputCacheMetric } from '../../utils/providerUsage';
+import type { ContextWindowReading } from '../../state/contextWindowReading';
 import { buildContextCompositionLayout, CONTEXT_FOCUS_USED_PERCENT } from './contextCompositionLayout';
 import {
   buildCapacityMetrics,
@@ -25,6 +26,7 @@ interface ContextUsageControlProps {
   language: UiLanguage;
   contextUsage: ContextUsageProjection | null;
   contextCompositions: readonly ContextCompositionProjection[];
+  retainedReading?: ContextWindowReading | null;
   contextOpen: boolean;
   setContextOpen: React.Dispatch<React.SetStateAction<boolean>>;
   rootRef: React.RefObject<HTMLDivElement | null>;
@@ -35,6 +37,7 @@ export function ContextUsageControl({
   language,
   contextUsage,
   contextCompositions,
+  retainedReading,
   contextOpen,
   setContextOpen,
   rootRef,
@@ -47,7 +50,9 @@ export function ContextUsageControl({
   useDismissibleLayer({ open: contextOpen, roots: [rootRef], trigger: triggerRef, onDismiss: () => setContextOpen(false) });
   useViewportBounds(panelRef, contextOpen);
   const [hoverContextKey, setHoverContextKey] = useState<ContextFocusKey | null>(null);
-  const displayedUsage = contextUsage;
+  const retained = contextUsage ? null : retainedReading;
+  const displayedUsage = contextUsage ?? retained?.usage ?? null;
+  const measuredLabel = retained ? t(language, 'agent.context.lastMeasured') : null;
   const contextPercent = displayedUsage
     ? percentOf(
         displayedUsage.inputTokens + displayedUsage.outputTokens,
@@ -63,7 +68,8 @@ export function ContextUsageControl({
         capacity: formatTokens(displayedUsage.contextWindowTokens, language),
       })
     : undefined;
-  const contextReceipt = contextCompositions.find(receipt => receipt.providerRequestId === contextUsage?.providerRequestId) ?? null;
+  const contextReceipt = retained ? retained.receipt
+    : contextCompositions.find(receipt => receipt.providerRequestId === contextUsage?.providerRequestId) ?? null;
   const capacityMetrics = useMemo(
     () => buildCapacityMetrics(displayedUsage, language),
     [displayedUsage, language],
@@ -168,10 +174,10 @@ export function ContextUsageControl({
         type="button"
         className={`achbit-session-model__context${contextPercent === null ? ' achbit-session-model__context--unknown' : ''}`}
         style={{ '--achbit-context-percent': `${contextPercent ?? 0}%` } as React.CSSProperties}
-        aria-label={contextLabel || t(language, 'agent.context.window')}
+        aria-label={measuredLabel ? `${measuredLabel} · ${contextLabel}` : contextLabel || t(language, 'agent.context.window')}
         aria-expanded={contextOpen}
         disabled={!hasContextFacts}
-        title={contextTitle}
+        title={measuredLabel ? `${measuredLabel} · ${contextTitle}` : contextTitle}
         onClick={onToggle}
       >
         <span>{contextLabel}</span>
@@ -191,7 +197,7 @@ export function ContextUsageControl({
           </header>
           <div className="achbit-session-model__context-body">
             <div className="achbit-session-model__context-total">
-              <span>{t(language, 'agent.context.used')}</span>
+              <span>{measuredLabel ?? t(language, 'agent.context.used')}</span>
               <strong>{contextTitle}</strong>
               <span>{contextLabel}</span>
             </div>
@@ -260,7 +266,7 @@ export function ContextUsageControl({
             <div {...identity.part('cache')} className="achbit-session-model__cache">
               <div className="achbit-session-model__cache-head">
                 <strong>
-                  {t(language, 'agent.context.inputCache')}
+                  {t(language, retained ? 'agent.context.measuredInputCache' : 'agent.context.inputCache')}
                   {cache && !cache.complete && ` · ${t(language, 'agent.context.cachePartial', {
                     reported: cache.reportedCallCount,
                     calls: cache.providerCallCount,

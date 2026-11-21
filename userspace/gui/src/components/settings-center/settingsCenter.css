@@ -390,6 +390,9 @@
 /* Feedback stays below the complete action group, including after a status change. */
 .settings-runtime-card .settings-card__body { display: grid; gap: 12px; }
 .settings-runtime-card .settings-actions { padding: 0; }
+/* Wrap Reload and Quit together before wrapping the pair's own buttons. */
+.settings-runtime-action-pair { min-width: 0; max-width: 100%; align-items: stretch; }
+.settings-runtime-action-pair > .settings-error { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
 .settings-runtime-card .settings-card__body > :is([role="status"], .settings-error) { margin: 0; }
 .settings-plugin-empty { color: var(--ac-muted, var(--text-muted)); font-size: calc(12px * var(--ac-ui-font-scale, 1)); margin: 12px 0; }
 .settings-button--primary { background: var(--ac-control-background); color: var(--ac-control-foreground); border-color: var(--ac-control-border); font-weight: 600; }

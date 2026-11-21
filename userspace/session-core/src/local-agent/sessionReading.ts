@@ -13,13 +13,16 @@ export interface SessionReadScope {
   handoffPending?: boolean;
 }
 
-/** Only user messages name historical targets. Tool output, summaries and assistant text do not. */
+/** Only human input can name history. In a managed Session every run starts from
+ * an assignment, even on continuation; its sender and text are not read grants. */
 export function sessionReadScope(currentId: string, events: readonly SessionEvent[]): SessionReadScope {
+  const managed = events.find(event => event.type === 'session.created')?.payload.agentContext;
+  const assignments = managed ? new Set(events.flatMap(event => event.type === 'run.started' ? [event.payload.inputMessageId] : [])) : undefined;
   const named = new Set<string>();
   let images = false;
   const children = new Set<string>();
   for (const event of events) {
-    if (event.type === 'message.committed' && event.payload.role === 'user') {
+    if (event.type === 'message.committed' && event.payload.role === 'user' && !assignments?.has(event.payload.messageId)) {
       // The normal Session identifier is session:<id>. An explicit sessionId="..." also
       // names caller-assigned identifiers supported by the public Session API.
       for (const match of event.payload.content.matchAll(/(?<![\w:./-])(session:[\w:@./-]+)|\bsessionId\s*=\s*"([^"\r\n]+)"/gu)) {

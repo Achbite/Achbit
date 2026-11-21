@@ -77,16 +77,12 @@ class State(fixture.ProviderState):
             action = definition['properties']['action']
             require(action.get('type') == 'string' and 'enum' not in action and 'const' not in action,
                     'Agent control schema must not change with discovery')
-        # The child task names its sender. Parents can read their children's resources.
+        # No human input names a historical session in this scenario. The
+        # assignment's sender is not a grant; only actual child resources are readable.
         history = [event for event in journal if event['sessionId'] == sid and event['sequence'] < receipts[-1]['sequence']]
         children = {event['payload']['agentSessionId'] for event in history
                     if event['type'] == 'agent.task.created' and event['payload'].get('createsAgent')}
-        parent = next((event['payload'].get('agentContext', {}).get('parentSessionId') for event in history
-                       if event['type'] == 'session.created'), None)
         expected_targets = children | ({sid} if children else set())
-        if parent and any(event['type'] == 'message.committed' and event['payload']['role'] == 'user'
-                          and parent in event['payload']['content'] for event in history):
-            expected_targets.add(parent)
         snapshot = next(event['payload']['runtimeSnapshot'] for event in reversed(history) if event['type'] == 'run.started')
         if not any(tool['name'] == 'session.read' and tool['availability'] == 'callable' for tool in snapshot['tools']):
             expected_targets.clear()
@@ -96,6 +92,8 @@ class State(fixture.ProviderState):
             schema = next(tool['function']['parameters'] for tool in body['tools'] if tool['function']['name'] == reader)
             require(set(schema['properties']['sessionId']['enum']) == expected_targets,
                     f'{lane}: history exposes the wrong Session targets')
+            require(set(schema['properties']['view']['enum']) == {'resources'},
+                    f'{lane}: creation alone must not expose a member transcript')
         with self.lock:
             previous = self.lanes.setdefault(lane, [])
             if previous:

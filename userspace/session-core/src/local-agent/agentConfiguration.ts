@@ -1,5 +1,5 @@
 import { decodeAgentRecipe, decodeAgentCapabilities, isLlmReasoningEffort, validatePermissionPatches } from '@achbit/protocol';
-import type { AgentRecipe, AgentCapabilities, AgentConfiguration, AgentSettings, UserSettings } from '@achbit/protocol';
+import type { AgentRecipe, AgentCapabilities, AgentConfiguration, AgentSettings, AgentHelperSpec, UserSettings } from '@achbit/protocol';
 
 export const DEFAULT_AGENT_CONFIGURATION: AgentConfiguration = {
   context: { id: 'journal' }, compaction: { id: 'summary' }, controls: { id: 'standard' },
@@ -22,7 +22,7 @@ export function agentPresets(settings: AgentSettings): AgentPreset[] {
   const ids = new Set(builtins.map(preset => preset.id));
   for (const item of stored) {
     if (!item || typeof item !== 'object' || Array.isArray(item)
-      || Object.keys(item).some(key => !['id', 'name', 'capabilities', 'tools', 'productComponents', 'profileId', 'reasoningEffort', 'configuration', 'runner', 'permissions', 'permissionPolicy', 'workspaceSandbox'].includes(key))
+      || Object.keys(item).some(key => !['id', 'name', 'capabilities', 'fileScope', 'tools', 'productComponents', 'profileId', 'reasoningEffort', 'configuration', 'runner', 'permissions', 'permissionPolicy', 'workspaceSandbox'].includes(key))
       || typeof item.id !== 'string' || !item.id.trim() || ids.has(item.id)
       || typeof item.name !== 'string' || !item.name.trim()
       || item.profileId !== undefined && (typeof item.profileId !== 'string' || !item.profileId.trim())
@@ -33,6 +33,16 @@ export function agentPresets(settings: AgentSettings): AgentPreset[] {
     builtins.push({ id: item.id, name: item.name, ...decodedRecipe, capabilities: decodeAgentCapabilities(item.capabilities) });
   }
   return builtins;
+}
+
+/** A restricted worker receives an exact menu, not the global preset directory. */
+export function helperPresets(templates: AgentPreset[], specs: AgentHelperSpec[]): AgentPreset[] {
+  return specs.map(spec => {
+    const base = templates.find(p => p.id === spec.preset);
+    if (!base) throw new Error('agent_helper_template_unavailable');
+    return { ...base, ...spec.recipe, id:spec.id, name:spec.id,
+      capabilities:{ ...base.capabilities, messaging:base.capabilities.messaging ? 'parent' : false, delegation:Boolean(spec.helpers?.length) } };
+  });
 }
 
 /** Discovery and admission use the same configured model choices. */

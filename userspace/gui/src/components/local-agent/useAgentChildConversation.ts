@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApprovalProjection, ConversationCommand, PendingAgentDecision, SessionProjection } from '@achbit/protocol';
-import { awaitsApprovalReviewer } from './composerDecisions';
+import { selectPendingApproval } from './composerDecisions';
 import { getLocalAgentProjection, submitLocalAgentCommand } from '../../services/localAgentApi';
 import { watchConversationChanges } from '../../services/conversationEvents';
 import useAppStatusStore from '../../state/appStatusStore';
@@ -9,18 +9,27 @@ export type ChildDecisionCommand = Extract<ConversationCommand, {
   type: 'interaction.respond' | 'approval.respond' | 'plan.respond' | 'session.permissions.set';
 }>;
 
+export type ChildReviewTarget = { kind: 'plan' | 'approval'; decision: PendingAgentDecision }
+  | { kind: 'interaction'; decision: PendingAgentDecision; interactionId: string };
+
+/** A published ID is only a route; the current child run must still own an unanswered item. */
+export function pendingChildInteraction(projection: SessionProjection | null,
+  id: Pick<SessionProjection['interactions'][number], 'runId' | 'interactionId'>, route: PendingAgentDecision) {
+  if (!projection?.run || projection.sessionId !== route.agentSessionId || projection.run.runId !== id.runId
+    || route.runId !== id.runId || !['running', 'waiting'].includes(projection.run.status)
+    || !route.interactionIds.includes(id.interactionId)) return null;
+  return projection.interactions.find(item => item.status === 'pending' && item.runId === id.runId && item.interactionId === id.interactionId) ?? null;
+}
+
 export function pendingChildApproval(projection: SessionProjection | null, id: Pick<ApprovalProjection, 'runId' | 'callId' | 'approvalId'>,
   route?: PendingAgentDecision) {
-  if (!projection?.run || projection.run.runId !== id.runId || !['running', 'waiting'].includes(projection.run.status)) return null;
-  if (route && (route.agentSessionId !== projection.sessionId || route.runId !== id.runId
+  if (route && (route.agentSessionId !== projection?.sessionId || route.runId !== id.runId
     || route.approval?.approvalId !== id.approvalId || route.approval?.callId !== id.callId)) return null;
-  const pending = projection.pendingApprovals ?? (projection.pendingApproval ? [projection.pendingApproval] : []);
-  const approval = pending.find(item => item.runId === id.runId && item.callId === id.callId && item.approvalId === id.approvalId) ?? null;
-  return route && awaitsApprovalReviewer(approval) ? null : approval;
+  return selectPendingApproval(projection, id);
 }
 
 /** This is a view of a child Session, not a child execution owner. */
-export function useAgentChildConversation(sessionId: string, expanded: boolean, approvalRoute?: PendingAgentDecision) {
+export function useAgentChildConversation(sessionId: string, expanded: boolean, route?: ChildReviewTarget) {
   const hostReady = useAppStatusStore(state => state.apiStatus === 'connected');
   const [projection, setProjection] = useState<SessionProjection | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
@@ -97,7 +106,9 @@ export function useAgentChildConversation(sessionId: string, expanded: boolean, 
     setSubmitting(true);
     setCommandError(null);
     try {
-      if (command.type === 'approval.respond' && !pendingChildApproval(latest.current, command, approvalRoute)) {
+      if (route?.kind === 'interaction' && (command.type !== 'interaction.respond' || route.interactionId !== command.interactionId
+        || !pendingChildInteraction(latest.current, command, route.decision))) throw new Error('interaction_response_missing');
+      if (command.type === 'approval.respond' && !pendingChildApproval(latest.current, command, route?.kind === 'approval' ? route.decision : undefined)) {
         throw new Error('approval_response_missing');
       }
       const reply = await submitLocalAgentCommand(command);
@@ -118,7 +129,7 @@ export function useAgentChildConversation(sessionId: string, expanded: boolean, 
         setSubmitting(false);
       }
     }
-  }, [sessionId, read, approvalRoute]);
+  }, [sessionId, read, route]);
 
   return { projection: projection?.sessionId === sessionId ? projection : null,
     readError: watchError ?? readError, commandError, submitting,

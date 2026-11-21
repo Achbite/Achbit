@@ -147,6 +147,7 @@ impl KernelClientConfig {
 pub struct HttpKernelClient {
     config: KernelClientConfig,
     http: reqwest::Client,
+    shutdown_identity: Option<achbit_kernel_abi::HostProcessIdentity>,
 }
 
 impl HttpKernelClient {
@@ -171,7 +172,11 @@ impl HttpKernelClient {
             .no_proxy()
             .build()?;
         config.host_shell_token = None;
-        Ok(Self { config, http })
+        Ok(Self {
+            config,
+            http,
+            shutdown_identity: None,
+        })
     }
 
     pub fn base_url(&self) -> &str {
@@ -424,15 +429,12 @@ impl HttpKernelClient {
     }
 
     pub async fn stop_host(&self) -> KernelClientResult<achbit_kernel_abi::HostShutdownReceipt> {
-        let value = self
-            .http
-            .get(self.url("/api/host/identity"))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
-        let identity: achbit_kernel_abi::HostProcessIdentity = decode_api_data(value)?;
+        // A shutdown bootstrap pins the selected instance across discovery, the activity
+        // check and dispatch. Never discover a different process for that confirmed action.
+        let identity = match &self.shutdown_identity {
+            Some(identity) => identity.clone(),
+            None => self.host_identity(Duration::from_secs(60)).await?,
+        };
         let value = self
             .http
             .post(self.url("/api/host/shutdown"))
@@ -446,12 +448,34 @@ impl HttpKernelClient {
             .json::<Value>()
             .await?;
         let receipt: achbit_kernel_abi::HostShutdownReceipt = decode_api_data(value)?;
-        if !receipt.confirms_shutdown_of(&identity) {
+        if !receipt.accepts_shutdown_of(&identity) {
             return Err(KernelClientError::Api(
                 "host_shutdown_identity_mismatch".into(),
             ));
         }
+        if !receipt.cleanup_complete {
+            return Err(KernelClientError::Api(format!(
+                "host_shutdown_cleanup_incomplete: {}",
+                identity.instance_id
+            )));
+        }
         Ok(receipt)
+    }
+
+    async fn host_identity(
+        &self,
+        timeout: Duration,
+    ) -> KernelClientResult<achbit_kernel_abi::HostProcessIdentity> {
+        let value = self
+            .http
+            .get(self.url("/api/host/identity"))
+            .timeout(timeout)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        decode_api_data(value)
     }
 
     pub async fn conversation_resource_read(

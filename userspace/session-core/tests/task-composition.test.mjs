@@ -159,6 +159,28 @@ test('the main request only offers referenced history or actual image evidence, 
     error => error.code === 'plugin_user_selection_required');
 });
 
+test('managed run inputs never select historical targets, while an actual user answer still can', async () => {
+  const { sessionReadScope, sessionReadAllowed } = await import('../dist/local-agent/sessionReading.js');
+  const id = 'session:worker';
+  const message = (messageId, content) => ({ type: 'message.committed', payload: { messageId, role: 'user', content } });
+  const start = (runId, inputMessageId) => ({ type: 'run.started', runId, payload: { inputMessageId } });
+  const events = [
+    { type: 'session.created', payload: { agentContext: { parentSessionId: 'session:owner' } } },
+    message('m1', 'Task from agent session:owner:\nSee session:unshared.'), start('r1', 'm1'),
+    message('m2', 'Follow up with session:another.'), start('r2', 'm2'),
+    { type: 'agent.message.received', runId: 'r2', payload: { sourceSessionId: 'session:peer', text: 'See session:peer-history.' } },
+    { type: 'agent.task.created', payload: { createsAgent: true, agentSessionId: 'session:leaf' } },
+  ];
+  const before = sessionReadScope(id, events);
+  assert.deepEqual(before.history, []);
+  assert.ok(sessionReadAllowed(before, { sessionId: 'session:leaf', view: 'resources' }));
+  assert.ok(!sessionReadAllowed(before, { sessionId: 'session:leaf', view: 'messages' }));
+  const after = sessionReadScope(id, [...events, { ...message('answer', 'Use session:shared.'), runId: 'r2' }]);
+  assert.deepEqual(after.history, ['session:shared']);
+  assert.ok(sessionReadAllowed(after, { sessionId: 'session:shared', view: 'messages' }));
+  assert.ok(!sessionReadAllowed(after, { sessionId: 'session:owner', view: 'messages' }));
+});
+
 test('coding tool results expose literal text, concrete effects, and recoverable errors only', () => {
   const result = (toolName, input, output, error, origin = 'coreBuiltin', extra = {}) => {
     const base = { sessionId: 'session:feedback', runId: 'run:feedback', callId: 'call:one' };

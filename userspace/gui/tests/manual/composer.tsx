@@ -25,14 +25,14 @@ const question = { interactionId: 'question:preview', prompt: '测试页使用�
   { id: 'compact', label: '紧凑布局', description: '按钮、开关和输入放在同一区域' },
   { id: 'grouped', label: '分组布局', description: '按交互类型分区排列' },
 ] };
-const review = { approvalId: 'approval:review', preview: { summary: 'docker ps --format json', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'], fileAccess: { read: ['/Applications/Achbit.app'], write: [] }, operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps --format json' } } } };
-const approval = { approvalId: 'approval:preview', preview: { summary: '点击测试页中的“点我 +1”按钮', effects: ['external'], logicalTargets: ['browser:preview-1'], authorizationScope: 'sessionBrowser' } };
+const review = { runId: 'run:preview', callId: 'call:review', approvalId: 'approval:review', preview: { summary: 'docker ps --format json', approvalReviewer: 'agent', effects: ['shell'], logicalTargets: ['host'], fileAccess: { read: ['/Applications/Achbit.app'], write: [] }, operation: { toolName: 'bash', workspaceRoot: '/workspace', executionScope: 'host', arguments: { command: 'docker ps --format json' } } } };
+const approval = { runId: 'run:preview', callId: 'call:preview', approvalId: 'approval:preview', preview: { summary: '点击测试页中的“点我 +1”按钮', effects: ['external'], logicalTargets: ['browser:preview-1'], authorizationScope: 'sessionBrowser' } };
 const scopeQuestion = { interactionId: 'question:debug-scope', kind: 'question', prompt: '工具与界面链路可以直接测试；若要覆盖完整的 Session → 模型 → 工具 → 回复链路，需要给独立 Debug 实例配置模型。你希望采用哪种范围？', allowFreeform: true, options: [
   { id: 'full', label: '完整链路，复用当前模型配置', description: '进行一次小型真实请求，核对模型、工具与回复。' },
   { id: 'tools', label: '只测工具与界面链路', description: '不调用模型，测量工具、界面事件与组件耗时。' },
   { id: 'config', label: '使用指定的 Debug 配置', description: '提供独立 Debug 状态目录或模型配置。' },
 ] };
-const buildApproval = { approvalId: 'approval:debug-build', preview: {
+const buildApproval = { runId: 'run:preview', callId: 'call:build', approvalId: 'approval:debug-build', preview: {
   summary: '以宿主用户权限执行 bash：python3 debug-smoke/build_latest.py\n执行已准备的记录脚本，使用目标 worktree 的 bash ./build.sh -debug 构建 Debug 产物。',
   effects: ['shell'], logicalTargets: ['host'], authorizationScope: 'runHostShell',
   authorizationScopes: ['runCommand', 'sessionCommand', 'runHostShell', 'sessionHostShell'],
@@ -50,7 +50,8 @@ function numberedQuestion(index: number): InteractionProjection {
 }
 useLocalAgentStore.setState({ sessionId: 'session:composer-preview', loading: false, catalogBusy: false, submitting: false,
   profiles: [{ id: 'profile:preview', name: 'DeepSeek Flash', enabled: true, thinking: 'auto', reasoningEffort: 'medium' }] as never, selectedProfileId: 'profile:preview',
-  projection: { sessionId: 'session:composer-preview', revision: 0, contextCompositions: [], queuedInputs: [], plans: [], interactions: [], pendingApproval: approval } as never,
+  projection: { sessionId: 'session:composer-preview', revision: 0, contextCompositions: [], queuedInputs: [], plans: [], interactions: [], pendingApproval: approval,
+    run: { runId: approval.runId, status: 'waiting', waitingReason: 'approval' } } as never,
 });
 
 const firstMessage = new URLSearchParams(location.search).has('pluginMentions');
@@ -85,7 +86,7 @@ function Preview() {
       run: next === 'review' || next === 'questions' || next === 'plan-review' ? { runId: 'run:preview', status: 'running' }
         : pendingPlan ? { runId: 'run:preview', status: 'waiting', waitingReason: 'plan' }
         : ['interaction', 'blocking', 'questions-three'].includes(next) ? { runId: 'run:preview', status: 'waiting', waitingReason: 'userInput' }
-        : next === 'concurrent' ? { runId: 'run:preview', status: 'waiting', waitingReason: 'approval' } : null,
+        : ['approval', 'concurrent'].includes(next) ? { runId: 'run:preview', status: 'waiting', waitingReason: 'approval' } : null,
       pendingApproval: next === 'review' ? review : next === 'approval' ? approval : next === 'concurrent' ? buildApproval : null,
       pendingPlan,
       effectivePermissions: { 'agent.permissions.workspaceMutation': next === 'plan-review' || next === 'plan-reviewed' ? 'review' : 'plan' },
@@ -114,7 +115,7 @@ function Preview() {
           } as never });
           setResult('计划审核：改为人工确认');
         } else {
-          useLocalAgentStore.setState({ projection: { ...projection, run: null,
+          useLocalAgentStore.setState({ projection: { ...projection, run: { runId: review.runId, status: 'waiting', waitingReason: 'approval' },
             pendingApproval: { ...review, preview: { ...review.preview, approvalReviewer: 'user' } },
           } as never });
         }

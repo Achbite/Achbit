@@ -186,6 +186,21 @@ test('file and managed execution guidance follows the available capabilities', (
   assert.equal(codingToolInstruction([], aliases), undefined);
 });
 
+test('the shell routes uncovered capabilities through the actual callable discovery alias', () => {
+  const builtin = name => ({ name, origin: 'coreBuiltin', availability: 'callable' });
+  for (const shell of ['bash', 'powershell']) {
+    for (const expanded of [false, true]) {
+      const search = builtin('plugin.search');
+      const aliases = new Map([[shell, 'run_command'], ['fs.read', 'read_file'], [search.name, 'lookup_available']]);
+      const text = tools => codingToolInstruction([builtin('fs.read'), ...tools], aliases, expanded).text;
+      assert.match(text([builtin(shell), search]), /lookup_available/u);
+      assert.doesNotMatch(text([builtin(shell), { ...search, availability: 'blocked' }]), /lookup_available/u);
+      assert.doesNotMatch(text([builtin(shell)]), /lookup_available/u);
+      assert.doesNotMatch(text([search]), /lookup_available/u);
+    }
+  }
+});
+
 test('Host-installed product slices compose independently from tools, metadata and registration', () => {
   const extra = { id: 'extension.fixture', text: 'Fixture guidance.' };
   const standalone = new SessionConfigurationRegistry();

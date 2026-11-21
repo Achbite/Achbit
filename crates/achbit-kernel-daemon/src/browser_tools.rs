@@ -448,11 +448,18 @@ pub(crate) fn validate_computer_input(input: &Value) -> Result<(), String> {
         "drag" => &["app", "observationId", "x", "y", "toX", "toY"],
         _ => return Err("Unsupported computer action".into()),
     };
-    if object
+    if let Some(key) = object
         .keys()
-        .any(|key| key != "action" && !specific.contains(&key.as_str()))
+        .find(|key| key.as_str() != "action" && !specific.contains(&key.as_str()))
     {
-        return Err("Unsupported computer argument".into());
+        let hint = if key == "windowId" && specific.contains(&"observationId") {
+            "; windowId belongs on observe, not on input: observationId already binds the window"
+        } else {
+            ""
+        };
+        return Err(format!(
+            "Unsupported computer argument `{key}` for `{action}`{hint}"
+        ));
     }
     if input["observationType"] == "pixels" && input.get("windowId").is_none() {
         return Err("Pixel observation requires an exact windowId from listWindows".into());
@@ -604,6 +611,19 @@ mod tests {
             validate_computer_input(&json!({"action":"listApps","script":"arbitrary"})).is_err()
         );
         assert!(validate_computer_input(&json!({"action":"scroll","app":"com.apple.finder","observationId":"observation:1","deltaX":0,"deltaY":"down"})).is_err());
+    }
+
+    #[test]
+    fn extra_window_on_press_names_the_field_and_its_observation_binding() {
+        let error = validate_computer_input(&json!({"action":"press","app":"test","windowId":7,
+            "observationId":"frame:1","elementId":"element:2"}))
+        .unwrap_err();
+        assert!(
+            error.contains("press")
+                && error.contains("windowId")
+                && error.contains("observationId"),
+            "{error}"
+        );
     }
 
     #[test]

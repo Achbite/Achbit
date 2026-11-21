@@ -48,8 +48,16 @@ pub(crate) async fn host_identity() -> Json<ApiResponse> {
     )
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShutdownOptions {
+    #[serde(default)]
+    cancel_active_runs: bool,
+}
+
 pub(crate) async fn host_shutdown(
     State(state): State<HostState>,
+    Query(options): Query<ShutdownOptions>,
     Json(request): Json<HostShutdownRequest>,
 ) -> Response {
     let identity = host_process_identity();
@@ -63,7 +71,8 @@ pub(crate) async fn host_shutdown(
         )
             .into_response();
     }
-    let cleanup_complete = shutdown_owned_host_resources(&state).await;
+    let cleanup_complete =
+        shutdown_owned_host_resources_with_cancellation(&state, options.cancel_active_runs).await;
     request_host_shutdown();
     let receipt = HostShutdownReceipt {
         accepted: true,
@@ -81,10 +90,10 @@ pub(crate) async fn host_shutdown(
 }
 
 pub(crate) async fn shutdown_owned_host_resources(host: &HostState) -> bool {
-    shutdown_owned_host_resources_for_update(host, false).await
+    shutdown_owned_host_resources_with_cancellation(host, false).await
 }
 
-pub(crate) async fn shutdown_owned_host_resources_for_update(
+pub(crate) async fn shutdown_owned_host_resources_with_cancellation(
     host: &HostState,
     cancel_active_runs: bool,
 ) -> bool {

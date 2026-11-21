@@ -84,6 +84,7 @@ export async function performContextCompaction(
       runtime,
       ...runWorkspaceContext(snapshot, runId),
       events: modelContextEvents(snapshot.events),
+      historyEvents: snapshot.events,
       requestEvent,
     }, signal);
     throwIfAborted(signal);

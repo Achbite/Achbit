@@ -45,6 +45,13 @@ pub fn preview(binding: &Value, input: &Value) -> Result<Value, String> {
     decode(unsafe { ac_sharing_preview(encoded.as_ptr()) })
 }
 
+// The serialized execute thread owns this request's native diagnostic. The
+// independent preview thread cannot replace it, even when both read status.
+thread_local! { static FAILURE: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) }; }
+pub fn take_failure() -> Option<Value> {
+    FAILURE.with(|slot| slot.take())
+}
+
 fn decode(response: *mut c_char) -> Result<Value, String> {
     if response.is_null() {
         return Err("ScreenCaptureKit response unavailable".into());
@@ -53,7 +60,17 @@ fn decode(response: *mut c_char) -> Result<Value, String> {
     unsafe { ac_sharing_free(response) };
     let mut response = decoded.map_err(|e| format!("ScreenCaptureKit response invalid: {e}"))?;
     if response["ok"] != true {
-        return Err(format!("ScreenCaptureKit: {}", response["error"]));
+        if let Some(details) = response.get("diagnostics") {
+            FAILURE.with(|slot| {
+                slot.replace(Some(details.clone()));
+            });
+        }
+        return Err(format!(
+            "ScreenCaptureKit: {}",
+            response["error"]
+                .as_str()
+                .unwrap_or("missing error message")
+        ));
     }
     Ok(response["data"].take())
 }
@@ -70,8 +87,11 @@ pub fn validate(binding: &Value, window: u32, generation: u64) -> Result<(), Str
     Ok(())
 }
 
-pub fn release(binding: &Value) -> Result<Value, String> {
-    request(json!({"operation":"release"}), binding)
+pub fn release(binding: &Value, for_image_replacement: bool) -> Result<Value, String> {
+    request(
+        json!({"operation":"release","forImageReplacement":for_image_replacement}),
+        binding,
+    )
 }
 
 #[no_mangle]

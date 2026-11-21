@@ -1,4 +1,4 @@
-import type { ContextCompositionPartitionKind, ContextCompositionProjection, ContextUsageProjection } from '@achbit/protocol';
+import type { ContextCompositionPartitionKind, ContextCompositionProjection, ProviderTokenUsage } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import type { InputCacheMetric } from '../../utils/providerUsage';
 
@@ -20,7 +20,7 @@ interface ContextBarSegment {
 }
 
 export function buildCapacityMetrics(
-  usage: ContextUsageProjection | null,
+  usage: ProviderTokenUsage | null,
   language: UiLanguage,
 ): ContextDisplayMetric[] {
   const labels = {
@@ -65,7 +65,7 @@ export function buildCapacityMetrics(
 }
 
 export function buildCompositionSegments(
-  usage: ContextUsageProjection | null,
+  usage: ProviderTokenUsage | null,
   capacityMetrics: readonly ContextDisplayMetric[],
   requestSections: readonly ContextDisplayMetric[],
 ): ContextBarSegment[] {
@@ -104,7 +104,7 @@ export function buildCompositionSegments(
 }
 
 export function buildRequestSections(
-  receipt: ContextCompositionProjection | null,
+  receipt: Pick<ContextCompositionProjection, 'partitions'> | null,
   language: UiLanguage,
 ): ContextDisplayMetric[] {
   if (!receipt) return [];

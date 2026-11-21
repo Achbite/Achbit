@@ -36,8 +36,30 @@ export function inheritAgentTools(parent: AgentToolSelection | undefined, select
   return result;
 }
 
+/** A file-only ceiling within one existing workspace binding; never an execution grant. */
+export interface AgentFileScope { workspaceId: string; read: string[]; write: string[] }
+export function decodeAgentFileScope(value: unknown): AgentFileScope {
+  const s = value as AgentFileScope;
+  const valid = (path: unknown) => typeof path === 'string' && (path === '.' || path.length <= 1024
+    && !/[\\\\:\u0000-\u001f\u007f]/u.test(path) && path.split('/').every(part => part && part !== '.' && part !== '..'));
+  if (!s || typeof s !== 'object' || Array.isArray(s) || Object.keys(s).length !== 3
+    || typeof s.workspaceId !== 'string' || !s.workspaceId.trim() || s.workspaceId !== s.workspaceId.trim()
+    || [s.read,s.write].some(paths => !Array.isArray(paths) || paths.length > 64 || !paths.every(valid) || new Set(paths).size !== paths.length)) {
+    throw new Error('agent_file_scope_invalid');
+  }
+  return structuredClone(s);
+}
+function inheritFileScope(parent?: AgentFileScope, child = parent): AgentFileScope | undefined {
+  if (parent && child) {
+    const within = (paths: string[], ceilings: string[]) => paths.every(path => ceilings.some(root => root === '.' || path === root || path.startsWith(root+'/')));
+    if (child.workspaceId !== parent.workspaceId || !within(child.write,parent.write) || !within(child.read,[...parent.read,...parent.write])) throw new Error('agent_file_scope_not_grantable');
+  }
+  return child;
+}
+
 /** Declarative Session creation defaults. Executable components must already be installed. */
 export interface AgentRecipe {
+  fileScope?: AgentFileScope;
   /** Optional Host-installed product components, independent of tool permissions. */
   productComponents?: string[];
   tools?: AgentToolSelection;
@@ -53,13 +75,14 @@ export interface AgentRecipe {
 export function decodeAgentRecipe(value: unknown): AgentRecipe {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_recipe_invalid');
   const item = value as AgentRecipe;
-  if (Object.keys(item).some(key => !['tools', 'productComponents', 'profileId', 'reasoningEffort', 'configuration', 'runner', 'permissions', 'permissionPolicy', 'workspaceSandbox'].includes(key))
+  if (Object.keys(item).some(key => !['fileScope', 'tools', 'productComponents', 'profileId', 'reasoningEffort', 'configuration', 'runner', 'permissions', 'permissionPolicy', 'workspaceSandbox'].includes(key))
     || item.profileId !== undefined && (typeof item.profileId !== 'string' || !item.profileId.trim())
     || item.reasoningEffort !== undefined && !isLlmReasoningEffort(item.reasoningEffort)) throw new Error('agent_recipe_invalid');
   if (item.productComponents !== undefined && (!Array.isArray(item.productComponents)
     || item.productComponents.some(id => typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u.test(id))
     || new Set(item.productComponents).size !== item.productComponents.length)) throw new Error('agent_product_components_invalid');
   if (item.tools !== undefined) decodeAgentToolSelection(item.tools);
+  if (item.fileScope !== undefined) decodeAgentFileScope(item.fileScope);
   if (item.configuration !== undefined) decodeAgentConfiguration(item.configuration);
   if (item.runner !== undefined) decodeAgentContribution(item.runner);
   if (item.permissions !== undefined) validatePermissionPatches(item.permissions);
@@ -91,9 +114,14 @@ export function permissionPolicyConstraints(selection: AgentContributionSelectio
 
 /** Child presets can narrow constraints, including when they select another policy. */
 export function inheritAgentRecipe(parent: AgentRecipe | undefined, selected: AgentRecipe): AgentRecipe {
-  const tools = inheritAgentTools(parent?.tools, selected.tools);
+  const fileScope = inheritFileScope(parent?.fileScope, selected.fileScope);
+  let tools = inheritAgentTools(parent?.tools, selected.tools);
+  if (fileScope) {
+    const allowed = ['fs.read', ...(fileScope.write.length ? ['fs.write','fs.edit','fs.delete'] : [])];
+    tools = { ...tools, kernel: (tools?.kernel ?? allowed).filter(name => allowed.includes(name)), plugins:false };
+  }
   const productComponents = selected.productComponents ?? parent?.productComponents;
-  const result = decodeAgentRecipe({ ...selected, ...(tools ? { tools } : {}), ...(productComponents ? { productComponents } : {}),
+  const result = decodeAgentRecipe({ ...selected, ...(fileScope ? {fileScope} : {}), ...(tools ? { tools } : {}), ...(productComponents ? { productComponents } : {}),
     permissionPolicy: selected.permissionPolicy ?? parent?.permissionPolicy ?? { id: 'local-standard' },
     workspaceSandbox: selected.workspaceSandbox ?? parent?.workspaceSandbox ?? { backendId: 'platform-default' } });
   const effective = (recipe?: AgentRecipe) => recipe?.workspaceSandbox?.requireIsolatedProcesses

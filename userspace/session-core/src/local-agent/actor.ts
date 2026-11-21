@@ -13,6 +13,7 @@ import { ManagedProcesses } from './managedProcesses.js';
 import { createProcessActivity } from './processActivity.js';
 import { validatePermissionPatches, providerRuntimeForPurpose } from '@achbit/protocol';
 import { confirmationFacts } from './planStage.js';
+import { approvalNeedsAgentReview } from './approvalReview.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
@@ -70,24 +71,18 @@ interface ActiveRun {
 
 const MAX_FILESYSTEM_REFERENCE_COUNT = 8;
 
-/** Select only an actionable identity; do not copy a child's operation or transcript into its owner. */
-export function humanApprovalRoute(snapshot: LoopSnapshot, runId: string): { approvalId: string; callId: string } | undefined {
+/** Only route actionable identities, never copy the child's operations or transcript. */
+export function humanApprovalRoutes(snapshot: LoopSnapshot, runId: string): { approvalId: string; callId: string }[] {
+  const routes: { approvalId: string; callId: string }[] = [];
   const { run, pendingApprovals } = snapshot.state;
-  if (!run || run.runId !== runId || !['running', 'waiting'].includes(run.status)) return;
+  if (!run || run.runId !== runId || !['running', 'waiting'].includes(run.status)) return routes;
   for (const approval of pendingApprovals) {
     if (approval.runId !== runId) continue;
-    if (approval.preview.approvalReviewer === 'agent') {
-      if (approval.preview.review?.decision !== 'ask') continue;
-      const reviews = snapshot.events.filter((event): event is Extract<SessionEvent, { type: 'approval.reviewed' }> =>
-        event.type === 'approval.reviewed' && event.runId === runId && event.callId === approval.callId
-        && event.payload.approvalId === approval.approvalId);
-      // The first invalid reply is recorded before the reviewer's single format correction.
-      // It is not a final handoff. Another call's wait must not make it actionable.
-      const last = reviews.at(-1);
-      if (!last || last.payload.error?.code === 'approval_review_invalid' && reviews.length === 1) continue;
-    }
-    return { approvalId: approval.approvalId, callId: approval.callId };
+    if (approval.preview.approvalReviewer === 'agent' && (approval.preview.review?.decision !== 'ask'
+      || approvalNeedsAgentReview(snapshot.events, approval))) continue;
+    routes.push({ approvalId: approval.approvalId, callId: approval.callId });
   }
+  return routes;
 }
 
 export class SessionActor {
@@ -106,7 +101,7 @@ export class SessionActor {
   #mailbox = Promise.resolve();
   #writes = Promise.resolve();
   #active?: ActiveRun;
-  #pendingPreparations = 0;
+  #pendingRuntimeWork = 0;
   #customCapabilities = false;
   readonly #onLoopFinished?: () => void;
   readonly #inputWaits = new Set<{ runId: string; timed: boolean }>();
@@ -160,13 +155,16 @@ export class SessionActor {
       if (run.status === 'releasing' || run.status === 'releaseFailed') {
         const settlement = snapshot.state.pendingRunSettlements[run.runId];
         if (!settlement) throw new Error('run_finishing_settlement_missing');
-        await this.finalizeRunRuntime(snapshot, run.runId, settlement);
+        await this.withRuntimeActivity(() => this.finalizeRunRuntime(snapshot, run.runId, settlement));
         return;
       }
       const restored = await this.restoreRunRuntime(snapshot, run.runId);
       signal?.throwIfAborted();
       this.restoreWakeTimers(snapshot);
-      if (restored && run.status === 'running') {
+      // An inherited policy can replace a gate without changing the child's earlier
+      // waiting status. Recover the orphaned reviewer, not ordinary human waits.
+      if (restored && (run.status === 'running' || (run.status === 'waiting' && run.waitingReason === 'approval'
+        && snapshot.state.pendingApprovals.some(item => item.runId === run.runId && approvalNeedsAgentReview(snapshot.events, item))))) {
         this.startLoop({ type: 'recover', runId: run.runId });
       }
     });
@@ -232,8 +230,8 @@ export class SessionActor {
     return projection;
   }
 
-  async humanApprovalRoute(runId: string) {
-    return humanApprovalRoute(await this.loadSnapshot(), runId);
+  async humanApprovalRoutes(runId: string) {
+    return humanApprovalRoutes(await this.loadSnapshot(), runId);
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
@@ -249,7 +247,7 @@ export class SessionActor {
   async retireIfIdle(includeOrdinary: boolean): Promise<boolean> {
     const state = (await this.loadSnapshot()).state;
     if (state.run && !isTerminal(state.run.status) || state.agentContext && includeOrdinary && !state.run) return false;
-    if (!state.agentContext && (!includeOrdinary || this.#active || this.#pendingPreparations
+    if (!state.agentContext && (!includeOrdinary || this.#active || this.#pendingRuntimeWork
       || this.#customCapabilities || this.#loopFailure || this.#wakeTimers.size || this.#inputWaits.size
       || Object.values(state.processes).some(job => job.status === 'active'))) return false;
     // run.settled can wake a result consumer just before the Loop's finally completes.
@@ -411,13 +409,15 @@ export class SessionActor {
   }
 
   async activity(): Promise<{ active: boolean; keepAwake: boolean }> {
-    if (this.#pendingPreparations) return { active: true, keepAwake: true };
+    if (this.#pendingRuntimeWork) return { active: true, keepAwake: true };
     if (this.#loopFailure) return { active: false, keepAwake: false };
     const snapshot = await this.loadSnapshot();
     const run = snapshot.state.run;
-    // Waiting retains the run bindings, but only execution and timers need the system awake.
-    const active = this.#active !== undefined || (run != null && !isTerminal(run.status));
-    if (!active || !run || isTerminal(run.status)) return { active, keepAwake: false };
+    // A failed release remains recoverable in the journal, not background work.
+    // Only a real Loop or an in-flight runtime operation can still hold that Host.
+    if (!run || isTerminal(run.status) || run.status === 'releaseFailed') {
+      return { active: this.#active !== undefined, keepAwake: false };
+    }
     const executing = this.#active?.runId === run.runId;
     const waits = [...this.#inputWaits].filter(wait => wait.runId === run.runId);
     const attempts = new Map<string, (typeof snapshot.state.providerAttempts)[string]>();
@@ -428,16 +428,20 @@ export class SessionActor {
     }
     const providerBusy = executing && [...attempts.values()].some(attempt =>
       attempt.phase === 'started' || attempt.phase === 'retryWaiting');
-    return { active, keepAwake: pendingWakeups(snapshot.events, run.runId).size > 0
+    return { active: true, keepAwake: pendingWakeups(snapshot.events, run.runId).size > 0
       || waits.some(wait => wait.timed)
       || Boolean(executing && (providerBusy || run.status === 'releasing' || run.status === 'running' && !waits.length)) };
   }
 
-  private async prepareRun(...args: Parameters<AgentComposition['runPreparation']['prepare']>): ReturnType<AgentComposition['runPreparation']['prepare']> {
-    this.#pendingPreparations++;
+  private async withRuntimeActivity<T>(operation: () => Promise<T>): Promise<T> {
+    this.#pendingRuntimeWork++;
     this.notifyActivityChanged();
-    try { return await this.#composition.runPreparation.prepare(...args); }
-    finally { this.#pendingPreparations--; this.notifyActivityChanged(); }
+    try { return await operation(); }
+    finally { this.#pendingRuntimeWork--; this.notifyActivityChanged(); }
+  }
+
+  private prepareRun(...args: Parameters<AgentComposition['runPreparation']['prepare']>): ReturnType<AgentComposition['runPreparation']['prepare']> {
+    return this.withRuntimeActivity(() => this.#composition.runPreparation.prepare(...args));
   }
 
   private notifyActivityChanged(): void {
@@ -1463,7 +1467,7 @@ export class SessionActor {
     } else if (snapshot.state.run.status === 'releasing' || snapshot.state.run.status === 'releaseFailed') {
       const settlement = snapshot.state.pendingRunSettlements[command.runId];
       if (!settlement) throw new Error('run_finishing_settlement_missing');
-      await this.finalizeRunRuntime(snapshot, command.runId, settlement);
+      await this.withRuntimeActivity(() => this.finalizeRunRuntime(snapshot, command.runId, settlement));
     } else {
       await this.runLoop({ type: 'cancel', runId: command.runId });
     }
@@ -1514,6 +1518,9 @@ export class SessionActor {
         ...(this.#agents ? { agents: this.#agents } : {}),
         sessionOperation: (runId, operation, signal) => this.sessionOperation(runId, operation, signal),
         waitForInput: async (runId, wait, signal) => {
+          // Recreate missing child result leases before subscribing to the ordinary
+          // inbox. A journal terminal wakes it like any other input, even after reload.
+          this.#agents?.reattach(runId, (await this.loadSnapshot()).state.agentTasks);
           if (!hasProcessActivity) return this.waitForInput(runId, signal, undefined, undefined, wait);
           await this.ensureProcesses(runId);
           await this.#processes?.sync();

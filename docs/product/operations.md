@@ -24,7 +24,7 @@ In Achbit, **global prompt** (全局提示词) means the user's saved **Settings
 
 For self-development and installation, use the current Host CLI: `plugins capabilities`, then the needed `plugins guide` / `plugins template`; `plugins inspect`, `install`, `update`, `enable`, `disable`, `remove`, and `status` share the Settings operations. Target an existing instance with `--host-data-dir`. Read both registration and actual application state. New registrations enter discovery at the next model request in the same run; installation does not grant task activation or permission. The built-in `achbit-iteration` Skill includes the complete development/update workflow.
 
-Use `plugin.search` for enabled task plugins and file-backed Skills. Search for the file format or operation before installing a helper. All keywords must match the same entry; if none of the results does the job, even when others matched, shorten the query or browse without `query`. Follow `nextOffset` only when needed. Core tools such as [`process`](managed-processes.md) and [`session.read`](#models-and-context) have no plugin to install or activate: check the current task’s tool declarations.
+Use `plugin.search` for enabled task plugins and file-backed Skills. Use an already callable tool directly. Before writing a shell script or installing a helper for a specialized task, search for its format or operation (including a declared tool name). Use Shell for steps not covered by the available tools and within its own permissions; a denied action does not become authorized via Shell. All keywords must match the same entry; if none of the results does the job, even when others matched, shorten the query or browse without `query`. Follow `nextOffset` only when needed. Core tools such as [`process`](managed-processes.md) and [`session.read`](#models-and-context) have no plugin to install or activate: check the current task’s tool declarations.
 
 Activate relevant enabled results with `plugin.activate` alone, using their exact URIs. Tools and guidance enter the next request. Search does not start programs; activation neither installs/enables plugins nor grants permissions. For these discoverable plugins, user `@` mentions are optional. Read current schemas rather than guessing names or arguments.
 
@@ -70,13 +70,19 @@ Call `agent` with `action: models` for the current operation schemas. When enabl
 
 The built-in templates are `analysis` (read exact file references, return findings, and send questions to its task owner) and `collaboration` (also communicate with teammates). Permissions and runtime configuration inherit from the parent within each template's tool selection. Per-task tool, permission and Loop overrides require **Full configuration** in the main conversation; ordinary members select configured templates and cannot override permissions or Loop configuration.
 
+For task-local teams, the root can give direct peers a shared `peerGroup` and a worker a closed `helpers` menu with per-template limits. `fileScope` narrows the permitted workspace file effects; it never grants writes. See [task-local teams](model-services.md#task-local-teams) for a front-end/back-end example. Quality review is ordinary delegated work, not execution approval.
+
 Use `spawn` with `delivery: async` to overlap independent work after child startup, or `delivery: wait` when the next step depends on the child. A child can send findings or questions with `agent` → `send`, continue independent work, or use `session` → `wait` when it needs a reply. Messages interrupt result waits; final results arrive automatically at a model request boundary. Do not repeatedly query status to drive collaboration.
 
 Await final results and verify them. Completed tasks release execution automatically; the coordinator uses `assign` to give an idle retained member another task with its original Session, model and configuration. `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message to an active task, not authorization or a new assignment.
 
 Each root conversation retains its own model, reasoning effort and subagent settings. A new conversation copies the last explicitly edited configuration. Viewing, resuming, sending a message or using `/focus` in an older conversation does not replace that default. Changing one conversation does not rewrite its peers. A running task keeps its captured declarations, quotas and delegation settings. Changing the conversation selection takes effect on its next task, without cancelling existing subtasks or removing history.
 
+The main GUI lets you answer a subagent’s question or confirmation directly, including a question that allows its other work to continue. Messages between agents are not user decisions. Review later defers only that item; use the pending-decisions entry in the main conversation to reopen it if it still needs a response.
+
 If a subagent needs execution permission, the main GUI presents the original child request for a human decision. With delegated review, the configured approval model acts first; only a request handed back for human review needs attention. Accept or deny the actual child operation. Deferring its dialog does not deny it or grant access, and unrelated work can continue. A coordinator’s message can confirm that work is ready, but cannot grant execution permission.
+
+In the CLI or TUI, `/reply 1` allows a single pending human approval and `/reply 2` denies it. If several approvals are pending, use `/reply --approval <approvalId> <decision>` with the ID shown beside the operation. A model review is not a pending human decision. If the selected request changed, inspect the current decision before replying.
 
 Reader's Subagents view inspects recorded work without resuming it. Closing that view does not cancel the task. Review a child's actual pending decision rather than treating its report as approval.
 
@@ -91,7 +97,11 @@ achbit-cli start-host
 achbit-cli stop-host
 ```
 
-GUI, CLI and TUI share the Host. An automatically started Host stays alive while clients or unfinished tasks need it, including tasks waiting for decisions. A persistent Host started with `start-host` needs explicit shutdown. Reading history does not resume execution or recover lost runtime bindings.
+GUI, CLI and TUI share the Host. After a local desktop window connects, closing the window or quitting the GUI leaves that Host running. Reopening the app reconnects to it. To stop both the desktop and its local shared Host, choose **Settings → About Achbit → Quit Achbit**. If work is active or settings edits are unsaved, confirm before exiting; this affects other clients of that Host too. The action does not shut down a remote SSH Host. `achbit-cli stop-host` also explicitly stops the selected Host.
+
+A Host used only by ordinary CLI/TUI clients still exits after the last client disconnects and no work remains. Running tasks, in-flight cleanup and tasks waiting for decisions remain work. A recorded cleanup failure by itself does not keep an automatic Host alive or count as a successful release. An explicitly persistent `start-host` still requires explicit shutdown. Reading history does not resume execution or recover lost runtime bindings.
+
+**Settings → General → Prevent idle sleep during tasks** (`workbench.preventIdleSleep`, on by default) applies to work from all clients sharing the Host. Achbit requests that the system stay awake during execution and timed waits. Idle sessions and tasks only waiting for your input do not keep it awake. Turning the setting off releases Achbit’s request without stopping a task; turning it back on applies to work already in progress. It does not keep the display on or change the system’s power settings.
 
 Switching conversations changes the view, not the previous task. Reopening a GUI does not retarget a waiting run; **Continue in this window** explicitly rebinds future requests. Earlier pending calls retain their original target. Observe again after rebinding.
 

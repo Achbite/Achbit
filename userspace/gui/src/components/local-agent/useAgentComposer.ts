@@ -14,7 +14,7 @@ import { shouldSubmitComposerKey } from './composerKeyboard';
 import { composerCommands, parseComposerCommand, suggestComposerCommands, type ComposerCommand } from './composerCommands';
 import { requestAgentOverview } from './agentNavigation';
 import { planScopeAddition } from './planReview';
-import { composerDecisionView, foregroundApproval, foregroundInteractions, foregroundPlan } from './composerDecisions';
+import { composerDecisionView, selectPendingApproval, foregroundInteractions, foregroundPlan } from './composerDecisions';
 import { clipboardImages, readPastedImage } from '../../services/pastedImage';
 import { isLongPastedText } from '../../services/pastedText';
 import { supportsNativeFileInput } from '../../services/modelFileInput';
@@ -54,6 +54,14 @@ export function useAgentComposer(
   const connections = useLocalAgentStore((state) => state.connections);
   const selectedProfileId = useLocalAgentStore((state) => state.selectedProfileId);
   const projection = useLocalAgentStore((state) => state.projection);
+  const retainedContextWindow = useLocalAgentStore(state => {
+    const p = state.projection;
+    if (!p) return null;
+    const usage = p.contextUsage;
+    if (!usage || usage.runId !== p.run?.runId) return state.contextWindowReading;
+    const last = p.contextCompositions.at(-1);
+    return last?.purpose === 'agent' && last.sequence > usage.sequence ? state.contextWindowReading : null;
+  });
   const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
   const pendingInteractions = useMemo(() => foregroundInteractions(projection), [projection]);
   const [interactionSelection, setInteractionSelection] = useState<{ conversationKey: string; interactionId: string } | null>(null);
@@ -63,7 +71,7 @@ export function useAgentComposer(
   const interactionIndex = selectedInteractionIndex >= 0 ? selectedInteractionIndex : Math.max(0,
     pendingInteractions.findIndex(item => item.interactionId === projection?.pendingInteraction?.interactionId));
   const pendingInteraction = pendingInteractions.at(interactionIndex) ?? null;
-  const pendingApproval = foregroundApproval(projection?.pendingApproval ?? null, projection?.run);
+  const pendingApproval = selectPendingApproval(projection);
   const pendingPlan = foregroundPlan(projection?.pendingPlan ?? null, projection?.effectivePermissions);
   const pendingScopeAddition = pendingPlan ? planScopeAddition(projection?.plans.find((plan) => (
     plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1
@@ -92,7 +100,11 @@ export function useAgentComposer(
   const editMessage = useLocalAgentStore((state) => state.editMessage);
   const focusContext = useLocalAgentStore((state) => state.focusContext);
   const respondInteraction = useLocalAgentStore((state) => state.respondInteraction);
-  const respondApproval = useLocalAgentStore((state) => state.respondApproval);
+  const submitApproval = useLocalAgentStore((state) => state.respondApproval);
+  const respondApproval = (decision: 'allow' | 'deny', scope?: Parameters<typeof submitApproval>[1]) => {
+    if (!sessionId || !pendingApproval) return Promise.reject(new Error('approval_response_missing'));
+    return submitApproval(decision, scope, { sessionId, runId: pendingApproval.runId, callId: pendingApproval.callId, approvalId: pendingApproval.approvalId });
+  };
   const respondPlan = useLocalAgentStore((state) => state.respondPlan);
   const cancelRun = useLocalAgentStore((state) => state.cancelRun);
   const saveModelChoice = useLocalAgentStore(state => state.selectModel);
@@ -508,7 +520,7 @@ export function useAgentComposer(
     if (id === 'cancel') return canCancel;
     if (id === 'plan') return !canCancel;
     if (id === 'agents') return Boolean(sessionId);
-    if (id === 'context') return Boolean(projection?.contextUsage);
+    if (id === 'context') return Boolean(projection?.contextUsage || retainedContextWindow);
     if (id === 'model') return !modelSettingsBusy;
     if (id === 'attach' || id === 'plugins') return !catalogBusy;
     return true;
@@ -833,6 +845,7 @@ export function useAgentComposer(
     } : null,
     pendingApproval,
     projection,
+    retainedContextWindow,
     loading,
     submitting,
     catalogBusy,

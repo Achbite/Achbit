@@ -925,6 +925,11 @@
   border-top: 1px solid var(--ac-border);
 }
 
+.achbit-gui-text-dialog--delete-session > header,
+.achbit-gui-text-dialog--delete-session > footer {
+  border-color: transparent;
+}
+
 .achbit-gui-text-dialog h2 {
   margin: 0;
   font-size: var(--ac-font-body-large);
