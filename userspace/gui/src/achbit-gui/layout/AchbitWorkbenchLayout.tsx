@@ -665,7 +665,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
 
       {deleteSessionCandidate && (
         <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-labelledby="achbit-delete-session-title" busy={catalogBusy} onClose={() => setDeleteSessionCandidate(null)}>
-          <div className="achbit-gui-text-dialog" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="achbit-gui-text-dialog achbit-gui-text-dialog--delete-session" onMouseDown={(event) => event.stopPropagation()}>
             <PanelHeader>
               <h2 id="achbit-delete-session-title">{t(language, 'agent.session.delete')}</h2>
               <CloseButton aria-label={t(language, 'agent.session.cancel')} disabled={catalogBusy}
