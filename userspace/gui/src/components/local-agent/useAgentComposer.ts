@@ -54,6 +54,14 @@ export function useAgentComposer(
   const connections = useLocalAgentStore((state) => state.connections);
   const selectedProfileId = useLocalAgentStore((state) => state.selectedProfileId);
   const projection = useLocalAgentStore((state) => state.projection);
+  const retainedContextWindow = useLocalAgentStore(state => {
+    const p = state.projection;
+    if (!p) return null;
+    const usage = p.contextUsage;
+    if (!usage || usage.runId !== p.run?.runId) return state.contextWindowReading;
+    const last = p.contextCompositions.at(-1);
+    return last?.purpose === 'agent' && last.sequence > usage.sequence ? state.contextWindowReading : null;
+  });
   const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
   const pendingInteractions = useMemo(() => foregroundInteractions(projection), [projection]);
   const [interactionSelection, setInteractionSelection] = useState<{ conversationKey: string; interactionId: string } | null>(null);
@@ -508,7 +516,7 @@ export function useAgentComposer(
     if (id === 'cancel') return canCancel;
     if (id === 'plan') return !canCancel;
     if (id === 'agents') return Boolean(sessionId);
-    if (id === 'context') return Boolean(projection?.contextUsage);
+    if (id === 'context') return Boolean(projection?.contextUsage || retainedContextWindow);
     if (id === 'model') return !modelSettingsBusy;
     if (id === 'attach' || id === 'plugins') return !catalogBusy;
     return true;
@@ -833,6 +841,7 @@ export function useAgentComposer(
     } : null,
     pendingApproval,
     projection,
+    retainedContextWindow,
     loading,
     submitting,
     catalogBusy,

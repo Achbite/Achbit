@@ -120,7 +120,7 @@ The GUI defaults to the last 30 local dates, not a calendar month. CLI date rang
 | Quantity | Scope |
 | --- | --- |
 | Cache hit rate | `cacheReadInputTokens / inputTokens`; output tokens are excluded |
-| Context indicator | Last settled Agent request |
+| Context indicator | Single-window usage from an Agent request. If the latest response has no single-window measurement (for example, after hosted search), the GUI shows **Last measured** for the same run. Reopening a completed conversation restores that reading from its request history; without a measured request the indicator stays empty. |
 | GUI total cache indicator | Current Session and descendants, counted once each, including closed members |
 | Own-session usage | This Session only; do not add it to a child-inclusive total |
 | Quota | Timestamped provider response, not a local token estimate |

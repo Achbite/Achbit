@@ -24,6 +24,7 @@ import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
 import { runHandoffNotice } from './handoffNotice';
+import { reportedWindowRounds, sessionView, type CachedSessionView, type ContextWindowReading } from './contextWindowReading';
 import { uiEvents } from './uiEvents';
 import { dismissUnappliedInputs } from './unappliedInputReminders';
 import type { PastedTextInput } from '../services/pastedText';
@@ -39,6 +40,7 @@ import {
   getConversationCatalog,
   getConversationStatuses,
   readOpeningHistory,
+  readMeasuredWindowHistory,
   type OpeningHistoryPage,
   watchConversationCatalog,
   getConversationCatalogManagement,
@@ -72,6 +74,7 @@ interface PendingFilesystemPath {
 
 type StoreErrorSource =
   | 'initialization'
+  | 'contextHistory'
   | 'projection'
   | 'catalog'
   | 'pluginCatalog'
@@ -99,6 +102,7 @@ export interface LocalAgentState {
   statusError: string | null;
   pluginCatalog: PluginCatalogProjection;
   projection: SessionProjection | null;
+  contextWindowReading: ContextWindowReading | null;
   openingHistory: OpeningHistoryPage | null;
   loading: boolean;
   loadingPurpose: 'initialization' | 'session' | null;
@@ -203,13 +207,16 @@ function advanceView(): number {
 // Draft deltas do not advance the journal revision. Serialize reads across
 // polling, navigation and command reconciliation so responses cannot rewind them.
 const projectionReadQueues = new Map<string, Promise<void>>();
-const projectionCache = new Map<string, SessionProjection>();
-function cacheProjection(projection: SessionProjection): void {
+const projectionCache = new Map<string, CachedSessionView>();
+function cacheProjection(projection: SessionProjection): CachedSessionView {
+  const cached = projectionCache.get(projection.sessionId);
+  const view = cached && !shouldApplyProjection(cached.projection, projection) ? cached : sessionView(projection, cached);
   projectionCache.delete(projection.sessionId);
-  projectionCache.set(projection.sessionId, projection);
+  projectionCache.set(projection.sessionId, view);
   while (projectionCache.size > 6) projectionCache.delete(projectionCache.keys().next().value!);
+  return view;
 }
-function readProjection(sessionId: string, signal?: AbortSignal, minimumRevision = 0): Promise<SessionProjection> {
+function readSessionView(sessionId: string, signal?: AbortSignal, minimumRevision = 0): Promise<CachedSessionView> {
   const read = (projectionReadQueues.get(sessionId) ?? Promise.resolve())
     .then(async () => {
       signal?.throwIfAborted();
@@ -223,11 +230,10 @@ function readProjection(sessionId: string, signal?: AbortSignal, minimumRevision
     .then((projection) => {
       signal?.throwIfAborted();
       const cached = projectionCache.get(sessionId);
-      const current = cached && !shouldApplyProjection(cached, projection) ? cached : projection;
-      const notice = runHandoffNotice(cached, current,
-        store.getState().profiles.find(profile => profile.id === current.contextHandoff?.profileId)?.name,
+      const current = cacheProjection(projection);
+      const notice = runHandoffNotice(cached?.projection, current.projection,
+        store.getState().profiles.find(profile => profile.id === current.projection.contextHandoff?.profileId)?.name,
         normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']));
-      cacheProjection(current);
       if (notice) uiEvents.publish(notice);
       return current;
     });
@@ -298,6 +304,7 @@ const store = create<LocalAgentState>((set, get) => ({
   statusError: null,
   pluginCatalog: EMPTY_PLUGIN_CATALOG,
   projection: null,
+  contextWindowReading: null,
   openingHistory: null,
   loading: false, loadingPurpose: null,
   submitting: false,
@@ -456,6 +463,7 @@ const store = create<LocalAgentState>((set, get) => ({
       welcomeIndex: get().sessionId === null ? get().welcomeIndex : Math.floor(Math.random() * 4),
       sessionId: null,
       projection: null,
+      contextWindowReading: null,
       openingHistory: null,
       draftProjectId: projectId,
       draftSubagentSettings: defaults.storePath && !defaults.errorMessage ? subagentDefaults(defaults.effectiveSettings) : null,
@@ -504,7 +512,7 @@ const store = create<LocalAgentState>((set, get) => ({
     }
     activeSubmissionCount = 0;
     const cached = projectionCache.get(sessionId) ?? null;
-    if (cached) cacheProjection(cached);
+    if (cached) cacheProjection(cached.projection);
     const visibleCached = get().runtimeReady ? cached : null;
     set({
       submitting: false,
@@ -516,9 +524,9 @@ const store = create<LocalAgentState>((set, get) => ({
       error: null,
       errorSource: null,
       sessionId,
-      selectedProfileId: cached?.modelSettings?.profileId ?? summary.profileId ?? null,
-      reasoningEffortOverride: cached?.modelSettings?.reasoningEffortOverride ?? null,
-      projection: visibleCached,
+      selectedProfileId: cached?.projection.modelSettings?.profileId ?? summary.profileId ?? null,
+      reasoningEffortOverride: cached?.projection.modelSettings?.reasoningEffortOverride ?? null,
+      ...(visibleCached ?? { projection: null, contextWindowReading: null }),
       openingHistory: null,
       draftProjectId: null,
     });
@@ -526,7 +534,7 @@ const store = create<LocalAgentState>((set, get) => ({
       if (!get().runtimeReady) await waitForExecution(signal);
       if (currentGeneration !== generation) return;
       if (cached) {
-        if (!visibleCached) set({ projection: cached, loading: false, loadingPurpose: null });
+        if (!visibleCached) set({ ...cached, loading: false, loadingPurpose: null });
         await get().refresh();
         return;
       }
@@ -540,13 +548,13 @@ const store = create<LocalAgentState>((set, get) => ({
         minimumRevision = page.revision;
         if (page.messages.length) set({ openingHistory: page });
       }
-      const projection = await readProjection(sessionId, signal, minimumRevision);
+      const view = await readSessionView(sessionId, signal, minimumRevision);
       if (currentGeneration !== generation) return;
       set({
         sessionId,
-        selectedProfileId: projection.modelSettings?.profileId ?? summary.profileId ?? null,
-        reasoningEffortOverride: projection.modelSettings?.reasoningEffortOverride ?? null,
-        projection, openingHistory: null,
+        selectedProfileId: view.projection.modelSettings?.profileId ?? summary.profileId ?? null,
+        reasoningEffortOverride: view.projection.modelSettings?.reasoningEffortOverride ?? null,
+        ...view, openingHistory: null,
         loading: false, loadingPurpose: null,
       });
     } catch (error) {
@@ -641,25 +649,20 @@ const store = create<LocalAgentState>((set, get) => ({
       try {
         const items = await statuses;
         if (!sessionId || generation !== refreshGeneration || (get().loading && !get().projection)) return;
-        const cached = projectionCache.get(sessionId);
+        const cached = projectionCache.get(sessionId)?.projection;
         const status = items?.find((item) => item.sessionId === sessionId);
         if (cached && !cached.agentContext && !cached.agentChildren?.length && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
           && !['running', 'waiting', 'releasing'].includes(status.run?.status ?? '')) {
           return;
         }
-        const projection = await readProjection(sessionId, signal);
+        const view = await readSessionView(sessionId, signal);
         if (generation !== refreshGeneration || get().sessionId !== sessionId) return;
         set((state) => {
-          const nextProjection = shouldApplyProjection(state.projection, projection)
-            ? projection
-            : state.projection;
-          if (
-            nextProjection === state.projection
-            && state.errorSource !== 'projection'
-          ) return state;
+          const apply = shouldApplyProjection(state.projection, view.projection);
+          if (!apply && state.errorSource !== 'projection') return state;
           return {
-            projection: nextProjection,
-            ...projectModelSettings(nextProjection),
+            ...(apply ? view : {}),
+            ...projectModelSettings(apply ? view.projection : state.projection),
             ...(state.errorSource === 'projection'
               ? { error: null, errorSource: null }
               : {}),
@@ -775,7 +778,7 @@ const store = create<LocalAgentState>((set, get) => ({
     try {
       const projection = await attachConversationDirectoryIndex(sessionId, canonicalRoot);
       if (get().sessionId !== sessionId) throw new Error('conversation_session_changed');
-      set({ projection });
+      set(cacheProjection(projection));
     } catch (error) {
       set({ error: errorMessage(error), errorSource: 'operation' });
       throw error;
@@ -790,7 +793,7 @@ const store = create<LocalAgentState>((set, get) => ({
     try {
       const projection = await detachConversationDirectoryIndex(sessionId, workspaceId);
       if (get().sessionId !== sessionId) throw new Error('conversation_session_changed');
-      set({ projection });
+      set(cacheProjection(projection));
     } catch (error) {
       set({ error: errorMessage(error), errorSource: 'operation' });
       throw error;
@@ -1062,7 +1065,7 @@ async function submitNewRun(
       if (generation !== submissionGeneration) throw new Error('conversation_session_changed');
       sessionId = created.sessionId;
       onSessionCreated?.(sessionId);
-      set({ sessionId, projection: created, draftProjectId: null, draftSubagentSettings: null });
+      set({ sessionId, ...cacheProjection(created), draftProjectId: null, draftSubagentSettings: null });
       await get().refreshCatalog();
     }
     const filesystemReferences = [...(retained.filesystemReferences ?? []), ...(filesystemPaths.length
@@ -1208,16 +1211,16 @@ async function reconcileProjectionAfterReply(
   replyRevision: number,
   commandGeneration: number,
 ): Promise<void> {
-  const projection = await readProjection(sessionId);
-  if (projection.revision < replyRevision) {
+  const view = await readSessionView(sessionId);
+  if (view.projection.revision < replyRevision) {
     throw new Error(
-      `conversation_projection_behind_command_reply:${projection.revision}:${replyRevision}`,
+      `conversation_projection_behind_command_reply:${view.projection.revision}:${replyRevision}`,
     );
   }
   if (get().sessionId !== sessionId || generation !== commandGeneration) return;
   set((state) => {
-    const nextProjection = shouldApplyProjection(state.projection, projection) ? projection : state.projection;
-    return { projection: nextProjection, ...projectModelSettings(nextProjection) };
+    return shouldApplyProjection(state.projection, view.projection)
+      ? { ...view, ...projectModelSettings(view.projection) } : projectModelSettings(state.projection);
   });
 }
 
@@ -1392,6 +1395,45 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Historical recovery is separate from navigation/command completion: do not hold the
+// timeline, a new live reading, or another conversation behind this read-only lookup.
+let historyLookup: { key: string; controller: AbortController } | null = null;
+store.subscribe((state, previous) => {
+  if (state.projection === previous.projection && state.sessionId === previous.sessionId) return;
+  // Only a decoded snapshot admitted to this view's cache can authorize a journal lookup.
+  const admitted = state.sessionId ? projectionCache.get(state.sessionId) : undefined;
+  const p = admitted && admitted.projection === state.projection ? admitted.projection : null;
+  const rounds = p?.run && !p.contextUsage ? reportedWindowRounds(p) : [];
+  const newest = rounds[0];
+  // Only new usage can yield a new reading. Draft deltas, tool progress, and starting
+  // a successor with zero reports must neither cancel the lookup nor trigger another scan.
+  const key = p && newest ? JSON.stringify([p.sessionId, p.contextHandoff?.historyThroughSequence ?? 0,
+    newest.runId, newest.reportedCallCount]) : null;
+  if (key && key === historyLookup?.key) return;
+  historyLookup?.controller.abort();
+  historyLookup = null;
+  if (!key || !p) {
+    if (state.errorSource === 'contextHistory') store.setState({ error: null, errorSource: null });
+    return;
+  }
+  const controller = new AbortController();
+  historyLookup = { key, controller };
+  const after = state.contextWindowReading?.receipt?.sequence ?? 0;
+  void readMeasuredWindowHistory(p, rounds, after, controller.signal).then(reading => {
+    if (controller.signal.aborted) return;
+    const current = store.getState();
+    if (current.errorSource === 'contextHistory') store.setState({ error: null, errorSource: null });
+    if (!reading || current.sessionId !== p.sessionId || current.projection?.contextUsage) return;
+    const cached = projectionCache.get(p.sessionId);
+    if (!cached || cached.projection !== current.projection) { historyLookup = null; return; }
+    if (!reportedWindowRounds(cached.projection).some(round => round.runId === reading.usage.runId)
+      || (cached.contextWindowReading?.receipt?.sequence ?? 0) >= reading.receipt.sequence) return;
+    cached.contextWindowReading = reading;
+    store.setState({ contextWindowReading: reading });
+  }).catch(error => {
+    if (!controller.signal.aborted) store.setState({ error: errorMessage(error), errorSource: 'contextHistory' });
+  });
+});
 return store;
 }
 

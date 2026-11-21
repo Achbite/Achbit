@@ -554,6 +554,8 @@
     "agent.context.window": "Context window",
     "agent.context.windowUsage": "{used} / {capacity} tokens",
     "agent.context.used": "Context used",
+    "agent.context.lastMeasured": "Last measured",
+    "agent.context.measuredInputCache": "Input cache for that request",
     "agent.context.composition": "Context usage composition",
     "agent.context.requestComposition": "Current input composition (estimated)",
     "agent.context.estimatedShare": "Estimated share {percent}%",

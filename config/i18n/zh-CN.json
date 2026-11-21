@@ -554,6 +554,8 @@
     "agent.context.window": "上下文窗口",
     "agent.context.windowUsage": "{used} / {capacity} Token",
     "agent.context.used": "已用上下文",
+    "agent.context.lastMeasured": "上次实测",
+    "agent.context.measuredInputCache": "该次请求的输入缓存",
     "agent.context.composition": "上下文用量构成",
     "agent.context.requestComposition": "本次输入构成（估算）",
     "agent.context.estimatedShare": "估算占比 {percent}%",

@@ -16,6 +16,8 @@ import type {
   ConversationCommand,
   ConversationSessionStatus,
   ContextCompositionMessageBlock,
+  ContextCompositionProjection,
+  ContextUsageProjection,
   ContextCompositionTool,
   FilesystemReference,
   PluginCatalogProjection,
@@ -1149,11 +1151,17 @@ function isContextUsage(value: unknown): boolean {
     ['cacheReadInputTokens', 'cacheMissInputTokens', 'reasoningOutputTokens'],
   )) return false;
   if (
-    !isIdentifier(value.providerRequestId)
-    || !isIdentifier(value.providerRuntimeRef)
-    || !isIdentifier(value.runId)
+    !isIdentifier(value.runId)
     || !isNaturalNumber(value.sequence)
     || !isNonEmptyText(value.updatedAt)
+  ) return false;
+  return validWindowMeasurement(value);
+}
+
+function validWindowMeasurement(value: Record<string, unknown>): value is Record<string, unknown> & Omit<ContextUsageProjection, 'runId' | 'sequence' | 'updatedAt'> {
+  if (
+    !isIdentifier(value.providerRequestId)
+    || !isIdentifier(value.providerRuntimeRef)
     || !isNaturalNumber(value.inputTokens)
     || !isNaturalNumber(value.outputTokens)
     || (value.reasoningOutputTokens !== undefined && (!isNaturalNumber(value.reasoningOutputTokens)
@@ -1171,7 +1179,7 @@ function isContextUsage(value: unknown): boolean {
     ));
 }
 
-function isContextComposition(value: unknown): boolean {
+function isContextComposition(value: unknown): value is ContextCompositionProjection {
   return isExactRecord(value, [
     'providerRequestId',
     'purpose',
@@ -1674,6 +1682,50 @@ export async function readConversation(sessionId: string, query: Omit<import('@a
   }
   return page;
 }
+
+/** Read the last individually measured request, not the potentially multi-step last response total. */
+export async function readMeasuredWindowHistory(projection: SessionProjection, rounds: SessionProjection['tokenUsageHistory'],
+  afterSequence: number, signal: AbortSignal) {
+  const { sessionId, revision } = projection;
+  if (!rounds.length) return null;
+  const eligibleRuns = new Set(rounds.map(round => round.runId));
+  const floor = Math.max(afterSequence, rounds.at(-1)!.sequence);
+  // Pages are bounded and ordered. The composition excerpt may be truncated; use only a decoded receipt.
+  const hostedActivities = new Set(projection.activities.filter(a => a.kind === 'providerHosted').map(a => a.activityId));
+  const hostedRequests = new Set(projection.timeline.flatMap(item => item.kind === 'toolGroup' && item.providerRequestId
+    && item.activityIds.some(id => hostedActivities.has(id)) ? [item.providerRequestId] : []));
+  // At run.started the last composition can still belong to the *previous* run. Include it.
+  let before = (projection.contextCompositions.at(-1)?.sequence ?? revision) + 1;
+  while (before > floor + 1) {
+    const page = await readConversation(sessionId, { view: 'context', throughSequence: revision, before, limit: 10 }, signal);
+    let cursor = before;
+    if (page.revision !== revision || !Array.isArray(page.items)) throw new Error('context_history_page_invalid');
+    for (const item of [...page.items].reverse()) {
+      if (!isPositiveNaturalNumber(item.sequence) || item.sequence >= cursor) throw new Error('context_history_sequence_invalid');
+      cursor = item.sequence;
+      if (cursor <= floor) return null;
+      if (item.type !== 'context.composed' || !isIdentifier(item.runId) || !eligibleRuns.has(item.runId) || item.usage === null) continue;
+      if (!isIdentifier(item.providerRequestId)) throw new Error('context_history_request_invalid');
+      if (hostedRequests.has(item.providerRequestId)) continue; // Avoid a full receipt read for known hosted turns.
+      const receipt = projection.contextCompositions.find(r => r.providerRequestId === item.providerRequestId)
+        ?? await request<unknown>(`${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/context-compositions/${encodeURIComponent(item.providerRequestId)}`, { signal });
+      if (!isContextComposition(receipt) || receipt.providerRequestId !== item.providerRequestId
+        || receipt.sequence !== item.sequence || receipt.runId !== item.runId) throw new Error('context_history_receipt_mismatch');
+      // Session assigns token estimates only to individually measured receipts, never hosted aggregates.
+      if (receipt.purpose !== 'agent' || receipt.partitions[0].tokenSource !== 'sessionEstimated') continue;
+      if (!isRecord(item.usage) || item.usage.truncated !== false || typeof item.usage.content !== 'string') throw new Error('context_history_usage_invalid');
+      const usage: unknown = JSON.parse(item.usage.content);
+      if (!isRecord(usage) || !validWindowMeasurement(usage) || usage.providerRequestId !== receipt.providerRequestId
+        || receipt.partitions.reduce((sum, part) => sum + part.estimatedInputTokens!, 0) !== usage.inputTokens) throw new Error('context_history_usage_mismatch');
+      return { usage: { ...usage, runId: receipt.runId }, receipt: { sequence: receipt.sequence, partitions: receipt.partitions } };
+    }
+    if (page.nextBefore === null) return null;
+    if (page.nextBefore !== cursor || cursor >= before) throw new Error('context_history_cursor_invalid');
+    before = cursor;
+  }
+  return null;
+}
+
 export interface OpeningHistoryPage {
   sessionId: string;
   revision: number;
