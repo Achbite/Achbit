@@ -1456,7 +1456,7 @@ async fn render_pending_agent_decisions(
     parent: &SessionProjection,
 ) -> Result<bool, String> {
     let mut waiting = false;
-    for decision in parent.pending_agent_decisions.iter().flatten() {
+    for decision in parent.pending_decision_children() {
         let child = refresh_projection(client, &decision.agent_session_id).await?;
         if child.run.as_ref().map(|run| &run.run_id) != Some(&decision.run_id)
             || !(child.pending_plan.is_some()

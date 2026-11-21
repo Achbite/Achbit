@@ -170,7 +170,8 @@ export function AgentConversationHistory({ projection, name, language, expanded 
 
 /** A parent dialog handles one decision; the child Reader still shows its full decision history. */
 export type ChildReviewItem = { kind: 'plan'; plan: NonNullable<SessionProjection['pendingPlan']> }
-  | { kind: 'approval'; approval: NonNullable<SessionProjection['pendingApproval']> };
+  | { kind: 'approval'; approval: NonNullable<SessionProjection['pendingApproval']> }
+  | { kind: 'interaction'; interaction: SessionProjection['interactions'][number] };
 
 export function ChildDecisions({ child, projection, language, only }: {
   child: ReturnType<typeof useAgentChildConversation>; projection: SessionProjection; language: UiLanguage; only?: ChildReviewItem;
@@ -178,7 +179,7 @@ export function ChildDecisions({ child, projection, language, only }: {
   const [revisionText, setRevisionText] = useState('');
   const pendingPlan = only ? (only.kind === 'plan' ? only.plan : null) : projection.pendingPlan;
   const pendingApproval = only ? (only.kind === 'approval' ? only.approval : null) : projection.pendingApproval;
-  const interactions = only ? [] : projection.interactions.filter(item => item.status === 'pending');
+  const interactions = only ? (only.kind === 'interaction' ? [only.interaction] : []) : projection.interactions.filter(item => item.status === 'pending');
   const previousPlan = pendingPlan ? projection.plans.find(plan => plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1) : undefined;
   const base = () => ({ schemaVersion: CONVERSATION_COMMAND_VERSION, commandId: `command:${crypto.randomUUID()}`, sessionId: projection.sessionId });
   const respondPlan = (response: PlanResponse) => {

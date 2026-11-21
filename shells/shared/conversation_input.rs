@@ -45,12 +45,13 @@ pub async fn child_reply_projection(
     {
         return Ok(None);
     }
-    let decisions = projection.pending_agent_decisions.as_deref().unwrap_or(&[]);
-    let decision = match decisions {
-        [] => return Ok(None),
-        [decision] => decision,
-        _ => return Err(language.text("tui.chooseChildReply").into()),
+    let mut children = projection.pending_decision_children();
+    let Some(decision) = children.next() else {
+        return Ok(None);
     };
+    if children.next().is_some() {
+        return Err(language.text("tui.chooseChildReply").into());
+    }
     let child = client
         .conversation_projection(&decision.agent_session_id)
         .await

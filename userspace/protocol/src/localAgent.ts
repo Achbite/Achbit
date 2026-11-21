@@ -223,7 +223,8 @@ export interface AgentChildProjection {
   closed: boolean;
 }
 
-/** Read-only routing identities. Full decision content is loaded from the child Session. */
+/** Read-only routing identities. Concurrent approvals can have distinct rows for the same child run.
+ * Full decision content is loaded from the child Session. */
 export interface PendingAgentDecision {
   agentSessionId: string;
   displayName: string;

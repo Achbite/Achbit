@@ -76,6 +76,8 @@ Await final results and verify them. Completed tasks release execution automatic
 
 Each root conversation retains its own model, reasoning effort and subagent settings. A new conversation copies the last explicitly edited configuration. Viewing, resuming, sending a message or using `/focus` in an older conversation does not replace that default. Changing one conversation does not rewrite its peers. A running task keeps its captured declarations, quotas and delegation settings. Changing the conversation selection takes effect on its next task, without cancelling existing subtasks or removing history.
 
+The main GUI lets you answer a subagent’s question or confirmation directly, including a question that allows its other work to continue. Messages between agents are not user decisions. Review later defers only that item; use the pending-decisions entry in the main conversation to reopen it if it still needs a response.
+
 If a subagent needs execution permission, the main GUI presents the original child request for a human decision. With delegated review, the configured approval model acts first; only a request handed back for human review needs attention. Accept or deny the actual child operation. Deferring its dialog does not deny it or grant access, and unrelated work can continue. A coordinator’s message can confirm that work is ready, but cannot grant execution permission.
 
 Reader's Subagents view inspects recorded work without resuming it. Closing that view does not cancel the task. Review a child's actual pending decision rather than treating its report as approval.

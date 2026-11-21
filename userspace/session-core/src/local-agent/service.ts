@@ -23,7 +23,7 @@ import type {
   PendingAgentDecision,
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
-import { SessionActor, humanApprovalRoute } from './actor.js';
+import { SessionActor, humanApprovalRoutes } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
 import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
@@ -415,19 +415,22 @@ export class SessionService implements ConversationPort {
         // The current task/run owns its decision route; the creation tree still owns archival.
         if (child.run?.runId !== task.childRunId) continue;
         const plan = child.run.status === 'waiting' && child.pendingPlan?.runId === task.childRunId ? child.pendingPlan : null;
-        let approval: PendingAgentDecision['approval'];
+        let approvals: NonNullable<PendingAgentDecision['approval']>[] = [];
         if (child.pendingApproval?.runId === task.childRunId) {
           // A run-level wait can predate a replacement approval for the same call. Route
           // only an actionable request, without opening a child Actor merely to read it.
           const actor = this.#actors.get(child.sessionId);
-          approval = actor ? await (await actor).humanApprovalRoute(task.childRunId)
-            : humanApprovalRoute(loopSnapshot(child.sessionId, await readSessionEvents(this.journal, child.sessionId)), task.childRunId);
+          approvals = actor ? await (await actor).humanApprovalRoutes(task.childRunId)
+            : humanApprovalRoutes(loopSnapshot(child.sessionId, await readSessionEvents(this.journal, child.sessionId)), task.childRunId);
         }
         const interactionIds = child.pendingInteractions.filter(item => item.runId === task.childRunId).map(item => item.interactionId);
-        if (plan || approval || interactionIds.length) decisions.push({ agentSessionId: child.sessionId,
-          displayName: task.displayName, runId: task.childRunId, interactionIds,
+        const identity = { agentSessionId: child.sessionId, displayName: task.displayName, runId: task.childRunId };
+        const [first, ...others] = approvals;
+        if (plan || first || interactionIds.length) decisions.push({ ...identity, interactionIds,
           ...(plan ? { plan: { planId: plan.planId, revision: plan.revision } } : {}),
-          ...(approval ? { approval: { approvalId: approval.approvalId, callId: approval.callId } } : {}) });
+          ...(first ? { approval: first } : {}) });
+        // Deferring one request at the root does not hide a different pending call in the same run.
+        for (const approval of others) decisions.push({ ...identity, interactionIds: [], approval });
         await visit(child);
       }
     };

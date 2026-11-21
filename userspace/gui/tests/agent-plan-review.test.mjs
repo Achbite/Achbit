@@ -208,3 +208,139 @@ test('the parent waits for the child model handoff and never opens a stale or re
   assert.equal(pendingChildApproval({ ...activeHandoff, pendingApprovals: [other] }, calls[0], decision), null);
   assert.equal(pendingChildApproval(activeHandoff, calls[0], { ...decision, approval: other }), null, 'another route cannot authorize this response');
 });
+
+function childInteractionFixture() {
+  const { projection } = childApprovalFixture();
+  const question = { interactionId: 'question:output', runId: projection.run.runId, status: 'pending', kind: 'question',
+    mode: 'continue', prompt: 'Where should the report go?', allowFreeform: true };
+  const confirmation = { ...question, interactionId: 'question:publish', kind: 'confirmation', mode: 'wait',
+    prompt: 'Publish this report?', allowFreeform: false, options: [{ id: 'publish', label: 'Publish now' }, { id: 'keep', label: 'Keep private' }] };
+  const decision = { agentSessionId: projection.sessionId, displayName: 'Writer', runId: question.runId,
+    interactionIds: [question.interactionId, confirmation.interactionId] };
+  return { decision, question, confirmation, projection: { ...projection, interactions: [question, confirmation] } };
+}
+
+test('parent-routed child interaction: pure requests mount and deferring one preserves its siblings', async t => {
+  const [{ AgentPlanReview, nextAgentReview }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
+  const { decision, question, confirmation } = childInteractionFixture();
+  const mount = decisions => viewOf(() => AgentPlanReview({ decisions, language: 'en-US', refresh: async () => {} }));
+  assert.equal(mount([]), null, 'messages without a user decision route have no review');
+  const entry = mount([decision]);
+  assert.ok(entry, 'a route containing only interactionIds opens directly in the parent');
+  assert.equal(entry.props.decision, decision);
+  assert.equal(entry.props.interactionId, question.interactionId);
+  const approval = call => ({ ...decision, approval: { callId: `call:${call}`, approvalId: `approval:${call}` } });
+  const firstApproval = approval('one'), secondApproval = approval('two');
+  const routes = [decision, firstApproval, secondApproval], later = new Set(), before = structuredClone(routes);
+  const take = () => { const item = nextAgentReview(routes, later); assert.ok(item); later.add(item.key); return item; };
+  assert.equal(take().decision, firstApproval, 'a question cannot displace an existing Plan or permission review');
+  assert.equal(take().decision, secondApproval, 'two routes for one child are not collapsed');
+  assert.equal(take().key, entry.key);
+  assert.equal(take().interactionId, confirmation.interactionId);
+  assert.equal(nextAgentReview(routes, later), null, 'duplicates and republished identities stay deferred');
+  for (const changed of [{ ...decision, agentSessionId: 'session:sibling' }, { ...decision, runId: 'run:next' },
+    { ...decision, interactionIds: ['question:new'] }]) assert.ok(nextAgentReview([changed], later));
+  assert.deepEqual(routes, before, 'deferral does not rewrite Session facts');
+});
+
+test('parent-routed child interaction: free text and confirmation choices submit to the exact child', async t => {
+  const [{ AgentReviewDialog }, { ChildDecisions }, { InteractionCard }, { InteractionOptions }] = await loadGuiModules(t, [
+    '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/AgentTasksPanel.tsx',
+    '/src/components/local-agent/InteractionCard.tsx', '/src/components/local-agent/InteractionOptions.tsx',
+  ]);
+  const { decision, question, confirmation, projection } = childInteractionFixture();
+  const calls = []; let deferred = 0;
+  const controls = (interaction, snapshot, title) => {
+    const dialog = viewOf(() => AgentReviewDialog({ kind: 'interaction', decision, interactionId: interaction.interactionId,
+      language: 'en-US', child: { projection: snapshot, submitting: false, readError: null, submit: async cmd => { calls.push(cmd); } },
+      onDismiss: () => { deferred++; }, onResolved: () => assert.fail('render is not a resolution') }));
+    assert.ok(dialog, 'the original pending interaction has an actionable dialog');
+    findReactElement(dialog, e => e.props['aria-label'] === title).props.onClose();
+    findReactElement(dialog, e => e.props.children === 'Review later').props.onClick();
+    const selected = findReactElement(dialog, e => e.type === ChildDecisions);
+    const html = renderToStaticMarkup(selected);
+    assert.ok(html.includes(interaction.prompt));
+    assert.ok(!html.includes(interaction === question ? confirmation.prompt : question.prompt));
+    assert.doesNotMatch(html, /Unrelated operation|Unrelated Plan/);
+    return findReactElement(viewOf(() => ChildDecisions(selected.props)), e => e.type === InteractionCard);
+  };
+  const free = controls(question, projection, 'Question'); // Continue while the child has a running Provider turn.
+  const choice = controls(confirmation, { ...projection, run: { ...projection.run, status: 'waiting', waitingReason: 'userInput' } }, 'Confirmation');
+  assert.equal(deferred, 4);
+  assert.deepEqual(calls, [], 'closing and reviewing later neither answer nor stop the child');
+  const text = 'Put it in the shared reports directory.';
+  const editing = viewOf(() => InteractionCard({ ...free.props, draft: text }));
+  findReactElement(editing, e => e.type === 'form').props.onSubmit({ preventDefault() {} });
+  const confirming = viewOf(() => InteractionCard(choice.props));
+  const options = findReactElement(confirming, e => e.type === InteractionOptions);
+  findReactElement(viewOf(() => InteractionOptions(options.props)), e => e.props.title === 'Keep private').props.onClick();
+  const common = { schemaVersion: 'achbit.command.v3', sessionId: decision.agentSessionId, runId: decision.runId, type: 'interaction.respond' };
+  assert.deepEqual(calls.map(({ commandId, ...command }) => command), [
+    { ...common, interactionId: question.interactionId, response: text },
+    { ...common, interactionId: confirmation.interactionId, response: 'keep' },
+  ]);
+  assert.equal(new Set(calls.map(c => c.commandId)).size, 2);
+  assert.equal(question.status, 'pending', 'only the child Session records the answer');
+});
+
+test('parent-routed child interaction: stale or unadvertised targets never substitute another pending item', async t => {
+  const [{ AgentReviewDialog }, { pendingChildInteraction }] = await loadGuiModules(t, [
+    '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/useAgentChildConversation.ts',
+  ]);
+  const { decision, question, confirmation, projection } = childInteractionFixture();
+  const show = (snapshot, route) => viewOf(() => AgentReviewDialog({ kind: 'interaction', decision: route,
+    interactionId: question.interactionId, language: 'en-US', child: { projection: snapshot, readError: null, submitting: false },
+    onDismiss() {}, onResolved() {} }));
+  assert.equal(show(null, decision), null, 'an unverified child snapshot does not interrupt the parent');
+  assert.ok(show(projection, decision), 'an exact pending continue question is actionable in a running child');
+  for (const [snapshot, route] of [
+    [projection, { ...decision, agentSessionId: 'session:sibling' }], [projection, { ...decision, runId: 'run:next' }],
+    [projection, { ...decision, interactionIds: [confirmation.interactionId] }],
+    [{ ...projection, run: { ...projection.run, runId: 'run:new' } }, decision],
+    [{ ...projection, run: { ...projection.run, status: 'completed' } }, decision],
+    ...[{ ...question, runId: 'run:old' }, { ...question, status: 'answered' }, { ...question, status: 'closed' }]
+      .map(stale => [{ ...projection, interactions: [confirmation, stale] }, decision]),
+    [{ ...projection, interactions: [confirmation] }, decision],
+  ]) {
+    assert.equal(show(snapshot, route), null);
+    assert.equal(pendingChildInteraction(snapshot, question, route), null, 'the same stale item fails the child submit preflight');
+  }
+  assert.equal(pendingChildInteraction(projection, question, decision), question);
+});
+
+test('deferred child decisions reopen from the main view without reviving a stale or withdrawn item', async t => {
+  const [{ AgentPlanReview }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
+  const { decision } = childInteractionFixture();
+  const approval = id => ({ ...decision, interactionIds: [], approval: { callId: `call:${id}`, approvalId: `approval:${id}` } });
+  const first = approval('first'), second = approval('second');
+  const invitations = [];
+  let frame = 0, refreshed = 0;
+  // Re-render the same hook owner after its real local actions. No key change or Reader navigation.
+  function Probe() {
+    const step = frame++;
+    const view = AgentPlanReview({ decisions: step === 6 ? [second] : [first, second], language: 'en-US',
+      refresh: async () => { refreshed++; } });
+    if (step === 2 || step === 4) {
+      assert.ok(view, 'all deferred is a non-modal invitation, not a dead end');
+      const open = findReactElement(view, e => e.props['aria-haspopup'] === 'dialog');
+      invitations.push({ view, open });
+      open.props.onClick();
+    } else if (step === 6) {
+      assert.equal(view, null, 'the parent withdrew the first route; the child already reported the second stale');
+    } else {
+      const active = findReactElement(view, e => typeof e.props.onResolved === 'function' && e.props.decision);
+      assert.equal(active.props.decision, step === 0 || step === 3 ? first : second);
+      if (step === 5) active.props.onResolved(); else active.props.onDismiss();
+    }
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  assert.equal(frame, 7);
+  assert.equal(refreshed, 1, 'reviewing later or reopening is not a resolution');
+  // A nested SSR render clears React's current hook owner; render captured markup after its action sequence.
+  assert.equal(invitations.length, 2);
+  for (const { view, open } of invitations) {
+    assert.doesNotMatch(renderToStaticMarkup(view), /role="dialog"|aria-modal/);
+    assert.match(renderToStaticMarkup(open), /Pending decisions/);
+  }
+});

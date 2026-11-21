@@ -4,4 +4,5 @@ dialog.app-modal.agent-plan-review { display:grid; place-items:center; padding:2
 .agent-plan-review__heading h2 { margin:0; font:inherit; font-weight:600; }
 .agent-plan-review__heading p { margin:4px 0 0; color:var(--ac-muted); }
 .agent-plan-review__heading > button { flex:none; }
+.agent-plan-review__reopen { grid-column:1; grid-row:-1 / span 1; justify-self:center; margin-block-end:var(--ac-control-gap); }
 .agent-plan-review__body { overflow:auto; min-height:0; padding:4px 22px 20px; }

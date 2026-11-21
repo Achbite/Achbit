@@ -230,9 +230,7 @@ fn decision_lines(
         )
     } else {
         return projection
-            .pending_agent_decisions
-            .iter()
-            .flatten()
+            .pending_decision_children()
             .map(|decision| {
                 Line::from(Span::styled(
                     format!(
@@ -350,9 +348,7 @@ pub(crate) fn decision_details(
         .is_some()
     {
         return projection
-            .pending_agent_decisions
-            .iter()
-            .flatten()
+            .pending_decision_children()
             .map(|decision| {
                 format!(
                     "{} · {}\n/agent {}",
@@ -1057,7 +1053,7 @@ impl Renderer {
             {
                 output.push_str(language.text("tui.agentDecisionHint"));
                 output.push('\n');
-                for decision in projection.pending_agent_decisions.iter().flatten() {
+                for decision in projection.pending_decision_children() {
                     output.push_str(&format!(
                         "{} · /agent {}\n",
                         decision.display_name, decision.agent_session_id

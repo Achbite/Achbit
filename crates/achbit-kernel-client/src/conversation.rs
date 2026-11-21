@@ -510,6 +510,15 @@ pub struct QueuedInputProjection {
 }
 
 impl SessionProjection {
+    /// Terminal pickers select a child run, not each of its pending tool calls.
+    pub fn pending_decision_children(&self) -> impl Iterator<Item = &PendingAgentDecision> {
+        let mut seen = HashSet::new();
+        self.pending_agent_decisions
+            .iter()
+            .flatten()
+            .filter(move |item| seen.insert((&item.agent_session_id, &item.run_id)))
+    }
+
     pub fn file_changes_for_run(&self, run_id: &str) -> Vec<(&str, usize, &FileChangeProjection)> {
         self.file_change_rounds
             .iter()
@@ -3106,6 +3115,26 @@ mod tests {
             .unwrap()
             .validate()
             .is_err());
+    }
+
+    #[test]
+    fn child_picker_groups_routes_but_keeps_the_first_child_decision() {
+        let mut value = projection_value();
+        value["pendingAgentDecisions"] = json!([
+            {"agentSessionId":"session:a","runId":"run:a","displayName":"A","interactionIds":["question:a"],"approval":{"approvalId":"first","callId":"call:1"}},
+            {"agentSessionId":"session:a","runId":"run:a","displayName":"A","interactionIds":[],"approval":{"approvalId":"second","callId":"call:2"}},
+            {"agentSessionId":"session:b","runId":"run:b","displayName":"B","interactionIds":["question:b"]}
+        ]);
+        let projection: SessionProjection = serde_json::from_value(value).unwrap();
+        projection.validate().unwrap();
+        let members: Vec<_> = projection.pending_decision_children().collect();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].approval.as_ref().unwrap().approval_id, "first");
+        assert_eq!(members[1].agent_session_id, "session:b");
+        assert_eq!(
+            projection.pending_agent_decisions.as_ref().unwrap().len(),
+            3
+        );
     }
 
     #[test]
