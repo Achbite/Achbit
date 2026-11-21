@@ -518,7 +518,11 @@ const store = create<LocalAgentState>((set, get) => ({
     activeSubmissionCount = 0;
     const cached = projectionCache.get(sessionId) ?? null;
     if (cached) cacheProjection(cached.projection);
-    const visibleCached = get().runtimeReady ? cached : null;
+    // Live text can change without a journal revision. A cached draft followed
+    // by its catch-up snapshot would replay text received while the user was away.
+    const settledCache = cached && !cached.projection.assistantDraft
+      && !['running', 'waiting', 'releasing'].includes(cached.projection.run?.status ?? '') ? cached : null;
+    const visibleCached = get().runtimeReady ? settledCache : null;
     set({
       submitting: false,
       modelSettingsBusy: false,
@@ -538,15 +542,15 @@ const store = create<LocalAgentState>((set, get) => ({
     try {
       if (!get().runtimeReady) await waitForExecution(signal);
       if (currentGeneration !== generation) return;
-      if (cached) {
-        if (!visibleCached) set({ ...cached, loading: false, loadingPurpose: null });
+      if (settledCache) {
+        if (!visibleCached) set({ ...settledCache, loading: false, loadingPurpose: null });
         await get().refresh();
         return;
       }
       const revision = get().sessionStatuses[sessionId]?.revision;
       const pair = new AbortController();
       const reading = AbortSignal.any([signal, pair.signal]);
-      const readBoundary = revision === undefined || revision > 64 ? async () => {
+      const readBoundary = !cached && (revision === undefined || revision > 64) ? async () => {
         const page = await readOpeningHistory(sessionId, reading);
         reading.throwIfAborted();
         if (page.messages.length && currentGeneration === generation) set({ openingHistory: page });

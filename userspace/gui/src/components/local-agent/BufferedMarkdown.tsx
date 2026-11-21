@@ -162,13 +162,16 @@ export const BufferedMarkdown = memo(function BufferedMarkdown({ text, streamIde
   streaming?: boolean;
   onDisplayed?(identity: string, text: string): void;
 }) {
-  const playback = useRef({ identity: streamIdentity, buffer: new StreamingTextBuffer(streaming ? '' : text) });
-  const [visible, setVisible] = useState({ identity: streamIdentity, text: playback.current.buffer.text });
+  // Mounting a row (including a restored live draft) is not a text delta.
+  // Only additions observed by this mounted stream should animate.
+  const [playback] = useState(() => ({ identity: streamIdentity, buffer: new StreamingTextBuffer(text) }));
+  const [visible, setVisible] = useState(() => ({ identity: streamIdentity, text }));
   useLayoutEffect(() => {
-    if (playback.current.identity !== streamIdentity) {
-      playback.current = { identity: streamIdentity, buffer: new StreamingTextBuffer(streaming ? '' : text) };
+    if (playback.identity !== streamIdentity) {
+      playback.identity = streamIdentity;
+      playback.buffer = new StreamingTextBuffer(text);
     }
-    const { buffer } = playback.current;
+    const { buffer } = playback;
     buffer.update(text, performance.now());
     let frame: number | null = null;
     const publish = () => setVisible((current) => current.identity === streamIdentity && current.text === buffer.text
@@ -181,8 +184,8 @@ export const BufferedMarkdown = memo(function BufferedMarkdown({ text, streamIde
     publish();
     if (!buffer.complete) frame = requestAnimationFrame(tick);
     return () => { if (frame !== null) cancelAnimationFrame(frame); };
-  }, [streamIdentity, text, streaming]);
-  const displayed = visible.identity === streamIdentity ? visible.text : streaming ? '' : text;
+  }, [playback, streamIdentity, text]);
+  const displayed = visible.identity === streamIdentity ? visible.text : text;
   const caughtUp = displayed === text;
   useLayoutEffect(() => {
     if (!streaming && caughtUp) onDisplayed?.(streamIdentity, displayed);
