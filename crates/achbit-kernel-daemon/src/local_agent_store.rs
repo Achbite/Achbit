@@ -524,36 +524,29 @@ impl LocalAgentJournal {
         &self,
         session_id: &str,
     ) -> Result<JournalEventPublication, LocalAgentStoreError> {
-        let mut value = Vec::new();
         let mut revision = 0;
         let mut gap = false;
         let mut created = false;
         // Validate every original payload with the same decoder, including rows
         // outside the selected view. Keep syntax errors ahead of replay errors.
-        self.visit_event_rows(
-            session_id,
-            0,
-            |event: JournalEvent<Box<serde_json::value::RawValue>>| {
-                revision += 1;
-                gap |= event.sequence != revision;
-                if revision == 1 {
-                    created = event.event_type == "session.created";
-                }
-                // Session owns editing and approval visibility in activeConversationEvents.
-                if matches!(
-                    event.event_type.as_str(),
-                    "session.created"
-                        | "conversation.revised"
-                        | "message.committed"
-                        | "narrative.committed"
-                        | "approval.requested"
-                        | "approval.resolved"
-                        | "approval.revoked"
-                ) {
-                    value.push(event);
-                }
-            },
-        )?;
+        let value = self.select_event_rows(session_id, 0, |sequence, kind| {
+            revision += 1;
+            gap |= sequence != revision;
+            if revision == 1 {
+                created = kind == "session.created";
+            }
+            // Session owns editing and approval visibility in activeConversationEvents.
+            matches!(
+                kind,
+                "session.created"
+                    | "conversation.revised"
+                    | "message.committed"
+                    | "narrative.committed"
+                    | "approval.requested"
+                    | "approval.resolved"
+                    | "approval.revoked"
+            )
+        })?;
         let failure = if gap {
             Some("session_event_sequence_gap")
         } else if revision == 0 {
@@ -579,17 +572,15 @@ impl LocalAgentJournal {
         session_id: &str,
         after: u64,
     ) -> Result<Vec<JournalEvent<Payload>>, LocalAgentStoreError> {
-        let mut events = Vec::new();
-        self.visit_event_rows(session_id, after, |event| events.push(event))?;
-        Ok(events)
+        self.select_event_rows(session_id, after, |_, _| true)
     }
 
-    fn visit_event_rows<Payload: serde::de::DeserializeOwned>(
+    fn select_event_rows<Payload: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         after: u64,
-        mut visit: impl FnMut(JournalEvent<Payload>),
-    ) -> Result<(), LocalAgentStoreError> {
+        mut keep: impl FnMut(i64, &str) -> bool,
+    ) -> Result<Vec<JournalEvent<Payload>>, LocalAgentStoreError> {
         validate_id("sessionId", session_id)?;
         let connection = self.lock()?;
         let exists: bool = connection
@@ -613,23 +604,39 @@ impl LocalAgentJournal {
             )
             .map_err(sql_error("session_event_read_prepare_failed"))?;
         let after = i64::try_from(after).unwrap_or(i64::MAX);
-        let rows = statement
-            .query_map(params![session_id, after], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(sql_error("session_event_read_failed"))?;
-        for row in rows {
-            let (sequence, event_id, event_type, occurred_at, run_id, call_id, payload) =
-                row.map_err(sql_error("session_event_read_failed"))?;
-            visit(JournalEvent {
+        let read_error = |error| sql_error("session_event_read_failed")(error);
+        let mut rows = statement
+            .query(params![session_id, after])
+            .map_err(&read_error)?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().map_err(&read_error)? {
+            // Borrow the payload from the active SQLite row. In particular, an ignored
+            // context receipt need not allocate either a String or an owned RawValue.
+            let payload = row
+                .get_ref(6)
+                .and_then(|value| Ok(value.as_str()?))
+                .map_err(&read_error)?;
+            let sequence = row.get(0).map_err(&read_error)?;
+            let event_id = row.get(1).map_err(&read_error)?;
+            let event_type: String = row.get(2).map_err(&read_error)?;
+            let occurred_at = row.get(3).map_err(&read_error)?;
+            let run_id = row.get(4).map_err(&read_error)?;
+            let call_id = row.get(5).map_err(&read_error)?;
+            let corrupt = |error: serde_json::Error| {
+                decode_json(payload, "session_event_corrupt")
+                    .err()
+                    .unwrap_or_else(|| {
+                        LocalAgentStoreError::new(
+                            "session_event_corrupt",
+                            format!("JSON 解码失败：{error}"),
+                        )
+                    })
+            };
+            if !keep(sequence, &event_type) {
+                serde_json::from_str::<&serde_json::value::RawValue>(payload).map_err(corrupt)?;
+                continue;
+            }
+            events.push(JournalEvent {
                 schema_version: EVENT_VERSION,
                 event_id,
                 session_id: session_id.to_owned(),
@@ -638,22 +645,10 @@ impl LocalAgentJournal {
                 event_type,
                 run_id,
                 call_id,
-                payload: serde_json::from_str(&payload).map_err(|error| {
-                    // RawValue's syntax scanner may phrase a malformed JSON
-                    // error differently. Decode only that failed row for the
-                    // established diagnostic; valid history keeps the fast path.
-                    decode_json(&payload, "session_event_corrupt")
-                        .err()
-                        .unwrap_or_else(|| {
-                            LocalAgentStoreError::new(
-                                "session_event_corrupt",
-                                format!("JSON 解码失败：{error}"),
-                            )
-                        })
-                })?,
+                payload: serde_json::from_str(payload).map_err(corrupt)?,
             });
         }
-        Ok(())
+        Ok(events)
     }
 
     /// Resource field projection only. Membership, grants and edited visibility
