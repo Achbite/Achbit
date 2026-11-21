@@ -216,14 +216,14 @@ function cacheProjection(projection: SessionProjection): CachedSessionView {
   while (projectionCache.size > 6) projectionCache.delete(projectionCache.keys().next().value!);
   return view;
 }
-function readSessionView(sessionId: string, signal?: AbortSignal, readBoundary?: () => Promise<number>): Promise<CachedSessionView> {
+function readSessionView(sessionId: string, signal?: AbortSignal, boundary: number | (() => Promise<number>) = 0): Promise<CachedSessionView> {
   const read = (projectionReadQueues.get(sessionId) ?? Promise.resolve())
     .then(async () => {
       signal?.throwIfAborted();
       // Start the bounded page first, but let transport and Session recovery
       // overlap. Neither response enters the cache until both are validated.
       const [minimumRevision, first] = await Promise.all([
-        readBoundary?.() ?? 0, getLocalAgentProjection(sessionId, signal),
+        typeof boundary === 'number' ? boundary : boundary(), getLocalAgentProjection(sessionId, signal),
       ]);
       signal?.throwIfAborted();
       if (first.revision >= minimumRevision) return first;
@@ -520,7 +520,9 @@ const store = create<LocalAgentState>((set, get) => ({
     if (cached) cacheProjection(cached.projection);
     // Live text can change without a journal revision. A cached draft followed
     // by its catch-up snapshot would replay text received while the user was away.
+    const observed = get().sessionStatuses[sessionId];
     const settledCache = cached && !cached.projection.assistantDraft
+      && (observed?.revision ?? 0) <= cached.projection.revision
       && !['running', 'waiting', 'releasing'].includes(cached.projection.run?.status ?? '') ? cached : null;
     const visibleCached = get().runtimeReady ? settledCache : null;
     set({
@@ -550,12 +552,14 @@ const store = create<LocalAgentState>((set, get) => ({
       const revision = get().sessionStatuses[sessionId]?.revision;
       const pair = new AbortController();
       const reading = AbortSignal.any([signal, pair.signal]);
-      const readBoundary = !cached && (revision === undefined || revision > 64) ? async () => {
+      // A known status already proves the minimum revision. Don't scan the
+      // journal twice just to obtain an unused excerpt for this same boundary.
+      const readBoundary = !cached && revision === undefined ? async () => {
         const page = await readOpeningHistory(sessionId, reading);
         reading.throwIfAborted();
         if (page.messages.length && currentGeneration === generation) set({ openingHistory: page });
         return page.revision;
-      } : undefined;
+      } : Math.max(cached?.projection.revision ?? 0, revision ?? 0);
       const view = await readSessionView(sessionId, reading, readBoundary).finally(() => pair.abort());
       if (currentGeneration !== generation) return;
       set({

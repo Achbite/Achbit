@@ -76,3 +76,22 @@ test('the full read overlaps a held opening page without publishing a stale proj
   assert.equal(store.getState().projection.revision, 76);
   assert.equal(fullReads, 2, 'the one established retry verifies the page revision');
 });
+
+test('a known long-history revision needs no excerpt query and a persistently older response still fails', async t => {
+  const id = 'session:known', view = projectSession(emptySessionState(id));
+  let reads=0, revision=85;
+  const requests=[];
+  installGuiFetch(t, async url => {
+    requests.push(url.pathname.split('/').at(-1));
+    if (!url.pathname.endsWith('/projection')) throw new Error(`Unexpected ${url.pathname}`);
+    reads++; return Response.json({ok:true,data:{...view,revision}});
+  });
+  const store=await loadGuiModelStore(t);
+  store.setState({catalog:{projects:[],sessions:[{id}]},sessionStatuses:{[id]:{revision:86}}});
+  await store.getState().activateSession(id);
+  assert.equal(store.getState().error,'session_projection_revision_behind');
+  assert.equal(store.getState().projection,null);
+  revision=86; await store.getState().activateSession(id);
+  assert.equal(store.getState().projection.revision,86);
+  assert.equal(reads,3); assert.deepEqual(requests,['projection','projection','projection']);
+});
