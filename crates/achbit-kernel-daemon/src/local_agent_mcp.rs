@@ -784,6 +784,11 @@ fn first_party_server_source(
         capability_summary,
         tools,
     } = plugin;
+    let tool_names = tools
+        .iter()
+        .map(|tool| tool.canonical_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     let prompt_contributions = tools
         .iter()
         .map(|tool| {
@@ -805,7 +810,7 @@ fn first_party_server_source(
         content: Arc::from([]),
         provider_ref,
         capability_refs,
-        capability_summary,
+        capability_summary: format!("{capability_summary}\nTools: {tool_names}"),
         tool_prompt_provider: Some(json!({
             "providerRef": format!("tool-prompt-provider:first-party:{id}"),
             "origin": "extension",
@@ -1031,7 +1036,7 @@ fn local_cli_source(source: LocalPluginSource) -> McpServerSource {
             manifest
                 .tools
                 .iter()
-                .map(|tool| format!("- {}: {}", tool.name, tool.description))
+                .map(|tool| format!("- {}.{}: {}", source.id, tool.name, tool.description))
                 .collect::<Vec<_>>()
                 .join("\n")
         );
