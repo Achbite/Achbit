@@ -178,6 +178,105 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn archive_deletion_preserves_failed_desktop_release_until_the_owning_run_retries() {
+    use crate::desktop_tools::{DesktopExecutor, DesktopHost};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Stream(AtomicUsize);
+    impl DesktopExecutor for Stream {
+        fn call(&self, binding: &Value, input: &Value) -> Result<Value, String> {
+            assert_eq!(binding["sessionId"], "session:parent");
+            match input["action"].as_str().unwrap() {
+                "computer:observe" => Ok(json!({"ok":true,"data":{}})),
+                "computer:releaseRun" if self.0.fetch_add(1, Ordering::SeqCst) == 0 => {
+                    Ok(json!({"ok":false,"message":"original stop failure"}))
+                }
+                "computer:releaseRun" => Ok(json!({"ok":true,"data":{"released":true}})),
+                _ => panic!("unexpected desktop request {input}"),
+            }
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let mut fixture = Fixture::new();
+    let stream = Arc::new(Stream(AtomicUsize::new(0)));
+    let desktop = DesktopHost::for_test("host:delete", stream.clone());
+    fixture.runtime.kernel.desktop = desktop.clone();
+    let view = fixture.prepare("parent", false).unwrap();
+    let child_view = fixture.prepare("child", false).unwrap();
+    let context = serde_json::from_value(json!({"output_directory": fixture.root, "workspace_root":null, "workspace_id":null,
+        "private_resolved_targets":[], "workspace_write_targets":null, "file_access":{"read":[],"write":[],"readOnly":[],"home":null}})).unwrap();
+    desktop
+        .run("session:parent", "run:parent")
+        .execute(json!({"action":"observe"}), &context, "call:observe")
+        .unwrap();
+    let failure = Fixture::release(&fixture.runtime, "parent", &view).unwrap_err();
+    assert_eq!(failure.code, "computer_sharing_cleanup_failed");
+    assert_eq!(failure.message, "original stop failure");
+    let history = || {
+        serde_json::to_value(
+            fixture
+                .runtime
+                .journal
+                .read_events_publication("session:parent", 0)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let before = history();
+    let denied = fixture
+        .runtime
+        .delete_session_archive("session:parent")
+        .unwrap_err();
+    assert_eq!(denied.code, "session_delete_active_run");
+    assert_eq!(history(), before);
+    assert_eq!(
+        stream.0.load(Ordering::SeqCst),
+        1,
+        "deletion never retries native cleanup"
+    );
+    Fixture::release(&fixture.runtime, "parent", &view).unwrap();
+    fixture
+        .runtime
+        .delete_session_archive("session:parent")
+        .unwrap();
+    assert_eq!(stream.0.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        fixture
+            .runtime
+            .journal
+            .read_events_publication("session:parent", 0)
+            .err()
+            .unwrap()
+            .code,
+        "session_not_found"
+    );
+    Fixture::release(&fixture.runtime, "child", &child_view).unwrap();
+}
+
+#[test]
+fn archive_deletion_refuses_unpublished_preparation_but_not_an_unrelated_session() {
+    let fixture = Fixture::new();
+    let pending = fixture.pending_prepare();
+    let mut gate = fixture.gate(&pending); // tools/list is waiting outside the registry locks.
+    let denied = fixture.runtime.delete_session_archive("session:parent");
+    let unrelated = fixture.runtime.delete_session_archive("session:child");
+    gate.write_all(b"Y").unwrap();
+    let prepared = pending.join().unwrap().unwrap();
+    Fixture::release(&fixture.runtime, "parent", &prepared).unwrap();
+    assert_eq!(denied.unwrap_err().code, "session_delete_active_run");
+    unrelated.unwrap();
+    fixture
+        .runtime
+        .delete_session_archive("session:parent")
+        .unwrap();
+    assert_eq!(
+        fixture.prepare("parent", false).unwrap_err().code,
+        "session_not_found"
+    );
+}
+
+#[test]
 fn slow_mcp_prepare_does_not_block_child_retire_and_release() {
     let fixture = Fixture::new();
     let child = fixture.prepare("child", false).unwrap();

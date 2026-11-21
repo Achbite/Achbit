@@ -1288,6 +1288,25 @@ impl LocalAgentKernel {
         self.records.read(call_id)
     }
 
+    pub(crate) fn current_archive_owner(
+        &self,
+        ids: &std::collections::HashSet<&str>,
+    ) -> Result<Option<(String, String)>, LocalAgentKernelError> {
+        let state = self.lock_generations()?;
+        let owner = state
+            .run_bindings
+            .keys()
+            .map(|key| (&key.session_id, &key.run_id))
+            .chain(
+                state
+                    .run_containers
+                    .keys()
+                    .map(|(session, run)| (session, run)),
+            )
+            .find(|(session, _)| ids.contains(session.as_str()));
+        Ok(owner.map(|(session, run)| (session.clone(), run.clone())))
+    }
+
     pub(crate) fn activity_changed(&self) -> Arc<tokio::sync::Notify> {
         self.jobs.activity_changed()
     }

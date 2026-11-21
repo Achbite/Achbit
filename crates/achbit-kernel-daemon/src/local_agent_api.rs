@@ -143,6 +143,16 @@ impl LocalAgentRuntime {
                 ));
             }
         }
+        // Admission precedes the first journal read: after a committed deletion, even
+        // a racing preparation must read the missing creation fact, not a stale recipe.
+        let key = PreparedRunKey {
+            session_id: request.session_id.clone(),
+            run_id: request.run_id.clone(),
+        };
+        let run_transition = self.run_transition(&key)?;
+        let _run_transition = run_transition.lock().map_err(|_| {
+            RunPreparationError::new("run_transition_lock_failed", "Run transition 锁已损坏。")
+        })?;
         let agent_context = self
             .journal
             .agent_context(&request.session_id)
@@ -195,14 +205,6 @@ impl LocalAgentRuntime {
                 ));
             }
         }
-        let key = PreparedRunKey {
-            session_id: request.session_id.clone(),
-            run_id: request.run_id.clone(),
-        };
-        let run_transition = self.run_transition(&key)?;
-        let _run_transition = run_transition.lock().map_err(|_| {
-            RunPreparationError::new("run_transition_lock_failed", "Run transition 锁已损坏。")
-        })?;
         let _transition = self.runtime_transition().map_err(|message| {
             RunPreparationError::new("runtime_transition_lock_failed", message)
         })?;
@@ -1055,12 +1057,70 @@ impl LocalAgentRuntime {
         Ok(response)
     }
 
+    /// The Session has claimed these IDs; do not open an Actor or ask any resource to stop.
+    fn with_deletable_archives<'a, T>(
+        &self,
+        session_ids: impl IntoIterator<Item = &'a str>,
+        operation: impl FnOnce() -> Result<T, LocalAgentStoreError>,
+    ) -> Result<T, LocalAgentStoreError> {
+        let ids: std::collections::HashSet<_> = session_ids.into_iter().collect();
+        if ids.is_empty() || ids.iter().any(|id| !crate::conversation_api::valid_id(id)) {
+            return Err(LocalAgentStoreError::new(
+                "local_agent_identity_invalid",
+                "Invalid sessionId for archive deletion",
+            ));
+        }
+        // Never wait for an individual run while holding the transition registry. Other
+        // paths take its short registration lock *before* any run/prepare/Kernel locks.
+        let prepared = self.prepared_runs.lock().map_err(|_| {
+            LocalAgentStoreError::new(
+                "prepared_run_registry_lock_failed",
+                "Prepared run registry 锁已损坏。",
+            )
+        })?;
+        let admission = self.run_transitions.lock().map_err(|_| {
+            LocalAgentStoreError::new(
+                "run_transition_lock_failed",
+                "Run transition registry 锁已损坏。",
+            )
+        })?;
+        let retained = prepared
+            .keys()
+            .chain(
+                admission
+                    .iter()
+                    .filter_map(|(key, owner)| (owner.strong_count() > 0).then_some(key)),
+            )
+            .find(|key| ids.contains(key.session_id.as_str()));
+        // A failed preparation rollback may leave a Kernel binding before publication
+        // to prepared_runs. Previous-Host identities and completed receipts are not leases.
+        let owner = match retained {
+            Some(key) => Some((key.session_id.clone(), key.run_id.clone())),
+            None => self
+                .kernel
+                .current_archive_owner(&ids)
+                .map_err(|error| LocalAgentStoreError::new(error.code, error.message))?,
+        };
+        if let Some((session, run)) = owner {
+            return Err(LocalAgentStoreError::new(
+                "session_delete_active_run",
+                format!("This Host still owns run {run} in {session}. Finish its cleanup before deleting the conversation."),
+            ));
+        }
+        drop(prepared);
+        let result = operation(); // Hold admission (not the Kernel locks) through the actual DELETE.
+        drop(admission);
+        result
+    }
+
     fn delete_session_archive(&self, session_id: &str) -> Result<usize, LocalAgentStoreError> {
-        self.journal.delete_archive(
-            self.session_store_path.as_ref(),
-            self.tool_record_store_path.as_ref(),
-            session_id,
-        )
+        self.with_deletable_archives([session_id], || {
+            self.journal.delete_archive(
+                self.session_store_path.as_ref(),
+                self.tool_record_store_path.as_ref(),
+                session_id,
+            )
+        })
     }
 
     fn authorize(&self, headers: &HeaderMap) -> bool {
@@ -1475,6 +1535,27 @@ pub(crate) async fn local_agent_child_session_create(
     crate::conversation_api::create_agent_session(state, body).await
 }
 
+pub(crate) async fn local_agent_check_deletion(
+    ReadyState(state): ReadyState,
+    headers: HeaderMap,
+    Json(ids): Json<Vec<String>>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || {
+        state
+            .local_agent
+            .with_deletable_archives(ids.iter().map(String::as_str), || Ok(()))
+    })
+    .await
+    {
+        Ok(Ok(())) => ApiResponse::ok(json!(true)),
+        Ok(Err(error)) => store_error(error),
+        Err(error) => ApiResponse::error("session_archive_check_failed", error.to_string()),
+    }
+}
+
 pub(crate) async fn local_agent_session_delete(
     ReadyState(state): ReadyState,
     headers: HeaderMap,
@@ -1483,18 +1564,19 @@ pub(crate) async fn local_agent_session_delete(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state
-        .local_agent
-        .delete_session_archive(&session_id)
-        .and_then(|count| {
-            state.local_agent.journal.publication(
-                json!({"deleted": true, "toolRecordCount": count}),
-                &session_id,
-                true,
-            )
-        }) {
-        Ok(publication) => ApiResponse::ok(publication),
-        Err(error) => store_error(error),
+    match tokio::task::spawn_blocking(move || {
+        let count = state.local_agent.delete_session_archive(&session_id)?;
+        state.local_agent.journal.publication(
+            json!({"deleted": true, "toolRecordCount": count}),
+            &session_id,
+            true,
+        )
+    })
+    .await
+    {
+        Ok(Ok(publication)) => ApiResponse::ok(publication),
+        Ok(Err(error)) => store_error(error),
+        Err(error) => ApiResponse::error("session_archive_delete_failed", error.to_string()),
     }
 }
 

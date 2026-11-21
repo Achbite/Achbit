@@ -236,6 +236,9 @@ export class SessionService implements ConversationPort {
           await this.assertDeletableRun((await readStored(id, true))!);
         }
       }
+      // Check physical owners for the entire tree before disposing even its first child.
+      // A releaseFailed journal alone is neither a live resource nor proof of release.
+      await this.journal.assertSessionsDeletable(deletionOrder);
       for (const id of deletionOrder) {
         const actorPromise = this.#actors.get(id);
         if (actorPromise) {

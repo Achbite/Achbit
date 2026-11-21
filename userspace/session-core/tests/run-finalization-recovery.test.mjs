@@ -4,13 +4,14 @@ import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { SessionService } from '../dist/local-agent/service.js';
 import { actorWith, runtimeSnapshot, fakeRunPreparation, createSession, readEvents, emptyKernel } from './local-agent-fixtures.mjs';
 
-async function finishingRun(journal, sessionId, runId) {
+async function finishingRun(journal, sessionId, runId, beforeFinish) {
   await createSession(journal, sessionId);
   const runtime = runtimeSnapshot(runId);
   await journal.append({ type: 'message.committed', sessionId,
     payload: { messageId: 'message:original', role: 'user', content: 'Original task' } });
   await journal.append({ type: 'run.started', sessionId, runId,
     payload: { inputMessageId: 'message:original', workspaceBindings: [], runtimeSnapshot: runtime } });
+  await beforeFinish?.();
   const settlement = { outcome: 'failed', error: { code: 'original_failure', message: 'Keep this error' } };
   await journal.append({ type: 'run.finishing', sessionId, runId, payload: settlement });
   return { runtime, settlement };
@@ -44,6 +45,32 @@ test('deleting failed cleanup history does not recover the run or fabricate sett
   };
   assert.deepEqual(await service.deleteSession(sessionId), { deletedSessionIds: [sessionId] });
   await assert.rejects(readEvents(journal, sessionId), /session_not_found/);
+});
+
+test('family deletion keeps every archive while the current Host retains a failed release', async t => {
+  const journal = new InMemoryCommandJournal(), parent = 'session:retained-parent', child = 'session:idle-child', runId = 'run:retained';
+  const capabilities = { messaging: false, continuation: false, delegation: false };
+  const { runtime } = await finishingRun(journal, parent, runId, async () => {
+    await journal.createSession({ sessionId: child, displayTitle: 'Child', workspaceBindings: [], agentContext: {
+      ownerSessionId: parent, parentSessionId: parent, parentRunId: runId, parentCallId: 'call:spawn', capabilities,
+    } });
+    await journal.append({ type: 'agent.task.created', sessionId: parent, runId, callId: 'call:spawn', payload: {
+      taskId: 'task:child', agentSessionId: child, capabilities, createsAgent: true, displayName: 'Child', text: 'A task', delivery: 'async',
+    } });
+    await journal.append({ type: 'agent.task.completed', sessionId: parent, runId, payload: {
+      taskId: 'task:child', result: { outcome: 'failed', error: { code: 'start_failed', message: 'Child did not start' } },
+    } });
+  });
+  await recordReleaseFailure(journal, parent, runId, runtime);
+  const before = await Promise.all([child, parent].map(id => readEvents(journal, id)));
+  const ownerError = new Error('This Host still holds the parent run');
+  journal.assertSessionsDeletable = async ids => { assert.deepEqual(ids, [child, parent]); throw ownerError; };
+  const service = new SessionService(journal, { async create() { assert.fail('Checking an owner must not recover an Actor'); } });
+  t.after(() => service.dispose());
+  await assert.rejects(service.deleteSession(parent), error => error === ownerError);
+  assert.deepEqual(await Promise.all([child, parent].map(id => readEvents(journal, id))), before);
+  journal.assertSessionsDeletable = async () => {}; // Same historical facts; no owner remains on the Host.
+  assert.deepEqual(await service.deleteSession(parent), { deletedSessionIds: [child, parent] });
 });
 
 test('deletion refuses an in-flight cleanup retry even while the journal still says releaseFailed', async t => {

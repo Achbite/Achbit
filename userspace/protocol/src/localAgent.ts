@@ -2607,6 +2607,8 @@ export interface CommandJournalPort extends JournalPort {
   /** Kernel policy publications; callback is synchronous and never writes facts. */
   subscribePermissions(sessionId: string, publish: (settings: RunRuntimeSnapshot['permissions']) => void): () => void;
   createSession(input: SessionCreationInput): Promise<SessionEvent>;
+  /** Check current Host ownership for the whole family, without releasing or deleting anything. */
+  assertSessionsDeletable(sessionIds: readonly string[]): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   readCommand(sessionId: string, commandId: string): Promise<StoredCommand | null>;
   commitCommand(

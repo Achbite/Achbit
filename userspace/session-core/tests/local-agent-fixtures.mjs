@@ -305,6 +305,7 @@ export function forwardingJournal(delegate, read) {
   return {
     subscribePermissions: (...args) => delegate.subscribePermissions(...args),
     createSession: (input) => delegate.createSession(input),
+    assertSessionsDeletable: ids => delegate.assertSessionsDeletable(ids),
     deleteSession: (sessionId) => delegate.deleteSession(sessionId),
     append: (event) => delegate.append(event),
     appendBatch: (events) => delegate.appendBatch(events),

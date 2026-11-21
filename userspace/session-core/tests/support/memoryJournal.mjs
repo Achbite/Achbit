@@ -32,6 +32,8 @@ export class InMemoryCommandJournal {
     });
   }
 
+  async assertSessionsDeletable() {} // This in-memory adapter owns no physical runtime.
+
   async deleteSession(sessionId) {
     await this.serial(async () => {
       if (!this.#events.delete(sessionId)) throw new Error('session_not_found');

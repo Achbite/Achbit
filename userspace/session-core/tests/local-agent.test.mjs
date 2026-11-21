@@ -3584,6 +3584,7 @@ test('an escaped Loop fault remains Session-local and releases its runtime', asy
   const journal = {
     subscribePermissions: (...args) => baseJournal.subscribePermissions(...args),
     createSession: (input) => baseJournal.createSession(input),
+    assertSessionsDeletable: ids => baseJournal.assertSessionsDeletable(ids),
     deleteSession: (sessionId) => baseJournal.deleteSession(sessionId),
     append: (event) => baseJournal.append(event),
     appendBatch(events) {
