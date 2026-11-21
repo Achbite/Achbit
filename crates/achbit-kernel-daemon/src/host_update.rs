@@ -183,11 +183,12 @@ async fn handle(host: &HostState, request: UpdateRequest) -> Result<Value, Strin
                 }
                 slot.take().ok_or("Host has not prepared an update")?
             };
-            let cleanup_complete = crate::host_shutdown::shutdown_owned_host_resources_for_update(
-                host,
-                prepared.manual,
-            )
-            .await;
+            let cleanup_complete =
+                crate::host_shutdown::shutdown_owned_host_resources_with_cancellation(
+                    host,
+                    prepared.manual,
+                )
+                .await;
             request_host_shutdown();
             drop(prepared);
             Ok(serde_json::to_value(HostShutdownReceipt {

@@ -26,6 +26,27 @@ impl HostClientLease {
         persistent: bool,
         deadline: Instant,
     ) -> io::Result<Self> {
+        Self::register(
+            base_url,
+            token,
+            if persistent {
+                "mode=persistent"
+            } else {
+                "mode=client"
+            },
+            deadline,
+        )
+    }
+
+    pub(crate) fn connect_desktop_until(
+        base_url: &str,
+        token: &str,
+        deadline: Instant,
+    ) -> io::Result<Self> {
+        Self::register(base_url, token, "mode=client&desktop=true", deadline)
+    }
+
+    fn register(base_url: &str, token: &str, query: &str, deadline: Instant) -> io::Result<Self> {
         if !is_valid_host_shell_token(token) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -45,8 +66,7 @@ impl HostClientLease {
             Duration::from_secs(2).min(crate::startup::remaining(deadline)?),
         )?;
 
-        let mode = if persistent { "persistent" } else { "client" };
-        let request = format!("GET /api/host/client?mode={mode} HTTP/1.1\r\nHost: {authority}\r\n{HOST_SHELL_TOKEN_HEADER}: {token}\r\nConnection: keep-alive\r\n\r\n");
+        let request = format!("GET /api/host/client?{query} HTTP/1.1\r\nHost: {authority}\r\n{HOST_SHELL_TOKEN_HEADER}: {token}\r\nConnection: keep-alive\r\n\r\n");
         let mut pending = request.as_bytes();
         while !pending.is_empty() {
             stream.set_write_timeout(Some(

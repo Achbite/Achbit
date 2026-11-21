@@ -27,11 +27,10 @@ pub struct OwnedHostChildren {
 }
 
 impl OwnedHostChildren {
-    pub fn attach_client_until(&mut self, deadline: std::time::Instant) -> io::Result<()> {
-        self.client_lease = Some(HostClientLease::connect_until(
+    pub fn attach_desktop_until(&mut self, deadline: std::time::Instant) -> io::Result<()> {
+        self.client_lease = Some(HostClientLease::connect_desktop_until(
             &self.daemon_identity.address,
             &self.daemon_token,
-            false,
             deadline,
         )?);
         #[cfg(windows)]

@@ -2,12 +2,11 @@
 #[cfg(any(target_os = "macos", test))]
 mod macos;
 
-use super::{runtime_locations, HostApiEnvelope, HostProcessGroup};
+use super::{host_control::local_host, runtime_locations, HostProcessGroup};
 use achbit_host_connection::installation::{wait_for_process_exit, Installation};
-use achbit_host_connection::loopback_http::request_loopback_json_until;
-use achbit_kernel_abi::{HostProcessIdentity, HostShutdownReceipt, HOST_SHELL_TOKEN_HEADER};
+use achbit_kernel_abi::HostShutdownReceipt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{
     collections::BTreeMap,
     io::Write,
@@ -447,51 +446,6 @@ async fn check(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-#[derive(Clone)]
-struct Host {
-    host: String,
-    port: String,
-    token: String,
-    identity: HostProcessIdentity,
-}
-impl Host {
-    fn request(
-        &self,
-        action: &str,
-        token: Option<u64>,
-        manual: bool,
-        confirmed: bool,
-    ) -> Result<Value, String> {
-        let body =
-            json!({"action":action,"token":token,"expectedIdentity":self.identity,"manual":manual,"confirmed":confirmed}).to_string();
-        let request = format!("POST /api/host/update HTTP/1.1\r\nHost: {}:{}\r\n{}: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            self.host,self.port,HOST_SHELL_TOKEN_HEADER,self.token,body.len(),body);
-        let reply: HostApiEnvelope<Value> = request_loopback_json_until(
-            &self.host,
-            &self.port,
-            &request,
-            Instant::now() + Duration::from_secs(45),
-        )
-        .map_err(|error| error.to_string())?;
-        reply.into_data().map_err(|error| error.to_string())
-    }
-}
-fn local_host(app: &AppHandle) -> Result<Option<Host>, String> {
-    let processes = app.state::<HostProcessGroup>();
-    let state = processes
-        .state
-        .lock()
-        .map_err(|_| "Host process lock poisoned")?;
-    if state.active_startups > 0 || state.shutting_down {
-        return Err("Host startup or shutdown is in progress".into());
-    }
-    Ok(state.children.as_ref().map(|children| Host {
-        host: children.daemon_host.clone(),
-        port: children.daemon_port.clone(),
-        token: children.daemon_token.clone(),
-        identity: children.daemon_identity.clone(),
-    }))
-}
 fn save_restart(restart: &Restart) -> Result<(), String> {
     let mut file = tempfile::NamedTempFile::new_in(&runtime_locations().user.data_dir)
         .map_err(|error| error.to_string())?;

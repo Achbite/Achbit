@@ -95,7 +95,9 @@ achbit-cli start-host
 achbit-cli stop-host
 ```
 
-GUI, CLI and TUI share the Host. An automatically started Host stays alive while clients or unfinished tasks need it, including tasks waiting for decisions. A persistent Host started with `start-host` needs explicit shutdown. Reading history does not resume execution or recover lost runtime bindings.
+GUI, CLI and TUI share the Host. After a local desktop window connects, closing the window or quitting the GUI leaves that Host running. Reopening the app reconnects to it. To stop both the desktop and its local shared Host, choose **Settings → About Achbit → Quit Achbit**. If work is active or settings edits are unsaved, confirm before exiting; this affects other clients of that Host too. The action does not shut down a remote SSH Host. `achbit-cli stop-host` also explicitly stops the selected Host.
+
+A Host used only by ordinary CLI/TUI clients still exits after the last client disconnects and no work remains. Running tasks, in-flight cleanup and tasks waiting for decisions remain work. A recorded cleanup failure by itself does not keep an automatic Host alive or count as a successful release. An explicitly persistent `start-host` still requires explicit shutdown. Reading history does not resume execution or recover lost runtime bindings.
 
 **Settings → General → Prevent idle sleep during tasks** (`workbench.preventIdleSleep`, on by default) applies to work from all clients sharing the Host. Achbit requests that the system stay awake during execution and timed waits. Idle sessions and tasks only waiting for your input do not keep it awake. Turning the setting off releases Achbit’s request without stopping a task; turning it back on applies to work already in progress. It does not keep the display on or change the system’s power settings.
 

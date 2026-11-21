@@ -1,7 +1,7 @@
 import type { ApiResponse, HealthStatus } from '@achbit/protocol';
 import { activeT } from '../i18n';
 import * as api from './apiClient';
-import { isRemoteHost } from './hostTarget';
+import { getHostConnectionHeaders, isRemoteHost } from './hostTarget';
 
 type TauriCoreApi = {
   invoke?: <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -174,6 +174,24 @@ export function requestCloseAppWindow(): void {
 
 export async function closeAppWindow(): Promise<void> {
   await windowCommand('close', () => window.close());
+}
+
+export type QuitAchbitReply = { status: 'confirmationRequired'; hostId: string; active: boolean } | { status: 'exiting' };
+
+function localQuitInvoke() {
+  // A native bridge by itself (e.g. a secondary WebView) is not a bound local workbench.
+  if (typeof window === 'undefined' || isRemoteHost() || !getHostConnectionHeaders()['x-achbit-host-ui-token']) return null;
+  return tauriInvoke();
+}
+export function canQuitAchbit(): boolean { return localQuitInvoke() !== null; }
+
+export async function quitAchbit(confirmHostId: string | null, hasUnsavedChanges: boolean): Promise<QuitAchbitReply> {
+  const invoke = localQuitInvoke();
+  if (!invoke) throw new Error('local_quit_unavailable');
+  const reply = await invoke<QuitAchbitReply>('achbit_quit', { confirmHostId, hasUnsavedChanges });
+  if (reply?.status === 'exiting' || (reply?.status === 'confirmationRequired' && typeof reply.hostId === 'string'
+    && reply.hostId.trim() && typeof reply.active === 'boolean')) return reply;
+  throw new Error('invalid_achbit_quit_reply');
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
