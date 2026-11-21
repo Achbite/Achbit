@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SessionActor, SessionService } from '../dist/index.js';
 import { readConversation } from '../dist/local-agent/conversationRead.js';
+import { loopSnapshot } from '../dist/local-agent/loopFacts.js';
+import { reduceSession } from '../dist/local-agent/reducer.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { completedExecutionReply, emptyKernel, fakeRunPreparation, messageCommand, providerEvent,
   readEvents, recordedSubagentSettings, singleEvent, waitForProjection, workspaceBinding } from './local-agent-fixtures.mjs';
@@ -18,7 +20,7 @@ const preparationOptions = { tools: [shell], contextWindowTokens: 100000, permis
 
 // Generate actual commit boundaries once. Nothing from the live Actors, commands, or Kernel
 // adapter survives in the recovered journal except the selected durable event prefixes.
-async function recordedFamily(finalReview = 'allow') {
+async function recordedFamily(finalReview = 'allow', { finishOnline = false } = {}) {
   const journal = new InMemoryCommandJournal(), done = Promise.withResolvers(), firstWait = Promise.withResolvers();
   let service, childId, gateRequest, publishChild, reviews = 0;
   // Model the journal port's inherited permission publication. The parent command is real;
@@ -40,15 +42,17 @@ async function recordedFamily(finalReview = 'allow') {
     } }, provider: { async *stream(request) {
       const emit = (type, data) => providerEvent(request.requestId, type, data);
       if (request.purpose === 'approvalReview') {
-        yield emit('assistant.message', { content: ++reviews === 1 || finalReview === 'invalid' ? 'not valid JSON'
-          : JSON.stringify({ decision: finalReview, reason: 'Reviewed the original check.' }) });
+        reviews++;
+        yield emit('assistant.message', { content: !finishOnline && (reviews === 1 || finalReview === 'invalid') ? 'not valid JSON'
+          : JSON.stringify({ decision: inherited ? 'allow' : finalReview, reason: 'Reviewed the original check.' }) });
       } else if (++turns === 1 && sessionId === root) {
         yield emit('tool.call', { callId: 'spawn', name: 'agent', input: { action: 'spawn', preset: 'collaboration', name: 'Executor', task: 'Run the check.', delivery: 'wait' } });
       } else if (turns === 1) {
         childId = sessionId;
         yield emit('tool.call', { callId: 'gated', name: 'bash', input: { workspace: 'primary', command: 'printf checked' } });
       } else yield emit('text.delta', { text: 'Check complete.' });
-      yield emit('completed', {});
+      yield emit('completed', finishOnline && request.purpose === 'approvalReview'
+        ? { usage: { inputTokens: 80, outputTokens: 12, contextWindowTokens: preparationOptions.contextWindowTokens } } : {});
     } }, kernel: emptyKernel({ async execute(input) {
       if (input.nonWorkspaceAuthority) return completedExecutionReply(input, { exitCode: 0 });
       gateRequest = structuredClone(input);
@@ -64,7 +68,7 @@ async function recordedFamily(finalReview = 'allow') {
       const event = input.event;
       if (event.type === 'run.settled' && (event.sessionId === root || event.payload.outcome !== 'completed')) done.resolve(event);
       if (event.type === 'run.waiting' && event.sessionId === childId && event.payload.reason === 'approval') (inherited ? firstWait : done).resolve(event);
-      if (inherited && event.type === 'approval.requested' && event.payload.preview.approvalReviewer === 'agent') done.resolve(event);
+      if (inherited && !finishOnline && event.type === 'approval.requested' && event.payload.preview.approvalReviewer === 'agent') done.resolve(event);
     },
     failed(_id, error) { done.reject(error); },
   });
@@ -80,7 +84,11 @@ async function recordedFamily(finalReview = 'allow') {
       Object.assign(policy, patch); publishChild({ ...policy });
     }
     const checkpoint = await done.promise;
-    if (inherited) assert.equal(checkpoint.type, 'approval.requested', JSON.stringify(checkpoint.payload));
+    if (finishOnline) {
+      assert.equal(checkpoint.payload.outcome, 'completed', JSON.stringify(checkpoint.payload));
+      assert.equal(checkpoint.sessionId, root);
+      assert.equal(reviews, 1);
+    } else if (inherited) assert.equal(checkpoint.type, 'approval.requested', JSON.stringify(checkpoint.payload));
     else {
       assert.equal(checkpoint.type === 'run.settled' ? checkpoint.payload.outcome : checkpoint.payload.reason,
         finalReview === 'allow' ? 'completed' : 'approval', JSON.stringify(checkpoint.payload));
@@ -88,9 +96,32 @@ async function recordedFamily(finalReview = 'allow') {
     }
     const owner = await readEvents(journal, root), child = await readEvents(journal, childId);
     return { owner: owner.slice(0, singleEvent(owner, inherited ? 'session.permissions.updated' : 'agent.task.started').sequence),
-      child: inherited ? child.slice(0, checkpoint.sequence) : child, childId, gateRequest };
+      child: inherited && !finishOnline ? child.slice(0, checkpoint.sequence) : child, childId, gateRequest };
   } finally { await service.dispose(true); }
 }
+
+test('an online inherited policy change reviews the replacement gate and finishes the original child call once', async () => {
+  const { child, childId } = await recordedFamily('inherited', { finishOnline: true });
+  const gates = child.filter(e => e.type === 'approval.requested');
+  assert.deepEqual(gates.map(e => e.payload.preview.approvalReviewer), ['user', 'agent']);
+  const [before, after] = gates;
+  assert.equal(before.callId, after.callId);
+  assert.notEqual(before.payload.approvalId, after.payload.approvalId);
+  const request = child.find(e => e.type === 'context.composed' && e.payload.purpose === 'approvalReview');
+  const blocked = loopSnapshot(childId, child.slice(0, request.sequence - 1)).state;
+  assert.equal(blocked.run.waitingReason, 'approval');
+  const ordinary = child.find(e => e.type === 'context.composed' && e.payload.purpose === 'agent');
+  assert.throws(() => reduceSession(blocked, { ...ordinary, sequence: request.sequence }), /provider_request_run_not_active/u);
+  assert.equal(singleEvent(child, 'context.updated').payload.providerRequestId, request.payload.providerRequestId);
+  const resolution = singleEvent(child, 'approval.resolved');
+  assert.deepEqual([resolution.runId, resolution.callId, resolution.payload.approvalId, resolution.payload.source],
+    [before.runId, before.callId, after.payload.approvalId, 'agent']);
+  const effect = singleEvent(child, 'tool.completed');
+  assert.equal(effect.callId, before.callId);
+  assert.equal(effect.payload.record.outcome, 'completed');
+  assert.ok(effect.sequence > resolution.sequence);
+  assert.equal(singleEvent(child, 'run.settled').payload.outcome, 'completed');
+});
 
 async function restore(t, family, cut, { alreadyHandedOff = false, holdLookup = false, oldWait = false } = {}) {
   const { childId, child, owner } = family, journal = new InMemoryCommandJournal();
