@@ -1574,6 +1574,10 @@
         "compact": "紧凑"
       }
     },
+    "workbench.preventIdleSleep": {
+      "label": "任务运行时防止自动休眠",
+      "description": "任务运行时让电脑保持唤醒，屏幕仍可熄灭。关闭后立即恢复系统的休眠策略。"
+    },
     "gui.autoUpdate": {
       "label": "自动更新",
       "description": "自动检查并下载更新，Achbit 空闲后安装和重启；操作其他软件不影响空闲判定。关闭后可在“关于 Achbit”中检查更新，或点击已就绪的更新箭头安装。"

@@ -106,6 +106,17 @@ async fn observe(state: &HostState) -> Result<(), String> {
         .session_service
         .subscribe_events()
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let mut preferences = state
+        .gui
+        .lock()
+        .expect("gui state lock")
+        .settings_changes
+        .subscribe();
+    let enabled = || {
+        crate::settings_api::prevent_idle_sleep(
+            &state.gui.lock().expect("gui state lock").user_settings,
+        )
+    };
     let kernel_changes = services.local_agent.kernel.activity_changed();
     let mut power = Power::<platform::Lease>::default();
     loop {
@@ -125,31 +136,28 @@ async fn observe(state: &HostState) -> Result<(), String> {
                 }
             }
         }
-        let service = services.session_service.clone();
-        let activity = tokio::select! {
-            _ = wait_for_host_shutdown() => { power.disable().await; return Ok(()); },
-            result = tokio::task::spawn_blocking(move || service.request("activity", serde_json::json!({}))) => {
-                result.map_err(|error| error.to_string())?
-                    .map_err(|error| format!("{}: {}", error.code, error.message))?
+        let activity = work_requires_awake(&services);
+        tokio::pin!(activity);
+        let wanted = loop {
+            // Off releases immediately, even if a previous activity read is still in flight.
+            if !enabled()? {
+                break false;
+            }
+            tokio::select! {
+                _ = wait_for_host_shutdown() => { power.disable().await; return Ok(()); },
+                changed = preferences.changed() => changed.map_err(|_| "Host settings notifications closed")?,
+                result = &mut activity => break result? && enabled()?,
             }
         };
-        let awake = activity
-            .get("keepAwake")
-            .and_then(serde_json::Value::as_bool)
-            .ok_or("Invalid Session keepAwake activity response")?;
-        let executing = services
-            .local_agent
-            .kernel
-            .has_active_work()
-            .map_err(|error| format!("{}: {}", error.code, error.message))?;
         tokio::select! {
             _ = wait_for_host_shutdown() => { power.disable().await; return Ok(()); },
-            result = power.update(awake || executing, platform::Lease::acquire()) => {
+            result = power.update(wanted, platform::Lease::acquire()) => {
                 if let Err(error) = result { eprintln!("host_power_unavailable: {error}"); }
             },
         }
         tokio::select! {
             _ = wait_for_host_shutdown() => { power.disable().await; return Ok(()); },
+            changed = preferences.changed() => changed.map_err(|_| "Host settings notifications closed")?,
             _ = &mut kernel_changed => {},
             event = changes.recv() => match event {
                 Ok(crate::session_events::SessionNotification::Error { code, message }) => return Err(format!("{code}: {message}")),
@@ -162,6 +170,27 @@ async fn observe(state: &HostState) -> Result<(), String> {
             },
         }
     }
+}
+
+async fn work_requires_awake(
+    services: &crate::host_runtime::ExecutionServices,
+) -> Result<bool, String> {
+    let service = services.session_service.clone();
+    let activity =
+        tokio::task::spawn_blocking(move || service.request("activity", serde_json::json!({})))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let awake = activity
+        .get("keepAwake")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or("Invalid Session keepAwake activity response")?;
+    let executing = services
+        .local_agent
+        .kernel
+        .has_active_work()
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    Ok(awake || executing)
 }
 
 #[cfg(test)]

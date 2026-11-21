@@ -452,9 +452,22 @@ pub(crate) async fn llm_probe(
     }
 }
 
+const PREVENT_IDLE_SLEEP: &str = "workbench.preventIdleSleep";
+const DEFAULT_PREVENT_IDLE_SLEEP: bool = true;
+
+pub(crate) fn prevent_idle_sleep(settings: &Value) -> Result<bool, String> {
+    match settings.get(PREVENT_IDLE_SLEEP) {
+        None => Ok(DEFAULT_PREVENT_IDLE_SLEEP), // A reset removes the override.
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| format!("{PREVENT_IDLE_SLEEP} 必须是布尔值。")),
+    }
+}
+
 pub(crate) fn default_user_settings() -> Value {
     json!({
         "workbench.language": "zh-CN",
+        (PREVENT_IDLE_SLEEP): DEFAULT_PREVENT_IDLE_SLEEP,
         "workbench.styleTokenOverrides": "{}",
         "workbench.uiPlugins": "[]",
         "agent.systemPrompt": "",
@@ -509,6 +522,7 @@ pub(crate) fn default_user_settings() -> Value {
 }
 
 pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), String> {
+    prevent_idle_sleep(settings)?;
     if let Some(presets) = settings.get("agent.subagents.presets") {
         let valid = presets
             .as_str()
@@ -652,6 +666,23 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
 #[cfg(test)]
 mod context_management_tests {
     use super::*;
+
+    #[test]
+    fn idle_sleep_preference_defaults_on_and_applies_immediately() {
+        let key = "workbench.preventIdleSleep";
+        let mut settings = default_user_settings();
+        assert_eq!(settings[key], true);
+        assert!(!setting_activates_at_next_run(key));
+        settings[key] = json!(false);
+        validate_agent_runtime_settings(&settings).unwrap();
+        assert!(!prevent_idle_sleep(&settings).unwrap());
+        merge_object(&mut settings, &json!({(key): null}));
+        assert!(prevent_idle_sleep(&settings).unwrap());
+        for invalid in [json!("false"), json!(0), Value::Null] {
+            settings[key] = invalid;
+            assert!(validate_agent_runtime_settings(&settings).is_err());
+        }
+    }
 
     #[test]
     fn automatic_context_defaults_and_next_run_validation() {

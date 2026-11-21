@@ -97,6 +97,8 @@ achbit-cli stop-host
 
 GUI, CLI and TUI share the Host. An automatically started Host stays alive while clients or unfinished tasks need it, including tasks waiting for decisions. A persistent Host started with `start-host` needs explicit shutdown. Reading history does not resume execution or recover lost runtime bindings.
 
+**Settings → General → Prevent idle sleep during tasks** (`workbench.preventIdleSleep`, on by default) applies to work from all clients sharing the Host. Achbit requests that the system stay awake during execution and timed waits. Idle sessions and tasks only waiting for your input do not keep it awake. Turning the setting off releases Achbit’s request without stopping a task; turning it back on applies to work already in progress. It does not keep the display on or change the system’s power settings.
+
 Switching conversations changes the view, not the previous task. Reopening a GUI does not retarget a waiting run; **Continue in this window** explicitly rebinds future requests. Earlier pending calls retain their original target. Observe again after rebinding.
 
 ## Models and context

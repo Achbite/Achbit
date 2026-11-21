@@ -32,6 +32,7 @@ const GENERAL_KEYS = [
   'gui.showContextRail',
   'gui.showReasoning',
   'gui.autoUpdate',
+  'workbench.preventIdleSleep',
   'gui.completionSound.foreground',
   'gui.usageWidget.enabled',
   'gui.usageWidget.visibility',

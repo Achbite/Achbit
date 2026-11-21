@@ -1574,6 +1574,10 @@
         "compact": "Compact"
       }
     },
+    "workbench.preventIdleSleep": {
+      "label": "Prevent idle sleep during tasks",
+      "description": "Keep the computer awake while tasks run. The display can still turn off. Turn this off to let the system manage sleep as usual."
+    },
     "gui.autoUpdate": {
       "label": "Automatic updates",
       "description": "Check and download updates automatically, then install and restart when Achbit is idle. Activity in other apps does not delay updates. When disabled, check from About Achbit or click the ready update arrow to install."
