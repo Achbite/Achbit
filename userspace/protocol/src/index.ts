@@ -10,5 +10,6 @@ export { isErrorDiagnostics, isLocalAgentErrorValue, providerNeedsContinuation, 
 
 export * from './permissions.js';
 export * from './agentRecipe.js';
+export * from './agentTeam.js';
 
 export * from './processes.js';

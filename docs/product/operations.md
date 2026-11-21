@@ -70,6 +70,8 @@ Call `agent` with `action: models` for the current operation schemas. When enabl
 
 The built-in templates are `analysis` (read exact file references, return findings, and send questions to its task owner) and `collaboration` (also communicate with teammates). Permissions and runtime configuration inherit from the parent within each template's tool selection. Per-task tool, permission and Loop overrides require **Full configuration** in the main conversation; ordinary members select configured templates and cannot override permissions or Loop configuration.
 
+For task-local teams, the root can give direct peers a shared `peerGroup` and a worker a closed `helpers` menu with per-template limits. `fileScope` narrows the permitted workspace file effects; it never grants writes. See [task-local teams](model-services.md#task-local-teams) for a front-end/back-end example. Quality review is ordinary delegated work, not execution approval.
+
 Use `spawn` with `delivery: async` to overlap independent work after child startup, or `delivery: wait` when the next step depends on the child. A child can send findings or questions with `agent` → `send`, continue independent work, or use `session` → `wait` when it needs a reply. Messages interrupt result waits; final results arrive automatically at a model request boundary. Do not repeatedly query status to drive collaboration.
 
 Await final results and verify them. Completed tasks release execution automatically; the coordinator uses `assign` to give an idle retained member another task with its original Session, model and configuration. `close` retires an idle member, not an active task. Use `cancel` for owned active work. `send` delivers a message to an active task, not authorization or a new assignment.

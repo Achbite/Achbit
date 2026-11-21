@@ -1,4 +1,5 @@
 import type { AgentRecipe } from './agentRecipe.js';
+import { decodeAgentHelpers, teamKey, type AgentHelperSpec } from './agentTeam.js';
 import type { UserSettings } from './userSettings.js';
 import type { ShellAuthorizationScope } from './permissions.js';
 import type { LlmReasoningEffort, LlmThinkingMode } from './llm.js';
@@ -47,6 +48,8 @@ export type SessionOperation =
   | { action: 'wait'; timeoutSeconds?: number };
 
 export interface AgentContext {
+  peerGroup?: string;
+  helpers?: AgentHelperSpec[];
   capabilities: AgentCapabilities;
   configuration?: AgentConfiguration;
   model?: AgentModelConfiguration;
@@ -128,7 +131,7 @@ export function decodeAgentContext(value: unknown): AgentContext {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent_context_invalid');
   const item = value as Record<string, unknown>;
   const fields = ['ownerSessionId', 'parentSessionId', 'parentRunId', 'parentCallId'];
-  if (Object.keys(item).some(key => ![...fields, 'capabilities', 'configuration', 'model'].includes(key))
+  if (Object.keys(item).some(key => ![...fields, 'capabilities', 'configuration', 'model', 'peerGroup', 'helpers'].includes(key))
     || fields.some(key => typeof item[key] !== 'string' || !item[key])) {
     throw new Error('agent_context_invalid');
   }
@@ -140,7 +143,9 @@ export function decodeAgentContext(value: unknown): AgentContext {
       || model.thinking !== null && model.thinking !== 'enabled' && model.thinking !== 'disabled') throw new Error('agent_model_configuration_invalid');
     decodeAgentModelParameters(model.parameters);
   }
-  return { capabilities: decodeAgentCapabilities(item.capabilities), ownerSessionId: item.ownerSessionId as string,
+  return { ...(item.peerGroup !== undefined ? {peerGroup:teamKey(item.peerGroup)} : {}),
+    ...(item.helpers !== undefined ? {helpers:decodeAgentHelpers(item.helpers)} : {}),
+    capabilities: decodeAgentCapabilities(item.capabilities), ownerSessionId: item.ownerSessionId as string,
     parentSessionId: item.parentSessionId as string, parentRunId: item.parentRunId as string, parentCallId: item.parentCallId as string,
     ...(item.configuration !== undefined ? { configuration: decodeAgentConfiguration(item.configuration) } : {}),
     ...(item.model !== undefined ? { model: structuredClone(item.model) as AgentModelConfiguration } : {}) };
@@ -179,7 +184,8 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
 
 export type AgentOperation =
   | { action: 'models' }
-  | { action: 'spawn'; preset?: string; capabilities?: Partial<AgentCapabilities>;
+  | { action: 'spawn'; preset?: string | null; peerGroup?: string; helpers?: AgentHelperSpec[];
+      fileScope?: AgentRecipe['fileScope']; capabilities?: Partial<AgentCapabilities>;
       task: string; name: string; delivery: 'wait' | 'async';
       profileId?: string; reasoningEffort?: LlmReasoningEffort;
       loop?: Partial<Pick<AgentConfiguration, 'controls' | 'compaction'>>;
@@ -204,6 +210,7 @@ export interface AgentTaskResult {
 }
 
 export interface AgentTaskProjection {
+  helperId?: string;
   taskId: string;
   agentSessionId: string;
   capabilities: AgentCapabilities;
@@ -1037,7 +1044,7 @@ export type SessionEvent =
       items: Array<{ artifactId: string; label: string; deliveryId: string }>;
     } })
   | (SessionEventBase & { type: 'agent.task.created'; runId: string; callId: string; payload: {
-      taskId: string; agentSessionId: string; capabilities: AgentCapabilities; createsAgent: boolean; displayName: string; text: string; delivery: 'wait' | 'async';
+      taskId: string; agentSessionId: string; helperId?: string; capabilities: AgentCapabilities; createsAgent: boolean; displayName: string; text: string; delivery: 'wait' | 'async';
     } })
   | (SessionEventBase & { type: 'agent.task.started'; runId: string; payload: { taskId: string; childRunId: string } })
   | (SessionEventBase & { type: 'agent.task.completed'; runId: string; payload: { taskId: string; result: AgentTaskResult } })
@@ -2509,7 +2516,7 @@ export interface RunLifecycleRead {
 export type AgentLifecycleEvent =
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'session.created' }>, 'agentContext'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.created' }>,
-      'taskId' | 'agentSessionId' | 'capabilities' | 'createsAgent' | 'displayName' | 'delivery'>
+      'taskId' | 'agentSessionId' | 'capabilities' | 'createsAgent' | 'displayName' | 'delivery' | 'helperId'>
   | RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.started' }>, 'taskId' | 'childRunId'>
   | (RunLifecycleEventFields<Extract<SessionEvent, { type: 'agent.task.completed' }>, 'taskId'>
       & { payload: { result: Pick<AgentTaskResult, 'outcome'> } })

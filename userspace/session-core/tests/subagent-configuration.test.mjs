@@ -9,7 +9,7 @@ import { assertRuntimeContract } from './support/runtimeContract.mjs';
 import { emptyKernel, fakeRunPreparation, messageCommand, providerEvent, readEvents, recordedSubagentSettings, waitUntil, workspaceBinding } from './local-agent-fixtures.mjs';
 
 const caps = { messaging: true, continuation: true, delegation: true };
-const customFields = ['capabilities','reasoningEffort','context','loop','tools','productComponents','permissions','runner','permissionPolicy','workspaceSandbox'];
+const customFields = ['capabilities','reasoningEffort','context','loop','tools','productComponents','permissions','runner','permissionPolicy','workspaceSandbox','peerGroup','helpers','fileScope'];
 const call = (request, id, input) => providerEvent(request.requestId, 'tool.call', { callId:id, name:'agent', input });
 const answer = (request, text) => providerEvent(request.requestId, 'text.delta', { text });
 const textOf = request => JSON.stringify(request.messages);
@@ -77,6 +77,47 @@ test('default template discovery omits custom fields and full configuration expo
   assert.deepEqual(decodeSessionControlCall('call:product','agent',input).operation,input);
   const analysis=agentPresets({presets:'[]'})[0];
   assert.deepEqual(analysis.tools,{kernel:['fs.read'],controls:['agent','session'],plugins:false});
+});
+
+test('a task-owned team recipe accepts a scoped helper and an explicit fresh composition', () => {
+  const input = {action:'spawn', name:'Backend', task:'Produce one page.', delivery:'async', preset:null,
+    peerGroup:'orders', capabilities:{messaging:true,delegation:true}, helpers:[{id:'tester',preset:'collaboration',maxCalls:1,
+      recipe:{tools:{kernel:['fs.read','fs.write'],controls:['agent','session'],plugins:false},
+        fileScope:{workspaceId:'workspace:test',read:['protocol','tests'],write:['tests']}}}]};
+  assert.deepEqual(decodeSessionControlCall('team:spawn','agent',input).operation,input);
+  assertRuntimeContract('AgentOperation',input);
+  assert.throws(()=>decodeSessionControlCall('team:bad','agent',{...input,helpers:[input.helpers[0],input.helpers[0]]}));
+});
+
+test('scoped worker can create its selected helper once; the leaf and rejected requests reserve no further tasks', async t => {
+  let worker;
+  const f = await fixture(t,async function*({owner,sessionId,request,turn,journal}) {
+    if (sessionId === owner) {
+      if (turn === 1) yield call(request,'team-worker',{action:'spawn',name:'Worker',task:'Use your helper.',delivery:'wait',preset:'collaboration',peerGroup:'orders',helpers:[{id:'reader',preset:'analysis',maxCalls:1}]});
+      else yield answer(request,'Verified worker.');
+    } else if ((await readEvents(journal,sessionId))[0].payload.agentContext.parentSessionId === owner) {
+      worker=sessionId;
+      if (turn === 1) yield call(request,'worker-menu',{action:'models'});
+      else if (turn === 2) {
+        const menu=JSON.parse(request.messages.findLast(m=>m.role==='tool').content);
+        assert.deepEqual(menu.presets.map(p=>[p.id,p.remainingCalls]),[['reader',1]]);
+        const spawn = menu.operations.find(o=>o.action==='spawn').inputSchema;
+        assert.ok(spawn.required.includes('preset')); assert.equal(spawn.properties.profileId,undefined);
+        yield call(request,'wrong-helper',{action:'spawn',preset:'collaboration',name:'Unlisted',task:'Not permitted.',delivery:'async'});
+      } else if(turn===3) {
+        assert.match(textOf(request),/agent_helper_not_allowed/);
+        yield call(request,'allowed-helper',{action:'spawn',preset:'reader',name:'Reader',task:'Read evidence.',delivery:'wait'});
+      } else if(turn===4) yield call(request,'over-budget',{action:'spawn',preset:'reader',name:'Extra',task:'Not permitted.',delivery:'async'});
+      else { assert.match(textOf(request),/agent_helper_call_limit/); yield answer(request,'Worker done.'); }
+    } else {
+      const ctx=(await readEvents(journal,sessionId))[0].payload.agentContext;
+      assert.equal(ctx.capabilities.delegation,false); assert.equal(ctx.capabilities.messaging,'parent'); assert.equal(ctx.peerGroup,undefined);
+      yield answer(request,'Leaf done.');
+    }
+  },true);
+  const root=await f.run(); assert.equal(root.agentTasks.length,1);
+  const child=await f.service.snapshot(worker); assert.deepEqual(child.agentTasks.map(t=>[t.helperId,t.status]),[['reader','completed']]);
+  assert.equal(root.subagentSettings.presets,'[]');
 });
 
 test('template mode rejects custom execution fields before admitting a child', async t => {

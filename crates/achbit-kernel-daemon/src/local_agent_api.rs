@@ -635,6 +635,7 @@ impl LocalAgentRuntime {
         let mut permissions = LocalAgentPermissionPolicy::from_settings(settings)
             .map_err(RunPreparationError::from)?;
         permissions.constraints = policy_constraints;
+        permissions.file_scope = recipe.file_scope.clone();
         let web_search = if recipe.tools.allows_kernel("web.search") {
             prepare_web_search_binding(
                 &provider_runtime,

@@ -37,6 +37,8 @@ For tools, plugins, CLI/Debug and Provider-facing interfaces, trace the declarat
 
 Write positive, clear descriptions of capabilities, inputs, outputs and meaningful limits. Include necessary detail without optimizing for word count. Keep discovery, activation, permission, execution and verified completion distinct. For delegated work, separate the coordinator's readiness or scope messages from a tool grant. Exercise the human or configured reviewer path against the original child call; a message to the child is not an approval response. PATH discovery establishes a command location; sandbox dependencies and service readiness need evidence from that execution environment. Check the actual packaged entrypoint as well as source, and record unverified interfaces explicitly.
 
+For configurable teams, verify the same peer relationship in discovery and delivery, and the same helper menu in discovery and creation. Capture budgets in task facts before starting work. A task description or file-tool list does not restrict actual file effects: exercise an allowed target and a neighboring denied target through the Kernel. Use a sample produced by one worker and actually consumed by its peer to establish end-to-end collaboration.
+
 ## Verify only what changed
 
 Use the project's container for dependencies, ordinary builds and tests. Keep native packaging within the authorized platform scope. Debug uses its own workspace and state root; leave the ordinary product alone.

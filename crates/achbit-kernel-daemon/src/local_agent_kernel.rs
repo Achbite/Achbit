@@ -199,6 +199,7 @@ enum PreparedEffectScope {
 /// selected here, never from model-supplied permission switches.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalAgentPermissionPolicy {
+    pub(crate) file_scope: Option<crate::local_agent_recipe::AgentFileScope>,
     pub(crate) constraints: crate::local_agent_recipe::PolicyConstraints,
     workspace_mutation: WorkspaceMutationMode,
     requested_plan: Option<RequestedPlanStage>,
@@ -292,6 +293,7 @@ impl LocalAgentPermissionPolicy {
         }
         Ok(Self {
             constraints: Default::default(),
+            file_scope: None,
             shell,
             shell_full_access,
             command_rules,
@@ -3030,6 +3032,43 @@ fn catalog_error(error: ToolCatalogError) -> LocalAgentKernelError {
 }
 
 fn policy_denial(prepared: &PreparedEffect) -> Option<Admission> {
+    // Captured recipe is immutable; other admission checks still run on every allowed target.
+    if let Some(scope) = &prepared.generation.permissions.file_scope {
+        let read = prepared.operation == "fs.read";
+        let is_file = matches!(
+            &prepared.input,
+            PreparedToolInput::Builtin(
+                KernelCanonicalInvocation::FsRead { .. }
+                    | KernelCanonicalInvocation::FsWrite { .. }
+                    | KernelCanonicalInvocation::FsEdit { .. }
+                    | KernelCanonicalInvocation::FsDelete(_)
+            )
+        );
+        let within = prepared.workspace_id.as_deref() == Some(scope.workspace_id.as_str())
+            && is_file
+            && prepared.file_requests.is_empty()
+            && !prepared.private_resolved_targets.is_empty()
+            && prepared.workspace_root.as_deref().is_some_and(|root| {
+                prepared.private_resolved_targets.iter().all(|target| {
+                    Path::new(target)
+                        .strip_prefix(root)
+                        .ok()
+                        .is_some_and(|relative| {
+                            scope
+                                .write
+                                .iter()
+                                .chain(scope.read.iter().filter(|_| read))
+                                .any(|path| path == "." || relative.starts_with(path))
+                        })
+                })
+            });
+        if !within {
+            return Some(Admission::denied(
+                "agent_file_scope_denied",
+                "This operation is outside the assigned file-only scope.",
+            ));
+        }
+    }
     let constraints = prepared.permissions.constraints;
     if (!constraints.allow_host_execution || !constraints.allow_external_tools)
         && prepared.binding.uses_external_runtime()

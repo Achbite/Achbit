@@ -400,6 +400,8 @@ pub enum AgentMessagingScope {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentContext {
+    pub peer_group: Option<String>,
+    pub helpers: Option<Vec<Value>>,
     pub capabilities: AgentCapabilities,
     pub configuration: Option<AgentConfiguration>,
     pub model: Option<AgentModelConfiguration>,
@@ -472,6 +474,7 @@ pub struct AgentTaskResult {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentTaskProjection {
+    pub helper_id: Option<String>,
     pub task_id: String,
     pub agent_session_id: String,
     pub capabilities: AgentCapabilities,

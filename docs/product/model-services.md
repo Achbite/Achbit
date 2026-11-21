@@ -165,4 +165,20 @@ A root conversation stores its subagent configuration alongside its model choice
 
 Full subagent configuration is off by default. The model selects a template and an allowed profile. Enabling **Full configuration** (`agent.subagents.allowFullConfiguration`) exposes per-task model effort, context, controls, compaction, tools, capabilities, installed runner, product components, permission policy and sandbox choices to the coordinator through `agent` → `models`. This setting is independent of the **Full access** execution-permission preset. The built-in runner is `standard`; additional runners must already be installed, and recipes do not load executable code. Children retain the parent tool and permission limits. Explicit saved settings are preserved. Configuration catalogs and current contacts stay in discovery results; tool declarations remain stable while task progress changes.
 
+### Task-local teams
+
+With **Full configuration**, the root can use a template unchanged, override it for one `spawn`, or pass `preset: null` to compose a fresh instance. Omission still selects `analysis` for ordinary unscoped callers. Fresh instances inherit permitted components and default to owner messaging, continuation, and no delegation. No choice here edits saved templates.
+
+Give root-created workers `capabilities.messaging: true` and the same `peerGroup` to open a direct channel for this root run. A grouped worker and an ungrouped or differently grouped peer cannot discover or message one another. Their helpers do not join the group. Contact with an actual task owner and management of owned work are separate. Sending to an idle member still does not start a task. Start a new team for a new root run; reassigning an old member retains its recipe, not the old peer channel in a new run.
+
+For example, create the front end with `preset: "collaboration"`, `peerGroup: "orders"`, and `helpers: []`. Spawn the back end with the same group and this additional field (use an actual inherited project `workspaceId` returned by `agent` → `models`):
+
+```json
+{"helpers":[{"id":"test-writer","preset":"collaboration","maxCalls":1,"recipe":{"tools":{"kernel":["fs.read","fs.write","fs.edit"],"controls":["agent","session"],"plugins":false},"fileScope":{"workspaceId":"workspace:example","read":["protocol","src"],"write":["tests"]}}}]}
+```
+
+Member delegation must be enabled to grant a nonempty `helpers` menu. The worker chooses `preset: "test-writer"` and supplies only a task, name and delivery. Discovery and admission use the same menu; its per-entry budget counts admitted creations for that worker run, including a later failed start. A helper contacts its task owner, not its owner's peers. It cannot create another helper unless its own entry has a nested menu. Existing family-wide capacity limits still apply. Omitting the menu preserves previous template behavior.
+
+`fileScope` is a **ceiling, not a grant**. Paths are files or subtrees relative to one already bound workspace. `.` means its root; `[]` selects no paths. Writes also permit reading the selected targets. A scoped recipe uses only selected built-in file tools and no plugins, Shell or Host tools. Kernel checks the actual resolved target even if a broader Plan exists; inside the ceiling the ordinary permission, Plan, and revocation checks still apply. File paths and workspace bindings are not transferable permission receipts.
+
 Kernel prepares only the selected callable bindings. Session sends those tools, the task, relevant file addresses and active usage guidance to the model. Unstarted modules, disabled tools, plugin registration lists and internal policy/runtime configuration remain diagnostic facts, not model instructions. Enabled delegation retains proactive delegation guidance. Managed process activity and plugin activation are optional Session contributions over the same Loop and journal; container and other extension tools use the existing Kernel catalog disposal lifecycle.

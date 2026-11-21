@@ -2137,8 +2137,11 @@ fn validate_new_event(
                     "text",
                     "delivery",
                 ],
-                &[],
+                &["helperId"],
             )?;
+            if let Some(id) = payload.get("helperId") {
+                validate_team_key(id)?;
+            }
             for field in ["taskId", "agentSessionId"] {
                 validate_id(field, required_string(payload, field)?)?;
             }
@@ -5191,6 +5194,53 @@ fn validate_agent_capabilities(value: &Value) -> Result<(), LocalAgentStoreError
     Ok(())
 }
 
+fn validate_team_key(value: &Value) -> Result<(), LocalAgentStoreError> {
+    if value.as_str().is_some_and(|s| {
+        !s.is_empty()
+            && s.len() <= 64
+            && s.as_bytes()[0].is_ascii_alphanumeric()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+    }) {
+        Ok(())
+    } else {
+        Err(LocalAgentStoreError::new(
+            "agent_team_key_invalid",
+            "Invalid team identifier.",
+        ))
+    }
+}
+fn validate_helpers(value: &Value, depth: usize) -> Result<(), LocalAgentStoreError> {
+    let invalid = || LocalAgentStoreError::new("agent_helpers_invalid", "Invalid assistant menu.");
+    let entries = value
+        .as_array()
+        .filter(|v| v.len() <= 16 && depth <= 4)
+        .ok_or_else(invalid)?;
+    let mut ids = std::collections::BTreeSet::new();
+    for entry in entries {
+        exact_object(entry, &["id", "preset", "maxCalls"], &["recipe", "helpers"])?;
+        validate_team_key(&entry["id"])?;
+        let preset = required_string(entry, "preset")?;
+        if preset.trim().is_empty()
+            || preset.trim() != preset
+            || !ids.insert(required_string(entry, "id")?)
+            || !entry["maxCalls"]
+                .as_u64()
+                .is_some_and(|n| (1..=9_007_199_254_740_991).contains(&n))
+        {
+            return Err(invalid());
+        }
+        if let Some(recipe) = entry.get("recipe") {
+            crate::local_agent_recipe::AgentRecipe::decode(recipe)
+                .map_err(|e| LocalAgentStoreError::new("agent_recipe_invalid", e))?;
+        }
+        if let Some(next) = entry.get("helpers") {
+            validate_helpers(next, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_agent_context(
     value: &Value,
     session_id: &str,
@@ -5204,8 +5254,14 @@ pub(crate) fn validate_agent_context(
             "parentRunId",
             "parentCallId",
         ],
-        &["configuration", "model"],
+        &["configuration", "model", "peerGroup", "helpers"],
     )?;
+    if let Some(group) = value.get("peerGroup") {
+        validate_team_key(group)?;
+    }
+    if let Some(helpers) = value.get("helpers") {
+        validate_helpers(helpers, 1)?;
+    }
     if let Some(model) = value.get("model") {
         exact_object(
             model,

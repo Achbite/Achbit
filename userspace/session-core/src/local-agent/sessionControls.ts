@@ -16,6 +16,7 @@ import {
   isLlmReasoningEffort,
   decodeAgentContribution,
   decodeAgentRecipe,
+  decodeAgentHelpers, teamKey, teamKeyPattern,
   validatePermissionPatches,
   LLM_REASONING_EFFORTS,
   SESSION_CONTROL_INTERACTION_REQUEST,
@@ -246,7 +247,7 @@ export function agentTurnPolicy(input: Record<string, unknown>): 'tools' | 'agen
 
 /** Detailed contracts are returned by discovery, leaving the provider tool prefix stable. */
 export function agentOperationDefinitions({ messaging, delegation, continuation }: AgentCapabilities,
-  options: { fullConfiguration?: boolean; presetIds?: string[]; profileIds?: string[]; productComponentIds?: string[]; canSpawn?: boolean; allowChildDelegation?: boolean; coordinator?: boolean } = {}): JsonObject[] {
+  options: { fullConfiguration?: boolean; helperMenu?: boolean; presetIds?: string[]; profileIds?: string[]; productComponentIds?: string[]; canSpawn?: boolean; allowChildDelegation?: boolean; coordinator?: boolean } = {}): JsonObject[] {
   const operation = (action: string, description: string, properties: JsonObject = {}, required: string[] = []): JsonObject => ({
     action, description, turn: action === 'spawn' ? { async: 'agentCalls', wait: 'singleCall' }
       : agentTurnPolicies[action as AgentOperation['action']] === 'tools' ? 'independentTools'
@@ -258,13 +259,18 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
     operation('models', 'Discover available operations and model profiles.'),
     ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Permissions and configuration inherit from the parent. Select a template using the returned fields. model-services.md in productDocsPath has examples.', {
       task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
-      preset: { type: 'string', enum: options.presetIds ?? ['analysis', 'collaboration'], description: 'analysis reads referenced files and contacts its task owner; collaboration also works with teammates. Both retain their Session for follow-up tasks.' },
+      preset: { type: options.fullConfiguration ? ['string','null'] : 'string', enum: [...(options.presetIds ?? ['analysis', 'collaboration']), ...(options.fullConfiguration ? [null] : [])], description: 'Select an available template. In full configuration, null creates a fresh instance from inherited components, without a template.' },
+      ...(options.fullConfiguration && options.coordinator !== false ? {
+        peerGroup: {type:'string',pattern:teamKeyPattern,description:'Optional direct-peer group for sibling workers created in this root run. Both peers must have team messaging and the same group. Does not include their assistants.'},
+        helpers: {type:'array',maxItems:16,items:{type:'object',additionalProperties:false,required:['id','preset','maxCalls'],properties:{id:{type:'string',pattern:teamKeyPattern},preset:{type:'string',enum:options.presetIds},maxCalls:{type:'integer',minimum:1},recipe:{type:'object',description:'Optional task-only AgentRecipe overrides; fileScope limits actual file effects.'},helpers:{type:'array',description:'Optional nested menu with the same shape, at most four levels.'}}},description:'Closed menu of assistants for this worker, counted per entry per worker run. [] makes a leaf. Members choose an id, not custom overrides.'},
+        fileScope:{type:'object',additionalProperties:false,required:['workspaceId','read','write'],properties:{workspaceId:id,read:{type:'array',items:{type:'string'}},write:{type:'array',items:{type:'string'}}},description:'File-only ceiling in one returned workspace. Relative file/subtree paths; writes also permit reads. No Shell, plugins or external paths; Kernel permissions still apply.'},
+      } : {}),
       ...(options.coordinator !== false && options.fullConfiguration ? { capabilities: { type: 'object', additionalProperties: false, properties: {
         messaging: { enum: messaging === true ? [false, 'parent', true] : messaging === 'parent' ? [false, 'parent'] : [false], description: 'false: no messages; parent: only the parent; true: the related team.' },
         continuation: { type: 'boolean', ...(!continuation ? { const: false } : {}), description: 'Accept follow-up tasks in the same Session.' },
         delegation: { type: 'boolean', ...(options.allowChildDelegation === false ? { const: false } : {}), description: 'Create child agents.' },
       } } } : {}),
-      profileId: { ...id, ...(options.profileIds ? { enum: options.profileIds } : {}), description: 'Use a model allowed by the returned preset rules; omit to follow the selected preset.' },
+      ...(!options.helperMenu ? {profileId: { ...id, ...(options.profileIds ? { enum: options.profileIds } : {}), description: 'Use a model allowed by the returned preset rules; omit to follow the selected preset.' }} : {}),
       ...(options.coordinator !== false && options.fullConfiguration ? { reasoningEffort: { type: 'string', enum: [...LLM_REASONING_EFFORTS], description: 'Override using an effort supported by the selected model.' },
         context: { type: 'object', description: 'Optional context override. journal.parameters.maxTokens caps context including output reserve; omit to inherit.' } } : {}),
       ...(options.coordinator !== false && options.fullConfiguration ? { loop: { type: 'object', additionalProperties: false, properties: {
@@ -286,7 +292,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
         backendId: { type: 'string', description: 'platform-default or the observed available backend.' },
         requireIsolatedProcesses: { type: 'boolean', description: 'Run Shell commands through the selected isolation backend.' },
       } } } : {}),
-    }, ['task', 'name', 'delivery'])] : []),
+    }, ['task', 'name', 'delivery', ...(options.helperMenu ? ['preset'] : [])])] : []),
     ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
     ...(delegation && options.coordinator !== false && options.canSpawn !== false ? [
       operation('assign', 'Coordinator only: asynchronously assign a new task to an idle retained agent, preserving its Session, model and configuration. Use send for an active task.',
@@ -465,9 +471,9 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       assertExactKeys(input, ['action']);
       return { action: 'models' };
     case 'spawn': {
-      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents'],
-        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents']);
-      if (input.preset !== undefined) requiredText(input.preset, 'preset');
+      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope'],
+        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope']);
+      if (input.preset !== undefined && input.preset !== null) requiredText(input.preset, 'preset');
       if (input.capabilities !== undefined && ((!input.capabilities || typeof input.capabilities !== 'object' || Array.isArray(input.capabilities))
         || Object.entries(input.capabilities).some(([key, value]) => !['messaging', 'continuation', 'delegation'].includes(key)
           || typeof value !== 'boolean' && !(key === 'messaging' && value === 'parent')))) {
@@ -487,11 +493,13 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
         loop = Object.fromEntries(Object.entries(input.loop).map(([key, value]) => [key, decodeAgentContribution(value)]));
       }
       if (input.permissions !== undefined) validatePermissionPatches(input.permissions);
-      const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents']
+      const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'fileScope']
         .filter(key => input[key] !== undefined).map(key => [key, input[key]])));
       return { action: input.action, task: requiredText(input.task, 'task'), name: requiredText(input.name, 'name'), delivery: input.delivery,
         ...components,
-        ...(input.preset !== undefined ? { preset: input.preset as string } : {}),
+        ...(input.preset !== undefined ? { preset: input.preset as string | null } : {}),
+        ...(input.peerGroup !== undefined ? {peerGroup:teamKey(input.peerGroup)} : {}),
+        ...(input.helpers !== undefined ? {helpers:decodeAgentHelpers(input.helpers)} : {}),
         ...(input.capabilities !== undefined ? { capabilities: { ...input.capabilities } as Partial<AgentCapabilities> } : {}),
         ...(input.profileId !== undefined ? { profileId: requiredText(input.profileId, 'profileId') } : {}),
         ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}),

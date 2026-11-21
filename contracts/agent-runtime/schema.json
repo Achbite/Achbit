@@ -39,6 +39,12 @@
         "delegation": {"type": "boolean"}
       }
     },
+    "TeamKey": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$"},
+    "AgentHelpers": {"type":"array","maxItems":16,"items":{"type":"object","additionalProperties":false,"required":["id","preset","maxCalls"],"properties":{
+      "id":{"$ref":"#/$defs/TeamKey"},"preset":{"type":"string","minLength":1},"maxCalls":{"type":"integer","minimum":1,"maximum":9007199254740991},"recipe":{"$ref":"#/$defs/AgentRecipe"},"helpers":{"$ref":"#/$defs/AgentHelpers"}}}},
+    "AgentFileScope": {"type":"object","additionalProperties":false,"required":["workspaceId","read","write"],"properties":{
+      "workspaceId":{"$ref":"#/$defs/Id"},"read":{"$ref":"#/$defs/ScopePaths"},"write":{"$ref":"#/$defs/ScopePaths"}}},
+    "ScopePaths": {"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":1024}},
     "AgentOperation": {
       "oneOf": [
         {
@@ -50,7 +56,8 @@
           "required": ["action", "task", "name", "delivery"],
           "properties": {
             "action": {"const": "spawn"},
-            "preset": {"type": "string", "minLength": 1},
+            "preset": {"type": ["string","null"], "minLength": 1},
+            "peerGroup":{"$ref":"#/$defs/TeamKey"},"helpers":{"$ref":"#/$defs/AgentHelpers"},"fileScope":{"$ref":"#/$defs/AgentFileScope"},
             "capabilities": {
               "type": "object", "additionalProperties": false,
               "properties": {
@@ -146,6 +153,7 @@
     "AgentRecipe": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "fileScope":{"$ref":"#/$defs/AgentFileScope"},
         "productComponents": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}},
         "tools": {"$ref": "#/$defs/AgentToolSelection"},
         "profileId": {"$ref": "#/$defs/Id"},
@@ -164,6 +172,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["capabilities", "ownerSessionId", "parentSessionId", "parentRunId", "parentCallId"],
       "properties": {
+        "peerGroup":{"$ref":"#/$defs/TeamKey"},"helpers":{"$ref":"#/$defs/AgentHelpers"},
         "configuration": {"$ref": "#/$defs/AgentConfiguration"},
         "model": {"type": "object", "additionalProperties": false,
           "required": ["profileId", "model", "reasoningEffort", "thinking", "parameters"], "properties": {
@@ -199,6 +208,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["taskId", "agentSessionId", "capabilities", "displayName", "text", "delivery", "parentRunId", "status"],
       "properties": {
+        "helperId":{"$ref":"#/$defs/TeamKey"},
         "taskId": {"$ref": "#/$defs/Id"},
         "agentSessionId": {"$ref": "#/$defs/Id"},
         "capabilities": {"$ref": "#/$defs/AgentCapabilities"},
@@ -2457,6 +2467,7 @@
                     "$ref": "#/$defs/AgentCapabilities"
                   },
                   "createsAgent": {"type": "boolean"},
+                  "helperId":{"$ref":"#/$defs/TeamKey"},
                   "displayName": {
                     "type": "string",
                     "minLength": 1

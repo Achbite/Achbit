@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AgentRecipe {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_scope: Option<AgentFileScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
     #[serde(default)]
     pub tools: ToolSelection,
@@ -23,6 +25,59 @@ pub(crate) struct AgentRecipe {
     pub permission_policy: PermissionPolicySelection,
     #[serde(default)]
     pub workspace_sandbox: WorkspaceSandboxSelection,
+}
+
+/// A restriction on resolved file effects, not a grant or an extra workspace binding.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AgentFileScope {
+    pub workspace_id: String,
+    pub read: Vec<String>,
+    pub write: Vec<String>,
+}
+impl AgentFileScope {
+    fn validate(&self) -> Result<(), String> {
+        let valid = |path: &String| {
+            path == "."
+                || !path.is_empty()
+                    && path.len() <= 1024
+                    && !path
+                        .chars()
+                        .any(|c| c.is_control() || c == '\\' || c == ':')
+                    && path.split('/').all(|p| !matches!(p, "" | "." | ".."))
+        };
+        if self.workspace_id.trim().is_empty()
+            || self.workspace_id.trim() != self.workspace_id
+            || [&self.read, &self.write].iter().any(|v| {
+                v.len() > 64
+                    || !v.iter().all(valid)
+                    || v.iter().collect::<std::collections::BTreeSet<_>>().len() != v.len()
+            })
+        {
+            return Err("agent_file_scope_invalid".into());
+        }
+        Ok(())
+    }
+    fn covers_child(&self, child: &Self) -> bool {
+        let covers =
+            |root: &str, path: &str| root == "." || std::path::Path::new(path).starts_with(root);
+        self.workspace_id == child.workspace_id
+            && child
+                .write
+                .iter()
+                .all(|p| self.write.iter().any(|r| covers(r, p)))
+            && child
+                .read
+                .iter()
+                .all(|p| self.read.iter().chain(&self.write).any(|r| covers(r, p)))
+    }
+    pub fn file_tools(&self) -> Vec<String> {
+        let mut names = vec!["fs.read".into()];
+        if !self.write.is_empty() {
+            names.extend(["fs.write", "fs.edit", "fs.delete"].map(String::from));
+        }
+        names
+    }
 }
 
 /// This selection owns both declaration and dispatch membership for a task.
@@ -237,6 +292,7 @@ impl AgentRecipe {
             };
         }
         recipe.validate()?;
+        recipe.restrict_file_tools();
         Ok(recipe)
     }
 
@@ -249,7 +305,19 @@ impl AgentRecipe {
             })
     }
 
+    pub fn restrict_file_tools(&mut self) {
+        if let Some(scope) = &self.file_scope {
+            let allowed = scope.file_tools();
+            let selected = self.tools.kernel.get_or_insert_with(|| allowed.clone());
+            selected.retain(|tool| allowed.contains(tool));
+            self.tools.plugins = false;
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(scope) = &self.file_scope {
+            scope.validate()?;
+        }
         if self
             .profile_id
             .as_ref()
@@ -304,6 +372,14 @@ impl AgentRecipe {
 
     pub fn validate_child(&self, child: &Self) -> Result<(), String> {
         self.tools.validate_child(&child.tools)?;
+        if self.file_scope.as_ref().is_some_and(|parent| {
+            !child
+                .file_scope
+                .as_ref()
+                .is_some_and(|child| parent.covers_child(child))
+        }) {
+            return Err("agent_file_scope_not_grantable".into());
+        }
         let parent = self.constraints()?;
         let requested = child.constraints()?;
         if !parent.allow_host_execution && requested.allow_host_execution
@@ -405,6 +481,28 @@ pub(crate) fn inherit_permissions(parent: &Value, patch: Option<&Value>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_scope_keeps_tools_and_descendant_paths_inside_the_same_workspace() {
+        let scoped = |id: &str, read: &[&str], write: &[&str]| {
+            AgentRecipe::decode(&json!({
+                "fileScope":{"workspaceId":id,"read":read,"write":write},
+                "tools":{"kernel":["fs.read","fs.write","bash"],"plugins":true}
+            }))
+        };
+        let parent = scoped("workspace:src", &["contract"], &["tests"]).unwrap();
+        assert!(!parent.tools.plugins && !parent.tools.allows_kernel("bash"));
+        let child = scoped("workspace:src", &["tests/one"], &["tests/two"]).unwrap();
+        parent.validate_child(&child).unwrap();
+        for invalid in [
+            scoped("workspace:other", &[], &["tests"]),
+            scoped("workspace:src", &[], &["tests-other"]),
+            scoped("workspace:src", &["."], &[]),
+        ] {
+            assert!(parent.validate_child(&invalid.unwrap()).is_err());
+        }
+        assert!(scoped("workspace:src", &["../src"], &[]).is_err());
+    }
 
     #[test]
     fn task_tools_can_only_narrow_child_admission() {
