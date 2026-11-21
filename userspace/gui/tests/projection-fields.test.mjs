@@ -1,9 +1,31 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SessionService } from '../../session-core/dist/index.js';
+import { SessionService, emptySessionState, projectSession } from '../../session-core/dist/index.js';
+import { reduceAgentLifetime } from '../../session-core/dist/local-agent/agentLifecycle.js';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
 import { emptyKernel, fakeRunPreparation, messageCommand, providerEvent, waitForProjection } from '../../session-core/tests/local-agent-fixtures.mjs';
 import { decodeGuiProjection, installGuiFetch, loadGuiModelStore } from './gui-projection-contract.mjs';
+
+test('a worker projection preserves the optional named helper and still rejects invalid task fields', async () => {
+  const project = (helperId) => {
+    const state = emptySessionState('session:worker');
+    const event = { type: 'agent.task.created', sessionId: state.sessionId, runId: 'run:worker', callId: 'call:reader', sequence: 1,
+      payload: { taskId: 'task:reader', agentSessionId: 'session:reader', capabilities: { messaging: 'parent', continuation: true, delegation: false },
+        createsAgent: true, displayName: 'Reader', text: 'Read the note.', delivery: 'async', ...(helperId === undefined ? {} : { helperId }) } };
+    Object.assign(state, reduceAgentLifetime(state, event));
+    return projectSession(state);
+  };
+  for (const id of [undefined, 'reader', 'A:._-' + '9'.repeat(59)]) {
+    const snapshot = project(id);
+    assert.equal(snapshot.agentTasks[0].helperId, id);
+    assert.deepEqual(await decodeGuiProjection(snapshot), snapshot);
+  }
+  const snapshot = project('reader');
+  for (const fields of [{ helperId: '' }, { helperId: '.reader' }, { helperId: 'read er' }, { helperId: '9'.repeat(65) },
+    { helperId: null }, { helperId: 1 }, { undeclared: 'reader' }]) {
+    await assert.rejects(decodeGuiProjection({ ...snapshot, agentTasks: [{ ...snapshot.agentTasks[0], ...fields }] }), /conversation_projection_invalid/);
+  }
+});
 
 async function sessionFixture(t) {
   let requests = 0;

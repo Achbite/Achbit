@@ -5,7 +5,7 @@ import { isProcessActivity } from '@achbit/protocol';
 import { isShellAuthorizationScope } from '@achbit/protocol';
 import { validatePermissionPatches } from '@achbit/protocol';
 import { isLocalAgentErrorValue } from '@achbit/protocol';
-import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
+import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings, teamKeyPattern } from '@achbit/protocol';
 import type {
   AssistantDraftBlockProjection,
   AgentRecipe,
@@ -534,8 +534,10 @@ function isAgentTaskResult(value: unknown): boolean {
     && (value.finalMessageId === undefined || isIdentifier(value.finalMessageId));
 }
 
+const teamKey = new RegExp(teamKeyPattern, 'u');
 function isAgentTask(value: unknown): boolean {
-  return isExactRecord(value, ['taskId', 'agentSessionId', 'capabilities', 'displayName', 'text', 'delivery', 'parentRunId', 'status'], ['childRunId', 'result'])
+  return isExactRecord(value, ['taskId', 'agentSessionId', 'capabilities', 'displayName', 'text', 'delivery', 'parentRunId', 'status'], ['childRunId', 'result', 'helperId'])
+    && (value.helperId === undefined || (typeof value.helperId === 'string' && teamKey.test(value.helperId)))
     && isIdentifier(value.taskId) && isIdentifier(value.agentSessionId) && isAgentCapabilities(value.capabilities)
     && isNonEmptyText(value.displayName) && isNonEmptyText(value.text)
     && (value.delivery === 'wait' || value.delivery === 'async') && isIdentifier(value.parentRunId)
