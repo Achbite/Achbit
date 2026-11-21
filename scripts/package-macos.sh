@@ -48,6 +48,11 @@ gui_args=(build --release)
 if [ "${ACHBIT_BUILD_KIND:-normal}" = debug ]; then
   cargo_args+=(--features achbit-kernel-daemon/debug-control,achbit-cli/debug-control)
   gui_args+=(--features debug-control)
+  # Darwin-only callback regression; never link the stand-in streams into the App.
+  stop_test="$(dirname "$SHARED")/sharing-stop-test"
+  xcrun clang -fobjc-arc -fmodules -mmacosx-version-min=15.2 plugins/computer-use/native/tests/sharing-stop.m \
+    -framework ScreenCaptureKit -framework AppKit -framework CoreMedia -framework CoreImage -framework CoreVideo -o "$stop_test"
+  "$stop_test"
 fi
 export CARGO_TARGET_DIR="${ACHBIT_MACOS_CARGO_TARGET_DIR:-$ROOT_DIR/target/macos-arm64}"
 "$CARGO" "${cargo_args[@]}" -p achbit-kernel-daemon -p achbit-first-party-tools -p achbit-host-web -p achbit-cli -p achbit-tui -p achbit-computer-use

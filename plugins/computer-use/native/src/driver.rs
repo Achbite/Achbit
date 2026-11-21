@@ -1088,6 +1088,8 @@ pub fn execute(
     binding: &Value,
     input: &Value,
 ) -> Result<Value, String> {
+    // Do not attach an earlier request's ScreenCaptureKit evidence to this one.
+    crate::sharing::take_failure();
     // GUI presentation requests are private Host commands, not model tools.
     // They neither consume an observation nor create an image artifact.
     if input["action"] == "computer:preview" {
@@ -1125,7 +1127,7 @@ pub fn execute(
             {
                 *observation = None;
             }
-            return crate::sharing::release(binding);
+            return crate::sharing::release(binding, input["forImageReplacement"] == true);
         }
         if action == "listWindows" {
             return windows();
@@ -1358,6 +1360,9 @@ pub fn execute(
             }
             Err(message) => {
                 result["observationError"] = json!({"message":message});
+                if let Some(details) = crate::sharing::take_failure() {
+                    result["observationError"]["screenCaptureKit"] = details;
+                }
                 Ok(result)
             }
         }

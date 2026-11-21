@@ -17,6 +17,13 @@ static NSString *NativeError(NSError *error) {
     return [NSString stringWithFormat:@"%@: %ld: %@", error.domain, (long)error.code, error.localizedDescription];
 }
 
+static NSDictionary *NativeDetails(NSString *stage, NSError *error) {
+    return @{ @"stage": stage, @"nativeDomain": error.domain, @"nativeCode": @(error.code), @"message": error.localizedDescription };
+}
+static NSDictionary *NativeFailure(NSString *stage, NSError *error) {
+    return @{ @"ok": @NO, @"error": NativeError(error), @"diagnostics": NativeDetails(stage, error) };
+}
+
 // Draw explicit pointer pixels into the shared window's own backing surface,
 // independently of NSImageView template-image state and appearance tinting.
 @interface ACPointerView : NSView
@@ -81,6 +88,9 @@ void ac_computer_install_pointer_content(void *window) {
 @property NSString *phase;
 @property NSString *reason;
 @property SCStream *stream;
+// Main queue only: all callers join the one in-flight stop of this physical stream.
+@property NSMutableArray<void (^)(NSError *)> *stopWaiters;
+@property NSDictionary *stopDiagnostic;
 @property SCContentFilter *filter;
 @property uint32_t window;
 @property pid_t pid;
@@ -107,7 +117,13 @@ static NSMutableDictionary<NSString *, ACShare *> *Shares;
 // The physical map above is main-thread-only. The read-only endpoint reads
 // immutable published metadata and one encoded frame, never AppKit objects.
 static NSMutableDictionary<NSString *, ACShare *> *PreviewSources;
-static uint64_t Generation = 0;
+// A preview gesture carries a generation across the Host connection. Do not
+// recycle a previous process's generation when a new helper shares the same window.
+static uint64_t NextGeneration(void) {
+    static uint64_t previous;
+    previous = MAX(previous + 1, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000);
+    return previous;
+}
 static atomic_uint_fast64_t FrameSequence = 0;
 @interface ACPicker : NSObject <SCContentSharingPickerObserver>
 @end
@@ -119,16 +135,26 @@ static void UpdatePicker(void) {
     SCContentSharingPicker.sharedPicker.active = active;
 }
 static void StopSingle(ACShare *share, void (^complete)(NSError *)) {
-    share.generation = ++Generation;
-    @synchronized (share) { share.latestFrame = nil; share.frameError = nil; }
+    if (share.stopWaiters) { [share.stopWaiters addObject:[complete copy]]; return; }
     SCStream *stream = share.stream;
     if (!stream) { share.phase = @"stopped"; complete(nil); return; }
-    share.phase = @"stopping";
+    share.stopWaiters = [NSMutableArray arrayWithObject:[complete copy]];
+    share.generation = NextGeneration(); share.phase = @"stopping";
+    @synchronized (share) { share.latestFrame = nil; share.frameError = nil; }
     [stream stopCaptureWithCompletionHandler:^(NSError *error) {
         Main(^{
-            if (!error) { share.stream = nil; share.filter = nil; share.phase = @"stopped"; }
-            else { share.reason = NativeError(error); share.phase = @"failed"; }
-            UpdatePicker(); complete(error);
+            BOOL alreadyStopped = error && [error.domain isEqual:SCStreamErrorDomain] && error.code == SCStreamErrorAttemptToStopStreamState;
+            NSError *failure = alreadyStopped ? nil : error;
+            // The delegate may independently have ended this exact stream. A late
+            // completion cannot mutate a different stream or erase a real error.
+            if (error) share.stopDiagnostic = NativeDetails(@"stopCapture", error);
+            if (share.stream == stream) {
+                if (!failure) { share.stream = nil; share.filter = nil; share.phase = @"stopped"; }
+                else { share.reason = NativeError(failure); share.phase = @"failed"; }
+            }
+            NSArray *waiters = share.stopWaiters; share.stopWaiters = nil;
+            UpdatePicker();
+            for (void (^waiter)(NSError *) in waiters) waiter(failure);
         });
     }];
 }
@@ -139,11 +165,15 @@ static void Stop(ACShare *share, void (^complete)(NSError *)) {
     @synchronized (share) { share.latestFrame = nil; share.frameError = nil; }
     // Both physical streams have one run owner. Failure is retained on the
     // affected source; stopping a companion never redirects the target.
-    if (share.pointer) {
-        StopSingle(share.pointer, ^(NSError *pointerError) {
-            StopSingle(share, ^(NSError *targetError) { complete(targetError ?: pointerError); });
-        });
-    } else StopSingle(share, complete);
+    ACShare *pointer = share.pointer;
+    __block NSUInteger pending = pointer ? 2 : 1;
+    __block NSError *failure = nil;
+    void (^finished)(NSError *) = ^(NSError *error) {
+        if (error && !failure) failure = error;
+        if (--pending == 0) complete(failure);
+    };
+    StopSingle(share, finished);
+    if (pointer) StopSingle(pointer, finished);
 }
 @implementation ACShare
 @synthesize phase = _phase;
@@ -170,6 +200,7 @@ static void Stop(ACShare *share, void (^complete)(NSError *)) {
               @"app": _app ?: @"", @"generation": @(_generation),
               @"reason": _reason ?: @"", @"selectedByUser": @(_selectedByUser),
               @"sourceKind": _pointerSource ? @"pointer" : @"target" } mutableCopy];
+    if (_stopDiagnostic) value[@"stopDiagnostic"] = _stopDiagnostic;
     if (_pointer) value[@"pointerSharing"] = _pointer.snapshot;
     return value;
 }
@@ -180,7 +211,7 @@ static void Stop(ACShare *share, void (^complete)(NSError *)) {
         if (self.pointer) StopSingle(self.pointer, ^(NSError *error) {});
     }
     @synchronized (self) { self.latestFrame = nil; self.frameError = nil; }
-    self.reason = reason; self.generation = ++Generation;
+    self.reason = reason; self.generation = NextGeneration();
     self.stream = nil; self.filter = nil; self.phase = @"stopped"; UpdatePicker();
 }
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
@@ -273,7 +304,7 @@ static SCStreamConfiguration *Configuration(SCContentFilter *filter, BOOL previe
         ac_computer_feedback_clear(share.window, share.generation);
         share.pointerPosition = nil;
         @synchronized (share) { share.latestFrame = nil; share.frameError = nil; }
-        share.generation = ++Generation; share.phase = @"updating";
+        share.generation = NextGeneration(); share.phase = @"updating";
         void (^update)(NSError *) = ^(NSError *pointerError) {
             if (share.stream != stream || ![share.phase isEqual:@"updating"]) return;
             if (pointerError) {
@@ -301,12 +332,12 @@ static SCStreamConfiguration *Configuration(SCContentFilter *filter, BOOL previe
 static void Screenshot(SCContentFilter *filter, NSString *path, ACReply *reply) {
     [SCScreenshotManager captureImageWithFilter:filter configuration:Configuration(filter, NO) completionHandler:^(CGImageRef image, NSError *error) {
         if (![reply pending]) return;
-        if (error || !image) { [reply finish:Failure(error ? NativeError(error) : @"Screenshot returned no image")]; return; }
+        if (error || !image) { [reply finish:error ? NativeFailure(@"captureImage", error) : Failure(@"Screenshot returned no image")]; return; }
         NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCGImage:image];
         NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
         NSError *writeError = nil;
         if (!png || ![png writeToFile:path options:NSDataWritingAtomic error:&writeError]) {
-            [reply finish:Failure(writeError ? NativeError(writeError) : @"PNG encoding failed")]; return;
+            [reply finish:writeError ? NativeFailure(@"writePNG", writeError) : Failure(@"PNG encoding failed")]; return;
         }
         [reply finish:Success(@{ @"width": @(CGImageGetWidth(image)), @"height": @(CGImageGetHeight(image)) })];
     }];
@@ -324,7 +355,7 @@ static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, ACRe
     ACShare *share = [ACShare new];
     share.key = key; share.window = window.windowID; share.pid = window.owningApplication.processID;
     share.app = window.owningApplication.bundleIdentifier; share.title = window.title; share.filter = filter;
-    share.generation = ++Generation; share.phase = @"starting";
+    share.generation = NextGeneration(); share.phase = @"starting";
     share.imageContext = [CIContext contextWithOptions:nil];
     share.outputQueue = dispatch_queue_create("com.achbite.achbit.control-preview", DISPATCH_QUEUE_SERIAL);
     SCStream *stream = [[SCStream alloc] initWithFilter:filter configuration:Configuration(filter, YES) delegate:share];
@@ -335,7 +366,7 @@ static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, ACRe
     }
     NSError *outputError = nil;
     if (![stream addStreamOutput:share type:SCStreamOutputTypeScreen sampleHandlerQueue:share.outputQueue error:&outputError]) {
-        [share ended:NativeError(outputError)]; [reply finish:Failure(share.reason)]; return;
+        [share ended:NativeError(outputError)]; [reply finish:NativeFailure(@"addStreamOutput", outputError)]; return;
     }
     SCContentSharingPickerConfiguration *picker = [SCContentSharingPickerConfiguration new];
     picker.allowedPickerModes = SCContentSharingPickerModeSingleWindow;
@@ -344,7 +375,7 @@ static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, ACRe
     UpdatePicker();
     [stream startCaptureWithCompletionHandler:^(NSError *error) {
         Main(^{
-            if (error) { [share ended:NativeError(error)]; [reply finish:Failure(share.reason)]; return; }
+            if (error) { if (share.stream == stream && [share.phase isEqual:@"starting"]) [share ended:NativeError(error)]; [reply finish:NativeFailure(@"startCapture", error)]; return; }
             if (![reply pending] || Shares[key] != share) { Stop(share, ^(NSError *ignored) {}); return; }
             if (![share.phase isEqual:@"starting"]) { [reply finish:Failure(share.reason ?: @"Sharing stopped during startup")]; return; }
             share.phase = @"active"; [reply finish:Success(share.snapshot)];
@@ -373,7 +404,7 @@ void ac_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
         pointer.window = pointerWindow; pointer.pid = NSProcessInfo.processInfo.processIdentifier;
         pointer.app = NSBundle.mainBundle.bundleIdentifier;
         pointer.title = @"Achbit Agent Pointer";
-        pointer.generation = ++Generation; pointer.phase = @"starting";
+        pointer.generation = NextGeneration(); pointer.phase = @"starting";
         pointer.pointerWindowDeadline = NSProcessInfo.processInfo.systemUptime + 2.0;
         owner.pointer = pointer;
         [owner publish];
@@ -490,12 +521,20 @@ static void HandleRequest(NSDictionary *request, ACReply *reply) {
     if ([operation isEqual:@"preview"]) { [reply finish:Success(Preview(share, request))]; return; }
     if ([operation isEqual:@"release"]) {
         if (!share) { [reply finish:Success(@{ @"released": @YES })]; return; }
+        if ([request[@"forImageReplacement"] boolValue] && (![share.phase isEqual:@"active"] || share.selectedByUser ||
+                (share.pointer && ![share.pointer.phase isEqual:@"active"] && ![share.pointer.phase isEqual:@"starting"]))) {
+            [reply finish:Failure(@"Executor image replaced; sharing was stopped, changed or unavailable. Finish this run; its selection will not be restarted.")]; return;
+        }
         Stop(share, ^(NSError *error) {
             if (!error && Shares[key] == share) {
                 [Shares removeObjectForKey:key];
                 @synchronized (ACShare.class) { [PreviewSources removeObjectForKey:key]; }
             }
-            [reply finish:error ? Failure(NativeError(error)) : Success(@{ @"released": @YES })];
+            if (error) { [reply finish:NativeFailure(@"stopCapture", error)]; return; }
+            NSMutableDictionary *receipt = [@{ @"released": @YES } mutableCopy];
+            if (share.stopDiagnostic) receipt[@"targetStop"] = share.stopDiagnostic;
+            if (share.pointer.stopDiagnostic) receipt[@"pointerStop"] = share.pointer.stopDiagnostic;
+            [reply finish:Success(receipt)];
         }); return;
     }
     if ([operation isEqual:@"validate"]) {
@@ -521,7 +560,7 @@ static void HandleRequest(NSDictionary *request, ACReply *reply) {
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO completionHandler:^(SCShareableContent *content, NSError *error) {
         Main(^{
             if (![reply pending]) return;
-            if (error) { [reply finish:Failure(NativeError(error))]; return; }
+            if (error) { [reply finish:NativeFailure(@"enumerateShareableContent", error)]; return; }
             // A system stop or selection change may have arrived during enumeration.
             if (share && (Shares[key] != share || share.generation != generation || ![share.phase isEqual:@"active"])) {
                 [reply finish:Failure(@"Sharing changed during capture preparation")]; return;
@@ -538,7 +577,7 @@ static void HandleRequest(NSDictionary *request, ACReply *reply) {
             if (!filter) { [reply finish:Failure(@"The exact capture target is unavailable")]; return; }
             if (!ensure) { Screenshot(filter, request[@"path"], reply); return; }
             if (share) Stop(share, ^(NSError *stopError) {
-                if (stopError) [reply finish:Failure(NativeError(stopError))]; else Begin(key, window, filter, reply);
+                if (stopError) [reply finish:NativeFailure(@"stopCapture", stopError)]; else Begin(key, window, filter, reply);
             }); else Begin(key, window, filter, reply);
         });
     }];
