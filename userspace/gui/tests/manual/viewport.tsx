@@ -8,7 +8,7 @@ import { ConversationComposer } from '../../src/components/local-agent/Conversat
 import { BufferedMarkdown } from '../../src/components/local-agent/BufferedMarkdown';
 import { useAgentComposer } from '../../src/components/local-agent/useAgentComposer';
 import { useConversationViewport } from '../../src/components/local-agent/useConversationViewport';
-import { ProviderHostedDraftGroup, ToolActivityGroup } from '../../src/components/local-agent/ToolActivityDetails';
+import { ToolActivityGroup } from '../../src/components/local-agent/ToolActivityDetails';
 import { useLocalAgentStore } from '../../src/state/localAgentStore';
 import { installPaletteDefaults } from '../../src/theme/palette';
 import '../../src/achbit-gui/styles/achbitDesignTokens.css';
@@ -101,8 +101,8 @@ function Preview() {
             {Array.from({ length: historyCount }, (_, index) => <section key={index} className="fixture-history" data-conversation-anchor={`history:${index}`}>
               <strong>历史消息 {index + 1}</strong><p>读取项目配置并核对执行环境。这里保留历史正文，用于检查输出时的位置保持和向上翻阅。</p>
             </section>)}
-            <section data-conversation-anchor="tools"><ProviderHostedDraftGroup blocks={[{ kind: 'providerHosted', providerCallId: 'search:preview', outputIndex: 0,
-              providerToolType: 'web_search', status: 'completed', action: { queries: ['LLM news'] } } as never]}
+            <section data-conversation-anchor="tools"><ToolActivityGroup activities={[]} onOpenWorkspaceResource={() => {}} hostedDraft={{type:'providerHostedGroup', runId:'run:preview', turnId:'request:preview', blocks:[{ kind: 'providerHosted', providerCallId: 'search:preview', outputIndex: 0,
+              providerToolType: 'web_search', status: 'completed', action: { queries: ['LLM news'] } }]}}
               language="zh-CN" onExpand={() => viewport.setLatestFollowMode(false)} /></section>
             <section data-conversation-anchor="shell-fixture">
               <p>展开长命令输出，将鼠标放在输出中：先滚内部，触顶/触底后继续滚动外层。向上离开底部后点击“追加正文”，阅读位置应保留。</p>

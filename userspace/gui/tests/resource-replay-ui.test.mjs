@@ -42,15 +42,16 @@ test('hidden never-opened Reader does not mount its tree loader',async t=>{
   assert.equal(renderToStaticMarkup(createElement(ResourceTree,{sessionId:'session:history',language:'zh-CN',visible:false,openTarget(){}})),'');
 });
 
-test('tool headers retain counts and operation descriptions through success, failure and pending states',async t=>{
+test('tool headers show only operation descriptions through success, failure and pending states',async t=>{
   const {toolGroupSummary}=await loadGuiModule(t,'/src/components/local-agent/ToolActivityDetails.tsx');
   const read={activityId:'read',runId:'run',kind:'tool',status:'completed',label:'fs.read',sequence:1,tool:{operation:'fs.read',resources:[]}};
-  assert.match(toolGroupSummary([read,read],'zh-CN'),/2 个工具.*已读取文件/);
+  assert.equal(toolGroupSummary([read,read],'zh-CN'),'已读取文件');
   const failed=toolGroupSummary([read,{...read,status:'failed'}],'zh-CN');
-  assert.match(failed,/2 个工具.*读取文件/);assert.match(failed,/已结束 1/);assert.doesNotMatch(failed,/已读取文件|失败/);
+  assert.equal(failed,'读取文件');
   const pending=toolGroupSummary([{...read,status:'requested',label:'fs.write',tool:undefined}],'zh-CN');
-  assert.match(pending,/已请求 1 个工具.*修改文件/);assert.doesNotMatch(pending,/已修改文件/);
-  assert.match(toolGroupSummary([{...read,status:'failed'}],'en-US'),/1 tools.*File reads.*Finished/i);
+  assert.equal(pending,'修改文件');
+  assert.equal(toolGroupSummary([{...read,status:'failed'}],'en-US'),'File reads');
+  assert.equal(toolGroupSummary([read,{...read,status:'cancelled',label:'bash',tool:undefined}],'zh-CN'),'读取文件、运行命令');
 });
 
 function projectionFor(kind){

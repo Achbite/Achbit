@@ -16,9 +16,10 @@ import { requestWorkspacePreview, type AgentReaderTarget } from './readerState';
 import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
-import { projectionItems, assistantDraftItems } from './conversationItems';
-import { ToolActivityGroup, ProviderHostedDraftGroup } from './ToolActivityDetails';
+import { projectionItems, assistantDraftItems, conversationRounds } from './conversationItems';
+import { ToolActivityGroup } from './ToolActivityDetails';
 import PlanCard from './PlanCard';
+import { PlanPreviewCard } from './PlanPreviewCard';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useConversationHost } from './ConversationHost';
 import { AgentOverviewList } from './AgentOverview';
@@ -150,20 +151,25 @@ export function AgentConversationHistory({ projection, name, language, expanded 
 }) {
   if (!expanded) return null;
   const openResource = (workspaceId: string, path: string) => requestWorkspacePreview(projection.sessionId, workspaceId, path);
-  const items = projectionItems(projection);
+  const rounds = conversationRounds(projectionItems(projection), assistantDraftItems(projection.assistantDraft), projection.run?.runId);
   return <div className="agent-tasks__conversation">
-    {items.map(item => item.type === 'toolGroup'
-      ? <ToolActivityGroup key={item.groupId} activities={item.values} artifacts={projection.artifacts} language={language} onExpand={() => {}}
-          pendingApproval={projection.pendingApproval} reviewingApproval={projection.run?.status === 'running'} onOpenWorkspaceResource={openResource} />
-      : item.type === 'plan' ? <PlanCard key={`plan:${item.sequence}`} plan={item.value} active={false} language={language} workspaceBindings={projection.workspaceBindings} />
-      : item.type === 'interaction' ? <InteractionCard key={`interaction:${item.sequence}`} interaction={item.value} language={language} disabled />
-      : <article key={`${item.type}:${item.sequence}`}>
-          <header>{item.type === 'message' && item.value.role === 'user' ? t(language, 'agent.team.input') : name}</header>
-          <MarkdownContent>{item.value.displayContent ?? item.value.content}</MarkdownContent>
-        </article>)}
-    {assistantDraftItems(projection.assistantDraft).map(item => item.type === 'text'
-      ? <article key={item.block.streamId}><MarkdownContent streaming>{item.block.displayContent ?? item.block.content}</MarkdownContent></article>
-      : item.type === 'providerHostedGroup' ? <ProviderHostedDraftGroup key={item.groupId} blocks={item.blocks} language={language} onExpand={() => {}} /> : null)}
+    {rounds.flatMap(round => round.rows).map(({ key, item, draft }) => {
+      if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
+        const group = item?.type === 'toolGroup' ? item : undefined;
+        return <ToolActivityGroup key={key} activities={group?.values ?? []} hostedKeys={group?.hostedKeys}
+          hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection.artifacts} language={language} onExpand={() => {}}
+          pendingApproval={projection.pendingApproval} reviewingApproval={projection.run?.status === 'running'} onOpenWorkspaceResource={openResource} />;
+      }
+      if (!item) return draft?.type === 'text'
+        ? <article key={key}><MarkdownContent streaming>{draft.block.displayContent ?? draft.block.content}</MarkdownContent></article>
+        : draft?.type === 'planPreview' ? <PlanPreviewCard key={key} preview={draft.value} language={language} /> : null;
+      if (item.type === 'plan') return <PlanCard key={key} plan={item.value} active={false} language={language} workspaceBindings={projection.workspaceBindings} />;
+      if (item.type === 'interaction') return <InteractionCard key={key} interaction={item.value} language={language} disabled />;
+      return <article key={key}>
+        <header>{item.type === 'message' && item.value.role === 'user' ? t(language, 'agent.team.input') : name}</header>
+        <MarkdownContent>{item.value.displayContent ?? item.value.content}</MarkdownContent>
+      </article>;
+    })}
     {projection.fileChangeRounds?.map(round => <FileChanges key={round.runId} activities={roundChangeActivities(projection, round.runId)} />)}
   </div>;
 }

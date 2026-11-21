@@ -20,7 +20,16 @@ export type ProjectionItem =
       sequence: number;
       groupId: string;
       values: ActivityProjection[];
+      /** Shared lookup for this snapshot; a Provider call ID is scoped to its request. */
+      hostedKeys?: ReadonlyMap<string, string>;
     };
+
+export type HostedBlock = Extract<AssistantDraftBlockProjection, { kind: 'providerHosted' }>;
+export type HostedDraftGroup = { type: 'providerHostedGroup'; runId: string; turnId: string; blocks: HostedBlock[] };
+export const hostedEntryKey = (runId: string, turnId: string, callId: string): string =>
+  `hosted:${JSON.stringify([runId, turnId, callId])}`;
+
+const hasMemberNotice = (values: ActivityProjection[]) => values.some(a => a.agent && a.agent.phase !== 'started');
 
 export type AssistantDraftItem =
   | { type: 'planPreview'; value: NonNullable<NonNullable<SessionProjection['assistantDraft']>['planPreview']>; key: string }
@@ -28,44 +37,30 @@ export type AssistantDraftItem =
       type: 'text';
       block: Exclude<AssistantDraftBlockProjection, { kind: 'providerHosted' }>;
     }
-  | {
-      type: 'providerHostedGroup';
-      groupId: string;
-      blocks: Array<Extract<AssistantDraftBlockProjection, { kind: 'providerHosted' }>>;
-    };
+  | HostedDraftGroup;
 
 export function assistantDraftItems(
   draft: SessionProjection['assistantDraft'],
 ): AssistantDraftItem[] {
   if (!draft) return [];
   const items: AssistantDraftItem[] = [];
-  let hostedBlocks: Array<Extract<AssistantDraftBlockProjection, { kind: 'providerHosted' }>> = [];
-  const flushHostedBlocks = (): void => {
-    if (hostedBlocks.length === 0) return;
-    items.push({
-      type: 'providerHostedGroup',
-      groupId: `draft-hosted:${draft.turnId}:${hostedBlocks[0]!.outputIndex}`,
-      blocks: hostedBlocks,
-    });
-    hostedBlocks = [];
+  let plan = draft.planPreview;
+  const appendPlan = () => {
+    if (plan) items.push({ type: 'planPreview', value: plan, key: `${draft.turnId}:plan:${plan.providerCallId}` });
+    plan = undefined;
   };
   for (const block of draft.blocks) {
+    // Insert the plan before grouping: it can fall between two searches.
+    if (plan?.outputIndex !== undefined && block.outputIndex !== undefined && block.outputIndex > plan.outputIndex) appendPlan();
     if (block.kind !== 'providerHosted') {
-      flushHostedBlocks();
-      items.push({ type: 'text', block });
-      continue;
+      if ((block.displayContent ?? block.content).trim()) items.push({ type: 'text', block });
+    } else {
+      const last = items.at(-1);
+      if (last?.type === 'providerHostedGroup') last.blocks.push(block);
+      else items.push({ type: 'providerHostedGroup', runId: draft.runId, turnId: draft.turnId, blocks: [block] });
     }
-    hostedBlocks.push(block);
   }
-  flushHostedBlocks();
-  if (draft.planPreview) {
-    const preview = draft.planPreview;
-    const index = preview.outputIndex === undefined ? -1 : items.findIndex((item) => {
-      const outputIndex = item.type === 'text' ? item.block.outputIndex : item.type === 'providerHostedGroup' ? item.blocks[0]?.outputIndex : undefined;
-      return outputIndex !== undefined && outputIndex > preview.outputIndex!;
-    });
-    items.splice(index < 0 ? items.length : index, 0, { type: 'planPreview', value: preview, key: `${draft.turnId}:plan:${preview.providerCallId}` });
-  }
+  appendPlan();
   return items;
 }
 
@@ -79,6 +74,7 @@ export function projectionItems(projection: SessionProjection | null): Projectio
   const plans = new Map(projection.plans.map((value) => [`${value.planId}:${value.revision}`, value]));
   const activities = new Map(projection.activities.map((value) => [value.activityId, value]));
   const interactions = new Map(projection.interactions.map(value => [value.callId, value]));
+  const hostedKeys = new Map<string, string>();
   const items = projection.timeline.map((item): ProjectionItem => {
     switch (item.kind) {
       case 'message':
@@ -110,20 +106,19 @@ export function projectionItems(projection: SessionProjection | null): Projectio
             'conversation_timeline_plan_missing',
           ),
         };
-      case 'toolGroup':
-        return {
-          type: 'toolGroup',
-          sequence: item.sequence,
-          groupId: item.timelineId,
-          values: item.activityIds.map((activityId) => requiredProjectionValue(
-            activities.get(activityId),
-            'conversation_timeline_activity_missing',
-          )),
-        };
+      case 'toolGroup': {
+        const values = item.activityIds.map(id => requiredProjectionValue(activities.get(id), 'conversation_timeline_activity_missing'));
+        for (const a of values) {
+          if (a.providerHosted && item.providerRequestId) hostedKeys.set(a.activityId, hostedEntryKey(a.runId, item.providerRequestId, a.providerHosted.providerCallId));
+        }
+        return { type: 'toolGroup', sequence: item.sequence, groupId: item.timelineId, values, hostedKeys };
+      }
     }
   });
   const grouped: ProjectionItem[] = [];
   const displayItems = items.flatMap((item): ProjectionItem[] => {
+    if (item.type === 'narrative' && !(item.value.displayContent ?? item.value.content).trim()
+      && !item.value.sourceReferences?.citations.length && !item.value.sourceReferences?.unresolved) return [];
     if (item.type !== 'toolGroup' || !item.values.some((activity) => activity.kind === 'interaction')) return [item];
     const rows: ProjectionItem[] = [];
     for (const activity of item.values) {
@@ -144,8 +139,7 @@ export function projectionItems(projection: SessionProjection | null): Projectio
     if (item.type === 'toolGroup' && previous?.type === 'toolGroup'
       && item.values[0]?.runId === previous.values[0]?.runId
       // An arriving member notification belongs at its event position, after preceding tools.
-      && !item.values.some(activity => activity.agent && activity.agent.phase !== 'started')
-      && !previous.values.some(activity => activity.agent && activity.agent.phase !== 'started')) {
+      && !hasMemberNotice(item.values) && !hasMemberNotice(previous.values)) {
       previous.values.push(...item.values);
     } else grouped.push(item);
   }
@@ -176,17 +170,36 @@ export function conversationRounds(items: ProjectionItem[], drafts: AssistantDra
     round.rows.push(row);
   };
   const committedStreams = new Set<string>();
+  const committedHosted = new Set<string>();
+  const hasLiveSearch = drafts.some(draft => draft.type === 'providerHostedGroup');
   for (const item of items) {
     const streamId = item.type === 'message' || item.type === 'narrative' ? item.streamId : undefined;
     if (streamId) committedStreams.add(streamId);
-    const key = streamId ?? (item.type === 'message' ? item.value.messageId : item.type === 'toolGroup' ? item.groupId : `${item.type}:${item.sequence}`);
-    append(item.type === 'toolGroup' ? item.values[0]!.runId : item.value.runId ?? '', { key, item });
+    if (item.type === 'toolGroup') {
+      const first = item.values[0]!;
+      if (hasLiveSearch && first.runId === currentRunId) for (const a of item.values) {
+        const key = item.hostedKeys?.get(a.activityId);
+        if (key) committedHosted.add(key);
+      }
+      append(first.runId, { key: item.hostedKeys?.get(first.activityId) ?? item.groupId, item });
+    } else append(item.value.runId ?? '', { key: streamId ?? (item.type === 'message' ? item.value.messageId : `${item.type}:${item.sequence}`), item });
   }
   if (currentRunId) {
     for (const draft of drafts) {
       if (draft.type === 'text' && committedStreams.has(draft.block.streamId)) continue;
-      const key = draft.type === 'text' ? draft.block.streamId : draft.type === 'planPreview' ? draft.key : draft.groupId;
-      append(currentRunId, { key, draft });
+      if (draft.type !== 'providerHostedGroup') {
+        append(currentRunId, { key: draft.type === 'text' ? draft.block.streamId : draft.key, draft });
+        continue;
+      }
+      if (draft.runId !== currentRunId) continue;
+      const keyOf = (block: HostedBlock) => hostedEntryKey(draft.runId, draft.turnId, block.providerCallId);
+      const blocks = draft.blocks.filter(block => !committedHosted.has(keyOf(block)));
+      if (!blocks.length) continue;
+      const round = rounds.at(-1);
+      const last = round?.runId === currentRunId ? round.rows.at(-1) : undefined;
+      if (last?.draft?.type === 'providerHostedGroup') last.draft = { ...draft, blocks: [...last.draft.blocks, ...blocks] };
+      else if (last?.item?.type === 'toolGroup' && !hasMemberNotice(last.item.values)) last.draft = { ...draft, blocks };
+      else append(currentRunId, { key: keyOf(blocks[0]!), draft: { ...draft, blocks } });
     }
     if (rounds.at(-1)?.runId !== currentRunId) rounds.push({ key: currentRunId, runId: currentRunId, rows: [] });
   }

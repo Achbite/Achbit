@@ -57,6 +57,7 @@ test('long mixed tool summaries retain their full text and title across disclosu
   const operations=['plugin.search','plugin.activate','fs.read','fs.write','powershell'];
   const activities=Array.from({length:26},(_,index)=>({...tool(`long-${index}`,operations[index%operations.length]),
     status:index<22?'completed':index<24?'rejected':index===24?'failed':'cancelled'}));
+  activities.push(computer('observed'), {...tool('web'), kind:'providerHosted'}, {...tool('approval'), kind:'approval'});
   const full=summary(activities);
   assert.ok(full.length>100,'fixture must exercise a long summary');
   const escaped=full.replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;');
