@@ -17,6 +17,8 @@ export interface AgentWait extends ControlWait { taskIds?: string[] }
 export interface AgentSessionRuntime {
   execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
   wait(runId: string, signal: AbortSignal, acceptedWait?: AgentWait): Promise<void>;
+  /** Restore result delivery, without joining children or changing an inbox wait's wake conditions. */
+  reattach(runId: string, tasks: readonly AgentTaskSummary[]): void;
   cancel(runId: string): Promise<void>;
 }
 
@@ -58,6 +60,11 @@ export class AgentManager {
     return {
       execute: (runId, callId, operation, signal) => this.execute(sessionId, runId, callId, operation, signal),
       wait: (runId, signal, acceptedWait) => this.wait(sessionId, runId, acceptedWait?.taskIds, signal, acceptedWait),
+      reattach: (runId, tasks) => {
+        for (const task of tasks) {
+          if (task.parentRunId === runId && task.status === 'running' && task.childRunId) this.track(sessionId, task);
+        }
+      },
       cancel: runId => this.cancelRun(sessionId, runId),
     };
   }

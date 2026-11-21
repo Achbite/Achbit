@@ -1518,6 +1518,9 @@ export class SessionActor {
         ...(this.#agents ? { agents: this.#agents } : {}),
         sessionOperation: (runId, operation, signal) => this.sessionOperation(runId, operation, signal),
         waitForInput: async (runId, wait, signal) => {
+          // Recreate missing child result leases before subscribing to the ordinary
+          // inbox. A journal terminal wakes it like any other input, even after reload.
+          this.#agents?.reattach(runId, (await this.loadSnapshot()).state.agentTasks);
           if (!hasProcessActivity) return this.waitForInput(runId, signal, undefined, undefined, wait);
           await this.ensureProcesses(runId);
           await this.#processes?.sync();

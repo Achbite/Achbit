@@ -982,6 +982,41 @@ for (const delivery of ['async', 'wait']) test(`reloading an accepted ${delivery
   assert.equal((await readEvents(journal, ownerId)).filter(event => event.type === 'agent.task.completed').length, 1);
 });
 
+test('reopening an ordinary inbox wait collects a child already settled before its result reached the parent', async t => {
+  const owner = 'session:inbox-recovery', evidence = 'Child completed once.';
+  const finishChild = Promise.withResolvers();
+  let childId;
+  t.after(() => finishChild.resolve());
+  const original = await serviceFixture(t, owner, async function* ({ sessionId, request, turn }) {
+    if (sessionId !== owner) { childId = sessionId; await finishChild.promise; yield answer(request, evidence); }
+    else if (turn === 1) yield call(request, 'spawn', 'agent', { action: 'spawn', name: 'Worker', task: 'Return evidence.', delivery: 'async' });
+    else if (turn === 2) yield call(request, 'wait', 'session', { action: 'wait' });
+    else yield answer(request, 'Done.');
+    yield done(request);
+  });
+  await original.service.submit(messageCommand(owner, 'command:start', 'Collect the delegated result.'));
+  await waitUntil(async () => acceptedWait(await readEvents(original.journal, owner), 'wait'), 'ordinary wait committed');
+  const parentCut = await readEvents(original.journal, owner);
+  assert.ok(!parentCut.some(e => e.type === 'agent.task.completed'));
+  finishChild.resolve();
+  await completed(original.service, owner);
+  const childCut = await readEvents(original.journal, childId);
+  assert.equal(childCut.find(e => e.type === 'run.settled')?.payload.outcome, 'completed');
+  const journal = await copyCommittedJournal([parentCut, childCut]);
+  await original.service.dispose();
+  const reopened = await serviceFixture(t, owner, async function* ({ sessionId, request }) {
+    assert.equal(sessionId, owner, 'do not rerun the child');
+    assert.equal(occurrences(textOf(request), evidence), 1);
+    yield answer(request, 'Joined the original result.'); yield done(request);
+  }, { journal, reopen: true });
+  // Activate only the parent; no extra message, timer or explicit agent.wait.
+  await assert.rejects(reopened.service.replaceCapabilities(owner, createSessionCapabilities()), /session_capabilities_run_active/u);
+  await completed(reopened.service, owner);
+  assert.equal(reopened.requests.get(owner).length, 1);
+  assert.ok(!reopened.requests.has(childId));
+  assert.equal((await readEvents(journal, owner)).filter(e => e.type === 'agent.task.completed').length, 1);
+});
+
 test('an answer arriving with a peer message is committed before the next Loop request', async t => {
   const ownerId = 'session:answer-message';
   let releaseMessage;
