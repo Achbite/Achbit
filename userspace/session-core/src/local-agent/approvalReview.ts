@@ -25,6 +25,15 @@ export const APPROVAL_REVIEW_SCHEMA: JsonObject = {
 export const MAX_APPROVAL_EVIDENCE_ROUNDS = 6;
 export const APPROVAL_HISTORY_VIEWS: readonly string[] = ['summary', 'messages', 'tools', 'plans'];
 
+/** A first malformed decision is still being corrected; a second is a final human handoff. */
+export function approvalNeedsAgentReview(events: readonly SessionEvent[], approval: NonNullable<SessionProjection['pendingApproval']>): boolean {
+  if (approval.preview.approvalReviewer !== 'agent') return false;
+  const reviews = events.filter((event): event is Extract<SessionEvent, { type: 'approval.reviewed' }> =>
+    event.type === 'approval.reviewed' && event.runId === approval.runId && event.callId === approval.callId
+    && event.payload.approvalId === approval.approvalId);
+  return reviews.length === 0 || reviews.length === 1 && reviews[0]!.payload.error?.code === 'approval_review_invalid';
+}
+
 function approvalReadTools(tools: readonly PreparedToolDescriptor[], sessionId: string, hasWorkspace: boolean) {
   return tools.filter(tool => tool.name === 'session.read' || hasWorkspace && tool.name === 'fs.read').map(tool => {
     const properties = { ...tool.inputSchema.properties as JsonObject };

@@ -13,6 +13,7 @@ import { ManagedProcesses } from './managedProcesses.js';
 import { createProcessActivity } from './processActivity.js';
 import { validatePermissionPatches, providerRuntimeForPurpose } from '@achbit/protocol';
 import { confirmationFacts } from './planStage.js';
+import { approvalNeedsAgentReview } from './approvalReview.js';
 import { admitSessionEvents } from './admission.js';
 import { failureSnapshotEvent } from './failureSnapshot.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
@@ -166,7 +167,10 @@ export class SessionActor {
       const restored = await this.restoreRunRuntime(snapshot, run.runId);
       signal?.throwIfAborted();
       this.restoreWakeTimers(snapshot);
-      if (restored && run.status === 'running') {
+      // An inherited policy can replace a gate without changing the child's earlier
+      // waiting status. Recover the orphaned reviewer, not ordinary human waits.
+      if (restored && (run.status === 'running' || (run.status === 'waiting' && run.waitingReason === 'approval'
+        && snapshot.state.pendingApprovals.some(item => item.runId === run.runId && approvalNeedsAgentReview(snapshot.events, item))))) {
         this.startLoop({ type: 'recover', runId: run.runId });
       }
     });
