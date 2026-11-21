@@ -82,6 +82,8 @@ The main GUI lets you answer a subagent’s question or confirmation directly, i
 
 If a subagent needs execution permission, the main GUI presents the original child request for a human decision. With delegated review, the configured approval model acts first; only a request handed back for human review needs attention. Accept or deny the actual child operation. Deferring its dialog does not deny it or grant access, and unrelated work can continue. A coordinator’s message can confirm that work is ready, but cannot grant execution permission.
 
+In the CLI or TUI, `/reply 1` allows a single pending human approval and `/reply 2` denies it. If several approvals are pending, use `/reply --approval <approvalId> <decision>` with the ID shown beside the operation. A model review is not a pending human decision. If the selected request changed, inspect the current decision before replying.
+
 Reader's Subagents view inspects recorded work without resuming it. Closing that view does not cancel the task. Review a child's actual pending decision rather than treating its report as approval.
 
 ## Host lifetime

@@ -110,6 +110,7 @@ async fn main() {
         KernelBootstrapOptions::new(args.api.clone())
             .host_data_dir(args.host_data_dir.clone())
             .auto_start(!args.no_auto_start_kernel && !matches!(args.command, Command::StopHost))
+            .for_shutdown(matches!(args.command, Command::StopHost))
             .persistent(matches!(
                 args.command,
                 Command::StartHost | Command::GuiAttach
@@ -976,7 +977,9 @@ async fn wait_for_projection(
             }
         }
         if let Some(run) = projection.run.as_ref() {
-            if run.status == "waiting" {
+            if projection.human_approvals().next().is_some()
+                || (run.status == "waiting" && !model_only_approval_wait(&projection))
+            {
                 output
                     .render_action_required(&mut io::stdout().lock(), &projection)
                     .map_err(|error| error.to_string())?;
@@ -1127,12 +1130,7 @@ async fn run_chat(
                         .flatten()
                         .next()
                         .is_some()
-                    || projection
-                        .pending_approval
-                        .as_ref()
-                        .is_some_and(|approval| {
-                            !approval.is_model_reviewing(projection.run.as_ref())
-                        })
+                    || projection.human_approvals().next().is_some()
                 {
                     Outcome::ActionRequired
                 } else {
@@ -1310,8 +1308,19 @@ async fn run_chat(
             }
             _ => {
                 // Polling may still show a run that settled before this input arrived.
-                projection = refresh_projection(client, &projection.session_id).await?;
+                let current = refresh_projection(client, &projection.session_id).await?;
                 let text = line.trim_end_matches(['\r', '\n']);
+                let check = conversation_input::check_reply_refresh(
+                    i18n::Language::ZhCn,
+                    &projection,
+                    &current,
+                    text,
+                );
+                projection = current;
+                if let Err(error) = check {
+                    eprintln!("{error}");
+                    continue;
+                }
                 let consumes_plugins = conversation_input::consumes_plugin_selections(text);
                 let plugin_binding = if selected_plugins.is_empty() || !consumes_plugins {
                     None
@@ -1458,13 +1467,10 @@ async fn render_pending_agent_decisions(
     let mut waiting = false;
     for decision in parent.pending_decision_children() {
         let child = refresh_projection(client, &decision.agent_session_id).await?;
-        if child.run.as_ref().map(|run| &run.run_id) != Some(&decision.run_id)
-            || !(child.pending_plan.is_some()
-                || child.pending_interaction.is_some()
-                || child
-                    .pending_approval
-                    .as_ref()
-                    .is_some_and(|approval| !approval.is_model_reviewing(child.run.as_ref())))
+        if !conversation_input::child_decisions_match(parent, decision, &child, false)
+            || (child.human_approvals().next().is_none()
+                && child.pending_plan.is_none()
+                && child.pending_interaction.is_none())
         {
             continue;
         }
@@ -1476,10 +1482,18 @@ async fn render_pending_agent_decisions(
             decision.display_name, child.session_id
         )
         .map_err(|error| error.to_string())?;
-        render_action_required_if_any(&mut stdout, &child).map_err(|error| error.to_string())?;
+        CliRenderState::default()
+            .render_human_decisions(&mut stdout, &child)
+            .map_err(|error| error.to_string())?;
+        let mut approvals = child.human_approvals();
+        let reply = match (approvals.next(), approvals.next()) {
+            (Some(item), None) => format!("/reply --approval {} <决定>", item.approval_id),
+            (Some(_), Some(_)) => "/reply --approval <审批ID> <决定>".into(),
+            _ => "/reply <答复>".into(),
+        };
         writeln!(
             stdout,
-            "回复此子代理：achbit-cli ask --session {} \"/reply <答复>\"",
+            "回复此子代理：achbit-cli ask --session {} \"{reply}\"",
             child.session_id
         )
         .map_err(|error| error.to_string())?;
@@ -1487,15 +1501,30 @@ async fn render_pending_agent_decisions(
     Ok(waiting)
 }
 
+fn model_only_approval_wait(projection: &SessionProjection) -> bool {
+    projection
+        .run
+        .as_ref()
+        .is_some_and(|r| r.status == "waiting" && r.waiting_reason.as_deref() == Some("approval"))
+        && projection.current_approvals().next().is_some()
+        && projection.human_approvals().next().is_none()
+        && projection.pending_plan.is_none()
+        && projection.pending_interaction.is_none()
+}
+
 fn outcome_for_projection(projection: &SessionProjection) -> Option<Outcome> {
-    if projection
-        .pending_agent_decisions
-        .iter()
-        .flatten()
-        .next()
-        .is_some()
+    if projection.human_approvals().next().is_some()
+        || projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
     {
         return Some(Outcome::ActionRequired);
+    }
+    if model_only_approval_wait(projection) {
+        return None;
     }
     outcome_for_status(&projection.run.as_ref()?.status)
 }
@@ -1565,6 +1594,7 @@ Achbit 本地编码 Agent
 使用 -C/--workspace 为新对话指定工作目录；已有对话通过 attach-directory/detach-directory 管理目录。
 chat 内 /sessions 列表，/resume <序号或完整 ID> 进入，/new 沿用启动目录新建；切换不会取消原会话或复制权限。序号仅对应本进程最后显示的列表。
 chat 普通文本随时发送，运行中按序排队；/reply 1 确认计划，/reply <说明> 修改计划或回答问题，/reply 1/2 允许/拒绝操作；cancel-plan 取消计划。
+多项审批并存时，使用 /reply --approval <审批ID> <决定> 选择已显示的原请求。
 权限请求提供时，/reply 3 本轮允许相同命令，/reply 4 本轮允许 Host Shell。/permissions <JSON> 修改当前任务权限；/revoke <authority-id> 撤销本轮授权。
 文件与目录引用只在 ask 中显式选择；--file 与 --directory 均可重复。图片以视觉内容发送给支持图片的模型，其他文件保留只读引用。
 ask/chat 创建新会话时支持 --recipe <JSON 文件> 选择模型、Loop 组件、权限策略和 Sandbox 后端。

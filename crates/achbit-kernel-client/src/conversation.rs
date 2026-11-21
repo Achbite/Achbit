@@ -522,6 +522,24 @@ impl SessionProjection {
             .filter(move |item| seen.insert((&item.agent_session_id, &item.run_id)))
     }
 
+    pub fn current_approvals(&self) -> impl Iterator<Item = &ApprovalProjection> {
+        self.pending_approvals
+            .as_deref()
+            .unwrap_or(self.pending_approval.as_slice())
+            .iter()
+            .filter(|item| {
+                self.run.as_ref().is_some_and(|run| {
+                    run.run_id == item.run_id
+                        && matches!(run.status.as_str(), "running" | "waiting")
+                })
+            })
+    }
+
+    pub fn human_approvals(&self) -> impl Iterator<Item = &ApprovalProjection> {
+        self.current_approvals()
+            .filter(|item| !item.is_model_reviewing(self.run.as_ref()))
+    }
+
     pub fn file_changes_for_run(&self, run_id: &str) -> Vec<(&str, usize, &FileChangeProjection)> {
         self.file_change_rounds
             .iter()
@@ -2013,9 +2031,17 @@ pub struct ApprovalProjection {
 }
 
 impl ApprovalProjection {
+    /// Only the review of this approval can hand it off; a sibling may already be waiting.
     pub fn is_model_reviewing(&self, run: Option<&RunProjection>) -> bool {
-        self.preview.approval_reviewer.as_deref() == Some("agent")
-            && run.is_some_and(|run| run.run_id == self.run_id && run.status == "running")
+        run.is_some_and(|run| {
+            run.run_id == self.run_id && matches!(run.status.as_str(), "running" | "waiting")
+        }) && self.preview.approval_reviewer.as_deref() == Some("agent")
+            && self
+                .preview
+                .review
+                .as_ref()
+                .and_then(|r| r["decision"].as_str())
+                != Some("ask")
     }
 }
 

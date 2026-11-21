@@ -124,14 +124,15 @@ fn run_label(language: Language, projection: Option<&SessionProjection>) -> Stri
     let Some(run) = &projection.run else {
         return language.text("tui.ready").into();
     };
+    if projection.human_approvals().next().is_none()
+        && projection.current_approvals().next().is_some()
+        && projection.pending_plan.is_none()
+        && projection.pending_interaction.is_none()
+        && projection.pending_decision_children().next().is_none()
+    {
+        return language.text("agent.permission.reviewing").into();
+    }
     if run.status == "running" {
-        if projection
-            .pending_approval
-            .as_ref()
-            .is_some_and(|approval| approval.is_model_reviewing(Some(run)))
-        {
-            return language.text("agent.permission.reviewing").into();
-        }
         if let Some(attempt) = projection
             .provider_attempts
             .last()
@@ -164,11 +165,28 @@ fn run_label(language: Language, projection: Option<&SessionProjection>) -> Stri
     .into()
 }
 
+fn displayed_approvals(
+    projection: &SessionProjection,
+) -> Vec<&achbit_kernel_client::ApprovalProjection> {
+    let human: Vec<_> = projection.human_approvals().collect();
+    if human.is_empty()
+        && projection.pending_plan.is_none()
+        && projection.pending_interaction.is_none()
+        && projection.pending_decision_children().next().is_none()
+    {
+        projection.current_approvals().collect()
+    } else {
+        human
+    }
+}
+
 fn approval_actions(
     language: Language,
     approval: &achbit_kernel_client::ApprovalProjection,
+    multiple: bool,
 ) -> String {
-    let mut actions = language.text("tui.authorizationActions").to_owned();
+    let prefix = crate::conversation_input::approval_reply_prefix(approval, multiple);
+    let mut actions = language.format("tui.authorizationActions", std::slice::from_ref(&prefix));
     for (scope, input) in achbit_kernel_client::AUTHORIZATION_OPTIONS {
         if approval
             .preview
@@ -177,7 +195,7 @@ fn approval_actions(
             .is_some_and(|scopes| scopes.iter().any(|value| value == scope))
         {
             actions.push_str(&format!(
-                "\n/reply {input} {}",
+                "\n{prefix} {input} {}",
                 language.text(&format!("agent.permission.scope.{scope}"))
             ));
         }
@@ -192,7 +210,31 @@ fn decision_lines(
     let Some(projection) = projection else {
         return vec![];
     };
-    let (title, actions, summary) = if let Some(approval) = &projection.pending_approval {
+    let approvals = displayed_approvals(projection);
+    if approvals.len() > 1 {
+        let mut lines = Vec::new();
+        for approval in approvals {
+            let reviewing = approval.is_model_reviewing(projection.run.as_ref());
+            lines.push(Line::from(format!(
+                "{} · {}",
+                if reviewing {
+                    language.text("agent.permission.reviewing")
+                } else {
+                    &approval.approval_id
+                },
+                approval.preview.summary
+            )));
+            if !reviewing {
+                lines.extend(
+                    approval_actions(language, approval, true)
+                        .lines()
+                        .map(|s| Line::from(s.to_owned())),
+                );
+            }
+        }
+        return lines;
+    }
+    let (title, actions, summary) = if let Some(approval) = approvals.first() {
         let reviewing = approval.is_model_reviewing(projection.run.as_ref());
         (
             language.text(if reviewing {
@@ -203,7 +245,7 @@ fn decision_lines(
             if reviewing {
                 String::new()
             } else {
-                approval_actions(language, approval)
+                approval_actions(language, approval, false)
             },
             approval.preview.summary.clone(),
         )
@@ -266,68 +308,97 @@ pub(crate) fn decision_details(
     let Some(projection) = projection else {
         return language.text("tui.sessionNotInitialized").into();
     };
-    if let Some(approval) = &projection.pending_approval {
-        let reviewing = approval.is_model_reviewing(projection.run.as_ref());
-        let mut text = language.format(
-            if reviewing {
-                "tui.authorizationReviewingDetails"
-            } else {
-                "tui.authorizationDetails"
-            },
-            &[format!("{}", approval.preview.summary)],
-        );
-        if let Some(operation) = &approval.preview.operation {
-            text.push_str(&format!(
-                "\n{}: {}",
-                language.text("agent.tool.detail.operation"),
-                operation.tool_name
-            ));
-            if let Some(root) = &operation.workspace_root {
-                text.push_str(&format!(
-                    "\n{}: {root}",
-                    language.text("agent.tool.shell.cwd")
-                ));
-            }
-            if let Some(scope) = &operation.execution_scope {
-                text.push_str(&format!(
-                    "\n{}: {scope}",
-                    language.text("agent.approval.executionScope")
-                ));
-            }
-            text.push_str(&format!(
-                "\n{}: {}",
-                language.text("agent.approval.arguments"),
-                serde_json::to_string_pretty(&operation.arguments)
-                    .expect("operation arguments serialize")
-            ));
-        }
-        if let Some(reason) = approval
-            .preview
-            .review
-            .as_ref()
-            .and_then(|review| review["reason"].as_str())
-        {
-            text.push_str(&format!("\n{reason}"));
-        }
-        if let Some(files) = &approval.preview.file_access {
-            for access in ["read", "write"] {
-                for path in files[access].as_array().into_iter().flatten() {
-                    text.push_str(&format!("\n{access}: {}", path.as_str().unwrap_or("")));
-                }
-            }
-        }
-        for target in &approval.preview.logical_targets {
-            text.push_str(&format!("\n{target}"));
-        }
-        if approval.preview.authorization_scope.as_deref() == Some("sessionBrowser") {
-            text.push_str(language.text("tui.browserAuthorizationScope"));
-        }
-        text.push('\n');
-        if !reviewing {
-            text.push_str(&approval_actions(language, approval));
-        }
-        return text;
+    let approvals = displayed_approvals(projection);
+    if !approvals.is_empty() {
+        let multiple = approvals.len() > 1;
+        return approvals
+            .into_iter()
+            .map(|approval| {
+                approval_details(
+                    language,
+                    approval,
+                    approval.is_model_reviewing(projection.run.as_ref()),
+                    multiple,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
     }
+    non_approval_details(language, projection)
+}
+
+fn approval_details(
+    language: Language,
+    approval: &achbit_kernel_client::ApprovalProjection,
+    reviewing: bool,
+    multiple: bool,
+) -> String {
+    let mut text = language.format(
+        if reviewing {
+            "tui.authorizationReviewingDetails"
+        } else {
+            "tui.authorizationDetails"
+        },
+        &[format!("{}", approval.preview.summary)],
+    );
+    if let Some(operation) = &approval.preview.operation {
+        text.push_str(&format!(
+            "\n{}: {}",
+            language.text("agent.tool.detail.operation"),
+            operation.tool_name
+        ));
+        if let Some(root) = &operation.workspace_root {
+            text.push_str(&format!(
+                "\n{}: {root}",
+                language.text("agent.tool.shell.cwd")
+            ));
+        }
+        if let Some(scope) = &operation.execution_scope {
+            text.push_str(&format!(
+                "\n{}: {scope}",
+                language.text("agent.approval.executionScope")
+            ));
+        }
+        text.push_str(&format!(
+            "\n{}: {}",
+            language.text("agent.approval.arguments"),
+            serde_json::to_string_pretty(&operation.arguments)
+                .expect("operation arguments serialize")
+        ));
+    }
+    if let Some(reason) = approval
+        .preview
+        .review
+        .as_ref()
+        .and_then(|review| review["reason"].as_str())
+    {
+        text.push_str(&format!("\n{reason}"));
+    }
+    if let Some(files) = &approval.preview.file_access {
+        for access in ["read", "write"] {
+            for path in files[access].as_array().into_iter().flatten() {
+                text.push_str(&format!("\n{access}: {}", path.as_str().unwrap_or("")));
+            }
+        }
+    }
+    for target in &approval.preview.logical_targets {
+        text.push_str(&format!("\n{target}"));
+    }
+    if approval.preview.authorization_scope.as_deref() == Some("sessionBrowser") {
+        text.push_str(language.text("tui.browserAuthorizationScope"));
+    }
+    text.push('\n');
+    if !reviewing {
+        text.push_str(&format!(
+            "{} · {} · {}\n",
+            approval.run_id, approval.call_id, approval.approval_id
+        ));
+        text.push_str(&approval_actions(language, approval, multiple));
+    }
+    text
+}
+
+fn non_approval_details(language: Language, projection: &SessionProjection) -> String {
     if let Some(plan) = &projection.pending_plan {
         let mut text = String::new();
         render_plan_plain(language, &mut text, plan);
@@ -2897,6 +2968,27 @@ mod approval_presentation_tests {
     use serde_json::json;
 
     #[test]
+    fn terminal_approval_tui_displays_commands_for_each_human_route_only() {
+        let p = crate::conversation_input::fixtures::approval_projection(&["model", "one", "two"]);
+        for text in [
+            decision_details(Language::EnUs, Some(&p)),
+            decision_lines(Language::EnUs, Some(&p))
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ] {
+            assert!(!text.contains("Operation model") && !text.contains("/reply 1"));
+            for id in ["one", "two"] {
+                assert!(
+                    text.contains(&format!("Operation {id}"))
+                        && text.contains(&format!("/reply --approval approval:{id} 2"))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn model_review_and_user_decision_have_distinct_actions_and_exact_details() {
         let mut projection: SessionProjection = serde_json::from_value(json!({
             "schemaVersion":achbit_kernel_client::SESSION_PROJECTION_VERSION,"sessionId":"session:test","revision":1,
@@ -2909,7 +3001,7 @@ mod approval_presentation_tests {
             "pendingApproval":{"approvalId":"approval:test","runId":"run:test","callId":"call:test","sequence":2,"createdAt":"now",
                 "preview":{"summary":"Inspect","effects":["process"],"logicalTargets":["."],"approvalReviewer":"agent",
                     "operation":{"toolName":"bash","arguments":{"command":"git status"},"workspaceRoot":"/project","executionScope":"workspace"},
-                    "fileAccess":{"read":["/references"],"write":[]},"review":{"decision":"ask","reason":"Scope needs confirmation"}}}
+                    "fileAccess":{"read":["/references"],"write":[]}}}
         })).unwrap();
         let reviewing = decision_details(Language::ZhCn, Some(&projection));
         assert!(reviewing.contains("模型正在审查"));
@@ -2918,10 +3010,15 @@ mod approval_presentation_tests {
                 && reviewing.contains("/project")
                 && reviewing.contains("/references")
         );
-        assert!(reviewing.contains("Scope needs confirmation"));
         assert!(!reviewing.contains("/reply"));
         projection.run.as_mut().unwrap().status = "waiting".into();
-        let waiting = decision_details(Language::ZhCn, Some(&projection));
-        assert!(waiting.contains("/reply"));
+        assert!(!decision_details(Language::ZhCn, Some(&projection)).contains("/reply"));
+        projection.pending_approval.as_mut().unwrap().preview.review =
+            Some(json!({"decision":"ask","reason":"Scope needs confirmation"}));
+        for status in ["waiting", "running"] {
+            projection.run.as_mut().unwrap().status = status.into();
+            let handoff = decision_details(Language::ZhCn, Some(&projection));
+            assert!(handoff.contains("/reply") && handoff.contains("Scope needs confirmation"));
+        }
     }
 }

@@ -461,7 +461,7 @@ impl TuiApp {
                     && self.projection.as_ref().is_some_and(|projection| {
                         projection.pending_plan.is_none()
                             && projection.pending_interaction.is_none()
-                            && projection.pending_approval.is_none()
+                            && projection.human_approvals().next().is_none()
                             && projection
                                 .pending_agent_decisions
                                 .iter()
@@ -903,7 +903,20 @@ impl TuiApp {
                 .conversation_projection(&projection.session_id)
                 .await
             {
-                Ok(current) => self.replace_projection(Some(current)),
+                Ok(current) => {
+                    let check = crate::conversation_input::check_reply_refresh(
+                        self.host.language,
+                        projection,
+                        &current,
+                        text,
+                    );
+                    self.replace_projection(Some(current));
+                    if let Err(error) = check {
+                        self.input_failed = true;
+                        self.status = error;
+                        return;
+                    }
+                }
                 Err(error) => {
                     self.input_failed = true;
                     self.status = error.to_string();
@@ -1499,7 +1512,7 @@ impl TuiApp {
                 Some(self.host.language.text("tui.actionPlan").to_string())
             } else if projection.pending_interaction.is_some() {
                 Some(self.host.language.text("tui.actionReply").to_string())
-            } else if projection.pending_approval.is_some() {
+            } else if projection.human_approvals().next().is_some() {
                 Some(self.host.language.text("tui.actionApproval").to_string())
             } else if projection
                 .pending_agent_decisions

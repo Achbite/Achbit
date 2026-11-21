@@ -3,8 +3,8 @@ use crate::i18n::Language;
 use achbit_kernel_client::{
     approval_response_command, focus_command, interaction_response_command,
     message_command_with_profile_and_plugins, plan_confirm_command, plan_revision_command,
-    FilesystemReference, HttpKernelClient, InteractionProjection, PluginSelectionInput,
-    SessionProjection,
+    FilesystemReference, HttpKernelClient, InteractionProjection, PendingAgentDecision,
+    PluginSelectionInput, SessionProjection,
 };
 use serde_json::json;
 
@@ -38,60 +38,168 @@ pub async fn child_reply_projection(
     projection: &SessionProjection,
     text: &str,
 ) -> Result<Option<SessionProjection>, String> {
-    if !matches!(slash_command(text), Some(("reply", _)))
-        || projection.pending_plan.is_some()
-        || projection.pending_interaction.is_some()
-        || projection.pending_approval.is_some()
-    {
-        return Ok(None);
-    }
-    let mut children = projection.pending_decision_children();
-    let Some(decision) = children.next() else {
+    let Some(("reply", response)) = slash_command(text) else {
         return Ok(None);
     };
-    if children.next().is_some() {
-        return Err(language.text("tui.chooseChildReply").into());
-    }
+    let selector = approval_selector(response).map(|(id, _)| id);
+    let decision = if let Some(id) = selector {
+        if projection.human_approvals().any(|a| a.approval_id == id) {
+            return Ok(None);
+        }
+        let mut routes = projection
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .filter(|route| route.approval.as_ref().is_some_and(|a| a.approval_id == id));
+        let Some(route) = routes.next() else {
+            return Err(language.text("tui.noPendingReply").into());
+        };
+        if routes.next().is_some() {
+            return Err(language.text("tui.chooseChildReply").into());
+        }
+        route
+    } else {
+        if projection.pending_plan.is_some()
+            || projection.pending_interaction.is_some()
+            || projection.human_approvals().next().is_some()
+        {
+            return Ok(None);
+        }
+        let mut children = projection.pending_decision_children();
+        let Some(first) = children.next() else {
+            return Ok(None);
+        };
+        if children.next().is_some() {
+            return Err(language.text("tui.chooseChildReply").into());
+        }
+        first
+    };
     let child = client
         .conversation_projection(&decision.agent_session_id)
         .await
         .map_err(|error| error.to_string())?;
-    let plan = child
-        .pending_plan
-        .as_ref()
-        .map(|plan| (plan.plan_id.as_str(), plan.revision));
-    let approval = child
-        .pending_approval
-        .as_ref()
-        .map(|approval| (approval.approval_id.as_str(), approval.call_id.as_str()));
-    let interactions: Vec<_> = child
-        .interactions
-        .iter()
-        .filter(|interaction| interaction.status == "pending")
-        .map(|interaction| interaction.interaction_id.as_str())
-        .collect();
-    if child.session_id != decision.agent_session_id
-        || child.run.as_ref().map(|run| run.run_id.as_str()) != Some(decision.run_id.as_str())
-        || plan
-            != decision
-                .plan
-                .as_ref()
-                .map(|plan| (plan.plan_id.as_str(), plan.revision))
-        || approval
-            != decision
-                .approval
-                .as_ref()
-                .map(|approval| (approval.approval_id.as_str(), approval.call_id.as_str()))
-        || interactions
-            != decision
-                .interaction_ids
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-    {
+    if !child_decisions_match(projection, decision, &child, selector.is_some()) {
         return Err(language.text("tui.childDecisionChanged").into());
     }
     Ok(Some(child))
+}
+
+/// Rendering and input must match Session's published route, not a child's first pending call.
+/// For an explicit selection a change to an unrelated sibling need not invalidate the reply.
+pub fn child_decisions_match(
+    parent: &SessionProjection,
+    decision: &PendingAgentDecision,
+    child: &SessionProjection,
+    explicit: bool,
+) -> bool {
+    if decision.agent_session_id != child.session_id
+        || !child.run.as_ref().is_some_and(|r| {
+            r.run_id == decision.run_id && matches!(r.status.as_str(), "running" | "waiting")
+        })
+    {
+        return false;
+    }
+    if explicit {
+        return decision.approval.as_ref().is_some_and(|r| {
+            child
+                .human_approvals()
+                .any(|a| a.approval_id == r.approval_id && a.call_id == r.call_id)
+        });
+    }
+    child
+        .human_approvals()
+        .map(|a| (&a.approval_id, &a.call_id))
+        .eq(parent
+            .pending_agent_decisions
+            .iter()
+            .flatten()
+            .filter(|r| r.agent_session_id == child.session_id && r.run_id == decision.run_id)
+            .filter_map(|d| d.approval.as_ref())
+            .map(|a| (&a.approval_id, &a.call_id)))
+        && child
+            .pending_plan
+            .as_ref()
+            .map(|p| (&p.plan_id, p.revision))
+            == decision.plan.as_ref().map(|p| (&p.plan_id, p.revision))
+        && child
+            .interactions
+            .iter()
+            .filter(|i| i.run_id == decision.run_id && i.status == "pending")
+            .map(|i| &i.interaction_id)
+            .eq(decision.interaction_ids.iter())
+}
+
+pub fn approval_reply_prefix(
+    approval: &achbit_kernel_client::ApprovalProjection,
+    multiple: bool,
+) -> String {
+    if multiple {
+        format!("/reply --approval {}", approval.approval_id)
+    } else {
+        "/reply".into()
+    }
+}
+
+/// None preserves the ordinary /reply text for a Plan, question or a single approval.
+fn approval_selector(response: &str) -> Option<(&str, &str)> {
+    let mut words = response.splitn(2, char::is_whitespace);
+    if words.next()? != "--approval" {
+        return None;
+    }
+    let rest = words.next().unwrap_or("").trim();
+    let (id, decision) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    Some((id, decision.trim()))
+}
+
+/// Never reinterpret an implicit approval when an interactive client's refresh changes its identity.
+pub fn check_reply_refresh(
+    language: Language,
+    before: &SessionProjection,
+    after: &SessionProjection,
+    text: &str,
+) -> Result<(), String> {
+    let Some(("reply", response)) = slash_command(text) else {
+        return Ok(());
+    };
+    fn identities<'a>(
+        p: &'a SessionProjection,
+        selected: Option<&str>,
+    ) -> Vec<(&'a str, &'a str, &'a str, &'a str)> {
+        let local = p.human_approvals().map(|a| {
+            (
+                p.session_id.as_str(),
+                a.run_id.as_str(),
+                a.call_id.as_str(),
+                a.approval_id.as_str(),
+            )
+        });
+        if selected.is_none()
+            && (p.human_approvals().next().is_some()
+                || p.pending_plan.is_some()
+                || p.pending_interaction.is_some())
+        {
+            return local.collect(); // An unrelated child's change cannot invalidate this local reply.
+        }
+        let children = p.pending_agent_decisions.iter().flatten().filter_map(|r| {
+            r.approval.as_ref().map(|a| {
+                (
+                    r.agent_session_id.as_str(),
+                    r.run_id.as_str(),
+                    a.call_id.as_str(),
+                    a.approval_id.as_str(),
+                )
+            })
+        });
+        local
+            .chain(children)
+            .filter(|a| selected.is_none_or(|id| id == a.3))
+            .collect()
+    }
+    let id = approval_selector(response).map(|(id, _)| id);
+    if identities(before, id) != identities(after, id) {
+        return Err(language.text("tui.childDecisionChanged").into());
+    }
+    Ok(())
 }
 
 pub fn contextual_input_command(
@@ -145,8 +253,25 @@ pub fn contextual_input_command(
         if !selections.is_empty() || !filesystem_references.is_empty() {
             return Err(language.text("tui.replyReferencesUnsupported").to_string());
         }
-        if let Some(approval) = projection.pending_approval.as_ref() {
-            let decision = approval_decision_for_input(language, response)?;
+        let selected = approval_selector(response);
+        let mut approvals = projection
+            .human_approvals()
+            .filter(|a| selected.is_none_or(|(id, _)| a.approval_id == id));
+        if let Some(approval) = approvals.next() {
+            if approvals.next().is_some() {
+                return Err(language.format(
+                    "tui.chooseApprovalReply",
+                    &[projection
+                        .human_approvals()
+                        .map(|a| a.approval_id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")],
+                ));
+            }
+            let decision = approval_decision_for_input(
+                language,
+                selected.map_or(response, |(_, decision)| decision),
+            )?;
             let scope = achbit_kernel_client::approval_scope_for_input(decision);
             if scope.is_some_and(|scope| {
                 !approval
@@ -163,6 +288,9 @@ pub fn contextual_input_command(
                 approval,
                 decision,
             ));
+        }
+        if selected.is_some() {
+            return Err(language.text("tui.noPendingReply").into());
         }
         if let Some(plan) = projection.pending_plan.as_ref() {
             if is_plan_confirmation_input(response) {
@@ -296,6 +424,21 @@ pub(crate) mod fixtures {
         serde_json::from_value(value).unwrap()
     }
 
+    pub(crate) fn approval_projection(ids: &[&str]) -> SessionProjection {
+        let approval = |id: &str| {
+            json!({"approvalId":format!("approval:{id}"),"callId":format!("call:{id}"),"runId":"run:test",
+            "preview":{"approvalReviewer":if id == "model" {"agent"} else {"user"},"summary":format!("Operation {id}"),"effects":[],"logicalTargets":[]},
+            "sequence":2,"createdAt":"now"})
+        };
+        let mut p = waiting_projection("pendingApproval", approval(ids[0]));
+        p.pending_approvals = Some(
+            ids.iter()
+                .map(|id| serde_json::from_value(approval(id)).unwrap())
+                .collect(),
+        );
+        p
+    }
+
     pub(crate) fn pending_decisions() -> [(
         &'static str,
         serde_json::Value,
@@ -337,6 +480,98 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use fixtures::approval_projection;
+
+    fn reply(p: &SessionProjection, text: &str) -> Result<serde_json::Value, String> {
+        contextual_input_command(Language::EnUs, p, text, "command:reply", None, &[], &[])
+    }
+
+    #[test]
+    fn terminal_approval_only_unambiguous_human_handoff_receives_reply() {
+        let mut p = approval_projection(&["model", "human"]);
+        for status in ["waiting", "running"] {
+            p.run.as_mut().unwrap().status = status.into();
+            let cmd = reply(&p, "/reply 2").unwrap();
+            assert_eq!(
+                (
+                    &cmd["sessionId"],
+                    &cmd["runId"],
+                    &cmd["callId"],
+                    &cmd["approvalId"]
+                ),
+                (
+                    &json!("session:test"),
+                    &json!("run:test"),
+                    &json!("call:human"),
+                    &json!("approval:human")
+                )
+            );
+        }
+        let p = approval_projection(&["model"]);
+        assert!(
+            reply(&p, "/reply 2").is_err(),
+            "a stale run-level wait is not a human handoff"
+        );
+    }
+
+    #[test]
+    fn terminal_approval_multiple_human_items_require_the_displayed_id() {
+        let p = approval_projection(&["model", "one", "two"]);
+        assert!(reply(&p, "/reply 1").is_err());
+        let cmd = reply(&p, "/reply --approval approval:two 2").unwrap();
+        assert_eq!(cmd["approvalId"], "approval:two");
+        assert_eq!(cmd["callId"], "call:two");
+        assert_eq!(cmd["decision"], "deny");
+        for stale in ["approval:old", "approval:model"] {
+            assert!(reply(&p, &format!("/reply --approval {stale} 1")).is_err());
+        }
+    }
+
+    #[test]
+    fn terminal_approval_checks_child_routes_and_refresh_against_original_identities() {
+        let child = approval_projection(&["model", "one", "two"]);
+        let mut parent = fixtures::waiting_projection("pendingApproval", serde_json::Value::Null);
+        parent.session_id = "session:parent".into();
+        parent.pending_agent_decisions = Some(["one","two"].into_iter().map(|id| serde_json::from_value(json!({
+            "agentSessionId":child.session_id, "displayName":"Worker", "runId":"run:test", "interactionIds":[],
+            "approval":{"approvalId":format!("approval:{id}"),"callId":format!("call:{id}")}
+        })).unwrap()).collect());
+        let routes = parent.pending_agent_decisions.as_ref().unwrap();
+        assert!(child_decisions_match(&parent, &routes[0], &child, false));
+        assert!(child_decisions_match(&parent, &routes[1], &child, true));
+        let fresh = approval_projection(&["model", "two", "new"]);
+        assert!(!child_decisions_match(&parent, &routes[0], &fresh, false));
+        assert!(!child_decisions_match(&parent, &routes[0], &fresh, true));
+        assert!(child_decisions_match(&parent, &routes[1], &fresh, true));
+        let mut later = parent.clone();
+        later.pending_agent_decisions.as_mut().unwrap()[1]
+            .approval
+            .as_mut()
+            .unwrap()
+            .call_id = "call:replacement".into();
+        assert!(!child_decisions_match(
+            &later,
+            &later.pending_agent_decisions.as_ref().unwrap()[1],
+            &child,
+            true
+        ));
+        assert!(check_reply_refresh(Language::EnUs, &parent, &later, "/reply 2").is_err());
+        assert!(check_reply_refresh(
+            Language::EnUs,
+            &parent,
+            &later,
+            "/reply --approval approval:two 2"
+        )
+        .is_err());
+        assert!(check_reply_refresh(
+            Language::EnUs,
+            &parent,
+            &later,
+            "/reply --approval approval:one 2"
+        )
+        .is_ok());
+    }
 
     #[test]
     fn pending_plugins_follow_task_input_not_replies_or_session_settings() {
