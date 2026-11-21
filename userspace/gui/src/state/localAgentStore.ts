@@ -24,6 +24,7 @@ import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
 import { runHandoffNotice } from './handoffNotice';
+import { selectPendingApproval, type ApprovalIdentity } from '../components/local-agent/composerDecisions';
 import { reportedWindowRounds, sessionView, type CachedSessionView, type ContextWindowReading } from './contextWindowReading';
 import { uiEvents } from './uiEvents';
 import { dismissUnappliedInputs } from './unappliedInputReminders';
@@ -150,7 +151,7 @@ export interface LocalAgentState {
   rebindHost(hostBinding: HostWindowBinding): Promise<CommandReply>;
   setPermissions(patches: UserSettings): Promise<CommandReply>;
   revokeAuthorization(authorityId: string): Promise<CommandReply>;
-  respondApproval(decision: 'allow' | 'deny', authorizationScope?: ShellAuthorizationScope): Promise<CommandReply>;
+  respondApproval(decision: 'allow' | 'deny', authorizationScope: ShellAuthorizationScope | undefined, target: ApprovalIdentity & { sessionId: string }): Promise<CommandReply>;
   respondPlan(response: PlanResponse, submissionId?: string): Promise<CommandReply>;
   continueProvider(sessionId: string, runId: string): Promise<CommandReply>;
   cancelRun(): Promise<CommandReply>;
@@ -863,10 +864,10 @@ const store = create<LocalAgentState>((set, get) => ({
     }));
   },
 
-  respondApproval: async (decision, authorizationScope) => {
+  respondApproval: async (decision, authorizationScope, target) => {
     const state = get();
     const sessionId = requiredSession(state);
-    const approval = state.projection?.pendingApproval;
+    const approval = sessionId === target.sessionId ? selectPendingApproval(state.projection, target) : null;
     if (!approval) throw new Error('approval_response_missing');
     return await submitDecision(
       set,

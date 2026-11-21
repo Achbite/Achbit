@@ -4779,11 +4779,18 @@ test('child decision positioning follows the current decision identity, not ever
   projection.pendingPlan.revision = 2;
   assert.notEqual(agentDecisionKey(projection), key);
   projection.pendingPlan = null;
-  projection.pendingApproval = { approvalId: 'approval:review', preview: { approvalReviewer: 'agent' } };
-  projection.run = { status: 'running' };
+  const reviewing = { runId: 'run:child', callId: 'call:A', approvalId: 'approval:A', preview: { approvalReviewer: 'agent' } };
+  projection.pendingApproval = reviewing;
+  projection.pendingApprovals = [reviewing];
+  projection.run = { runId: reviewing.runId, status: 'running' };
   assert.equal(agentDecisionKey(projection), null, 'automatic review does not request a human reply');
   projection.run.status = 'waiting';
-  assert.ok(agentDecisionKey(projection));
+  assert.equal(agentDecisionKey(projection), null, 'an old run-level wait is not a handoff for A');
+  const human = { runId: reviewing.runId, callId: 'call:B', approvalId: 'approval:B', preview: { approvalReviewer: 'user' } };
+  projection.pendingApprovals = [reviewing, human];
+  assert.equal(agentDecisionKey(projection), `approval:${human.approvalId}`, 'the Reader positions at the actual decision');
+  projection.pendingApprovals = [{ ...reviewing, preview: { ...reviewing.preview, review: { decision: 'ask', reason: 'Human decision needed' } } }];
+  assert.equal(agentDecisionKey(projection), `approval:${reviewing.approvalId}`, 'the final handoff for A is actionable');
 });
 
 test('a parent accepts changed child decision references at the same journal revision', async t => {

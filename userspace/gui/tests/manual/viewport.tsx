@@ -29,7 +29,7 @@ const initialSessionId = 'session:viewport-preview';
 const plan = { planId: 'plan:preview', revision: 1, title: '恢复容器引擎并运行编译与测试', steps: [], mutationManifest: [] };
 const question = { interactionId: 'question:preview', runId: 'run:preview', status: 'pending', kind: 'question', prompt: '本次测试采用哪种配置？', allowFreeform: true,
   options: [{ id: 'debug', label: '调试配置', description: '' }, { id: 'release', label: '发布配置', description: '' }] };
-const approval = { approvalId: 'approval:preview', preview: { summary: '执行编译与测试命令', effects: ['external'], logicalTargets: ['host:container'] } };
+const approval = { runId: 'run:preview', callId: 'call:preview', approvalId: 'approval:preview', preview: { summary: '执行编译与测试命令', effects: ['external'], logicalTargets: ['host:container'] } };
 useLocalAgentStore.setState({ sessionId: initialSessionId, loading: false, catalogBusy: false, submitting: false,
   profiles: [{ id: 'profile:preview', name: 'DeepSeek Flash', enabled: true, thinking: 'auto' }] as never, selectedProfileId: 'profile:preview',
   projection: { sessionId: initialSessionId, revision: 0, contextCompositions: [], queuedInputs: [], plans: [] } as never,
@@ -55,7 +55,7 @@ function Preview() {
       pendingPlan: next === 'plan' ? plan : null,
       pendingInteraction: next === 'interaction' ? question : null,
       interactions: next === 'interaction' ? [question] : [],
-      run: next === 'interaction' ? { runId: 'run:preview', status: 'waiting', waitingReason: 'userInput' } : null,
+      run: next === 'interaction' || next === 'approval' ? { runId: 'run:preview', status: 'waiting', waitingReason: next === 'approval' ? 'approval' : 'userInput' } : null,
     } as never });
   };
   useEffect(() => {

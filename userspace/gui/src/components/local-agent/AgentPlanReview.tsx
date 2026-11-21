@@ -5,8 +5,8 @@ import { t, type UiLanguage } from '../../i18n';
 import { Button, ModalDialog } from '../../ui-components';
 import { ChildDecisions, type ChildReviewItem } from './AgentTasksPanel';
 import { ConversationSessionScope } from './ConversationSessionScope';
-import { pendingChildApproval, pendingChildInteraction, useAgentChildConversation, type ChildReviewTarget } from './useAgentChildConversation';
-import { awaitsApprovalReviewer } from './composerDecisions';
+import { pendingChildInteraction, useAgentChildConversation, type ChildReviewTarget } from './useAgentChildConversation';
+import { awaitsApprovalReviewer, selectPendingApproval } from './composerDecisions';
 import './agentPlanReview.css';
 
 type ReviewRoute = ChildReviewTarget & { key: string };
@@ -108,7 +108,7 @@ export function AgentReviewDialog(props: ReviewProps & { child: ReturnType<typeo
   const bodyLinks = useConversationBodyLinks(projection, language, setLinkError);
   const plan = kind === 'plan' && projection && matchesAgentPlanReview(decision, projection) ? projection.pendingPlan : null;
   const approval = kind === 'approval' && decision.approval && projection?.sessionId === decision.agentSessionId
-    ? pendingChildApproval(projection, { runId: decision.runId, ...decision.approval }) : null;
+    ? selectPendingApproval(projection, { runId: decision.runId, ...decision.approval }, false) : null;
   const interaction = props.kind === 'interaction'
     ? pendingChildInteraction(projection, { runId: decision.runId, interactionId: props.interactionId }, decision) : null;
   const item: ChildReviewItem | null = plan ? { kind: 'plan', plan } : approval ? { kind: 'approval', approval }

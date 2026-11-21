@@ -194,7 +194,7 @@ function Preview() {
     respondApproval: async (decision, scope): Promise<CommandReply> => {
       setResult(JSON.stringify({ decision, scope })); setMode('message');
       const revision = projection.revision + 1;
-      useLocalAgentStore.setState({ projection: { ...projection, revision, pendingApproval: null,
+      useLocalAgentStore.setState({ projection: { ...projection, revision, pendingApproval: null, pendingApprovals: [],
         activities: projection.activities.map((activity) => activity.kind === 'approval'
           ? { ...activity, status: decision === 'allow' ? 'completed' : 'denied' } : activity) } });
       return { schemaVersion: COMMAND_REPLY_VERSION, status: 'accepted', commandId: 'command:fixture:approval', sessionId, revision };
@@ -207,7 +207,8 @@ function Preview() {
       return;
     }
     const permission = next === 'approval';
-    useLocalAgentStore.setState({ projection: { ...initial, pendingApproval: permission ? approval : null,
+    useLocalAgentStore.setState({ projection: { ...initial, pendingApproval: permission ? approval : null, pendingApprovals: permission ? [approval] : [],
+      run: permission ? { runId: approval.runId, profileId: 'profile:preview', status: 'waiting', waitingReason: 'approval', workspaceBindings: [] } : initial.run,
       activities: permission ? [{ activityId: 'approval:preview', kind: 'approval', status: 'waiting',
         label: approval.preview.summary, runId: approval.runId, callId: approval.callId, sequence: 5 }] : [],
       timeline: permission ? [...initial.timeline.slice(0, 3), { kind: 'toolGroup', timelineId: 'permission:preview', sequence: 5,

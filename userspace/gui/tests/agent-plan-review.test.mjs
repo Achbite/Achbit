@@ -136,6 +136,52 @@ function childApprovalFixture() {
   return { decision, target, other, projection };
 }
 
+test('the direct child Reader offers only the actionable sibling and submits its exact identity', async t => {
+  const [{ ChildDecisions }, { ComposerDecisionPanels }, { pendingChildApproval }] = await loadGuiModules(t, [
+    '/src/components/local-agent/AgentTasksPanel.tsx', '/src/components/local-agent/ComposerDecisionPanels.tsx',
+    '/src/components/local-agent/useAgentChildConversation.ts']);
+  const { target, other, projection } = childApprovalFixture();
+  const reviewing = { ...other, preview: { ...other.preview, approvalReviewer: 'agent' } };
+  const waiting = { ...projection, run: { ...projection.run, status: 'waiting', waitingReason: 'approval' },
+    pendingPlan: null, interactions: [], pendingApproval: reviewing, pendingApprovals: [reviewing, target] };
+  const calls = [];
+  const render = p => findReactElement(viewOf(() => ChildDecisions({ projection: p, language: 'en-US',
+    child: { projection: p, submitting: false, readError: null, submit: async cmd => { calls.push(cmd); } } })), e => e.type === ComposerDecisionPanels);
+  const panel = render(waiting);
+  assert.equal(panel.props.composer.pendingApproval, target);
+  const controls = viewOf(() => ComposerDecisionPanels(panel.props));
+  findReactElement(controls, e => e.props['data-ui-action'] === 'composer.decision.allow').props.onClick();
+  assert.deepEqual(calls.map(({ sessionId, runId, callId, approvalId }) => ({ sessionId, runId, callId, approvalId })),
+    [{ sessionId: waiting.sessionId, runId: target.runId, callId: target.callId, approvalId: target.approvalId }]);
+  assert.equal(pendingChildApproval(waiting, reviewing), null, 'the submit preflight rejects a model-owned call, even without a parent dialog');
+  assert.equal(pendingChildApproval(waiting, calls[0]), target);
+  const withdrawn = { ...waiting, pendingApprovals: [reviewing] };
+  assert.equal(pendingChildApproval(withdrawn, calls[0]), null, 'a stale B must never fall back to A');
+  assert.doesNotMatch(renderToStaticMarkup(render(withdrawn)), /composer\.decision\.(allow|deny)/);
+});
+
+test('a directly opened conversation cannot retarget the visible human approval after withdrawal or navigation', async t => {
+  const oldStorage = globalThis.sessionStorage;
+  globalThis.sessionStorage = { getItem: () => null };
+  t.after(() => { if (oldStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = oldStorage; });
+  const [{ useAgentComposer }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
+    '/src/components/local-agent/useAgentComposer.ts', '/src/state/localAgentStore.ts']);
+  const { target, other, projection } = childApprovalFixture();
+  const reviewer = { ...other, preview: { ...other.preview, approvalReviewer: 'agent' } };
+  const p = { ...projection, contextCompositions: [], queuedInputs: [], pendingPlan: null, interactions: [],
+    run: { ...projection.run, status: 'waiting', waitingReason: 'approval' }, pendingApproval: reviewer, pendingApprovals: [reviewer, target] };
+  store.setState({ sessionId: p.sessionId, projection: p });
+  Object.assign(store.getInitialState(), store.getState());
+  const composer = viewOf(() => useAgentComposer('en-US', () => {}));
+  assert.equal(composer.pendingApproval, target);
+  const noTransport = () => assert.fail('must not send a stale approval command');
+  const oldFetch = globalThis.fetch; globalThis.fetch = noTransport; t.after(() => { globalThis.fetch = oldFetch; });
+  store.setState({ projection: { ...p, pendingApprovals: [reviewer] } });
+  await assert.rejects(composer.respondApproval('allow'), /approval_response_missing/);
+  store.setState({ sessionId: 'session:other', projection: { ...p, sessionId: 'session:other' } });
+  await assert.rejects(composer.respondApproval('allow'), /approval_response_missing/);
+});
+
 test('the routed dialog acts on just the original child approval, even when it is not first', async t => {
   const [{ AgentReviewDialog }, { ChildDecisions }, { ComposerDecisionPanels }] = await loadGuiModules(t, [
     '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/AgentTasksPanel.tsx', '/src/components/local-agent/ComposerDecisionPanels.tsx',

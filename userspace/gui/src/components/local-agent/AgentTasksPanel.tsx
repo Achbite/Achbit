@@ -10,6 +10,7 @@ import { InteractionCard } from './InteractionCard';
 import { PlanCardContent } from './PlanCard';
 import { planScopeAddition } from './planReview';
 import { useAgentChildConversation } from './useAgentChildConversation';
+import { selectPendingApproval, isAutomaticApproval } from './composerDecisions';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { ArtifactLinks } from './ArtifactLinks';
 import { requestWorkspacePreview, type AgentReaderTarget } from './readerState';
@@ -135,12 +136,11 @@ export function AgentPageInformation({ name, sessionId, projection, language, on
 export function agentDecisionKey(projection: SessionProjection | null): string | null {
   if (!projection) return null;
   const plan = projection.pendingPlan;
-  const approval = projection.pendingApproval;
+  const approval = selectPendingApproval(projection);
   const pending = [
     ...(plan ? [`plan:${plan.planId}:${plan.revision}`] : []),
     ...projection.interactions.filter(item => item.status === 'pending').map(item => `interaction:${item.interactionId}`),
-    ...(approval && !(approval.preview.approvalReviewer === 'agent' && projection.run?.status === 'running')
-      ? [`approval:${approval.approvalId}`] : []),
+    ...(approval ? [`approval:${approval.approvalId}`] : []),
   ];
   return pending.length ? pending.join('|') : null;
 }
@@ -158,7 +158,7 @@ export function AgentConversationHistory({ projection, name, language, expanded 
         const group = item?.type === 'toolGroup' ? item : undefined;
         return <ToolActivityGroup key={key} activities={group?.values ?? []} hostedKeys={group?.hostedKeys}
           hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection.artifacts} language={language} onExpand={() => {}}
-          pendingApproval={projection.pendingApproval} reviewingApproval={projection.run?.status === 'running'} onOpenWorkspaceResource={openResource} />;
+          pendingApproval={projection.pendingApproval} reviewingApproval={isAutomaticApproval(projection.pendingApproval, projection.run)} onOpenWorkspaceResource={openResource} />;
       }
       if (!item) return draft?.type === 'text'
         ? <article key={key}><MarkdownContent streaming>{draft.block.displayContent ?? draft.block.content}</MarkdownContent></article>
@@ -184,7 +184,8 @@ export function ChildDecisions({ child, projection, language, only }: {
 }) {
   const [revisionText, setRevisionText] = useState('');
   const pendingPlan = only ? (only.kind === 'plan' ? only.plan : null) : projection.pendingPlan;
-  const pendingApproval = only ? (only.kind === 'approval' ? only.approval : null) : projection.pendingApproval;
+  const pendingApproval = only ? (only.kind === 'approval' ? only.approval : null)
+    : selectPendingApproval(projection) ?? (isAutomaticApproval(projection.pendingApproval, projection.run) ? projection.pendingApproval : null);
   const interactions = only ? (only.kind === 'interaction' ? [only.interaction] : []) : projection.interactions.filter(item => item.status === 'pending');
   const previousPlan = pendingPlan ? projection.plans.find(plan => plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1) : undefined;
   const base = () => ({ schemaVersion: CONVERSATION_COMMAND_VERSION, commandId: `command:${crypto.randomUUID()}`, sessionId: projection.sessionId });

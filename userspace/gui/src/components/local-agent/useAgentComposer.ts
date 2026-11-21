@@ -14,7 +14,7 @@ import { shouldSubmitComposerKey } from './composerKeyboard';
 import { composerCommands, parseComposerCommand, suggestComposerCommands, type ComposerCommand } from './composerCommands';
 import { requestAgentOverview } from './agentNavigation';
 import { planScopeAddition } from './planReview';
-import { composerDecisionView, foregroundApproval, foregroundInteractions, foregroundPlan } from './composerDecisions';
+import { composerDecisionView, selectPendingApproval, foregroundInteractions, foregroundPlan } from './composerDecisions';
 import { clipboardImages, readPastedImage } from '../../services/pastedImage';
 import { isLongPastedText } from '../../services/pastedText';
 import { supportsNativeFileInput } from '../../services/modelFileInput';
@@ -71,7 +71,7 @@ export function useAgentComposer(
   const interactionIndex = selectedInteractionIndex >= 0 ? selectedInteractionIndex : Math.max(0,
     pendingInteractions.findIndex(item => item.interactionId === projection?.pendingInteraction?.interactionId));
   const pendingInteraction = pendingInteractions.at(interactionIndex) ?? null;
-  const pendingApproval = foregroundApproval(projection?.pendingApproval ?? null, projection?.run);
+  const pendingApproval = selectPendingApproval(projection);
   const pendingPlan = foregroundPlan(projection?.pendingPlan ?? null, projection?.effectivePermissions);
   const pendingScopeAddition = pendingPlan ? planScopeAddition(projection?.plans.find((plan) => (
     plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1
@@ -100,7 +100,11 @@ export function useAgentComposer(
   const editMessage = useLocalAgentStore((state) => state.editMessage);
   const focusContext = useLocalAgentStore((state) => state.focusContext);
   const respondInteraction = useLocalAgentStore((state) => state.respondInteraction);
-  const respondApproval = useLocalAgentStore((state) => state.respondApproval);
+  const submitApproval = useLocalAgentStore((state) => state.respondApproval);
+  const respondApproval = (decision: 'allow' | 'deny', scope?: Parameters<typeof submitApproval>[1]) => {
+    if (!sessionId || !pendingApproval) return Promise.reject(new Error('approval_response_missing'));
+    return submitApproval(decision, scope, { sessionId, runId: pendingApproval.runId, callId: pendingApproval.callId, approvalId: pendingApproval.approvalId });
+  };
   const respondPlan = useLocalAgentStore((state) => state.respondPlan);
   const cancelRun = useLocalAgentStore((state) => state.cancelRun);
   const saveModelChoice = useLocalAgentStore(state => state.selectModel);

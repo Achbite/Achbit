@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApprovalProjection, ConversationCommand, PendingAgentDecision, SessionProjection } from '@achbit/protocol';
-import { awaitsApprovalReviewer } from './composerDecisions';
+import { selectPendingApproval } from './composerDecisions';
 import { getLocalAgentProjection, submitLocalAgentCommand } from '../../services/localAgentApi';
 import { watchConversationChanges } from '../../services/conversationEvents';
 import useAppStatusStore from '../../state/appStatusStore';
@@ -23,12 +23,9 @@ export function pendingChildInteraction(projection: SessionProjection | null,
 
 export function pendingChildApproval(projection: SessionProjection | null, id: Pick<ApprovalProjection, 'runId' | 'callId' | 'approvalId'>,
   route?: PendingAgentDecision) {
-  if (!projection?.run || projection.run.runId !== id.runId || !['running', 'waiting'].includes(projection.run.status)) return null;
-  if (route && (route.agentSessionId !== projection.sessionId || route.runId !== id.runId
+  if (route && (route.agentSessionId !== projection?.sessionId || route.runId !== id.runId
     || route.approval?.approvalId !== id.approvalId || route.approval?.callId !== id.callId)) return null;
-  const pending = projection.pendingApprovals ?? (projection.pendingApproval ? [projection.pendingApproval] : []);
-  const approval = pending.find(item => item.runId === id.runId && item.callId === id.callId && item.approvalId === id.approvalId) ?? null;
-  return route && awaitsApprovalReviewer(approval) ? null : approval;
+  return selectPendingApproval(projection, id);
 }
 
 /** This is a view of a child Session, not a child execution owner. */
