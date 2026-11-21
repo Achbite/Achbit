@@ -4,6 +4,14 @@
 //! the sibling executable inside a Host-owned Job Object.
 use serde_json::{json, Value};
 #[cfg(target_os = "macos")]
+mod macos_image;
+#[cfg(target_os = "macos")]
+use macos_image::FileIdentity as InstalledImage;
+#[cfg(windows)]
+use std::time::SystemTime;
+#[cfg(windows)]
+type InstalledImage = SystemTime;
+#[cfg(target_os = "macos")]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -11,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 /// Proof that the exact authenticated helper process has exited.
@@ -144,7 +152,10 @@ fn check_macos_desktop_version() -> Result<(), String> {
 struct Connection {
     stream: BufReader<TcpStream>,
     process_exit: ProcessExit,
+    #[cfg(windows)]
     executable_modified: SystemTime,
+    #[cfg(target_os = "macos")]
+    image: macos_image::ExecutorImage,
     failure: Option<String>,
 }
 
@@ -372,12 +383,12 @@ impl ComputerUseHost {
     }
 
     #[cfg(target_os = "macos")]
-    fn launch(&self, arguments: &[&str]) -> Result<(), String> {
+    fn launch(&self, app: &Path, arguments: &[&str]) -> Result<(), String> {
         // LaunchServices gives this App its own macOS identity, instead of
         // inheriting the Host's permission responsibility as a directly spawned binary.
         let launched = Command::new("/usr/bin/open")
             .args(["-n", "-g", "-a"])
-            .arg(&self.app)
+            .arg(app)
             .arg("--args")
             .args(arguments)
             .output()
@@ -427,7 +438,15 @@ impl ComputerUseHost {
         Ok(process)
     }
 
-    fn start(&self, modified: SystemTime) -> Result<Connection, String> {
+    fn installed_image(&self) -> Result<InstalledImage, String> {
+        #[cfg(windows)]
+        let identity = std::fs::metadata(self.executable()).and_then(|m| m.modified());
+        #[cfg(target_os = "macos")]
+        let identity = InstalledImage::at(&self.executable());
+        identity.map_err(|e| format!("computer_component_unavailable: {e}"))
+    }
+
+    fn start(&self, installed: InstalledImage) -> Result<Connection, String> {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let address = listener
@@ -443,7 +462,9 @@ impl ComputerUseHost {
             self.host.as_str(),
         ];
         #[cfg(target_os = "macos")]
-        self.launch(&arguments)?;
+        let launch = macos_image::LaunchImage::pin(&self.app, installed)?;
+        #[cfg(target_os = "macos")]
+        self.launch(&launch.app, &arguments)?;
         #[cfg(windows)]
         let mut launched = self.launch(&arguments)?;
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -486,13 +507,16 @@ impl ComputerUseHost {
             return Err("computer_component_handshake_invalid".into());
         }
         #[cfg(target_os = "macos")]
-        let process_exit = {
+        let (process_exit, image) = {
             let pid = handshake["pid"]
                 .as_u64()
                 .and_then(|value| libc::pid_t::try_from(value).ok())
                 .filter(|pid| *pid > 0)
                 .ok_or("computer_component_handshake_invalid")?;
-            watch_process_exit(pid)?
+            (
+                watch_process_exit(pid)?,
+                macos_image::ExecutorImage::new(pid, launch),
+            )
         };
         // The connecting process must be the exact child this Host started.
         #[cfg(windows)]
@@ -519,7 +543,10 @@ impl ComputerUseHost {
         Ok(Connection {
             stream: reader,
             process_exit,
-            executable_modified: modified,
+            #[cfg(windows)]
+            executable_modified: installed,
+            #[cfg(target_os = "macos")]
+            image,
             failure: None,
         })
     }
@@ -554,15 +581,27 @@ impl ComputerUseHost {
         // Release belongs to the connected executor even if its on-disk package
         // changed. Never launch a replacement merely to release the old run.
         if input["action"] != "computer:releaseRun" {
-            let modified = std::fs::metadata(self.executable())
-                .and_then(|m| m.modified())
-                .map_err(|e| format!("computer_component_unavailable: {e}"))?;
-            // An explicit package replacement is observed only between calls. Retire
-            // the old process before starting the replacement; never replay an input.
-            if slot
+            let installed = self.installed_image()?;
+            #[cfg(windows)]
+            let replaced = slot
                 .as_ref()
-                .is_some_and(|connection| connection.executable_modified != modified)
-            {
+                .is_some_and(|connection| connection.executable_modified != installed);
+            #[cfg(target_os = "macos")]
+            let replaced = if let Some(c) = slot.as_mut() {
+                if c.exited()? {
+                    true
+                } else if !c.image.current(installed)? {
+                    if let Some(reply) = macos_image::prepare_retirement(c, binding, input)? {
+                        return Ok(reply);
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if replaced {
                 slot.as_mut().expect("checked component").stop()?;
                 *slot = None;
                 {
@@ -589,11 +628,48 @@ impl ComputerUseHost {
                 }
             }
             if slot.is_none() {
-                *slot = Some(self.start(modified)?);
+                *slot = Some(self.start(installed)?);
+                // The package can also be exchanged while LaunchServices starts the App.
+                // Keep the exact process/exit watch even on rejection. Do not send input.
+                #[cfg(target_os = "macos")]
+                if let Some(c) = slot.as_ref() {
+                    if !c.image.current(self.installed_image()?)? {
+                        return Ok(c.image.rejection(
+                            &input["action"],
+                            "image changed during launch; observe again. No input dispatched.",
+                        ));
+                    }
+                }
             }
         }
         let connection = slot.as_mut().expect("started component");
+        #[cfg(target_os = "macos")]
+        if input["action"] == "computer:observe" {
+            connection.image.acquire(binding);
+        }
+        #[cfg(target_os = "macos")]
+        if input["action"] == "computer:releaseRun" && !connection.image.owns(binding) {
+            return Ok(json!({"ok":true,"data":{"released":true}}));
+        }
         let result = Self::exchange(connection, binding, input);
+        #[cfg(target_os = "macos")]
+        let result = result.map(|mut r| {
+            if input["action"] == "computer:status" || r["ok"] == false {
+                connection.image.status(&mut r);
+            }
+            r
+        });
+        #[cfg(target_os = "macos")]
+        if result.as_ref().is_ok_and(|r| {
+            (input["action"] == "computer:releaseRun"
+                && r["ok"] == true
+                && r["data"]["released"] == true)
+                || (input["action"] == "computer:observe"
+                    && r["ok"] == false
+                    && r["diagnostics"]["native"]["sharing"]["state"] == "inactive")
+        }) {
+            connection.image.release(binding);
+        }
         if input["action"] == "computer:releaseRun" {
             if let Err(channel) = result {
                 // A disconnect first observed by release needs cleanup in this
@@ -636,7 +712,7 @@ impl ComputerUseHost {
             }
         };
         let connection = slot.as_mut().ok_or("computer_component_not_connected")?;
-        Self::exchange(connection, binding, input).map(Some)
+        self.activate_existing(connection, binding, input).map(Some)
     }
 
     /// A user navigation gesture waits for the current physical action, then
@@ -650,6 +726,22 @@ impl ComputerUseHost {
             .lock()
             .map_err(|_| "computer_component_state_unavailable")?;
         let connection = slot.as_mut().ok_or("computer_component_not_connected")?;
+        self.activate_existing(connection, binding, input)
+    }
+
+    fn activate_existing(
+        &self,
+        connection: &mut Connection,
+        binding: &Value,
+        input: &Value,
+    ) -> Result<Value, String> {
+        #[cfg(target_os = "macos")]
+        if !connection.image.current(self.installed_image()?)? {
+            return Ok(connection.image.rejection(
+                &input["action"],
+                "preview cannot raise an old target; observe the exact window again.",
+            ));
+        }
         Self::exchange(connection, binding, input)
     }
 

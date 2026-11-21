@@ -39,6 +39,12 @@ impl MainThread {
         Ok(())
     }
 
+    pub fn owns_observation(&self, id: &str) -> bool {
+        id.rsplit_once('-').is_some_and(|(prefix, _)| {
+            prefix.strip_prefix("computer-") == Some(self.instance.as_str())
+        })
+    }
+
     pub fn resource_id(&self) -> String {
         protocol::resource_id(&self.instance)
     }

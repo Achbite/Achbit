@@ -864,9 +864,13 @@ pub fn status() -> Result<Value, String> {
         let bundle: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
         let identifier: *mut NSString = msg_send![bundle, bundleIdentifier];
         let path: *mut NSString = msg_send![bundle, bundlePath];
+        let mut executor = json!({"pid":std::process::id(),"bundleId":string(identifier),"bundlePath":string(path)});
+        match std::env::current_exe() {
+            Ok(path) => executor["executable"] = json!(path),
+            Err(error) => executor["executableError"] = json!(error.to_string()),
+        }
         Ok(json!({
-            "executor":{"pid":std::process::id(),"executable":std::env::current_exe().map_err(|error|error.to_string())?,
-                "bundleId":string(identifier),"bundlePath":string(path)},
+            "executor":executor,
             "permissions":{"accessibility":AXIsProcessTrusted(),"screenCapture":CGPreflightScreenCaptureAccess()},
             "capabilities":{"capture":true,"accessibility":true,"input":true,
                 "exactWindowIdentity":crate::window_identity::available(),"nativeWindowSharing":true,
@@ -1157,13 +1161,28 @@ pub fn execute(
                 Ok(json!({"applications":result}))
             });
         }
+        let bundle = input["app"].as_str().ok_or("Missing app")?;
+        if action != "observe" {
+            let id = input["observationId"]
+                .as_str()
+                .ok_or("Missing observationId")?;
+            if !gui.owns_observation(id) {
+                return Err("Observation belongs to a different Computer Use executor; observe the exact window again. No input dispatched.".into());
+            }
+            let saved = observation
+                .as_ref()
+                .ok_or("No active observation; observe the exact window again before acting")?;
+            if saved.id != id || saved.app != bundle || saved.binding != *binding {
+                return Err("Observation ID, app or run no longer matches; observe the exact window again. No input dispatched.".into());
+            }
+            crate::protocol::check_observation_age(saved.at.elapsed())?;
+        }
         if !(action == "observe" && input["observationType"] == "pixels") && !AXIsProcessTrusted() {
             return Err("macOS 辅助功能授权未被当前 Computer Use 辅助 App识别。请先使用 computer.control status 核对进程和应用身份；系统设置中的同名开关不能确认当前实例的状态。".into());
         }
         if !CGPreflightScreenCaptureAccess() {
             return Err("macOS screen recording access is not granted to the executing Computer Use App; inspect computer.control status for its identity".into());
         }
-        let bundle = input["app"].as_str().ok_or("Missing app")?;
         let target_bundle = bundle.to_string();
         let target_window = if action == "observe" {
             input["windowId"].as_u64().map(|id| id as u32)
@@ -1204,14 +1223,10 @@ pub fn execute(
         let saved = observation
             .take()
             .ok_or("Observe the application before acting")?;
-        if input["observationId"] != saved.id
-            || saved.app != bundle
-            || saved.pid != pid
-            || saved.binding != *binding
-            || saved.at.elapsed() > Duration::from_secs(120)
-        {
-            return Err("Observation is stale; observe again before acting".into());
+        if saved.pid != pid {
+            return Err("Observed window owner changed; observe the exact window again. No input dispatched.".into());
         }
+        crate::protocol::check_observation_age(saved.at.elapsed())?;
         let semantic = matches!(action, "press" | "setValue");
         if semantic && saved.pixels {
             return Err("Pixel observation has no semantic elements; use a supported pixel action or observe with observationType=accessibility".into());
