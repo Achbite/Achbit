@@ -207,15 +207,12 @@ export function useConversationViewport({
     const schedule = () => { if (frame === null) frame = requestAnimationFrame(() => { if (check()) dispose(); }); };
     const changes = new MutationObserver(schedule);
     changes.observe(body, { childList: true, subtree: true, attributes: true,
-      attributeFilter: ['data-conversation-pending', 'data-virtual-rendered', 'src', 'hidden'] });
+      attributeFilter: ['data-conversation-pending', 'data-virtual-rendered', 'hidden'] });
     const resize = new ResizeObserver(schedule);
     resize.observe(body);
     if (transcriptRef.current) resize.observe(transcriptRef.current);
-    body.addEventListener('load', schedule, true);
-    body.addEventListener('error', schedule, true);
     const dispose = () => {
       changes.disconnect(); resize.disconnect();
-      body.removeEventListener('load', schedule, true); body.removeEventListener('error', schedule, true);
       if (frame !== null) cancelAnimationFrame(frame);
     };
     return dispose;

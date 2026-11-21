@@ -55,6 +55,27 @@ test('only the actual reading viewport holds the first frame', async t => {
   assert.equal(ready(body, rows), true);
 });
 
+test('a visible image is local to its formatted row, including while its URL is being resolved', async t => {
+  const oldSelf = globalThis.self, oldImage = globalThis.HTMLImageElement;
+  class HeldImage {
+    src = 'https://unused.invalid/inline'; complete = false; loading = 'lazy';
+    hasAttribute() { return false; }
+    getBoundingClientRect() { return { top: 40, bottom: 140, width: 200, height: 100 }; }
+  }
+  globalThis.self = {}; globalThis.HTMLImageElement = HeldImage;
+  t.after(() => { if (oldSelf === undefined) delete globalThis.self; else globalThis.self = oldSelf;
+    if (oldImage === undefined) delete globalThis.HTMLImageElement; else globalThis.HTMLImageElement = oldImage; });
+  const [{ firstConversationFrameReady }, { ImageContent }] = await loadGuiModules(t, [
+    '/src/components/local-agent/firstConversationFrame.ts', '/src/components/local-agent/RichContent.tsx']);
+  const img = new HeldImage();
+  const body = { getBoundingClientRect: () => ({ top: 0, bottom: 400, width: 480, height: 400 }) };
+  const row = { ...body, dataset: { virtualRendered: 'true' }, querySelectorAll: selector => selector.includes('img') ? [img] : [] };
+  assert.equal(firstConversationFrameReady(body, [row]), true, 'do not wait for the image request to finish');
+  const pending = renderToStaticMarkup(createElement(ImageContent, { source: 'workspace://files/picture.png', alt: 'Picture' }));
+  assert.match(pending, /role="status"/);
+  assert.doesNotMatch(pending, /data-conversation-pending/, 'resolving a local image is not unfinished Markdown');
+});
+
 test('the full read overlaps a held opening page without publishing a stale projection', async t => {
   const id = 'session:overlap', fresh = projectSession(emptySessionState(id));
   fresh.revision = 76;

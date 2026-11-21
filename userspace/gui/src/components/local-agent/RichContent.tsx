@@ -63,7 +63,7 @@ export function ImageContent({ source, alt }: { source: string; alt: string }) {
     }).catch((error: unknown) => { if (!controller.signal.aborted) setResult({ source, error: String(error) }); });
     return () => { controller.abort(); release?.(); };
   }, [loadImage, sessionId, source]);
-  if (result?.source !== source) return <span role="status" data-conversation-pending>{t(uiLanguage, 'content.image.loading')}</span>;
+  if (result?.source !== source) return <span role="status">{t(uiLanguage, 'content.image.loading')}</span>;
   return result.url ? <span className="conversation-image-review">
     <ImageReview source={result.url} alt={alt} onError={() => setResult({ source, decodeFailed: true })} />
     <ContentImageSave createImage={signal => readContentImage(result.url!, alt || 'image', signal)} />
