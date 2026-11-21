@@ -3,6 +3,7 @@ import type React from 'react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { SessionProjection } from '@achbit/protocol';
 import { ConversationAnchors, firstReadingAnchor } from './conversationAnchors';
+import { firstConversationFrameReady } from './firstConversationFrame';
 
 const LATEST_TOLERANCE = 2;
 
@@ -38,11 +39,11 @@ export function useConversationViewport({
   const activeViewRef = useRef<string | null>(sessionId);
   const sessionViewportsRef = useRef(new Map<string, SessionViewport>(restoredInterfaceView<[string, SessionViewport][]>('conversationViewports', [])));
   const pendingViewportRestoreRef = useRef<string | null>(null);
+  const [shownSession, setShownSession] = useState<string | null>(null);
   const followingLatestRef = useRef(true);
   // Every programmatic write records its actual, browser-clamped position.
   const observedScrollTopRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
-  const viewportRestoreFrameRef = useRef<number | null>(null);
   const touchYRef = useRef<number | null>(null);
   const anchors = useRef(new ConversationAnchors()).current;
   useLayoutEffect(() => { anchors.invalidate(); });
@@ -153,12 +154,13 @@ export function useConversationViewport({
   }, [preserveReadingPosition]);
 
   useLayoutEffect(() => {
+    pendingViewportRestoreRef.current = sessionId;
+    setShownSession(null);
     if (activeViewRef.current !== sessionId) {
       if (scrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scrollFrameRef.current);
         scrollFrameRef.current = null;
       }
-      pendingViewportRestoreRef.current = sessionId;
       activeViewRef.current = sessionId;
       const saved = sessionId ? sessionViewportsRef.current.get(sessionId) : undefined;
       applyLatestFollowMode(saved?.mode !== 'detached');
@@ -166,6 +168,7 @@ export function useConversationViewport({
   }, [applyLatestFollowMode, sessionId]);
 
   useLayoutEffect(() => {
+    if (!projection) setShownSession(null);
     if (!sessionId || !loading || projection !== null) return;
     if (pendingViewportRestoreRef.current === sessionId) return;
     if (scrollFrameRef.current !== null) {
@@ -182,28 +185,44 @@ export function useConversationViewport({
       || loading
       || projection?.sessionId !== sessionId
     ) return;
-    if (viewportRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportRestoreFrameRef.current);
-    }
-    const targetSessionId = sessionId;
-    viewportRestoreFrameRef.current = window.requestAnimationFrame(() => {
-      viewportRestoreFrameRef.current = null;
-      if (
-        activeViewRef.current !== targetSessionId
-        || pendingViewportRestoreRef.current !== targetSessionId
-      ) return;
-      const body = bodyRef.current;
-      if (!body) return;
-      const saved = sessionViewportsRef.current.get(targetSessionId);
-      const following = saved?.mode !== 'detached';
-      applyLatestFollowMode(following);
+    const body = bodyRef.current;
+    if (!body) return;
+    const saved = sessionViewportsRef.current.get(sessionId);
+    const following = saved?.mode !== 'detached';
+    applyLatestFollowMode(following);
+    let frame: number | null = null;
+    const check = () => {
+      frame = null;
+      if (pendingViewportRestoreRef.current !== sessionId || activeViewRef.current !== sessionId) return true;
+      anchors.invalidate();
       if (following) writeScrollTop(body.scrollHeight);
       else restorePosition(saved!);
+      if (!firstConversationFrameReady(body, anchors.read(body).nodes)) return false;
       pendingViewportRestoreRef.current = null;
-    });
+      setShownSession(sessionId);
+      return true;
+    };
+    // A cached/simple viewport can be positioned and revealed in this commit.
+    if (check()) return;
+    const schedule = () => { if (frame === null) frame = requestAnimationFrame(() => { if (check()) dispose(); }); };
+    const changes = new MutationObserver(schedule);
+    changes.observe(body, { childList: true, subtree: true, attributes: true,
+      attributeFilter: ['data-conversation-pending', 'data-virtual-rendered', 'src', 'hidden'] });
+    const resize = new ResizeObserver(schedule);
+    resize.observe(body);
+    if (transcriptRef.current) resize.observe(transcriptRef.current);
+    body.addEventListener('load', schedule, true);
+    body.addEventListener('error', schedule, true);
+    const dispose = () => {
+      changes.disconnect(); resize.disconnect();
+      body.removeEventListener('load', schedule, true); body.removeEventListener('error', schedule, true);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+    return dispose;
   }, [
     applyLatestFollowMode,
     loading,
+    anchors,
     presentationLayoutKey,
     restorePosition,
     projection?.sessionId,
@@ -233,9 +252,6 @@ export function useConversationViewport({
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
-    if (viewportRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportRestoreFrameRef.current);
-    }
   }, []);
 
   const scrollToLatest = () => {
@@ -302,7 +318,7 @@ export function useConversationViewport({
     },
   };
 
-  return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, showJumpToLatest: !followingLatest && hasContentBelow,
+  return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, preparingViewport: !!sessionId && !!projection && shownSession !== sessionId, showJumpToLatest: !followingLatest && hasContentBelow,
     setLatestFollowMode, anchorDisclosure, scrollToLatest, scrollToAnchor, latestRequest, preserveReadingPosition };
 }
 

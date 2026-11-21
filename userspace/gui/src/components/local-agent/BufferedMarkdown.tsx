@@ -17,6 +17,8 @@ import 'katex/dist/katex.min.css';
 import { InlineInteractivePreview } from './InteractivePreview';
 
 import { RichContentScope } from './RichContentIdentity';
+import { t } from '../../i18n';
+import { useUiLanguage } from '../../useUiLanguage';
 
 const MarkdownBlockScope = createContext<{ key: string; start: number | undefined; streaming: boolean; copyPending: boolean } | null>(null);
 
@@ -67,7 +69,7 @@ const RenderedBlock = memo(function RenderedBlock({ block, provisional }: { bloc
   </MarkdownBlockScope.Provider>;
 });
 
-interface MarkdownContentProps { children: string; streaming?: boolean; decisionProse?: boolean; active?: boolean }
+interface MarkdownContentProps { children: string; streaming?: boolean; decisionProse?: boolean; active?: boolean; documentPreview?: boolean }
 
 function MarkdownBlocks({ blocks, provisional = false }: { blocks: MarkdownBlock[]; provisional?: boolean }) {
   return <>{blocks.map(block => <RenderedBlock key={block.key} block={block} provisional={provisional} />)}</>;
@@ -88,11 +90,18 @@ function firstPage(text: string): string {
   return prefix.slice(0, prefix.lastIndexOf('\n') + 1);
 }
 
-function ProgressiveMarkdown({ children: text, decisionProse = false, active = true }: MarkdownContentProps) {
-  const surface = useRef<HTMLDivElement>(null);
-  const cached = useMemo(() => decisionProse ? undefined : cachedMarkdown(text), [text, decisionProse]);
+// Only the file Reader offers a provisional, searchable source view. In a
+// conversation even the first paragraph can depend on definitions at EOF.
+function SearchableDocumentPreview({ text, decisionProse }: { text: string; decisionProse: boolean }) {
   const first = useMemo(() => firstPage(text), [text]);
   const preview = useMemo(() => new StreamingMarkdownParser().update(decisionProse ? formatDecisionProse(first) : first, true), [first, decisionProse]);
+  return <><MarkdownBlocks blocks={preview} provisional /><pre className="conversation-markdown__pending-source">{text.slice(first.length)}</pre></>;
+}
+
+function ProgressiveMarkdown({ children: text, decisionProse = false, active = true, documentPreview = false }: MarkdownContentProps) {
+  const language = useUiLanguage();
+  const surface = useRef<HTMLDivElement>(null);
+  const cached = useMemo(() => decisionProse ? undefined : cachedMarkdown(text), [text, decisionProse]);
   const [result, setResult] = useState<{ text: string; decisionProse: boolean; blocks?: MarkdownBlock[]; error?: string } | null>(null);
   const current = result?.text === text && result.decisionProse === decisionProse ? result : null;
   const blocks = current?.blocks ?? cached;
@@ -116,10 +125,11 @@ function ProgressiveMarkdown({ children: text, decisionProse = false, active = t
     });
     return () => controller.abort();
   }, [text, decisionProse, active, blocks, current?.error]);
-  return <div className="conversation-markdown" ref={surface} aria-busy={!blocks && !current?.error}>
-    <MarkdownBlocks blocks={blocks ?? preview} provisional={!blocks} />
+  const pending = !blocks && !current?.error;
+  return <div className="conversation-markdown" ref={surface} aria-busy={pending} data-conversation-pending={pending && !documentPreview || undefined}>
+    {blocks ? <MarkdownBlocks blocks={blocks} /> : documentPreview ? <SearchableDocumentPreview text={text} decisionProse={decisionProse} />
+      : pending && <span role="status">{t(language, 'agent.chat.preparingText')}</span>}
     {current?.error && <p role="alert">{current.error}</p>}
-    {!blocks && <pre className="conversation-markdown__pending-source">{text.slice(first.length)}</pre>}
   </div>;
 }
 

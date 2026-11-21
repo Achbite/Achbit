@@ -2554,4 +2554,5 @@
 .local-agent__composer--collapsed .local-agent__draft-attachments[data-reader-open] { display: flex; position: absolute; bottom: calc(100% + 10px); left: 0; width: min(420px, 100%); max-height: 180px; padding: 10px; border: 1px solid var(--ac-border); border-radius: 12px; background: var(--ac-surface-raised); box-shadow: var(--ac-shadow-panel); }
 .local-agent__attachment-summary { flex: none; white-space: nowrap; }
 
-.local-agent__opening-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.local-agent__body[data-preparing-viewport] { opacity: 0; }
+.local-agent__opening-status { position: absolute; inset: 0; pointer-events: none; }

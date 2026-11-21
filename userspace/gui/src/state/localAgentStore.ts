@@ -216,11 +216,16 @@ function cacheProjection(projection: SessionProjection): CachedSessionView {
   while (projectionCache.size > 6) projectionCache.delete(projectionCache.keys().next().value!);
   return view;
 }
-function readSessionView(sessionId: string, signal?: AbortSignal, minimumRevision = 0): Promise<CachedSessionView> {
+function readSessionView(sessionId: string, signal?: AbortSignal, readBoundary?: () => Promise<number>): Promise<CachedSessionView> {
   const read = (projectionReadQueues.get(sessionId) ?? Promise.resolve())
     .then(async () => {
       signal?.throwIfAborted();
-      const first = await getLocalAgentProjection(sessionId, signal);
+      // Start the bounded page first, but let transport and Session recovery
+      // overlap. Neither response enters the cache until both are validated.
+      const [minimumRevision, first] = await Promise.all([
+        readBoundary?.() ?? 0, getLocalAgentProjection(sessionId, signal),
+      ]);
+      signal?.throwIfAborted();
       if (first.revision >= minimumRevision) return first;
       signal?.throwIfAborted();
       const fresh = await getLocalAgentProjection(sessionId, signal);
@@ -538,17 +543,16 @@ const store = create<LocalAgentState>((set, get) => ({
         await get().refresh();
         return;
       }
-      // The status catalog already identifies short conversations. For large or
-      // unmeasured histories the public message page can paint ahead of replay.
       const revision = get().sessionStatuses[sessionId]?.revision;
-      let minimumRevision = 0;
-      if (revision === undefined || revision > 64) {
-        const page = await readOpeningHistory(sessionId, signal);
-        if (currentGeneration !== generation) return;
-        minimumRevision = page.revision;
-        if (page.messages.length) set({ openingHistory: page });
-      }
-      const view = await readSessionView(sessionId, signal, minimumRevision);
+      const pair = new AbortController();
+      const reading = AbortSignal.any([signal, pair.signal]);
+      const readBoundary = revision === undefined || revision > 64 ? async () => {
+        const page = await readOpeningHistory(sessionId, reading);
+        reading.throwIfAborted();
+        if (page.messages.length && currentGeneration === generation) set({ openingHistory: page });
+        return page.revision;
+      } : undefined;
+      const view = await readSessionView(sessionId, reading, readBoundary).finally(() => pair.abort());
       if (currentGeneration !== generation) return;
       set({
         sessionId,

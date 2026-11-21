@@ -154,7 +154,9 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     <AgentNavigationScope key={sessionId} sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
-      <div ref={bodyRef} className="local-agent__body" aria-live="polite" {...bodyHandlers}>
+      {viewport.preparingViewport && <div className="local-agent__opening-status local-agent__empty" role="status">{t(language, 'agent.chat.opening')}</div>}
+      <div ref={bodyRef} className="local-agent__body" aria-live="polite" inert={viewport.preparingViewport}
+        data-preparing-viewport={viewport.preparingViewport || undefined} {...bodyHandlers}>
         <ConversationTranscript
           layoutCache={conversationLayouts.current}
           displaySettledRunIds={display.displaySettledRunIds}

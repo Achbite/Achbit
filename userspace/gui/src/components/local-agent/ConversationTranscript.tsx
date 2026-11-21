@@ -18,6 +18,7 @@ import ProviderStageStatus from './ProviderStageStatus';
 import { RunTiming } from './RunTiming';
 import { SourceReferences } from './SourceReferences';
 import { BufferedMarkdown, MarkdownContent, MarkdownInline } from './BufferedMarkdown';
+import { StreamingMarkdownParser } from './streamingMarkdown';
 import PlanCard from './PlanCard';
 import { ToolActivityGroup } from './ToolActivityDetails';
 import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow } from './conversationItems';
@@ -101,11 +102,16 @@ export function ConversationTranscript({
     }
     setLatestFollowMode(false);
   };
+  const selectedSession = useLocalAgentStore((state) => state.sessionId);
   const opening = useLocalAgentStore((state) => state.openingHistory);
-  useLayoutEffect(() => {
-    const body = viewport.bodyRef.current;
-    if (opening && !projection && body) body.scrollTop = body.scrollHeight;
-  }, [opening, projection, viewport.bodyRef]);
+  // Use the bounded page to prepare the last complete answer, never as a second
+  // transcript. Only an exact text match can reuse the parser's bounded tree cache.
+  useEffect(() => {
+    if (!opening || projection || !viewport.followingLatest) return;
+    const last = opening.messages.at(-1);
+    if (!last || last.role !== 'assistant' || last.truncated) return;
+    new StreamingMarkdownParser().update(last.content, false);
+  }, [opening, projection, viewport.followingLatest]);
   const assistantDraft = projection?.assistantDraft ?? null;
   const submitting = useLocalAgentStore((state) => state.submitting);
   const welcomeIndex = useLocalAgentStore((state) => state.welcomeIndex);
@@ -317,14 +323,9 @@ export function ConversationTranscript({
         }}>{language === 'zh-CN' ? '复制路径' : 'Copy path'}</button>
       </div>}
       {loading && !projection && (
-        opening?.messages.length ? <section aria-label={t(language, 'agent.chat.recentMessages')}>
-          <p role="status">{t(language, 'agent.chat.loadingHistory')}</p>
-          {opening.messages.map(message => <article key={message.id} className={`local-agent__message local-agent__message--${message.role}`}>
-            <div className="local-agent__message-text local-agent__opening-text">{message.content}{message.truncated && '…'}</div>
-          </article>)}
-        </section> : <div className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
+        <div role="status" className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
       )}
-      {!hasConversationContent && !loading && (
+      {!hasConversationContent && !loading && (!selectedSession || projection) && (
         <div className="local-agent__empty local-agent__empty--welcome">
           <strong>
             {activeProject
