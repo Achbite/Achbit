@@ -308,10 +308,15 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
     case 'approval.reviewed': {
       if (!next.pendingApprovals.some(item => item.approvalId === event.payload.approvalId && item.callId === event.callId)) throw new Error('approval_review_request_missing');
       const review = { decision: event.payload.decision, reason: event.payload.reason };
-      next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
-        ? { ...item, preview: { ...item.preview, review } } : item);
       const activityId = approvalActivityId(event.payload.approvalId);
-      writableRecord(next, 'activities')[activityId] = { ...next.activities[activityId], approvalReview: review };
+      const activity = next.activities[activityId];
+      // A first malformed reply gets one format correction. Keep its diagnostic on the
+      // activity; only the final verdict belongs in the pending decision shown to people.
+      if (event.payload.error?.code !== 'approval_review_invalid' || activity.approvalReview) {
+        next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
+          ? { ...item, preview: { ...item.preview, review } } : item);
+      }
+      writableRecord(next, 'activities')[activityId] = { ...activity, approvalReview: review };
       break;
     }
     case 'session.mode.updated':

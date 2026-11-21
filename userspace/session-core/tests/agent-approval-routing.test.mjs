@@ -131,6 +131,11 @@ for (const outcome of ['manual', 'ask', 'failure', 'allow']) test(`child executi
     if (nested) {
       await checkpoint(reviewing[1]);
       assert.deepEqual((await service.snapshot(root)).pendingAgentDecisions ?? [], [], 'a recorded first format failure is still being corrected');
+      const childView = await service.snapshot(leaf);
+      assert.equal(childView.pendingApproval.preview.review, undefined, 'the first format error is not a human handoff in the child preview either');
+      const correction = (await readEvents(journal, leaf)).find(event => event.type === 'approval.reviewed' && event.payload.approvalId === pending.payload.approvalId);
+      assert.equal(correction.payload.error.code, 'approval_review_invalid');
+      assert.ok(childView.activities.some(activity => activity.callId === pending.callId && activity.approvalReview?.reason === correction.payload.reason), 'the correction remains visible in approval diagnostics');
       releaseReview[1].resolve();
     }
     if (outcome !== 'allow') await checkpoint(handedOff);
@@ -144,7 +149,10 @@ for (const outcome of ['manual', 'ask', 'failure', 'allow']) test(`child executi
     if (nested) {
       assert.notEqual((await service.snapshot(leaf)).agentContext.parentSessionId, root);
       const passive = new SessionService(journal, { async create() { assert.fail('a route read must not reopen any Actor'); } });
-      try { assert.deepEqual((await passive.snapshot(root)).pendingAgentDecisions, projection.pendingAgentDecisions); }
+      try {
+        assert.deepEqual((await passive.snapshot(root)).pendingAgentDecisions, projection.pendingAgentDecisions);
+        assert.equal((await passive.snapshot(leaf)).pendingApproval.preview.review.decision, 'ask', 'the actual handoff is visible even after replay');
+      }
       finally { await passive.dispose(); }
     }
     assert.equal(agentTurns.get(root), 1, 'the parent stays in its existing wait');

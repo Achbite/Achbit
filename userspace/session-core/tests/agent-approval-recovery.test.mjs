@@ -243,6 +243,8 @@ test('original child runtime recovers from execution review commit boundaries', 
     assert.equal(before.length, 1);
     const originalRoute = before[0];
     assert.deepEqual(originalRoute.approval, { callId: finalAsk.callId, approvalId: finalAsk.payload.approvalId });
+    const preview = (await actor.snapshot()).pendingApproval.preview.review;
+    assert.deepEqual(preview, { decision: 'ask', reason: finalAsk.payload.reason }, 'replay preserves the final human handoff, including a failed format correction');
     assert.deepEqual(executions, []);
     try {
       assert.equal((await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'approval.respond', sessionId: originalRoute.agentSessionId,
