@@ -112,6 +112,18 @@ test('review admits complete authorization over 18k when the configured model ha
   assert.equal(JSON.parse(request.messages[1].content).userMessages[0].content, fixture.user);
 });
 
+test('Plan and execution review distinguish coordinator assignments from direct user corrections', () => {
+  const { snapshot, runtime, approval } = reviewFixture('inspect');
+  snapshot.state.agentContext = { parentSessionId: 'session:owner', ownerSessionId: 'session:owner' };
+  const runId = approval.runId;
+  snapshot.events.push({ type: 'message.committed', runId, payload: { role: 'user', messageId: 'answer', content: 'Do not modify the checkout.' } });
+  const plan = { runId, planId: 'p', revision: 1, title: 'Inspect', summary: 'Read files', steps: [], mutationManifest: [], workspaceRequests: [] };
+  for (const prepared of [prepareApprovalReview(snapshot, runtime, approval, 'request:execution'), preparePlanReview(snapshot, runtime, plan, 'request:plan')]) {
+    const messages = JSON.parse(prepared.request.messages[1].content).userMessages;
+    assert.deepEqual(messages.map(m => [m.messageId, m.source]), [['user:inspect', 'delegatedTask'], ['answer', undefined]]);
+  }
+});
+
 test('Plan review uses model capacity while retaining its separate tool-free decision', () => {
   const fixture = reviewFixture('inspect', 'Required user restriction. '.repeat(1000));
   const plan = { runId: fixture.approval.runId, planId: 'plan:budget', revision: 1, title: 'Inspect', summary: 'Review requested files', steps: [], mutationManifest: [], workspaceRequests: [] };
