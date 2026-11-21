@@ -223,6 +223,9 @@ export class SessionService implements ConversationPort {
             this.#deletingSessionIds.add(id);
             claimed.add(id);
           }
+          // An explicit retry can keep its command pending until cleanup finishes. Refuse it
+          // now rather than waiting for that retry and then deleting underneath its caller.
+          if (projection.run?.status === 'releaseFailed' && this.#submissions.has(id)) await this.assertDeletableRun(projection);
           const children = new Set((projection.agentChildren ?? []).map(child => child.agentSessionId));
           for (const childId of children) await visit(childId, id);
           deletionOrder.push(id);
@@ -230,10 +233,7 @@ export class SessionService implements ConversationPort {
         await visit(sessionId);
         await Promise.allSettled(deletionOrder.flatMap(id => [...(this.#submissions.get(id) ?? [])]));
         for (const id of deletionOrder) {
-          const projection = (await readStored(id, true))!;
-          if (projection.run && ['running', 'waiting', 'releasing', 'releaseFailed'].includes(projection.run.status)) {
-            throw new Error(`session_delete_active_run:${id}`);
-          }
+          await this.assertDeletableRun((await readStored(id, true))!);
         }
       }
       for (const id of deletionOrder) {
@@ -265,6 +265,19 @@ export class SessionService implements ConversationPort {
       releaseOwner?.();
       for (const id of claimed) this.#deletingSessionIds.delete(id);
     }
+  }
+
+  private async assertDeletableRun({ sessionId, run }: SessionProjection): Promise<void> {
+    if (!run) return;
+    if (run.status === 'releaseFailed') {
+      // Recovery keeps the old failure in the journal throughout the physical retry.
+      // Inspect only an existing Actor: opening one here would itself retry cleanup.
+      if (!this.#openingActors.has(sessionId)) {
+        const actor = await this.#actors.get(sessionId);
+        if (!actor || !await actor.hasActiveWork()) return;
+      }
+    } else if (!['running', 'waiting', 'releasing'].includes(run.status)) return;
+    throw new Error(`session_delete_active_run:${sessionId}`);
   }
 
   async submit(command: ConversationCommand): Promise<CommandReply> {
@@ -637,6 +650,7 @@ export class SessionService implements ConversationPort {
     this.assertOpen();
     let actor = this.#actors.get(sessionId);
     if (!actor) {
+      if (this.#deletingSessionIds.has(sessionId)) throw new Error('session_delete_in_progress');
       this.#openingActors.add(sessionId);
       this.notifyActivityChanged(sessionId);
       actor = this.openActor(sessionId).finally(() => {

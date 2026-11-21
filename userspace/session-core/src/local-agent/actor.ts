@@ -101,7 +101,7 @@ export class SessionActor {
   #mailbox = Promise.resolve();
   #writes = Promise.resolve();
   #active?: ActiveRun;
-  #pendingPreparations = 0;
+  #pendingRuntimeWork = 0;
   #customCapabilities = false;
   readonly #onLoopFinished?: () => void;
   readonly #inputWaits = new Set<{ runId: string; timed: boolean }>();
@@ -155,7 +155,7 @@ export class SessionActor {
       if (run.status === 'releasing' || run.status === 'releaseFailed') {
         const settlement = snapshot.state.pendingRunSettlements[run.runId];
         if (!settlement) throw new Error('run_finishing_settlement_missing');
-        await this.finalizeRunRuntime(snapshot, run.runId, settlement);
+        await this.withRuntimeActivity(() => this.finalizeRunRuntime(snapshot, run.runId, settlement));
         return;
       }
       const restored = await this.restoreRunRuntime(snapshot, run.runId);
@@ -247,7 +247,7 @@ export class SessionActor {
   async retireIfIdle(includeOrdinary: boolean): Promise<boolean> {
     const state = (await this.loadSnapshot()).state;
     if (state.run && !isTerminal(state.run.status) || state.agentContext && includeOrdinary && !state.run) return false;
-    if (!state.agentContext && (!includeOrdinary || this.#active || this.#pendingPreparations
+    if (!state.agentContext && (!includeOrdinary || this.#active || this.#pendingRuntimeWork
       || this.#customCapabilities || this.#loopFailure || this.#wakeTimers.size || this.#inputWaits.size
       || Object.values(state.processes).some(job => job.status === 'active'))) return false;
     // run.settled can wake a result consumer just before the Loop's finally completes.
@@ -409,13 +409,15 @@ export class SessionActor {
   }
 
   async activity(): Promise<{ active: boolean; keepAwake: boolean }> {
-    if (this.#pendingPreparations) return { active: true, keepAwake: true };
+    if (this.#pendingRuntimeWork) return { active: true, keepAwake: true };
     if (this.#loopFailure) return { active: false, keepAwake: false };
     const snapshot = await this.loadSnapshot();
     const run = snapshot.state.run;
-    // Waiting retains the run bindings, but only execution and timers need the system awake.
-    const active = this.#active !== undefined || (run != null && !isTerminal(run.status));
-    if (!active || !run || isTerminal(run.status)) return { active, keepAwake: false };
+    // A failed release remains recoverable in the journal, not background work.
+    // Only a real Loop or an in-flight runtime operation can still hold that Host.
+    if (!run || isTerminal(run.status) || run.status === 'releaseFailed') {
+      return { active: this.#active !== undefined, keepAwake: false };
+    }
     const executing = this.#active?.runId === run.runId;
     const waits = [...this.#inputWaits].filter(wait => wait.runId === run.runId);
     const attempts = new Map<string, (typeof snapshot.state.providerAttempts)[string]>();
@@ -426,16 +428,20 @@ export class SessionActor {
     }
     const providerBusy = executing && [...attempts.values()].some(attempt =>
       attempt.phase === 'started' || attempt.phase === 'retryWaiting');
-    return { active, keepAwake: pendingWakeups(snapshot.events, run.runId).size > 0
+    return { active: true, keepAwake: pendingWakeups(snapshot.events, run.runId).size > 0
       || waits.some(wait => wait.timed)
       || Boolean(executing && (providerBusy || run.status === 'releasing' || run.status === 'running' && !waits.length)) };
   }
 
-  private async prepareRun(...args: Parameters<AgentComposition['runPreparation']['prepare']>): ReturnType<AgentComposition['runPreparation']['prepare']> {
-    this.#pendingPreparations++;
+  private async withRuntimeActivity<T>(operation: () => Promise<T>): Promise<T> {
+    this.#pendingRuntimeWork++;
     this.notifyActivityChanged();
-    try { return await this.#composition.runPreparation.prepare(...args); }
-    finally { this.#pendingPreparations--; this.notifyActivityChanged(); }
+    try { return await operation(); }
+    finally { this.#pendingRuntimeWork--; this.notifyActivityChanged(); }
+  }
+
+  private prepareRun(...args: Parameters<AgentComposition['runPreparation']['prepare']>): ReturnType<AgentComposition['runPreparation']['prepare']> {
+    return this.withRuntimeActivity(() => this.#composition.runPreparation.prepare(...args));
   }
 
   private notifyActivityChanged(): void {
@@ -1461,7 +1467,7 @@ export class SessionActor {
     } else if (snapshot.state.run.status === 'releasing' || snapshot.state.run.status === 'releaseFailed') {
       const settlement = snapshot.state.pendingRunSettlements[command.runId];
       if (!settlement) throw new Error('run_finishing_settlement_missing');
-      await this.finalizeRunRuntime(snapshot, command.runId, settlement);
+      await this.withRuntimeActivity(() => this.finalizeRunRuntime(snapshot, command.runId, settlement));
     } else {
       await this.runLoop({ type: 'cancel', runId: command.runId });
     }
