@@ -150,7 +150,7 @@ export async function runAgentLoop(
           await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
           continue;
         }
-        const waitingForTools = await dispatchPendingTools(deps, runId, signal, restoreApprovals);
+        const waitingForTools = await dispatchPendingTools(snapshot, deps, runId, signal, restoreApprovals);
         restoreApprovals = undefined;
         if (waitingForTools) return waitingForTools;
         if (deps.activity) await deps.activity.waitPending(await deps.readSnapshot(), signal);

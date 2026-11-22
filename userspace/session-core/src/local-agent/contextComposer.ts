@@ -139,7 +139,9 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     readScope,
     input.runtime.codingTools,
   );
-  const fixedViews = journalModelViews(modelViewEvents).contributions;
+  // Replay this request's immutable journal view once for history and receipt composition.
+  const journalView = journalModelViews(modelViewEvents);
+  const fixedViews = journalView.contributions;
   const journalCodecsByCallId = providerMessageCodecsByCallId(input.events);
   const resourceGuidance = new Map<string, string>();
   for (const usage of productUsage) {
@@ -164,7 +166,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
       resourceGuidance.get(contributionId),
     ].filter(Boolean).join('\n\n'));
   }
-  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents, false, journalCodecsByCallId, resourceGuidance);
+  const journalMessages = messagesFromJournal(input.events, input.runId, input.workspaceBindings, modelViewEvents, false, journalCodecsByCallId, resourceGuidance, journalView);
   const controlAliases = new Map(controlTools.map(tool => [tool.name, toolCodec.wireByCanonical.get(tool.name)!]));
   const policy = workspacePermissionInstruction(input.runtime, runtimeTools, controlAliases);
   const primaryId = input.workspaceBindings[0]?.workspaceId;
@@ -318,6 +320,7 @@ export function messagesFromJournal(
   includeReviewEvidence = false,
   callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools'>>,
   resourceGuidance: ReadonlyMap<string, string> = new Map(),
+  fixed = journalModelViews(modelViewEvents),
 ): ContextMessageContribution[] {
   const handles = workspaceHandleMap(workspaceBindings);
   const resultHandles = (callId: string) => callCodecs?.get(callId)?.workspaceHandleById ?? handles;
@@ -331,7 +334,6 @@ export function messagesFromJournal(
       && !('callId' in event && event.callId && reviewCalls.has(event.callId)));
   }
   const messages: ContextMessageContribution[] = [];
-  const fixed = journalModelViews(modelViewEvents);
   const throughSequence = events.at(-1)?.sequence ?? 0;
   const retained: ContextMessageContribution[] = [];
   const pendingHostRebinds: ContextMessageContribution[] = [];

@@ -358,8 +358,8 @@ export function interruptedApprovalReviews(snapshot: LoopSnapshot, runId: string
 }
 
 /** Execution is concurrent; all facts still pass through the Actor's serial commit port. */
-export async function dispatchPendingTools(deps: AgentLoopDeps, runId: string, signal: AbortSignal, restore?: 'resume' | 'recover'): Promise<LoopResult | undefined> {
-  let snapshot = await deps.readSnapshot();
+export async function dispatchPendingTools(snapshot: LoopSnapshot, deps: AgentLoopDeps, runId: string, signal: AbortSignal, restore?: 'resume' | 'recover'): Promise<LoopResult | undefined> {
+  // The turn already captured pending proposals. Execution still obtains current permissions and effects.
   const pending = pendingToolRequests(snapshot.events, runId);
   // Reuse live wait handling for the exact open gates. A user answer racing this
   // snapshot is seen before dispatch; resuming one sibling does not re-gate another.
