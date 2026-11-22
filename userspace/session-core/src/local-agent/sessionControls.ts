@@ -342,7 +342,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Activate discovered plugins by exact URI. The result lists prepared capabilities; call only tools declared on the next request, using its names. Activation does not install, enable, authorize or execute a tool. Submit alone.',
+      description: 'Activate exact discovered URIs. The result lists prepared capabilities; call only names declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },

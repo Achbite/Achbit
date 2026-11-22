@@ -23,9 +23,9 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
       const search = shell && aliases.get(shell.name);
       const commands = shell?.name === 'bash' ? 'ls or find' : 'Get-ChildItem or Select-String';
       const routes = [reader && `${name} to list a known directory`, search && `${search} to search (${commands})`].filter(Boolean).join(' or ');
-      rules.add('Read paths observed in listings, input or source directly: project-root references (res://) use project root; file-relative paths use the referring file.');
-      rules.add(`For unknown paths or symbols: Use ${routes}; read the hit next batch in the same workspace.`);
-      rules.add('NotFound or same-name hits? Check workspace and reference for a verified path. Never assume a repository name is a prefix.');
+      rules.add('Read paths observed in listings or input directly: project-root references (res://) from root; file-relative paths from the referring file.');
+      rules.add(`For unknown paths/symbols: Use ${routes}; read hits next batch, same workspace.`);
+      rules.add('NotFound/same-name hits: check root and source for a verified path, not a repository name prefix.');
     }
     for (const rule of guidance.guidelines) rules.add(rule);
     if (expanded) for (const rule of guidance.additionalGuidelines ?? []) rules.add(rule);
@@ -59,7 +59,7 @@ export function codingToolGuidance(canonical: string, name: string): { snippet: 
       ],
     };
     case 'bash': case 'powershell': return {
-      snippet: `${canonical === 'bash' ? 'Run project commands' : 'Execute PowerShell commands'} (e.g. reading multiple files)`, guidelines: [],
+      snippet: `${canonical === 'bash' ? 'Run project commands' : 'Execute PowerShell commands'} (reading multiple files)`, guidelines: [],
     };
     case 'fs.edit': return {
       snippet: 'Make precise file edits with exact text replacement, including multiple disjoint edits in one call',
