@@ -5,7 +5,7 @@ import { validLogicalPath } from './local-agent/workspaceBindings.js';
 import { decodeAgentContext, decodeAgentSettings, isLlmReasoningEffort } from '@achbit/protocol';
 import { isShellAuthorizationScope } from '@achbit/protocol';
 import { corePromptInstructions } from './local-agent/coreInstructions.js';
-import { achbitProductComponents, productDocumentation } from './local-agent/productInstructions.js';
+import { achbitProductComponents } from './local-agent/productInstructions.js';
 import { SessionConfigurationRegistry } from './local-agent/sessionConfiguration.js';
 import type { ConversationCommand, CommandJournalPort } from '@achbit/protocol';
 import { responseFrames } from './responseFrames.js';
@@ -90,7 +90,7 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
           provider, kernel,
           runPreparation: new HttpRunPreparationPort({
             apiBase, serviceToken, stableCoreInstructions: corePromptInstructions(!codingTools), promptContributions, codingTools,
-            environmentInstructions: environmentInstructions ?? (codingTools ? environment => productDocumentation(environment, false) : undefined),
+            environmentInstructions,
           }),
           async dispose() {},
         },

@@ -60,7 +60,10 @@ const server = createServer(async (req, res) => {
     const prompt = body.input[0].content;
     assert.equal(typeof prompt, 'string');
     assert.match(prompt, /^You are a coding assistant running inside Achbit/u);
-    assert.ok(prompt.indexOf('<tools>') < prompt.indexOf('<rules>') && prompt.indexOf('<rules>') < prompt.indexOf('<docs>') && prompt.indexOf('<docs>') < prompt.indexOf('<cwd>'));
+    // A blank minimal recipe has no product-operations component, project rules or user addendum.
+    assert.deepEqual([...prompt.matchAll(/^<(tools|rules|docs|project_context|skills|response|environment|cwd)>$/gmu)]
+      .map(match => match[1]), ['tools', 'rules', 'cwd']);
+    assert.doesNotMatch(prompt, /<docs>|productDocsPath|debug-control\.md/u);
     assert.doesNotMatch(prompt, /<response>|<environment>|outputs table|plan_publish|PI_\*/u);
     const results = outputs(body), items = [];
     const call = (id, name, input) => items.push({ type: 'function_call', id: `item-${id}`, call_id: id, name, arguments: JSON.stringify(input), status: 'completed' });

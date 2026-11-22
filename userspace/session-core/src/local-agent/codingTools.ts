@@ -23,7 +23,7 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
       const search = shell && aliases.get(shell.name);
       const commands = shell?.name === 'bash' ? 'ls or find' : 'Get-ChildItem or Select-String';
       const routes = [reader && `${name} to list a known directory`, search && `${search} to search (${commands})`].filter(Boolean).join(' or ');
-      rules.add('Read paths observed in listings or input directly: project-root references (res://) from root; file-relative paths from the referring file.');
+      rules.add('Read paths observed in listings or input directly: project-root references from the project root; file-relative paths from the referring file.');
       rules.add(`For unknown paths/symbols: Use ${routes}; read hits next batch, same workspace.`);
       rules.add('NotFound/same-name hits: check root and source for a verified path, not a repository name prefix.');
     }
@@ -42,8 +42,9 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
   }
   if (expanded && shell) rules.add('Preserve the target exit status in pipelines and diagnostics. Check it before using output. Bound runs and keep ownership of test processes until they exit. Clean up only resources this task is authorized to manage.');
   rules.add('Reply concisely with clear file paths.');
+  const extraTools = expanded || active.some(tool => tool.origin === 'coreBuiltin' && !codingToolNames.has(tool.name));
   return { id: 'achbit.coding-tools', text: [
-    '<tools>', ...descriptions, 'Additional tools may be available.', '</tools>', '',
+    '<tools>', ...descriptions, ...(extraTools ? ['Additional tools may be available.'] : []), '</tools>', '',
     '<rules>', ...[...rules].map(rule => `- ${rule}`), '</rules>',
   ].join('\n') };
 }
@@ -77,8 +78,13 @@ const readBytes = 50 * 1024;
 const record = (value: unknown): value is JsonObject =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+// Change field help, never field presence, constraints or binding facts.
+function fieldHelp(field: unknown, description: string): unknown {
+  return record(field) ? { ...field, description } : field;
+}
+
 /** A presentation selects fields from one captured Kernel definition; it never copies its operation prose. */
-export function codingToolView(tools: readonly PreparedToolDescriptor[], coding = true): readonly PreparedToolDescriptor[] {
+export function codingToolView(tools: readonly PreparedToolDescriptor[], coding = true, compact = false): readonly PreparedToolDescriptor[] {
   return tools.map(tool => {
     if (!coding || tool.origin !== 'coreBuiltin' || !codingToolNames.has(tool.name)) return tool;
     const schema = tool.inputSchema;
@@ -88,13 +94,17 @@ export function codingToolView(tools: readonly PreparedToolDescriptor[], coding 
     let description = tool.description;
     switch (tool.name) {
       case 'fs.read':
-        properties = { path: fields.path,
-          ...(fields.startLine === undefined ? {} : { offset: { ...fields.startLine as JsonObject,
-            description: 'First line or directory entry to read (1-indexed). Defaults to 1.' } }),
+        properties = { path: compact ? fieldHelp(fields.path, 'Workspace-relative path or an authorized absolute file path.') : fields.path,
+          ...(fields.startLine === undefined ? {} : { offset: fieldHelp(fields.startLine,
+            compact ? 'First line or directory entry (1-based; default 1).' : 'First line or directory entry to read (1-indexed). Defaults to 1.') }),
           ...(fields.maxLines === undefined ? {} : { limit: fields.maxLines }),
-          ...(fields.startByte === undefined ? {} : { startByte: { ...fields.startByte as JsonObject,
-            description: 'Files only. Resume at the returned nextByte, even within a line. Takes precedence over offset.' } }) };
-        description += `\nText window: ${readBytes / 1024} KiB. Use offset/limit; follow the returned cursor.`;
+          ...(fields.startByte === undefined ? {} : { startByte: fieldHelp(fields.startByte, compact
+            ? 'Files: resume at nextByte, even mid-line. Overrides offset.'
+            : 'Files only. Resume at the returned nextByte, even within a line. Takes precedence over offset.') }) };
+        if (compact) {
+          const lineFields = ['offset', 'limit'].filter(name => properties[name] !== undefined).join('/');
+          description += `\n${readBytes / 1024} KiB per call${lineFields ? ` (${lineFields})` : ''}.`;
+        } else description += `\nText window: ${readBytes / 1024} KiB. Use offset/limit; follow the returned cursor.`;
         break;
       case 'fs.edit': properties = { path: fields.path, edits: fields.edits }; break;
       case 'fs.write': properties = { path: fields.path, content: fields.content }; break;

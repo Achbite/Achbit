@@ -117,7 +117,9 @@ for (const mode of ['coding', 'full']) test(`file path guidance and original Not
   const instructions = requests[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
   const directRead = instructions.indexOf('Read paths observed');
   assert.ok(directRead >= 0 && instructions.indexOf('For unknown paths') > directRead);
-  for (const guidance of [/project-root references.*res:\/\/.*file-relative paths/iu, /symbol.*search/iu, /same.name/iu, /NotFound.*verified path/iu]) assert.match(instructions, guidance);
+  assert.doesNotMatch(instructions, /res:\/\//u, 'the generic system prefix does not preload an engine-specific example');
+  assert.match(replies[1].content, /res:\/\/scripts\/live\.cs/u, 'a project-root URI supplied by the file remains in the actual tool result');
+  for (const guidance of [/project-root references.*from the project root; file-relative paths from the referring file/iu, /symbol.*search/iu, /same.name/iu, /NotFound.*verified path/iu]) assert.match(instructions, guidance);
 });
 
 test('lookup routes use actual callable readers; a shell-only task still gets the same evidence rule', () => {
