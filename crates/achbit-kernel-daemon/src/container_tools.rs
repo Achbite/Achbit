@@ -448,6 +448,7 @@ impl Containers {
             .id = container.clone();
         self.metadata(Some(docker_context), &["start".into(), container.clone()])?;
         result.output["containerId"] = json!(container);
+        result.output["engine"] = target["engine"].clone();
         result.output["projectPath"] = json!("/project");
         result.output["workPath"] = json!("/work");
         result.output["sessionPath"] = json!(work);
@@ -566,6 +567,48 @@ esac
         added.as_array_mut().unwrap().push(mounts[0].clone());
         assert_ne!(first, prepare(added).unwrap(), "do not drop mount entries");
         assert!(prepare(Value::Null).unwrap_err().contains("mounts missing"));
+    }
+
+    #[test]
+    fn container_create_pairs_the_returned_id_with_the_prepared_engine() {
+        let root = tempfile::tempdir().unwrap();
+        let docker = root.path().join("docker");
+        std::fs::write(&docker, r#"#!/bin/sh
+case "$*" in
+  'context show') echo build-remote ;;
+  '--context build-remote context inspect build-remote') echo '[{"Endpoints":{"docker":{"Host":"unix:///fixture.sock"}}}]' ;;
+  '--context build-remote create '*) echo created-target ;;
+  '--context build-remote start created-target'|'--context build-remote ps -aq --filter '*) ;;
+  *) exit 1 ;;
+esac
+"#).unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let containers = Containers::new(root.path().to_str().unwrap()).unwrap();
+        let input = parse(json!({"action":"create", "image":"fixture"})).unwrap();
+        let target = containers
+            .prepare(&input, "/project", Some(root.path()))
+            .unwrap();
+        let context = KernelToolExecutionContext {
+            output_directory: Some(root.path().join("output")),
+            workspace_root: None,
+            workspace_id: None,
+            private_resolved_targets: vec![],
+            workspace_write_targets: None,
+            file_access: Default::default(),
+            cancellation: Default::default(),
+            progress: Default::default(),
+        };
+        let result = containers
+            .invoke("create", &input, &target, &context)
+            .unwrap();
+        containers.dispose().unwrap();
+        assert_eq!(result.outcome, KernelToolExecutionOutcome::Completed);
+        assert_eq!(result.output["containerId"], "created-target");
+        assert_eq!(
+            target["engine"],
+            json!({"context":"build-remote", "endpoint":"unix:///fixture.sock"})
+        );
+        assert_eq!(result.output["engine"], target["engine"]);
     }
 
     #[test]

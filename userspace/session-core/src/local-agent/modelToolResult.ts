@@ -65,6 +65,18 @@ export function managedJobFromRecord(record: ToolExecutionRecord): ManagedProces
   return isManagedProcessSnapshot(job) ? job : undefined;
 }
 
+function containerProcessFields(native: JsonObject): JsonObject {
+  // Exec returns the inspected target; create returns the new ID and its prepared engine.
+  const target = object(native.container) ? native.container : undefined;
+  const id = target ? target.id : native.containerId;
+  const engine = target ? target.engine : native.engine;
+  const identity = object(engine) ? Object.fromEntries(Object.entries(fields(engine, 'context', 'endpoint'))
+    .filter(([, value]) => typeof value === 'string' && value.trim())) : {};
+  return { ...(typeof id === 'string' && id.trim() ? { containerId: id } : {}),
+    ...(Object.keys(identity).length ? { engine: identity } : {}),
+    ...fields(native, 'projectPath', 'workPath', 'network') };
+}
+
 /** A status request or a wake delivers the same bounded command result as a foreground call. */
 export function processResult(job: ManagedProcessSnapshot, view: 'start' | 'requested' | 'notification'): JsonObject {
   const result: JsonObject = { jobId: job.jobId, status: job.status };
@@ -81,7 +93,7 @@ export function processResult(job: ManagedProcessSnapshot, view: 'start' | 'requ
   const commandResult = { ...native, stdout: tail ? out.stdout.slice(-2000) : out.stdout,
     stderr: tail ? out.stderr.slice(-2000) : out.stderr, truncated: clipped };
   return { ...result, ...shellOutput(commandResult, job.status === 'failed' || job.status === 'cancelled'),
-    ...(job.toolName === 'container' ? fields(native, 'containerId', 'projectPath', 'workPath', 'network') : {}),
+    ...(job.toolName === 'container' ? containerProcessFields(native) : {}),
     ...(job.error ? { error: errorDetails(job.error) } : {}) };
 }
 
@@ -151,12 +163,17 @@ function outputForModel(record: ToolExecutionRecord, out: unknown, handles: Hand
       return { ...fields(out, 'content', 'statusCode', 'details'), ...(out.finalUrl && out.finalUrl !== out.url ? { finalUrl: out.finalUrl } : {}),
         ...(out.truncated === true || out.sourceTruncated === true ? { truncated: true } : {}),
         ...fields(out, 'untrustedEvidence') };
-    case 'web.search':
+    case 'web.search': {
       if (out.provider === 'kimi-formula' && typeof out.providerContent === 'string') return out.providerContent;
-      return { ...(Array.isArray(out.results) ? { results: entries(out.results, 'title', 'url', 'snippet', 'summary', 'publishedAt', 'language', 'truncated') } : {}),
+      const query = out.query;
+      const rewritten = out.provider === 'brave-search' && object(query) && typeof query.original === 'string'
+        && typeof query.altered === 'string' && query.altered.trim() !== '' && query.altered !== query.original;
+      return { ...(rewritten ? { query: fields(query, 'original', 'altered') } : {}),
+        ...(Array.isArray(out.results) ? { results: entries(out.results, 'title', 'url', 'snippet', 'summary', 'publishedAt', 'language', 'truncated') } : {}),
         ...(out.truncated === true ? { truncated: true } : {}),
         ...(Array.isArray(out.resultIssues) && out.resultIssues.length ? { resultIssues: out.resultIssues } : {}),
         ...fields(out, 'details', 'untrustedEvidence') };
+    }
     case 'skill.read': return out.content ?? (record.outcome !== 'completed' ? fields(out, 'details') : undefined);
     case 'plugin.search':
       return { ...(Array.isArray(out.plugins) ? { plugins: entries(out.plugins, 'uri', 'displayName', 'shortDescription') } : {}),
