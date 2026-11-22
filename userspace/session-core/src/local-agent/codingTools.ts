@@ -91,8 +91,10 @@ export function codingToolView(tools: readonly PreparedToolDescriptor[], coding 
         properties = { path: fields.path,
           ...(fields.startLine === undefined ? {} : { offset: { ...fields.startLine as JsonObject,
             description: 'First line or directory entry to read (1-indexed). Defaults to 1.' } }),
-          ...(fields.maxLines === undefined ? {} : { limit: fields.maxLines }) };
-        description += `\nText window: ${readBytes / 1024} KiB. Use offset/limit; continue with the returned offset.`;
+          ...(fields.maxLines === undefined ? {} : { limit: fields.maxLines }),
+          ...(fields.startByte === undefined ? {} : { startByte: { ...fields.startByte as JsonObject,
+            description: 'Files only. Resume at the returned nextByte, even within a line. Takes precedence over offset.' } }) };
+        description += `\nText window: ${readBytes / 1024} KiB. Use offset/limit; follow the returned cursor.`;
         break;
       case 'fs.edit': properties = { path: fields.path, edits: fields.edits }; break;
       case 'fs.write': properties = { path: fields.path, content: fields.content }; break;
@@ -116,10 +118,8 @@ export function encodeCodingRead(input: JsonObject): JsonObject {
   return { ...rest, ...(startLine !== undefined ? { offset: startLine } : {}), ...(maxLines !== undefined ? { limit: maxLines } : {}) };
 }
 
-function shellText(out: JsonObject): string {
-  const stdout = typeof out.stdout === 'string' ? out.stdout : '';
-  const stderr = typeof out.stderr === 'string' ? out.stderr : '';
-  const text = stdout && stderr && !stdout.endsWith('\n') ? stdout + '\n' + stderr : stdout + stderr;
+function stdoutText(out: JsonObject): string {
+  const text = typeof out.stdout === 'string' ? out.stdout : '';
   if (!out.truncated) return text;
   const files = record(out.fullOutput) ? Object.values(out.fullOutput)
     .filter(record).filter(file => Number(file.bytes) > 0 && typeof file.path === 'string').map(file => file.path) : [];
@@ -133,14 +133,9 @@ function readText(out: JsonObject): string | undefined {
     .map(entry => String(entry.name) + (entry.kind === 'directory' ? '/' : '')).join('\n');
   else return;
   if (!out.truncated) return text;
-  let next = out.nextStartLine;
-  if (next === undefined && typeof out.startLine === 'number') {
-    const lastBreak = text.lastIndexOf('\n');
-    if (lastBreak < 0) return `[Line ${out.startLine} exceeds the read window. Use the shell to read part of that line.]`;
-    text = text.slice(0, lastBreak + 1);
-    next = out.startLine + text.split('\n').length - 1;
-  }
-  return `${text}\n\n[Output truncated. Use offset=${next} to continue.]`;
+  // For byte windows use the shared structured { content, nextByte } result; a page can end mid-line.
+  if (typeof out.nextStartLine !== 'number') return;
+  return `${text}\n\n[Output truncated. Use offset=${out.nextStartLine} to continue.]`;
 }
 
 /** Only the model-facing body changes. Permission decisions, partial effects and jobs keep their own facts. */
@@ -150,7 +145,10 @@ export function codingToolText(call: ToolExecutionRecord): string | undefined {
   const path = String(call.input.path ?? '');
   if (call.toolName === 'bash' || call.toolName === 'powershell') {
     if (out.job || !('stdout' in out || 'stderr' in out)) return;
-    const text = shellText(out);
+    // Separate pipes have no recorded cross-stream order. Keep the structured shell result
+    // when stderr has content; a PTY has already merged its output into stdout in order.
+    if (out.stderr) return;
+    const text = stdoutText(out);
     if (call.outcome === 'completed') return text || '(no output)';
     if (call.outcome === 'failed') {
       const error = 'error' in call ? call.error : undefined;
