@@ -83,29 +83,33 @@ test('selected Skill references survive handoff message freezing without widenin
   const runtime = runtimeSnapshot(runId, { tools: [tool('session.read', 'localRead'), tool('fs.read', 'workspaceRead')] });
   runtime.selectedPlugins.plugins = [{ uri, pluginArtifactRef: 'artifact:notes', pluginInstanceRef: 'instance:notes',
     extensionGenerationRef: runtime.extensionGenerationRef, capabilityRefs: [], skillEntryPath: path }];
-  const state = emptySessionState(sessionId);
-  const contextStart = { historyThroughSequence: 1, previousProfileId: 'profile:previous' };
-  state.contextHandoff = { ...contextStart, runId, status: 'reading' };
-  const events = [
-    { type: 'session.created', sessionId, sequence: 1,
-      payload: { displayTitle: 'Skill handoff', workspaceBindings: [workspaceBinding] } },
-    { type: 'message.committed', sessionId, sequence: 2,
-      payload: { messageId: 'message:skill-handoff', role: 'user', content: 'Continue with the selected Skill.' } },
-    { type: 'run.started', sessionId, runId, sequence: 3,
-      payload: { inputMessageId: 'message:skill-handoff', workspaceBindings: [workspaceBinding], runtimeSnapshot: runtime, contextStart } },
-  ];
+  async function handoff(prepared, workspaceBindings) {
+    const state = emptySessionState(sessionId);
+    const contextStart = { historyThroughSequence: 1, previousProfileId: 'profile:previous' };
+    state.contextHandoff = { ...contextStart, runId, status: 'reading' };
+    const events = [
+      { type: 'session.created', sessionId, sequence: 1, payload: { displayTitle: 'Skill handoff', workspaceBindings } },
+      { type: 'message.committed', sessionId, sequence: 2,
+        payload: { messageId: 'message:skill-handoff', role: 'user', content: 'Continue with the selected Skill.' } },
+      { type: 'run.started', sessionId, runId, sequence: 3,
+        payload: { inputMessageId: 'message:skill-handoff', workspaceBindings, runtimeSnapshot: prepared, contextStart } },
+    ];
+    const input = { sessionId, runId, runtime: prepared, events, workspaceBindings, responseConstraint: 'normal' };
+    const capabilities = createSessionCapabilities();
+    const first = await buildAgentProviderRequest({ ...input, providerRequestId: 'request:skill-handoff',
+      toolStage: stageForRequest(capabilities, prepared, state) });
+    state.contextHandoff = { ...state.contextHandoff, status: 'ready' };
+    const second = await buildAgentProviderRequest({ ...input, providerRequestId: 'request:skill-work',
+      events: [...events, { type: 'context.composed', sessionId, runId, sequence: 4, payload: first.receipt }],
+      toolStage: stageForRequest(capabilities, prepared, state) });
+    return { input, first, second };
+  }
   const frozen = structuredClone(runtime);
-  const input = { sessionId, runId, runtime, events, workspaceBindings: [workspaceBinding], responseConstraint: 'normal' };
-  const first = await buildAgentProviderRequest({ ...input, providerRequestId: 'request:skill-handoff',
-    toolStage: stageForRequest(createSessionCapabilities(), runtime, state) });
+  const { input, first, second } = await handoff(runtime, [workspaceBinding]);
   assert.deepEqual(first.request.tools.map(item => item.name), ['session_read']);
   const user = first.request.messages.find(message => message.role === 'user');
   assert.ok(user.content.includes(JSON.stringify({ uri, path })), 'the selected reference must exist before its input message is frozen');
 
-  state.contextHandoff = { ...state.contextHandoff, status: 'ready' };
-  const second = await buildAgentProviderRequest({ ...input, providerRequestId: 'request:skill-work',
-    events: [...events, { type: 'context.composed', sessionId, runId, sequence: 4, payload: first.receipt }],
-    toolStage: stageForRequest(createSessionCapabilities(), runtime, state) });
   assert.ok(second.request.tools.some(item => item.name === 'fs_read'));
   assert.deepEqual(second.request.messages.find(message => message.role === 'user'), user,
     'normal work retains the exact already-sent input, rather than patching its missing reference');
@@ -114,8 +118,25 @@ test('selected Skill references survive handoff message freezing without widenin
   const withoutReader = structuredClone(runtime);
   withoutReader.tools = withoutReader.tools.filter(item => item.name !== 'fs.read');
   const unavailable = await buildAgentProviderRequest({ ...input, runtime: withoutReader, providerRequestId: 'request:no-file-reader',
-    events: events.map(event => event.type === 'run.started'
+    events: input.events.map(event => event.type === 'run.started'
       ? { ...event, payload: { ...event.payload, runtimeSnapshot: withoutReader } } : event) });
   assert.ok(unavailable.request.messages.every(message => !message.content.includes(path)),
     'a run with no callable file reader must not advertise mounted Skill entries');
+
+  const shellOnly = runtimeSnapshot(runId, { tools: [tool('session.read', 'localRead'), tool('bash', 'process')] });
+  shellOnly.selectedPlugins = structuredClone(runtime.selectedPlugins);
+  // Empty bindings are a composer input, not a claim about a projectless Host session's working directory.
+  for (const [prepared, bindings, expectedReaders] of [
+    [runtime, [], []], [shellOnly, [workspaceBinding], ['bash']], [shellOnly, [], []],
+  ]) {
+    const { first: reading, second: ready } = await handoff(prepared, bindings);
+    assert.deepEqual(reading.request.workspaceBindings, bindings);
+    assert.deepEqual(reading.request.tools.map(item => item.name), ['session_read']);
+    const selected = reading.request.messages.find(message => message.role === 'user');
+    assert.ok(selected.content.includes(JSON.stringify({ uri, path })), 'the prepared reader qualifies the location, not a declaration');
+    assert.deepEqual(ready.request.messages.find(message => message.role === 'user'), selected);
+    assert.deepEqual(ready.request.workspaceBindings, bindings);
+    const fileReaders = ready.request.tools.map(item => item.name).filter(name => ['fs_read', 'bash', 'powershell'].includes(name));
+    assert.deepEqual(fileReaders, expectedReaders);
+  }
 });
