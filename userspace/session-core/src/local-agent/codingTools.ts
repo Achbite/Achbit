@@ -11,12 +11,22 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
   const ordered = [...codingToolNames.keys()].flatMap(name => active.filter(tool => tool.origin === 'coreBuiltin' && tool.name === name));
   const descriptions: string[] = [], rules = new Set<string>();
   const shell = ordered.find(tool => tool.name === 'bash' || tool.name === 'powershell');
+  const reader = ordered.find(tool => tool.name === 'fs.read');
   // Optional tools retain their declaration-owned guidance; activation must not rewrite this prefix.
   for (const tool of ordered) {
     const name = aliases.get(tool.name);
     if (!name) continue;
     const guidance = codingToolGuidance(tool.name, name)!;
     descriptions.push(`- ${name}: ${guidance.snippet}`);
+    // Either reader can locate files. Describe the shared workflow once, using this stage's aliases.
+    if (tool === (reader ?? shell)) {
+      const search = shell && aliases.get(shell.name);
+      const commands = shell?.name === 'bash' ? 'ls or find' : 'Get-ChildItem or Select-String';
+      const routes = [reader && `${name} to list a known directory`, search && `${search} to search (${commands})`].filter(Boolean).join(' or ');
+      rules.add('Read paths observed in listings, input or source directly: project-root references (res://) use project root; file-relative paths use the referring file.');
+      rules.add(`For unknown paths or symbols: Use ${routes}; read the hit next batch in the same workspace.`);
+      rules.add('NotFound or same-name hits? Check workspace and reference for a verified path. Never assume a repository name is a prefix.');
+    }
     for (const rule of guidance.guidelines) rules.add(rule);
     if (expanded) for (const rule of guidance.additionalGuidelines ?? []) rules.add(rule);
   }
@@ -24,7 +34,7 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
   if (expanded) rules.add('Honor declared tool permissions.');
   const discovery = aliases.get('plugin.search');
   if (shell && discovery && active.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'plugin.search')) {
-    rules.add(`Use a matching callable tool directly. Before recreating a capability with a shell script or dependency, check enabled plugins with ${discovery}. Use the shell for uncovered steps within its own permissions, not to bypass a denial.`);
+    rules.add(`For specialized capabilities, use a matching callable tool or check enabled plugins with ${discovery} before writing a replacement script or adding a dependency. Shell commands keep their own permissions; a denied action is not authorized through another tool.`);
   }
   if (shell && active.some(tool => tool.origin === 'coreBuiltin' && tool.name === 'process')) {
     rules.add('Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.');
@@ -42,20 +52,14 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
 export function codingToolGuidance(canonical: string, name: string): { snippet: string; guidelines: string[]; additionalGuidelines?: string[] } | undefined {
   switch (canonical) {
     case 'fs.read': return {
-      snippet: 'Read file or directory contents', guidelines: [
-        `Use ${name} to examine files instead of cat or sed.`,
-        'Read paths observed in listings, user input or source directly. Resolve project-root references (such as res://) from their project and file-relative paths from the referring file.',
-        'For a symbol or uncertain filename, search the workspace or list the nearest known directory. Distinguish same-name matches by reference or declaration.',
-        'After NotFound, check the parent or reference for a verified path.',
-      ],
+      snippet: 'Read file or directory contents', guidelines: [],
       additionalGuidelines: [
         'Read generated output after its producing command has completed.',
         'Follow returned cursors or full-output paths when truncated.',
       ],
     };
     case 'bash': case 'powershell': return {
-      snippet: canonical === 'bash' ? 'Run project commands' : 'Execute PowerShell commands',
-      guidelines: [`For unknown paths, use ${name} with ${canonical === 'bash' ? 'ls, rg or find' : 'Get-ChildItem or Select-String'}.`],
+      snippet: `${canonical === 'bash' ? 'Run project commands' : 'Execute PowerShell commands'} (e.g. reading multiple files)`, guidelines: [],
     };
     case 'fs.edit': return {
       snippet: 'Make precise file edits with exact text replacement, including multiple disjoint edits in one call',
