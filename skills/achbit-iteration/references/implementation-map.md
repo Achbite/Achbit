@@ -20,6 +20,18 @@ Use this map for implementation changes, not routine product control. Paths are 
 
 Here, “daemon” means `crates/achbit-kernel-daemon/src/`; “Session” means `userspace/session-core/src/local-agent/` unless a full path is given.
 
+## Follow one request across the boundary
+
+Use these paths relative to the **actual Git root**, not a project display name or the parent workspace. If the checkout is nested, list the bound workspace first and use the returned repository directory. For a moved source file, search for its declaration before reading a replacement path.
+
+| Symptom | Source of the first relevant fact | Follow it to |
+| --- | --- | --- |
+| Model chooses a guessed path or reads two same-named files as if they were one | Session `codingTools.ts` supplies the shared Read/Shell rules; `contextComposer.ts` and `providerToolCodec.ts` record this request’s visible operations, aliases and workspace handles | Kernel `crates/achbit-kernel-runtime/src/executors/fs.rs` reports the actual target error. Session `modelToolResult.ts` returns the record’s error; do not turn `NotFound` into permission denial or try other paths invisibly. |
+| A registered tool is missing from the model request | `crates/achbit-kernel-tools/src/registrations/mod.rs` lists the base tools; daemon `local_agent_tool_catalog.rs` constructs this run’s bindings | `contextComposer.ts` filters the current stage and `providerToolCodec.ts` maps callable names. Compare `context.composed` with the actual Provider request, not a global tool count. |
+| Plugin appears in discovery but cannot run | Daemon `local_agent_plugins.rs` builds the catalog; Session `pluginActivation.ts` and `loopTurn.ts` process model activation separately from explicit user selection | `local_agent_api.rs` prepares the replacement view; `local_agent_kernel.rs` admits each requested effect. Look for the next request’s declaration, then the actual ToolRecord or rejection. A file-backed Skill adds a location, not an executable. |
+| Tool call was displayed, but execution or its result is uncertain | `userspace/protocol/src/localAgent.ts` defines `KernelPort`; Session `httpPorts.ts` sends the fixed request; daemon `routes.rs` and `local_agent_api.rs` carry the execution reply | Kernel `local_agent_kernel.rs` owns the attempt outcome. Session `loopTools.ts` checks identity before the journal/reducer consumes it. An input rejection, a pending approval and a failed effect are different facts. |
+| A child finished, but the coordinator has only a message | Session `agentManager.ts` manages member/task identities; `loopTurn.ts` handles control settlement | Compare child run settlement with the resulting parent task event. Delivery of a message alone neither completes work nor grants permission. |
+
 ## Extension choice
 
 | Need | Existing form |

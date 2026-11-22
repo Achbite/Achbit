@@ -27,7 +27,7 @@ Use `achbitCli` and `hostDataDirectory` from the `Achbit product resources` atta
 
 The source directory is an authoring location. The watcher observes the installed copy. Recompiling the source requires `plugins update`; it does not by itself hot-replace the installation. `plugins disable` withdraws task tools at the request boundary; `plugins remove` removes registration while retaining plugin data.
 
-The stable system prefix and historical messages remain unchanged during plugin refresh. New tool names and guidance are appended where possible; changed/removed tools are still represented accurately. A Provider may invalidate cache entries when actual tool schemas change. Use reported cache usage to measure the outcome rather than promising a fixed hit rate.
+Plugin refresh does not rewrite recorded user messages, native calls or tool results. New declarations are appended where possible; changed or removed tools must still be represented accurately. Newly callable effects can add permission guidance to the next request’s system message. Compare that message separately from replayed history and tool declarations; use the Provider’s reported cache usage, not a prefix comparison, to measure hits.
 
 ## Repair a plugin from the current Session
 
