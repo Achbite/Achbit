@@ -117,7 +117,7 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
         : event.type === 'narrative.committed' && !query.messageId;
       case 'tools': return event.type === 'tool.completed'
         ? !query.recordId || event.payload.record.recordId === query.recordId
-        : isToolHistory(event) && !query.recordId;
+        : !query.recordId && (event.type === 'tool.interrupted' || isToolHistory(event));
       case 'plans': return event.type.startsWith('plan.') || event.type.startsWith('todo.');
       case 'reasoning': return event.type === 'provider.turn.settled' && event.payload.outcome === 'completed'
         && (!query.providerRequestId || event.payload.providerRequestId === query.providerRequestId);
@@ -190,6 +190,8 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
       ...(offset === null ? textExcerpt(event.payload.content, 12 * 1024) : textChunk(event.payload.content, 12 * 1024, offset)) };
   }
   if (event.type === 'tool.not-executed') return { ...base, callId: event.callId, outcome: 'notExecuted', ...event.payload };
+  if (event.type === 'tool.interrupted') return { ...base, callId: event.callId, attemptId: event.payload.attemptId,
+    outcome: 'indeterminate', error: textExcerpt(JSON.stringify(event.payload.error), 4000) };
   if (event.type === 'session.control.rejected') return { ...base, callId: event.callId,
     providerCallId: event.payload.providerCallId, toolName: event.payload.toolName, outcome: 'rejected', executed: false,
     input: textExcerpt(JSON.stringify(event.payload.input), summary ? 600 : 4000),

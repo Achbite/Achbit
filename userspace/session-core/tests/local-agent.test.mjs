@@ -30,6 +30,7 @@ import { responseFrames } from '../dist/responseFrames.js';
 import { environmentInstruction } from '../dist/local-agent/sessionEnvironment.js';
 import { createProviderToolAliases, createProviderToolCodec } from '../dist/local-agent/providerToolCodec.js';
 import { LoopFailure } from '../dist/local-agent/loopFailure.js';
+import { readConversation } from '../dist/local-agent/conversationRead.js';
 import { AgentManager } from '../dist/local-agent/agentManager.js';
 
 class TestAgentManager extends AgentManager {
@@ -1265,14 +1266,29 @@ for (const lateRecord of [false, true]) test(`lost Kernel reply closes tool hist
   assert.ok(terminal);
   assertEventOrder(singleEvent(events, 'run.runtime.released'), terminal, singleEvent(events, 'run.settled'));
   assert.equal(failed.activities.find((item) => item.callId === executions[1].callId).status, lateRecord ? 'completed' : 'indeterminate');
-  if (!lateRecord) {
+  const query = { sessionId, view: 'tools' };
+  const page = await readConversation(journal, { ...query, limit: 1 });
+  const [last] = page.items;
+  assert.equal(last?.eventId, terminal.eventId, 'tools history must include the released attempt, even without a Kernel record');
+  const previous = await readConversation(journal, { ...query, before: page.nextBefore, limit: 1 });
+  assert.equal(previous.items[0].recordId, records.get(executions[0].callId).recordId);
+  if (lateRecord) {
+    assert.equal(last.outcome, 'completed');
+    assert.equal(last.recordId, terminal.payload.record.recordId);
+    assert.equal(JSON.parse(last.output.content).content, 'late result');
+  } else {
+    assert.equal(last.outcome, 'indeterminate');
+    assert.equal(last.callId, executions[1].callId);
+    assert.equal(last.attemptId, executions[1].attemptId);
+    assert.deepEqual(JSON.parse(last.error.content), terminal.payload.error);
+    for (const field of ['recordId', 'executed', 'output']) assert.equal(Object.hasOwn(last, field), false);
+    await assert.rejects(readConversation(journal, { ...query, recordId: terminal.callId }), /tool_record_not_found/);
     // Reproduce the stored failure that predates a tool terminal event. Reading
     // it must expose both original facts without appending a synthetic result.
     const history = events.filter((event) => event !== terminal)
       .map((event, index) => ({ ...event, sequence: index + 1 }));
     const beforeRead = structuredClone(history);
     const { recoverSession, projectSession } = await import('../dist/local-agent/reducer.js');
-    const { readConversation } = await import('../dist/local-agent/conversationRead.js');
     const projection = projectSession(recoverSession(sessionId, history));
     assert.equal(projection.run.status, 'failed');
     assert.match(projection.terminalError.message, /fetch failed/);
@@ -2734,8 +2750,9 @@ test('Session attaches each bound usage contribution once to its actual wire dec
 });
 
 test('explicit run approvals are journaled and only accepted for a Kernel candidate', async (t) => {
-  for (const candidate of [false, true]) {
-    const journal = new InMemoryCommandJournal(), sessionId = `session:run-approval-${candidate}`;
+  for (const mode of ['once', 'run', 'cancel']) {
+    const candidate = mode === 'run';
+    const journal = new InMemoryCommandJournal(), sessionId = `session:run-approval-${mode}`;
     await createSession(journal, sessionId, [workspaceBinding]);
     const preparation = fakeRunPreparation({ tools: [{
       toolBindingRef: 'binding:approval', name: 'web.fetch', description: 'Read URL', origin: 'coreBuiltin', availability: 'callable',
@@ -2760,6 +2777,19 @@ test('explicit run approvals are journaled and only accepted for a Kernel candid
     await actor.submit(messageCommand(sessionId, 'command:start', 'Exercise approval.'));
     const waiting = await waitForProjection(actor, (state) => state.pendingApproval !== null);
     const approval = waiting.pendingApproval;
+    if (mode === 'cancel') {
+      await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', commandId: 'command:cancel-before-effect', sessionId, runId: approval.runId });
+      await waitForProjection(actor, state => state.run?.status === 'cancelled');
+      const held = singleEvent(await readEvents(journal, sessionId), 'tool.not-executed');
+      const { items } = await readConversation(journal, { sessionId, view: 'tools' });
+      const row = items.find(item => item.callId === approval.callId);
+      assert.equal(row?.eventId, held.eventId);
+      assert.equal(row.attemptId, held.payload.attemptId);
+      assert.equal(row.outcome, 'notExecuted');
+      assert.equal(row.reason, 'cancelled');
+      assert.equal(Object.hasOwn(row, 'recordId'), false);
+      continue;
+    }
     const command = { schemaVersion: 'achbit.command.v3', type: 'approval.respond', commandId: 'command:allow-run', sessionId,
       runId: approval.runId, callId: approval.callId, approvalId: approval.approvalId, decision: 'allow', authorizationScope: 'runHostShell' };
     const reply = await actor.submit(command);
