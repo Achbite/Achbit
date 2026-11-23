@@ -1667,7 +1667,7 @@
     },
     "agent.systemPrompt": {
       "label": "System prompt",
-      "description": "Append to the built-in instructions for new conversations."
+      "description": "Appended to built-in instructions starting with the next main-agent task. Does not change a running task or apply to execution reviews or delegated agents."
     },
     "agent.permissions.workspaceMutation": {
       "label": "Plan",

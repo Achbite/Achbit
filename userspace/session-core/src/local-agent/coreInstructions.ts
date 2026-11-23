@@ -1,3 +1,5 @@
+export const USER_SYSTEM_PROMPT_ID = 'achbit.user-system-prompt';
+
 /** One shared preamble; the full context inserts detail without replacing its base sentences. */
 export function corePromptInstructions(expanded = true) {
   return [{

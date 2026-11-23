@@ -1667,7 +1667,7 @@
     },
     "agent.systemPrompt": {
       "label": "系统提示词",
-      "description": "附加到内置指令后，应用于新对话。"
+      "description": "从下一次主助手任务起附加到内置指令。不会改变进行中的任务，也不用于执行审批或委派的子代理。"
     },
     "agent.permissions.workspaceMutation": {
       "label": "Plan",

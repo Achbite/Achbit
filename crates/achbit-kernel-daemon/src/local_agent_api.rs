@@ -369,6 +369,15 @@ impl LocalAgentRuntime {
                     .map_err(|error| RunPreparationError::new(error.code, error.message))?,
             }
         };
+        // A top-level assistant uses its captured run settings, never a live plugin setting
+        // or an instruction implicitly delegated to a child Session.
+        let user_system_prompt = if agent_context.is_none() {
+            crate::settings_api::user_system_prompt(settings).map_err(|message| {
+                RunPreparationError::new("user_system_prompt_invalid", message)
+            })?
+        } else {
+            None
+        };
         let mut environment_settings = settings.clone();
         if let Some(project_id) = gui
             .conversation_catalog
@@ -869,6 +878,9 @@ impl LocalAgentRuntime {
                 "thresholdTokens": settings.get("agent.contextManagement.thresholdTokens").and_then(Value::as_u64).unwrap_or(500_000),
             },
         });
+        if let Some(prompt) = user_system_prompt {
+            response["userSystemPrompt"] = json!(prompt);
+        }
         if let Some(instructions) = project_instructions {
             response["projectInstructions"] = instructions;
         }

@@ -521,6 +521,20 @@ pub(crate) fn default_user_settings() -> Value {
     })
 }
 
+/// Preserve the saved text verbatim; an unset or blank preference contributes no instruction.
+pub(crate) fn user_system_prompt(settings: &Value) -> Result<Option<&str>, String> {
+    let Some(value) = settings.get("agent.systemPrompt") else {
+        return Ok(None);
+    };
+    let prompt = value
+        .as_str()
+        .ok_or_else(|| "agent.systemPrompt 必须是字符串。".to_string())?;
+    if prompt.len() > 64 * 1024 {
+        return Err("agent.systemPrompt 超过 65536 字节上限。".to_string());
+    }
+    Ok((!prompt.trim().is_empty()).then_some(prompt))
+}
+
 pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), String> {
     prevent_idle_sleep(settings)?;
     if let Some(presets) = settings.get("agent.subagents.presets") {
@@ -629,14 +643,7 @@ pub(crate) fn validate_agent_runtime_settings(settings: &Value) -> Result<(), St
             }
         }
     }
-    if let Some(prompt) = settings.get("agent.systemPrompt") {
-        let prompt = prompt
-            .as_str()
-            .ok_or_else(|| "agent.systemPrompt 必须是字符串。".to_string())?;
-        if prompt.len() > 64 * 1024 {
-            return Err("agent.systemPrompt 超过 65536 字节上限。".to_string());
-        }
-    }
+    user_system_prompt(settings)?;
     if let Some(value) = settings.get("agent.permissions.workspaceMutation") {
         if !matches!(value.as_str(), Some("plan" | "review" | "allow")) {
             return Err(

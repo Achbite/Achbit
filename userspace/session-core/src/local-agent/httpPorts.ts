@@ -51,6 +51,7 @@ import { readJournalSequence, type JournalPermissions, type JournalPublication }
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
 import { environmentInstruction } from './sessionEnvironment.js';
+import { USER_SYSTEM_PROMPT_ID } from './coreInstructions.js';
 import type { ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import {
   decodeRunPluginConfig,
@@ -561,7 +562,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'environment',
       'agentCapabilities',
       'contextManagement',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions', 'mode', 'subagentSettings'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions', 'userSystemPrompt', 'mode', 'subagentSettings'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -639,6 +640,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
             ...this.#instructions, environmentInstruction(value.environment),
+            ...userSystemPromptContribution(value.userSystemPrompt),
             ...projectInstructionContributions(value.projectInstructions, this.#codingTools),
             ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
           ])],
@@ -680,6 +682,12 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       ...(released.recoveredAfterRestart ? { recoveredAfterRestart: true as const } : {}),
     });
   }
+}
+
+function userSystemPromptContribution(value: unknown): InstructionContribution[] {
+  if (value === undefined) return [];
+  if (typeof value !== 'string' || Buffer.byteLength(value) > 64 * 1024) throw new Error('run_runtime_user_system_prompt_invalid');
+  return value.trim() ? [{ id: USER_SYSTEM_PROMPT_ID, text: value }] : [];
 }
 
 function projectInstructionContributions(value: unknown, coding = false): InstructionContribution[] {
