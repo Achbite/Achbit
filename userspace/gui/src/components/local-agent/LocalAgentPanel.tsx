@@ -50,8 +50,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const projection = useLocalAgentStore((state) => state.projection);
   const candidate = useLocalAgentStore(state => state.openingReadingWindow);
   const rememberAnchor = useLocalAgentStore(state => state.rememberReadingAnchor);
-  const presented = useLocalAgentStore(state => state.readingWindowPresented);
-  const resolveWindow = useLocalAgentStore(state => state.awaitReadingProjection);
+  const opening = useLocalAgentStore(state => state.openingHistory);
   const openingWindow = !projection && candidate?.sessionId === sessionId && candidate?.surface && !showReasoning ? candidate : null;
   const loading = useLocalAgentStore((state) => state.loading);
   const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
@@ -100,22 +99,11 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     sessionId,
     loading,
     projection,
-    openingWindow, rememberAnchor, demandFullView: resolveWindow, presentationLayoutKey: presentation.layoutKey,
+    openingWindow, opening, rememberAnchor, presentationLayoutKey: presentation.layoutKey,
     assistantDraftLayoutKey,
     timelineExtentKey,
   });
   const { bodyRef, bodyHandlers, showJumpToLatest, scrollToLatest } = viewport;
-  useEffect(() => {
-    if (candidate?.source !== 'revisionWindow' || candidate.sessionId !== sessionId || projection) return;
-    if (!openingWindow) { void resolveWindow(candidate).catch(() => {}); return; } // Full restore reports failures in the owning store.
-    if (viewport.preparingViewport) return;
-    // A fetched page or a mounted inert body is not a presented answer. Allow a visible
-    // formatted frame through before kicking off the background full projection.
-    let frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => {
-      if (!bodyRef.current?.inert && bodyRef.current?.isConnected) presented(openingWindow);
-    }); });
-    return () => cancelAnimationFrame(frame);
-  }, [candidate, sessionId, projection, openingWindow, viewport.preparingViewport, bodyRef, presented, resolveWindow]);
   const composer = useAgentComposer(language, viewport.setLatestFollowMode);
   const automaticApproval = isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run) ? projection!.pendingApproval : null;
   const automaticPlan = isAutomaticPlanReview(projection?.pendingPlan ?? null, projection?.effectivePermissions) ? projection!.pendingPlan : null;
@@ -166,12 +154,10 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   );
 
   return (
-    <AgentNavigationScope key={sessionId} sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
+    <AgentNavigationScope key={sessionId} sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent || (sessionId && (loading || !projection)) ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
-      {viewport.preparingViewport && <div className="local-agent__opening-status local-agent__empty" role="status">{t(language, 'agent.chat.opening')}</div>}
-      <div ref={bodyRef} className="local-agent__body" aria-live="polite" inert={viewport.preparingViewport}
-        data-preparing-viewport={viewport.preparingViewport || undefined} {...bodyHandlers}>
+      <div ref={bodyRef} className="local-agent__body" aria-live="polite" {...bodyHandlers}>
         <ConversationTranscript
           layoutCache={conversationLayouts.current} openingWindow={openingWindow}
           displaySettledRunIds={display.displaySettledRunIds}

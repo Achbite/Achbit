@@ -777,7 +777,7 @@ export function useAgentComposer(
   };
   const draftCommand = !textDecision && !editingMessage && !pendingApproval ? parseComposerCommand(draft) : null;
   const guiCommand = draftCommand && !draftCommand.argument && composerCommands.find(command => command.id === draftCommand.name);
-  const canSend = !runtimeReady || readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
+  const canSend = !runtimeReady || (sessionId !== null && !projection) || readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
     ? Boolean(draft.trim()) && (Boolean(pendingPlan) || !pendingInteraction || pendingInteraction.allowFreeform)
     : Boolean(draft.trim() || pastedTexts.length || pastedImages.length || pendingFilesystemPaths.length || recoveredContent.filesystemReferences.length || editingMessage?.message.filesystemReferences.length)
       && !modelSettingsBusy && !catalogBusy

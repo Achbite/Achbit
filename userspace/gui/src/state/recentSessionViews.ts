@@ -71,7 +71,7 @@ interface Candidate {
   readonly windowBytes: number;
   readonly used: number;
 }
-export function matchesReadingStatus(saved: Candidate, status?: ConversationSessionStatus) {
+export function matchesReadingStatus(saved: Pick<Candidate, 'sessionId' | 'revision' | 'run'>, status?: ConversationSessionStatus) {
   return !!status && status.sessionId === saved.sessionId && status.revision === saved.revision && status.run?.runId === saved.run?.runId
     && status.run?.status === saved.run?.status;
 }

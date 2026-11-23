@@ -12,7 +12,8 @@ test('the active context window keeps one measured request across unknown snapsh
   ]);
   const store = createLocalAgentStore(), a = 'session:window-a', b = 'session:window-b';
   const runId = 'run:window', run = { runId, status: 'running', profileId: 'profile:main', workspaceBindings: [] };
-  const snapshots = { [a]: { ...projectSession(emptySessionState(a)), run }, [b]: projectSession(emptySessionState(b)) };
+  // Both catalog entries already have a session.created fact; A also has a run.
+  const snapshots = { [a]: { ...projectSession(emptySessionState(a)), revision: 2, run }, [b]: { ...projectSession(emptySessionState(b)), revision: 1 } };
   const statuses = () => Object.values(snapshots).map(p => ({ sessionId: p.sessionId, revision: p.revision,
     run: p.run && { runId: p.run.runId, status: p.run.status } }));
   store.setState({ catalog: { projects: [], sessions: [a, b].map(id => ({ id })) },
@@ -34,6 +35,7 @@ test('the active context window keeps one measured request across unknown snapsh
     snapshots[a] = { ...snapshots[a], revision: snapshots[a].revision + 5, ...patch };
     await store.getState().refresh();
     assert.equal(store.getState().error, null);
+    assert.equal(store.getState().statusError, null, 'the navigation fixture must provide a valid Host status receipt');
     assert.deepEqual(store.getState().projection, snapshots[a], 'the wire projection is unchanged');
     return display();
   };

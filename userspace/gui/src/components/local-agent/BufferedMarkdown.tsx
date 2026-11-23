@@ -150,6 +150,17 @@ export const MarkdownContent = memo(function MarkdownContent({ children: text, s
   </div>;
 });
 
+// An opening page carries text, not resource or action authority. Use the same
+// parsed blocks without mounting link handlers, plugins, viewers or image requests.
+export const ReadingMarkdown = memo(function ReadingMarkdown({ text }: { text: string }) {
+  const blocks = useMemo(() => new StreamingMarkdownParser().update(text, false), [text]);
+  return <div className="conversation-markdown">{blocks.map(block => <Fragment key={block.key}>
+    {toJsxRuntime(block.tree, { Fragment, jsx, jsxs, components: {
+      a: ({ children }) => <span>{children}</span>, img: ({ alt }) => <span>{alt}</span>,
+      input: ({ checked }) => <span>{checked ? '☑' : '☐'}</span>,
+    } })}</Fragment>)}</div>;
+});
+
 /** Inline fields share the Markdown grammar, without nested links or block layout in buttons/headings. */
 export const MarkdownInline = memo(function MarkdownInline({ children }: { children: string }) {
   const tree = useMemo(() => {

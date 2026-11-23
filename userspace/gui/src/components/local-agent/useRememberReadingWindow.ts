@@ -9,9 +9,9 @@ import type { ConversationNavigationEntry } from './conversationWindow';
  * not need a second snapshot. Keep normal navigation keys (never excerpt-derived action IDs). */
 export function useRememberReadingWindow(projection: SessionProjection | null, viewport: ConversationViewport,
   entries: ConversationNavigationEntry[], showReasoning: boolean) {
-  const { bodyRef, transcriptRef, preparingViewport, anchors } = viewport;
+  const { bodyRef, transcriptRef, anchors } = viewport;
   useLayoutEffect(() => {
-    if (preparingViewport || !projection || !anchors) return;
+    if (!projection || !anchors) return;
     const state = useLocalAgentStore.getState();
     if (!state.shouldRememberReadingWindow(projection)) return;
     // Do not drop a real reasoning control or build an unbounded second navigation index.
@@ -50,5 +50,5 @@ export function useRememberReadingWindow(projection: SessionProjection | null, v
     schedule(); body.addEventListener('scrollend',schedule); body.addEventListener('scroll',schedule,{passive:true});
     const observer = new ResizeObserver(schedule); observer.observe(body); observer.observe(transcript);
     return () => { if (frame !== null) cancelAnimationFrame(frame); observer.disconnect(); body.removeEventListener('scrollend',schedule); body.removeEventListener('scroll',schedule); };
-  }, [projection, preparingViewport, bodyRef, transcriptRef, anchors, entries, showReasoning]);
+  }, [projection, bodyRef, transcriptRef, anchors, entries, showReasoning]);
 }

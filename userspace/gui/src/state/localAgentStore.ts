@@ -28,8 +28,7 @@ import { selectPendingApproval, type ApprovalIdentity } from '../components/loca
 import { reportedWindowRounds, sessionView, type CachedSessionView, type ContextWindowReading } from './contextWindowReading';
 import { uiEvents } from './uiEvents';
 import { RecentColdReads } from './recentColdProjectionReads';
-import { ReadingWindowRecovery } from './readingWindowRecovery';
-import { RecentSessionViews, currentReadingTargets, matchesReadingStatus, openingFromRevisionWindow, type OpeningReadingWindow, type ReadingWindowRange, type RememberedReadingAnchor } from './recentSessionViews';
+import { RecentSessionViews, currentReadingTargets, matchesReadingStatus, type OpeningReadingWindow, type ReadingWindowRange, type RememberedReadingAnchor } from './recentSessionViews';
 import { dismissUnappliedInputs } from './unappliedInputReminders';
 import type { PastedTextInput } from '../services/pastedText';
 import { supportsNativeFileInput } from '../services/modelFileInput';
@@ -43,7 +42,6 @@ import {
   deleteConversationSession as deleteSessionRequest,
   getConversationCatalog,
   readConversationStatusReceipt,
-  readRevisionWindow,
   readOpeningHistory,
   readMeasuredWindowHistory,
   type OpeningHistoryPage,
@@ -112,7 +110,9 @@ export interface LocalAgentState {
   /** Validated display input only, never a substitute for the full projection or a command authority. */
   openingReadingWindow: OpeningReadingWindow | null;
   rememberReadingAnchor(sessionId: string, anchor: RememberedReadingAnchor | null): void;
-  readingWindowPresented(window: OpeningReadingWindow): void;
+  readOpeningMessages(sessionId: string): Promise<void>;
+  observeHistory(event: 'ready' | 'change' | 'closed'): void;
+  historyObservation(): object | null;
   shouldRememberReadingWindow(projection: SessionProjection): boolean;
   rememberReadingWindow(projection: SessionProjection, range: ReadingWindowRange | null): boolean;
   awaitReadingProjection(window: OpeningReadingWindow): Promise<SessionProjection>;
@@ -212,12 +212,14 @@ let generation = 0;
 let catalogVersion = 0;
 let viewReadController = new AbortController();
 const coldReads = new RecentColdReads((id, _rev, signal) => getLocalAgentProjection(id, signal));
-const windowReads = new RecentColdReads(readRevisionWindow);
+let openingRead: { sessionId: string; read(): Promise<number>; cancel(): void } | null = null;
+// Only a complete read made within one uninterrupted Host observation can skip
+// revalidation on return. Child decisions and inherited fields can change at
+// the same parent revision, so any event invalidates the proof conservatively.
+let observedViews = new WeakSet<CachedSessionView>();
+let streamReady = false;
 const readingAnchors = new Map<string, RememberedReadingAnchor>();
-let recovery: ReadingWindowRecovery | null = null;
-let publicWindowOwner: { generation: number; sessionId: string; revision: number; run: ConversationSessionStatus['run'] } | null = null;
 let supportsReadingWindow = false;
-let commandOwnsGeneration = -1;
 function rememberAnchor(id: string, anchor: RememberedReadingAnchor | null) {
   readingAnchors.delete(id);
   if (anchor) {
@@ -227,8 +229,9 @@ function rememberAnchor(id: string, anchor: RememberedReadingAnchor | null) {
   }
 }
 function advanceView(nextIsKnownCold = false): number {
-  if (!nextIsKnownCold) { coldReads.clear(); windowReads.clear(); }
-  publicWindowOwner = null;
+  openingRead?.cancel();
+  openingRead = null;
+  if (!nextIsKnownCold) coldReads.clear();
   viewReadController.abort();
   viewReadController = new AbortController();
   return ++generation;
@@ -236,7 +239,7 @@ function advanceView(nextIsKnownCold = false): number {
 // Draft deltas do not advance the journal revision. Serialize reads across
 // polling, navigation and command reconciliation so responses cannot rewind them.
 const projectionReadQueues = new Map<string, { tail: Promise<void> }>();
-const projectionCache = new RecentSessionViews();
+let projectionCache = new RecentSessionViews();
 let openingFlight: { sessionId: string; generation: number; promise: Promise<void> } | null = null;
 function cacheProjection(projection: SessionProjection, selectedId = store.getState().sessionId): CachedSessionView {
   const cached = projectionCache.get(projection.sessionId);
@@ -250,7 +253,7 @@ function knownColdRevision(sessionId: string, state: LocalAgentState): number | 
     && status && status.revision > 0 && !isLiveRun(status.run) ? status.revision : undefined;
 }
 function readSessionView(sessionId: string, signal?: AbortSignal, boundary: number | (() => Promise<number>) = 0,
-  coldRevision?: number, window?: OpeningReadingWindow): Promise<CachedSessionView> {
+  coldRevision?: number, window?: OpeningReadingWindow, onDecoded?: (p: SessionProjection) => void): Promise<CachedSessionView> {
   if (coldRevision === undefined) coldReads.forget(sessionId);
   const queue = projectionReadQueues.get(sessionId) ?? { tail: Promise.resolve() };
   projectionReadQueues.set(sessionId, queue);
@@ -260,17 +263,26 @@ function readSessionView(sessionId: string, signal?: AbortSignal, boundary: numb
   };
   const read = queue.tail.then(async () => {
       checkOwner();
+      const observed = streamReady ? observedViews : null;
       // The page and complete projection still overlap. Only a known cold opening may
       // borrow an outstanding transport. All admission, retries and errors stay here.
       const [boundaryRevision, first] = await Promise.all([
         typeof boundary === 'number' ? boundary : boundary(),
-        signal && coldRevision !== undefined && coldRevision === knownColdRevision(sessionId, store.getState())
+        (signal && coldRevision !== undefined && coldRevision === knownColdRevision(sessionId, store.getState())
           ? coldReads.read(sessionId, coldRevision, signal)
-          : getLocalAgentProjection(sessionId, signal).then(value => ({ value, joined: false })),
+          : getLocalAgentProjection(sessionId, signal).then(value => ({ value, joined: false }))).then(result => {
+          checkOwner();
+          if (result.value.revision >= (store.getState().sessionStatuses[sessionId]?.revision ?? 0)) onDecoded?.(result.value);
+          return result;
+        }),
       ]);
       checkOwner();
       const status = store.getState().sessionStatuses[sessionId];
-      const minimum = () => Math.max(boundaryRevision, boundaryRevision === 0 && coldRevision === undefined ? 0 : store.getState().sessionStatuses[sessionId]?.revision ?? 0);
+      const minimum = () => {
+        const state = store.getState();
+        return Math.max(boundaryRevision, state.sessionStatuses[sessionId]?.revision ?? 0,
+          state.openingHistory?.sessionId === sessionId ? state.openingHistory.revision : 0);
+      };
       let projection = first.value;
       if (projection.revision < minimum() || (first.joined && (
         projection.revision !== coldRevision || status?.revision !== coldRevision || !isSettledLocalSnapshot(projection)
@@ -283,6 +295,7 @@ function readSessionView(sessionId: string, signal?: AbortSignal, boundary: numb
       if (window && projection.revision === window.revision && !currentReadingTargets(projection, window)) throw new Error('conversation_read_window_projection_mismatch');
       const cached = projectionCache.get(sessionId);
       const current = cacheProjection(projection);
+      if (observed && observed === observedViews && !first.joined && current.projection.revision === projection.revision) observed.add(current);
       const notice = runHandoffNotice(cached?.projection, current.projection,
         store.getState().profiles.find(profile => profile.id === current.projection.contextHandoff?.profileId)?.name,
         normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']));
@@ -326,46 +339,6 @@ function observeStatuses(set: StoreSet, owner: number, signal: AbortSignal) {
   statusFlight = { owner, promise };
   void promise.then(() => { if (statusFlight?.promise === promise) statusFlight = null; });
   return promise;
-}
-
-async function openRevisionWindow(id: string, createdAt: string, owner: number, set: StoreSet, get: StoreGet, signal: AbortSignal) {
-  const check = () => {
-    signal.throwIfAborted();
-    if (generation !== owner || get().sessionId !== id) throw new Error('conversation_session_changed');
-    if (get().catalog.sessions.find(s => s.id === id)?.createdAt !== createdAt) throw new Error('conversation_session_not_found');
-  };
-  const freshStatus = async () => {
-    const items = await observeStatuses(set, owner, signal); check();
-    if (!items) throw new Error(get().statusError ?? 'conversation_statuses_invalid');
-    const current = items.find(s => s.sessionId === id);
-    if (!current) throw new Error('conversation_session_not_found');
-    return current;
-  };
-  let status = get().sessionStatuses[id];
-  if (!status || get().statusError) status = await freshStatus();
-  const anchor = readingAnchors.get(id);
-  for (let attempt = 0; ; attempt++) {
-    check();
-    if (!supportsReadingWindow || isLiveRun(status.run) || coldReads.pending(id, status.revision) || commandOwnsGeneration === owner) return null;
-    try {
-      const {value} = await windowReads.read(id, status.revision, signal, anchor?.key); check();
-      const current = get().sessionStatuses[id];
-      if (get().statusError) throw new Error(get().statusError!);
-      if (!current) throw new Error('conversation_session_not_found');
-      if (current.revision !== status.revision || current.run?.runId !== status.run?.runId || current.run?.status !== status.run?.status)
-        throw new ConversationRequestError('conversation_read_revision_changed', 'conversation_read_revision_changed');
-      if (!supportsReadingWindow || value.kind === 'requiresProjection' || commandOwnsGeneration === owner) return null;
-      return { window: openingFromRevisionWindow(id, status.revision, value, anchor?.offset ?? 0), status };
-    } catch (error) {
-      check();
-      // A producer-reported race is different from a malformed page with the wrong revision.
-      // One independent new Host receipt may authorize a new attempt. Never reuse the old page.
-      if (attempt || !(error instanceof ConversationRequestError) || error.code !== 'conversation_read_revision_changed') throw error;
-      const next = await freshStatus();
-      if (next.revision <= status.revision) throw error;
-      status = next;
-    }
-  }
 }
 
 async function refreshProfileConfiguration(set: StoreSet): Promise<string | null> {
@@ -423,13 +396,24 @@ const store = create<LocalAgentState>((set, get) => ({
   openingHistory: null,
   openingReadingWindow: null,
   rememberReadingAnchor: (id, anchor) => { if (get().sessionId === id) rememberAnchor(id, anchor); },
-  readingWindowPresented: window => { if (recovery?.window === window && get().openingReadingWindow === window) recovery.afterPresentation(); },
+  historyObservation: () => streamReady ? observedViews : null,
+  observeHistory: event => {
+    streamReady = event !== 'closed';
+    observedViews = new WeakSet();
+  },
+  // Only a mounted tail reader asks for this optional page when a status already
+  // supplied the revision. Headless navigation and a detached reader do not need it.
+  readOpeningMessages: async sessionId => {
+    const opening = openingRead;
+    if (opening?.sessionId === sessionId && !get().openingHistory?.messages.length) await opening.read();
+  },
+
   shouldRememberReadingWindow: p => get().projection === p && get().sessionId === p.sessionId && projectionCache.shouldRemember(p),
   rememberReadingWindow: (p, range) => get().sessionId === p.sessionId && get().projection === p && projectionCache.remember(p, range),
   awaitReadingProjection: async window => {
     const owner = openingFlight;
     if (!owner || window !== get().openingReadingWindow || owner.sessionId !== window.sessionId || owner.generation !== generation) throw new Error('conversation_session_changed');
-    if (recovery?.window === window) recovery.demand();
+
     await owner.promise;
     const { projection, sessionId, error } = get();
     if (generation !== owner.generation || sessionId !== window.sessionId) throw new Error('conversation_session_changed');
@@ -447,7 +431,13 @@ const store = create<LocalAgentState>((set, get) => ({
   initialize: async (runtimeReady) => {
     if (initialization) return await initialization;
     if (runtimeReady) {
-      set({ runtimeReady: false });
+      streamReady = false;
+      observedViews = new WeakSet();
+      projectionReadQueues.clear();
+      projectionCache = new RecentSessionViews();
+      readingAnchors.clear();
+      supportsReadingWindow = false;
+      set({ runtimeReady: false, projection: null, contextWindowReading: null, openingHistory: null, openingReadingWindow: null, sessionStatuses: {} });
       executionReady = runtimeReady.then(() => { set({ runtimeReady: true }); });
     }
     const currentGeneration = advanceView();
@@ -655,7 +645,10 @@ const store = create<LocalAgentState>((set, get) => ({
     // Live text can change without a journal revision. A cached draft followed
     // by its catch-up snapshot would replay text received while the user was away.
     const observed = get().sessionStatuses[sessionId];
-    const settledCache = cached && isSettledLocalSnapshot(cached.projection) && !isLiveRun(observed?.run)
+    const refusedAtSelection = cached && get().statusError !== null;
+    const quiet = !!cached && observedViews.has(cached) && !get().statusError;
+    const settledCache = cached && !refusedAtSelection
+      && canResumeReading(cached.projection, quiet) && !isLiveRun(observed?.run)
       && (observed?.revision ?? 0) <= cached.projection.revision ? cached : null;
     const visibleCached = get().runtimeReady ? settledCache : null;
     set({
@@ -668,21 +661,27 @@ const store = create<LocalAgentState>((set, get) => ({
       error: null,
       errorSource: null,
       sessionId,
-      selectedProfileId: cached?.projection.modelSettings?.profileId ?? summary.profileId ?? null,
-      reasoningEffortOverride: cached?.projection.modelSettings?.reasoningEffortOverride ?? null,
+      selectedProfileId: settledCache?.projection.modelSettings?.profileId ?? summary.profileId ?? null,
+      reasoningEffortOverride: settledCache?.projection.modelSettings?.reasoningEffortOverride ?? null,
       ...(visibleCached ?? { projection: null, contextWindowReading: null }),
-      openingHistory: null, openingReadingWindow: null,
+      openingHistory: !visibleCached && cached && quiet && get().runtimeReady && matchesReadingStatus(cached.projection, observed)
+        ? openingText(cached.projection) : null,
+      openingReadingWindow: null,
       draftProjectId: null,
     });
     try {
       if (!get().runtimeReady) await waitForExecution(signal);
       if (currentGeneration !== generation) return;
-      if (settledCache) {
+      if (cached && refusedAtSelection) {
+        const items = await observeStatuses(set, currentGeneration, signal);
+        signal.throwIfAborted();
+        if (!items) throw new Error(get().statusError ?? 'conversation_statuses_invalid');
+        if (!items.some(status => status.sessionId === sessionId)) throw new Error('conversation_session_not_found');
+      } else if (settledCache) {
         if (!visibleCached) set({ ...settledCache, loading: false, loadingPurpose: null });
-        await get().refresh();
+        if (!quiet) await get().refresh();
         return;
       }
-      let checkedWindow: OpeningReadingWindow | undefined;
       if (recent) {
         // A weak reference is not authority. Check the raw Host receipt for this selection,
         // not a possibly newer locally merged sidebar status. Never publish a partial projection.
@@ -703,30 +702,37 @@ const store = create<LocalAgentState>((set, get) => ({
           if (recent.window) set({ openingReadingWindow: recent.window });
         } else if (projectionCache.candidate(sessionId) === recent) projectionCache.forgetReading(sessionId);
       }
-      if (supportsReadingWindow && !get().openingReadingWindow && (!cached || isSettledLocalSnapshot(cached.projection))) {
-        const ready = await openRevisionWindow(sessionId, summary.createdAt, currentGeneration, set, get, signal);
-        if (generation !== currentGeneration) return;
-        if (ready) {
-          checkedWindow = ready.window;
-          publicWindowOwner = {sessionId, generation:currentGeneration, revision:ready.status.revision, run:ready.status.run};
-          const gate = recovery = new ReadingWindowRecovery(checkedWindow, signal);
-          try { set({ openingReadingWindow: checkedWindow }); await gate.ready; }
-          finally { if (recovery === gate) recovery = null; }
-          signal.throwIfAborted();
-        }
-      }
       const revision = get().sessionStatuses[sessionId]?.revision ?? (recent ? recent.revision : undefined);
+      const minimum = Math.max(cached?.projection.revision ?? 0, revision ?? 0);
       const pair = new AbortController();
       const reading = AbortSignal.any([signal, pair.signal]);
-      // A known status already proves the minimum revision. Don't scan the
-      // journal twice just to obtain an unused excerpt for this same boundary.
-      const readBoundary = !cached && revision === undefined ? async () => {
-        const page = await readOpeningHistory(sessionId, reading);
+      let pageRead: Promise<number> | undefined;
+      const read = () => pageRead ??= readOpeningHistory(sessionId, reading).then(page => {
         reading.throwIfAborted();
-        if (page.messages.length && currentGeneration === generation) set({ openingHistory: page });
+        if (currentGeneration === generation && !get().statusError && page.revision >= Math.max(minimum,
+          get().sessionStatuses[sessionId]?.revision ?? 0, get().openingHistory?.revision ?? 0)) set({ openingHistory: page });
         return page.revision;
-      } : Math.max(cached?.projection.revision ?? 0, revision ?? 0);
-      const view = await readSessionView(sessionId, reading, readBoundary, recent ? undefined : checkedWindow?.revision ?? coldRevision, checkedWindow).finally(() => pair.abort());
+      });
+      const opening = { sessionId, read, cancel: () => pair.abort() };
+      if (!get().openingReadingWindow && !get().statusError && !readingAnchors.has(sessionId)) openingRead = opening;
+      const needsBoundary = !cached && revision === undefined;
+      const boundary = () => new Promise<number>((resolve, reject) => {
+        const stop = store.subscribe(s => {
+          if (s.statusError) reject(new Error(s.statusError));
+          else if (s.sessionStatuses[sessionId]) resolve(s.sessionStatuses[sessionId]!.revision);
+        });
+        reading.addEventListener('abort', () => { stop(); reject(reading.reason); }, { once: true });
+        const known = get().sessionStatuses[sessionId];
+        if (known) resolve(known.revision);
+        else void read().then(resolve, reject);
+      });
+      const readBoundary = needsBoundary ? boundary : minimum;
+      const view = await readSessionView(sessionId, reading, readBoundary, recent || cached ? undefined : coldRevision, undefined, needsBoundary ? first => {
+        if (currentGeneration === generation && !get().statusError && !get().openingHistory) set({ openingHistory: openingText(first) });
+      } : undefined).finally(() => {
+        if (openingRead === opening) openingRead = null;
+        pair.abort();
+      });
       if (currentGeneration !== generation) return;
       set({
         sessionId,
@@ -735,6 +741,7 @@ const store = create<LocalAgentState>((set, get) => ({
         ...view, openingHistory: null, openingReadingWindow: null,
         loading: false, loadingPurpose: null,
       });
+      if (streamReady && !observedViews.has(view)) void get().refresh();
     } catch (error) {
       if (currentGeneration === generation) {
         set({
@@ -748,7 +755,7 @@ const store = create<LocalAgentState>((set, get) => ({
     const flight = { sessionId, generation: currentGeneration, promise: open() };
     openingFlight = flight;
     try { await flight.promise; } finally {
-      if (openingFlight === flight) { openingFlight = null; publicWindowOwner = null; }
+      if (openingFlight === flight) openingFlight = null;
     }
   },
 
@@ -811,14 +818,17 @@ const store = create<LocalAgentState>((set, get) => ({
     }
 
     const promise = (async () => {
+      const observed = streamReady ? observedViews : null;
       const statuses = observeStatuses(set, refreshGeneration, signal);
       try {
         const items = await statuses;
         if (!sessionId || generation !== refreshGeneration || (get().loading && !get().projection)) return;
-        const cached = projectionCache.get(sessionId)?.projection;
+        const cachedView = projectionCache.get(sessionId);
+        const cached = cachedView?.projection;
         const status = items?.find((item) => item.sessionId === sessionId);
         if (cached && !cached.agentContext && !cached.agentChildren?.length && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
           && !['running', 'waiting', 'releasing'].includes(status.run?.status ?? '')) {
+          if (observed && observed === observedViews) observed.add(cachedView!);
           return;
         }
         const view = await readSessionView(sessionId, signal);
@@ -1335,12 +1345,8 @@ async function submitCommandAndReconcile(
   const commandGeneration = generation;
   coldReads.forget(command.sessionId); // A transport from before this command cannot be handed to a later open.
   projectionCache.forgetReading(command.sessionId);
-  windowReads.forget(command.sessionId);
-  if (get().sessionId === command.sessionId) {
-    commandOwnsGeneration = generation;
-    recovery?.demand();
-    if (get().openingReadingWindow) set({ openingReadingWindow: null });
-  }
+  observedViews = new WeakSet();
+  if (get().sessionId === command.sessionId && get().openingReadingWindow) set({ openingReadingWindow: null });
   const previousProjection = get().projection;
   const previousReminders = (command.type === 'message.submit' || command.type === 'context.focus')
     && previousProjection?.sessionId === command.sessionId
@@ -1514,6 +1520,11 @@ function initialProfileId(
 function isLiveRun(run: ConversationSessionStatus['run'] | undefined) {
   return run?.status === 'running' || run?.status === 'waiting' || run?.status === 'releasing';
 }
+function canResumeReading(p: SessionProjection, quiet: boolean) {
+  if (p.assistantDraft || isLiveRun(p.run) || p.pendingInteraction || p.pendingApproval || p.pendingPlan
+    || p.pendingAgentDecisions?.length || p.agentTasks?.some(task => task.status === 'running')) return false;
+  return quiet || isSettledLocalSnapshot(p);
+}
 function isSettledLocalSnapshot(p: SessionProjection) {
   // A child's inherited permissions and a parent's child decisions/aggregate usage can
   // change without advancing this journal. Reopen them from a fresh authoritative read.
@@ -1583,6 +1594,10 @@ function errorMessage(error: unknown): string {
 // timeline, a new live reading, or another conversation behind this read-only lookup.
 let historyLookup: { key: string; controller: AbortController } | null = null;
 store.subscribe((state, previous) => {
+  const preview = state.openingHistory;
+  if (preview && (state.statusError || (state.sessionStatuses[preview.sessionId]?.revision ?? 0) > preview.revision)) {
+    store.setState({ openingHistory: null });
+  }
   if (state.sessionId !== previous.sessionId) projectionCache.trim(state.sessionId);
   if (state.catalog !== previous.catalog) {
     // A catalog title change is not a new Session; deletion/recreation is. Its former
@@ -1593,7 +1608,7 @@ store.subscribe((state, previous) => {
       const id = before.id;
       if (now.has(id) && now.get(id) === before.createdAt) continue;
       coldReads.forget(id, new Error('conversation_session_not_found'));
-      windowReads.forget(id, new Error('conversation_session_not_found'));
+
       readingAnchors.delete(id);
       if (openingFlight?.sessionId === id && openingFlight.generation === generation) viewReadController.abort(new Error('conversation_session_not_found'));
       projectionReadQueues.delete(id);
@@ -1605,17 +1620,8 @@ store.subscribe((state, previous) => {
   const window = state.openingReadingWindow;
   if (window && (state.catalog !== previous.catalog || state.sessionStatuses !== previous.sessionStatuses || state.statusError)) {
     const current = state.sessionStatuses[window.sessionId];
-    if (window.source === 'revisionWindow') {
-      if (state.statusError || !current || viewReadController.signal.aborted || publicWindowOwner?.generation !== generation
-        || current.revision !== window.revision || current.run?.status !== publicWindowOwner.run?.status || current.run?.runId !== publicWindowOwner.run?.runId) {
-        if (state.statusError || !current) viewReadController.abort(new Error(state.statusError ?? 'conversation_session_not_found'));
-        recovery?.demand();
-        store.setState({ openingReadingWindow: null });
-      }
-    } else {
-      const saved = projectionCache.candidate(window.sessionId);
-      if (!saved || saved.window !== window || !matchesReadingStatus(saved, current)) store.setState({ openingReadingWindow: null });
-    }
+    const saved = projectionCache.candidate(window.sessionId);
+    if (!saved || saved.window !== window || !matchesReadingStatus(saved, current)) store.setState({ openingReadingWindow: null });
   }
   if (state.projection === previous.projection && state.sessionId === previous.sessionId) return;
   // Only a decoded snapshot admitted to this view's cache can authorize a journal lookup.
@@ -1653,6 +1659,22 @@ store.subscribe((state, previous) => {
   });
 });
 return store;
+}
+
+// A reading aid, never a partial SessionProjection. Limit synchronous formatting
+// to the same small messages the journal's opening page can deliver.
+function openingText(p: SessionProjection): OpeningHistoryPage {
+  const messages: OpeningHistoryPage['messages'] = [];
+  for (let i = p.timeline.length - 1; i >= 0 && messages.length < 4; i--) {
+    const row = p.timeline[i]!;
+    if (row.kind !== 'message') continue;
+    const message = p.messages.findLast(m => m.messageId === row.messageId);
+    if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
+    const content = message.displayContent ?? message.content;
+    const truncated = content.length > 12 * 1024;
+    messages.push({ id: message.messageId, role: message.role, content: truncated ? '' : content, truncated });
+  }
+  return { sessionId: p.sessionId, revision: p.revision, messages: messages.reverse() };
 }
 
 export const useLocalAgentStore = createLocalAgentStore();

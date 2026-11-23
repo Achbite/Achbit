@@ -11,6 +11,7 @@ export default defineConfig({
     rollupOptions: { input: {
       typography: fileURLToPath(new URL('./typography.html', import.meta.url)),
       uiComponents: fileURLToPath(new URL('./ui-components.html', import.meta.url)),
+      sessionHandoff: fileURLToPath(new URL('./session-handoff.html', import.meta.url)),
       readerWorkbench: fileURLToPath(new URL('./reader-workbench.html', import.meta.url)),
       reader: fileURLToPath(new URL('./reader.html', import.meta.url)),
       approvalModel: fileURLToPath(new URL('./approval-model.html', import.meta.url)),

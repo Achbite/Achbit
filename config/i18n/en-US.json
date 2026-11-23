@@ -605,6 +605,7 @@
     "agent.chat.connecting": "Connecting",
     "agent.chat.new": "New chat",
     "agent.chat.opening": "Opening conversation…",
+    "agent.chat.openingMessages": "Recent messages · Loading full conversation",
     "agent.chat.preparingText": "Preparing text…",
     "agent.chat.welcomeProject": "What shall we build in {project}?",
     "agent.chat.welcomeProject.1": "What’s next for {project}?",

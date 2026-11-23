@@ -17,8 +17,7 @@ import { PlanPreviewCard } from './PlanPreviewCard';
 import ProviderStageStatus from './ProviderStageStatus';
 import { RunTiming } from './RunTiming';
 import { SourceReferences } from './SourceReferences';
-import { BufferedMarkdown, MarkdownContent, MarkdownInline } from './BufferedMarkdown';
-import { StreamingMarkdownParser } from './streamingMarkdown';
+import { BufferedMarkdown, MarkdownContent, MarkdownInline, ReadingMarkdown } from './BufferedMarkdown';
 import PlanCard from './PlanCard';
 import { ToolActivityGroup } from './ToolActivityDetails';
 import type { BlockingShell } from './shellProgress';
@@ -114,14 +113,21 @@ export function ConversationTranscript({
   };
   const selectedSession = useLocalAgentStore((state) => state.sessionId);
   const opening = useLocalAgentStore((state) => state.openingHistory);
-  // Use the bounded page to prepare the last complete answer, never as a second
-  // transcript. Only an exact text match can reuse the parser's bounded tree cache.
+  const readOpeningMessages = useLocalAgentStore(state => state.readOpeningMessages);
+  const runtimeReady = useLocalAgentStore(state => state.runtimeReady);
+  const wantsOpening = loading && !projection && !openingWindow && viewport.allowOpeningTail && runtimeReady;
+  const [openingError, setOpeningError] = useState<string | null>(null);
   useEffect(() => {
-    if (!opening || projection || !viewport.followingLatest) return;
-    const last = opening.messages.at(-1);
-    if (!last || last.role !== 'assistant' || last.truncated) return;
-    new StreamingMarkdownParser().update(last.content, false);
-  }, [opening, projection, viewport.followingLatest]);
+    setOpeningError(null);
+    if (!wantsOpening || !selectedSession) return;
+    let current = true;
+    void readOpeningMessages(selectedSession).catch(error => {
+      if (current && useLocalAgentStore.getState().loading) setOpeningError(error instanceof Error ? error.message : String(error));
+    });
+    return () => { current = false; };
+  }, [wantsOpening, selectedSession, readOpeningMessages]);
+  const openingMessages = wantsOpening && opening?.sessionId === selectedSession
+    ? opening?.messages.filter(message => !message.truncated && message.content.trim()) : undefined;
   const assistantDraft = projection?.assistantDraft ?? null;
   const submitting = useLocalAgentStore((state) => state.submitting);
   const welcomeIndex = useLocalAgentStore((state) => state.welcomeIndex);
@@ -315,7 +321,7 @@ export function ConversationTranscript({
   useLayoutEffect(() => () => { pendingJump.current = null; }, [sessionKey]);
   useLayoutEffect(() => {
     const request = pendingJump.current;
-    if (!request || !projection || viewport.preparingViewport) return;
+    if (!request || !projection) return;
     let current = true;
     // Join the exact window's authority check *and* wait for the full reader to commit.
     // Mounting a far page uses flushSync; doing it inside a React effect reads the old gap.
@@ -330,14 +336,15 @@ export function ConversationTranscript({
       else setUiActionError('conversation_read_anchor_not_found');
     }, () => { /* The initiating action owns the error. */ });
     return () => { current = false; };
-  }, [projection, navigation, viewport.preparingViewport, viewport.scrollToAnchor, setUiActionError]);
+  }, [projection, navigation, viewport.scrollToAnchor, setUiActionError]);
   const eagerRows = useMemo(() => {
-    const result = new Set<string>();
-    for (let n = rounds.length - 1; n >= 0 && result.size < 12; n--) {
-      for (const row of rounds[n]!.rows.slice(-(12-result.size))) result.add(row.key);
-    }
-    return result;
-  }, [rounds]);
+    const keys = rounds.flatMap(round => round.rows.map(row => row.key));
+    const anchor = viewport.openingAnchor;
+    const index = anchor ? keys.indexOf(anchor) : -1;
+    const nearby = index < 0 ? keys.slice(-12) : keys.slice(Math.max(0, index - 2), index + 10);
+    if (anchor) nearby.push(anchor); // file-change rows have a stable key outside round.rows
+    return new Set(nearby);
+  }, [rounds, viewport.openingAnchor]);
   // The scroll body belongs to a parent host node; its ref is attached after
   // child layout effects on a fresh mount (including cached session switches).
   useEffect(() => {
@@ -406,9 +413,16 @@ export function ConversationTranscript({
           setPathMenu(null);
         }}>{language === 'zh-CN' ? '复制路径' : 'Copy path'}</button>
       </div>}
-      {loading && !projection && !openingWindow && (
-        <div role="status" className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
-      )}
+      {loading && !projection && !openingWindow && (openingMessages?.length ? <section className="local-agent__opening-messages">
+        <p className="local-agent__reading-note" role="status">{t(language, 'agent.chat.openingMessages')}</p>
+        {openingMessages.map(message => <article key={message.id} data-conversation-anchor={`opening:${message.id}`}
+          className={`local-agent__message local-agent__message--${message.role}`}>
+          <div className="local-agent__message-content"><div className="local-agent__message-text">
+            {message.role === 'assistant' ? <ReadingMarkdown text={message.content} /> : <div className="conversation-plain">{message.content}</div>}
+          </div></div>
+        </article>)}
+      </section> : <div role="status" className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>)}
+      {wantsOpening && openingError && <p role="alert">{openingError}</p>}
       {!hasConversationContent && !loading && (!selectedSession || projection) && (
         <div className="local-agent__empty local-agent__empty--welcome">
           <strong>
@@ -470,7 +484,7 @@ function ConversationRoundView({ sessionId, language, roundKey, virtualizer, eag
       <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} hidden={row.process && !expanded && !row.required}
         eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>
     </React.Fragment>)}
-    {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} virtualizer={virtualizer}>
+    {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} eager={eagerRows.has(`${roundKey}:file-changes`)} virtualizer={virtualizer}>
       {() => children}
     </ConversationVirtualRow>}
   </section>;
