@@ -119,7 +119,7 @@ The GUI defaults to the last 30 local dates, not a calendar month. CLI date rang
 
 | Quantity | Scope |
 | --- | --- |
-| Cache hit rate | `cacheReadInputTokens / inputTokens`; output tokens are excluded |
+| Models & services → Usage: cache hit | Cached input / input for calls that reported a cache-read count, including explicit zero hits. The selected period, each day and each hour use the same weighted rate. The chart uses compact units on the axis. Hover or focus a day or hour for exact token counts: input cache hits, input cache misses, and output. Input with unknown cache status stays separate from misses. |
 | Context indicator | Single-window usage from an Agent request. If the latest response has no single-window measurement (for example, after hosted search), the GUI shows **Last measured** for the same run. Reopening a completed conversation restores that reading from its request history; without a measured request the indicator stays empty. |
 | GUI total cache indicator | Current Session and descendants, counted once each, including closed members |
 | Own-session usage | This Session only; do not add it to a child-inclusive total |

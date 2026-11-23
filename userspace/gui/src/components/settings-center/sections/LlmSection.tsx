@@ -18,7 +18,7 @@ import SubscriptionAuth from '../model-services/SubscriptionAuth';
 import UsageView from '../model-services/UsageView';
 import SubagentSettings from '../model-services/SubagentSettings';
 import type { ModelSettingsTarget } from '../modelSettingsNavigation';
-import { Cost, data, Hint, message, periodQuery, useModelLanguage } from '../model-services/shared';
+import { Cost, data, formatUsageTokens, Hint, message, periodQuery, useModelLanguage } from '../model-services/shared';
 import { UiSettingsContributions, useDisplayTheme } from '../../../ui-plugins/UiPlugins';
 import '../model-services/modelServices.css';
 
@@ -233,7 +233,7 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
             const index = catalog!.connections.findIndex(v => v.id === c.id);
             return <div className="model-connection-row" key={c.id}>
               <button className="model-connection-open" onClick={() => setPage({ kind: 'connection', id: c.id })}><span className={`model-status model-status--${c.authStatus}`} /><span><strong>{c.name}</strong><small>{c.credentialKind === 'oauth' ? c.account?.label ?? text('未登录', 'Signed out') : `${catalog?.adapters.find(a => a.id === c.adapterId)?.name ?? c.adapterId} · ${c.authStatus === 'ready' ? text('已配置', 'Configured') : text('待配置', 'Not configured')}`} · {profiles?.profiles.filter(p => p.connectionId === c.id && p.enabled).length ?? 0} {text('个模型', 'models')}</small></span></button>
-              <button className="model-connection-usage" onClick={() => setPage({ kind: 'usage', connectionId: c.id })}>{mode === 'metered' ? <Cost totals={stat} /> : <span>{stat?.reportedCalls ? (stat.inputTokens + stat.outputTokens).toLocaleString() : '—'} tokens</span>}<small>{stat?.calls ?? (usage ? 0 : '—')} {text('次调用', 'calls')}</small></button>
+              <button className="model-connection-usage" onClick={() => setPage({ kind: 'usage', connectionId: c.id })}>{mode === 'metered' ? <Cost totals={stat} /> : <span>{stat?.reportedCalls ? formatUsageTokens(stat.inputTokens + stat.outputTokens) : '—'} tokens</span>}<small>{stat?.calls ?? (usage ? 0 : '—')} {text('次调用', 'calls')}</small></button>
               <div className="model-reorder"><button aria-label={text('上移', 'Move up')} disabled={index === 0} onClick={() => void reorder(c.id, -1)}>↑</button><button aria-label={text('下移', 'Move down')} disabled={index === (catalog?.connections.length ?? 0)-1} onClick={() => void reorder(c.id, 1)}>↓</button></div>
               <button aria-label={text('配置连接', 'Configure connection')} onClick={() => setPage({ kind: 'connection', id: c.id })}>›</button>
             </div>;
