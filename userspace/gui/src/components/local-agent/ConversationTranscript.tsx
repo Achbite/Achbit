@@ -22,7 +22,10 @@ import { StreamingMarkdownParser } from './streamingMarkdown';
 import PlanCard from './PlanCard';
 import { ToolActivityGroup } from './ToolActivityDetails';
 import type { BlockingShell } from './shellProgress';
-import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow } from './conversationItems';
+import { ConversationReadingWindow } from './ConversationReadingWindow';
+import { useRememberReadingWindow } from './useRememberReadingWindow';
+import type { OpeningReadingWindow } from '../../state/recentSessionViews';
+import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow, type ConversationRound } from './conversationItems';
 import type { ConversationViewport } from './useConversationViewport';
 import { ConversationNavigation } from './ConversationNavigation';
 import { conversationNavigation } from './conversationWindow';
@@ -41,6 +44,7 @@ import { RichContentScope } from './RichContentIdentity';
 
 interface ConversationTranscriptProps {
   layoutCache: ConversationLayoutCache;
+  openingWindow?: OpeningReadingWindow | null;
   language: UiLanguage;
   loading: boolean;
   showReasoning?: boolean;
@@ -63,11 +67,12 @@ interface ConversationTranscriptProps {
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   unappliedRecovery?: UnappliedRecovery;
   canEditMessage?: boolean;
-  onEditMessage?: (message: SessionProjection['messages'][number]) => void;
+  onEditMessage?: (message: SessionProjection['messages'][number], restored?: SessionProjection) => void;
 }
 
 export function ConversationTranscript({
   layoutCache,
+  openingWindow = null,
   language,
   showReasoning = false,
   automaticReview,
@@ -93,8 +98,10 @@ export function ConversationTranscript({
   onEditMessage,
 }: ConversationTranscriptProps) {
   const host = useConversationHost();
+  const sessionKey = projection?.sessionId ?? openingWindow?.sessionId ?? '';
+  const resolveWindow = useLocalAgentStore(state => state.awaitReadingProjection);
   const interaction = useInteractionFocus();
-  const referencesIdentity = useUiOwner('conversation.references', undefined, { sessionId: projection?.sessionId });
+  const referencesIdentity = useUiOwner('conversation.references', undefined, { sessionId: sessionKey });
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
   const onPlanToggle = (card: HTMLElement, expanded: boolean) => {
     const body = viewport.bodyRef.current;
@@ -126,9 +133,9 @@ export function ConversationTranscript({
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const pathMenuRef = useRef<HTMLDivElement>(null);
   const pathTriggerRef = useRef<HTMLAnchorElement>(null);
-  const bodyLinks = useConversationBodyLinks(projection, language, setUiActionError, true);
-  const currentSessionRef = useRef({ sessionId: projection?.sessionId });
-  if (currentSessionRef.current.sessionId !== projection?.sessionId) currentSessionRef.current = { sessionId: projection?.sessionId };
+  const bodyLinks = useConversationBodyLinks(projection ?? (openingWindow ? { sessionId: sessionKey, resolveProjection: () => resolveWindow(openingWindow) } : null), language, setUiActionError, true);
+  const currentSessionRef = useRef({ sessionId: sessionKey });
+  if (currentSessionRef.current.sessionId !== sessionKey) currentSessionRef.current = { sessionId: sessionKey };
   useLayoutEffect(() => {
     setCopyFeedback(null);
     setPathMenu(null);
@@ -168,6 +175,10 @@ export function ConversationTranscript({
   ) => {
     const requestedView = currentSessionRef.current;
     try {
+      if (openingWindow) {
+        await resolveWindow(openingWindow);
+        if (useLocalAgentStore.getState().sessionId !== openingWindow.sessionId) return;
+      }
       await setMessageFeedback(messageId, feedback);
       if (currentSessionRef.current !== requestedView) return;
       setUiActionError(null);
@@ -199,16 +210,20 @@ export function ConversationTranscript({
             )}
             <SourceReferences references={item.value.sourceReferences} language={language} />
             {item.value.filesystemReferences.length > 0 && (
-              <MessageAttachments sessionId={projection!.sessionId} references={item.value.filesystemReferences} language={language}
+              <MessageAttachments sessionId={sessionKey} references={item.value.filesystemReferences} language={language}
                 identity={reference => referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
                 onOpen={openWorkspaceResource} onError={setUiActionError} />
             )}
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
             <MessageActions message={item.value} language={language} copied={copiedMessageId === item.value.messageId}
-              busy={submitting} canEdit={canEditMessage} onCopy={() => void copyMessage(item.value.messageId, messageDisplayText(item.value, projection?.interactions ?? []))}
+              busy={submitting} canEdit={canEditMessage || !!openingWindow} onCopy={() => void copyMessage(item.value.messageId, messageDisplayText(item.value, projection?.interactions ?? []))}
               onFeedback={(feedback) => void updateMessageFeedback(item.value.messageId, feedback)}
-              onEdit={() => onEditMessage?.(item.value)} />
+              onEdit={() => { if (!openingWindow) { onEditMessage?.(item.value); return; }
+                void resolveWindow(openingWindow).then(owner => {
+                  const exact = owner.messages.find(message => message.messageId === item.value.messageId);
+                  if (exact && useLocalAgentStore.getState().sessionId === owner.sessionId) onEditMessage?.(exact, owner);
+                }).catch(reason => { if (useLocalAgentStore.getState().sessionId === sessionKey) setUiActionError(String(reason)); }); }} />
           )}
         </article>
       ) : item.type === 'narrative' ? (
@@ -281,7 +296,9 @@ export function ConversationTranscript({
             && activity.kind === 'tool' && ['requested', 'active', 'waiting'].includes(activity.status))} />
       )}
 </>;
-  const rounds = useMemo(() => conversationRounds(conversationItems, draftItems, projection?.run?.runId), [conversationItems, draftItems, projection?.run?.runId]);
+  const items = useMemo(() => openingWindow ? openingWindow.rows.map((row): ProjectionItem => ({ type:'message', sequence:row.sequence,
+    ...(row.streamId !== undefined ? { streamId:row.streamId } : {}), value:row.message })) : conversationItems, [openingWindow, conversationItems]);
+  const rounds = useMemo(() => conversationRounds(items, draftItems, projection?.run?.runId), [items, draftItems, projection?.run?.runId]);
   const timingsByRun = useMemo(() => {
     const timings = new Map<string, NonNullable<SessionProjection['runTimings']>[number]>();
     for (const timing of projection?.runTimings ?? []) {
@@ -289,10 +306,38 @@ export function ConversationTranscript({
     }
     return timings;
   }, [projection?.runTimings]);
-  const sessionKey = projection?.sessionId ?? '';
   const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), viewport.preserveReadingPosition), [layoutCache, sessionKey, viewport.preserveReadingPosition]);
-  const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
-  const eagerRows = useMemo(() => new Set(rounds.flatMap((round) => round.rows).slice(-12).map((row) => row.key)), [rounds]);
+  const nav = openingWindow?.surface?.navigation;
+  const navigation = useMemo(() => nav ? nav.keys.map((key,i) => ({ key, rowIndex:i, label:nav.labels[i]! }))
+    : conversationNavigation(rounds, projection?.interactions), [nav, rounds, projection?.interactions]);
+  useRememberReadingWindow(projection, viewport, navigation, showReasoning);
+  const pendingJump = useRef<{ key: string; confirmed: Promise<SessionProjection> } | null>(null);
+  useLayoutEffect(() => () => { pendingJump.current = null; }, [sessionKey]);
+  useLayoutEffect(() => {
+    const request = pendingJump.current;
+    if (!request || !projection || viewport.preparingViewport) return;
+    let current = true;
+    // Join the exact window's authority check *and* wait for the full reader to commit.
+    // Mounting a far page uses flushSync; doing it inside a React effect reads the old gap.
+    void request.confirmed.then(owner => {
+      if (!current || pendingJump.current !== request) return;
+      pendingJump.current = null;
+      if (owner !== projection || useLocalAgentStore.getState().projection !== owner) {
+        setUiActionError('conversation_projection_changed');
+        return;
+      }
+      if (navigation.some(entry => entry.key === request.key)) viewport.scrollToAnchor(request.key);
+      else setUiActionError('conversation_read_anchor_not_found');
+    }, () => { /* The initiating action owns the error. */ });
+    return () => { current = false; };
+  }, [projection, navigation, viewport.preparingViewport, viewport.scrollToAnchor, setUiActionError]);
+  const eagerRows = useMemo(() => {
+    const result = new Set<string>();
+    for (let n = rounds.length - 1; n >= 0 && result.size < 12; n--) {
+      for (const row of rounds[n]!.rows.slice(-(12-result.size))) result.add(row.key);
+    }
+    return result;
+  }, [rounds]);
   // The scroll body belongs to a parent host node; its ref is attached after
   // child layout effects on a fresh mount (including cached session switches).
   useEffect(() => {
@@ -300,11 +345,46 @@ export function ConversationTranscript({
     return () => virtualizer.disconnect();
   }, [virtualizer, viewport.bodyRef]);
 
+  const renderRound = (round: ConversationRound, eager = eagerRows) => {
+    const current = projection?.run?.runId === round.runId;
+    const displaySettled = displaySettledRunIds.has(round.runId);
+    const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
+    const timing = timingsByRun.get(round.runId);
+    const rows = round.rows.map((row) => ({
+      key: row.key,
+      process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
+      required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
+        || row.item?.type === 'interaction' && row.item.value.status === 'pending',
+      live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
+      content: () => <RichContentScope.Provider value={row.item?.type === 'message' || row.item?.type === 'narrative' || row.draft?.type === 'text'
+        ? { sessionId: sessionKey, rowKey: row.key, contentKey: 'body' } : null}>{renderRow(row)}</RichContentScope.Provider>,
+    }));
+    if (showReasoning && projection) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false,
+      live: current && !displaySettled, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId}
+        activeTurnId={current ? assistantDraft?.turnId : undefined} throughTimelineId={current ? projection.timeline.at(-1)?.timelineId : undefined} /> });
+    if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
+    const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
+    return <ConversationRoundView sessionId={sessionKey} language={language} key={`${sessionKey}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eager}
+      displaySettled={displaySettled} timing={timing} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
+      {changeActivities.some(activity => activity.tool?.fileChanges?.length) ? <FileChanges activities={changeActivities} /> : null}
+    </ConversationRoundView>;
+  };
+
   return (
     <ConversationBodyLinkScope.Provider value={bodyLinks.open}><PreviewArtifactsScope.Provider value={projection}>
     {bodyLinks.selection}
     <ConversationNavigation key={sessionKey} sessionId={sessionKey} entries={navigation} viewport={viewport} language={language}
-      onNavigate={(entry) => viewport.scrollToAnchor(entry.key)} />
+      onNavigate={(entry) => {
+        pendingJump.current = null; // A later in-window click also supersedes an outstanding far jump.
+        if (!openingWindow || openingWindow.rows.some(row => row.key === entry.key)) { viewport.scrollToAnchor(entry.key); return; }
+        const request = { key: entry.key, confirmed: resolveWindow(openingWindow) };
+        pendingJump.current = request;
+        void request.confirmed.catch(reason => {
+          if (pendingJump.current !== request) return;
+          pendingJump.current = null;
+          if (useLocalAgentStore.getState().sessionId === sessionKey) setUiActionError(String(reason));
+        });
+      }} />
     <div
       ref={transcriptRef}
       className="local-agent__transcript"
@@ -326,7 +406,7 @@ export function ConversationTranscript({
           setPathMenu(null);
         }}>{language === 'zh-CN' ? '复制路径' : 'Copy path'}</button>
       </div>}
-      {loading && !projection && (
+      {loading && !projection && !openingWindow && (
         <div role="status" className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
       )}
       {!hasConversationContent && !loading && (!selectedSession || projection) && (
@@ -338,39 +418,15 @@ export function ConversationTranscript({
           </strong>
         </div>
       )}
-      {rounds.map((round) => {
-        const current = projection?.run?.runId === round.runId;
-        const displaySettled = displaySettledRunIds.has(round.runId);
-        const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
-        const timing = timingsByRun.get(round.runId);
-        const rows = round.rows.map((row) => ({
-          key: row.key,
-          // Progress narratives and execution details share the run's process disclosure.
-          process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
-          required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
-            || row.item?.type === 'interaction' && row.item.value.status === 'pending',
-          live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
-          content: () => <RichContentScope.Provider value={row.item?.type === 'message' || row.item?.type === 'narrative' || row.draft?.type === 'text'
-            ? { sessionId: sessionKey, rowKey: row.key, contentKey: 'body' } : null}>
-            {renderRow(row)}
-          </RichContentScope.Provider>,
-        }));
-        if (showReasoning && projection) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false,
-          live: current && !displaySettled, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId}
-            activeTurnId={current ? assistantDraft?.turnId : undefined}
-            throughTimelineId={current ? projection.timeline.at(-1)?.timelineId : undefined} /> });
-        if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
-        const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
-        const hasFileChanges = changeActivities.some(activity => activity.tool?.fileChanges?.length);
-        return <ConversationRoundView sessionId={sessionKey} language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}
-          displaySettled={displaySettled} timing={timing} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
-          {hasFileChanges ? <FileChanges activities={changeActivities} /> : null}
-        </ConversationRoundView>;
-      })}
+      {openingWindow?.surface && <div aria-hidden="true" style={{height:openingWindow.surface.before}} />}
+      {projection && rounds.length > 32 ? <ConversationReadingWindow key={`reading:${sessionKey}`} rounds={rounds} viewport={viewport} virtualizer={virtualizer}
+        dimensions={layoutCache.pages(projection)} environment={`${presentation.layoutKey}:${showReasoning}`} renderRound={renderRound} />
+        : rounds.map(round => renderRound(round, openingWindow ? new Set(round.rows.map(row=>row.key)) : eagerRows))}
+      {openingWindow?.surface && <div aria-hidden="true" style={{height:openingWindow.surface.after}} />}
       {projection && <UiEventStack sessionId={projection.sessionId} language={language} />}
       {projection && <StoppedRunStatus projection={projection} language={language} onError={setUiActionError} />}
       {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
-      {projection && <UnappliedInputs key={projection.sessionId} sessionId={projection.sessionId} inputs={projection.queuedInputs} language={language} recovery={unappliedRecovery}
+      {projection && <UnappliedInputs key={`unapplied:${projection.sessionId}`} sessionId={projection.sessionId} inputs={projection.queuedInputs} language={language} recovery={unappliedRecovery}
         copiedId={copiedMessageId} onCopy={(id, text) => void copyMessage(id, text)}
         onOpenReference={reference => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }} />}
       <div ref={messageEndRef} />

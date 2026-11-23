@@ -20,7 +20,7 @@ import { HostRebind } from './HostRebind';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { ComposerImageAttachment } from './ComposerImageAttachment';
 import { QueuedInputPreview } from './QueuedInputPreview';
-import { observeConversationComposerBoundary } from './conversationComposerBoundary';
+import { observeConversationComposerBoundary, resizeComposerTextarea } from './conversationComposerBoundary';
 import { composerDecisionView } from './composerDecisions';
 
 interface ConversationComposerProps {
@@ -716,11 +716,6 @@ export function ConversationComposer({
       )}
     </footer></UiRegion>
   );
-}
-
-function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
-  textarea.style.height = 'auto';
-  textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
 function filesystemPathDisplayName(absolutePath: string): string {

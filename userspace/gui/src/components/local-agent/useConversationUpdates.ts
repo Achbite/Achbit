@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { watchConversationChanges } from '../../services/conversationEvents';
 
-export function useConversationUpdates(sessionId: string | null, refresh: () => Promise<void>, hostReady: boolean) {
+export function useConversationUpdates(refresh: () => Promise<void>, hostReady: boolean) {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     setError(null);
     return startConversationUpdates(refresh, hostReady, setError);
-  }, [sessionId, refresh, hostReady, attempt]);
+  // This is a Host-wide subscription. The callback resolves the current selection in
+  // the store; changing tabs must not tear down and reopen the same SSE connection.
+  }, [refresh, hostReady, attempt]);
   return { error, dismiss: () => setError(null), retry: () => setAttempt(value => value + 1) };
 }
 

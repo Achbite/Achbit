@@ -201,8 +201,14 @@ function requiredProjectionValue<Value>(
 export type ConversationRow = { key: string; item?: ProjectionItem; draft?: AssistantDraftItem };
 export interface ConversationRound { key: string; runId: string; rows: ConversationRow[] }
 
+// A settled snapshot may be revisited many times. Keys, ordering and indexes belong
+// to this exact immutable item list; live draft rows are never cached here.
+const settledRounds = new WeakMap<ProjectionItem[], { runId?: string; rounds: ConversationRound[] }>();
+
 /** Stream identity keeps a text row in place when Session commits it to the timeline. */
 export function conversationRounds(items: ProjectionItem[], drafts: AssistantDraftItem[], currentRunId?: string): ConversationRound[] {
+  const previous = !drafts.length ? settledRounds.get(items) : undefined;
+  if (previous && previous.runId === currentRunId) return previous.rounds;
   const rounds: ConversationRound[] = [];
   const append = (runId: string, row: ConversationRow) => {
     let round = rounds.at(-1);
@@ -246,5 +252,6 @@ export function conversationRounds(items: ProjectionItem[], drafts: AssistantDra
     }
     if (rounds.at(-1)?.runId !== currentRunId) rounds.push({ key: currentRunId, runId: currentRunId, rows: [] });
   }
+  if (!drafts.length) settledRounds.set(items, { runId: currentRunId, rounds });
   return rounds;
 }

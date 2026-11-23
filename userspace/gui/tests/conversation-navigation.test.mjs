@@ -146,6 +146,62 @@ test('the navigation reveals its current tick without moving the transcript or k
   assert.equal(body.scrollTop, 777, 'only the navigation rail owns this scroll');
 });
 
+test('a sparse rail preserves manual scrolling when the same tail is measured or its full index arrives', async t => {
+  const { ConversationNavigation } = await loadGuiModule(t, '/src/components/local-agent/ConversationNavigation.tsx');
+  const originalResize = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  t.after(() => { globalThis.ResizeObserver = originalResize; });
+  const entries = Array.from({ length: 512 }, (_, i) => ({ key: `message:${i}`, rowIndex: i, label: `Question ${i}` }));
+  const rail = { scrollTop: 0, clientHeight: 360 };
+  const refs = [];
+  let previous, dispose;
+  t.after(() => dispose?.());
+  // Exercise the real layout callback with React's dependency-change semantics. The
+  // integration receipt additionally uses actual wheel geometry and DOM hit testing.
+  function commit(active, input) {
+    let effect, dependencies, tree;
+    function Probe() {
+      const internals = React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+      const original = internals.H;
+      let state = 0, ref = 0;
+      internals.H = { ...original, useRef: value => {
+        const fresh = original.useRef(value); return refs[ref++] ??= fresh;
+      }, useState: value => original.useState(state++ === 0 ? active : value),
+        useLayoutEffect: (next, deps) => { effect = next; dependencies = deps; } };
+      try {
+        tree = ConversationNavigation({ sessionId: 'session:rail', entries: input,
+          viewport: { bodyRef: { current: null }, followingLatest: true }, onNavigate() {}, language: 'en-US' });
+        return tree;
+      } finally { internals.H = original; }
+    }
+    renderToStaticMarkup(createElement(Probe));
+    findReactElement(tree, e => e.props.className === 'conversation-navigation__ticks').props.ref.current = rail;
+    if (!previous || dependencies.some((v, i) => !Object.is(v, previous[i]))) {
+      dispose?.(); dispose = effect(); previous = dependencies;
+    }
+    return tree;
+  }
+  commit(undefined, entries);
+  assert.equal(rail.scrollTop, 512 * 14 - 360, 'following latest initially reveals the tail');
+  rail.scrollTop = 3411;
+  commit(entries.at(-1).key, entries);
+  assert.equal(rail.scrollTop, 3411, 'confirming the same location does not undo a manual scroll');
+  commit(entries.at(-1).key, entries.map(e => ({ ...e })));
+  assert.equal(rail.scrollTop, 3411, 'canonical entry objects do not reset the rail either');
+  commit(entries[30].key, entries);
+  assert.equal(rail.scrollTop, 30 * 14, 'a genuinely new transcript location still reveals its tick');
+
+  const tree = commit(entries[30].key, entries);
+  const visible = findReactElement(tree, e => e.type === 'button' && e.props['data-navigation-index'] === 500);
+  rail.scrollTop = 6810; // The reader is browsing the end and can actually select this tick.
+  visible.props.onClick();
+  rail.scrollTop = 681; // The next wheel precedes the transcript's asynchronous location update.
+  commit(entries[500].key, entries);
+  assert.equal(rail.scrollTop, 681, 'confirming a rail click must not undo browsing for the next click');
+  commit(entries[30].key, entries);
+  assert.equal(rail.scrollTop, 30 * 14, 'a later independent location change still follows the transcript');
+});
+
 test('short layouts and virtualized latest rows use the catalog end; hidden viewports do not', async t => {
   const { activeConversationAnchor: active } = await loadGuiModule(t, '/src/components/local-agent/conversationNavigationPosition.ts');
   const anchors = [{ key: 'old', top: 80 }];

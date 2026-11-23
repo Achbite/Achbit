@@ -99,6 +99,30 @@ test('a blocking Shell reserves its card instead of extending history beneath it
   assert.equal(fixture.value(), '8px', 'opening output must not move history over the waiting command');
 });
 
+test('first reading can measure the newly connected composer before its resize delivery', async t => {
+  const { observeConversationComposerBoundary, syncConversationComposerBoundary } = await loadGuiModule(t, '/src/components/local-agent/conversationComposerBoundary.ts');
+  const f = boundaryFixture(t); f.surface.isConnected = false; f.geometry.surfaceTop = 0;
+  const close = observeConversationComposerBoundary(f.shell, f.viewport); t.after(close);
+  assert.equal(syncConversationComposerBoundary(f.viewport), false);
+  f.surface.isConnected = true; f.geometry.surfaceTop = 540;
+  assert.equal(syncConversationComposerBoundary(f.viewport), true); assert.equal(f.value(), '40px');
+  const writes = f.writes; f.observers[0].callback(); assert.equal(f.writes, writes);
+});
+
+test('a detached input never publishes a false zero height; its true draft size is in the first connected reading boundary', async t => {
+  const {resizeComposerTextarea, observeConversationComposerBoundary, syncConversationComposerBoundary}=await loadGuiModule(t,'/src/components/local-agent/conversationComposerBoundary.ts');
+  const f=boundaryFixture(t);let reads=0, height=88;
+  const input={style:{height:''},isConnected:false,clientWidth:0,get scrollHeight(){reads++;return this.isConnected?height:0;}};
+  resizeComposerTextarea(input);assert.equal(input.style.height,'auto');assert.equal(reads,0);
+  f.surface.isConnected=false;f.surface.querySelector=s=>{assert.equal(s,':scope > textarea');return input;};
+  const stop=observeConversationComposerBoundary(f.shell,f.viewport);t.after(stop);
+  assert.equal(syncConversationComposerBoundary(f.viewport),false);assert.equal(reads,0);
+  input.isConnected=f.surface.isConnected=true;input.clientWidth=780;
+  assert.equal(syncConversationComposerBoundary(f.viewport),true);assert.equal(input.style.height,'88px');assert.equal(reads,1);
+  f.observers[0].callback();assert.equal(reads,1,'ordinary boundary observations do not reflow the draft every time');
+  height=173;resizeComposerTextarea(input);assert.equal(input.style.height,'173px','subsequent content and width changes retain autosize');
+});
+
 test('a standalone composer without a transcript installs no observer', async t => {
   const { observeConversationComposerBoundary } = await loadGuiModule(t, '/src/components/local-agent/conversationComposerBoundary.ts');
   const fixture = boundaryFixture(t);

@@ -36,7 +36,8 @@ async function openResolvedResource(host: ConversationHost, resource: ResolvedLo
 
 type ReaderLinkSource = { sessionId: string; document: { path?: string; reference?: ResourceReference } };
 
-export function useConversationBodyLinks(source: SessionProjection | ReaderLinkSource | null, language: UiLanguage,
+type WindowLinkSource = { sessionId: string; resolveProjection(): Promise<SessionProjection> };
+export function useConversationBodyLinks(source: SessionProjection | ReaderLinkSource | WindowLinkSource | null, language: UiLanguage,
   setError: (message: string | null) => void, revealUnbound = false) {
   const host = useConversationHost();
   const document = source && 'document' in source ? source.document : null;
@@ -70,8 +71,10 @@ export function useConversationBodyLinks(source: SessionProjection | ReaderLinkS
     setChoices(null);
     setError(null); // Withdraw the previous click's feedback; the new Host operation has not completed.
     const displayed = useLocalAgentStore.getState().projection;
-    const owner = projection ?? (displayed?.sessionId === sessionId ? displayed : null);
     const navigate = async () => {
+      const owner = projection ?? (displayed?.sessionId === sessionId ? displayed :
+        'resolveProjection' in source && (local || href.startsWith('artifact://')) ? await source.resolveProjection() : null);
+      if (id !== requestId.current) return;
       if (local) {
         const reference = document?.reference;
         let target = local;

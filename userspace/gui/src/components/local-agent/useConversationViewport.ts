@@ -1,22 +1,28 @@
 import { registerInterfaceReloadView, restoredInterfaceView } from '../../services/interfaceReload';
 import type React from 'react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { SessionProjection } from '@achbit/protocol';
+import type { OpeningReadingWindow } from '../../state/recentSessionViews';
 import { ConversationAnchors, firstReadingAnchor } from './conversationAnchors';
 import { firstConversationFrameReady } from './firstConversationFrame';
+import { syncConversationComposerBoundary } from './conversationComposerBoundary';
 
 const LATEST_TOLERANCE = 2;
 
 interface SessionViewport {
   mode: 'following' | 'detached';
   scrollTop: number;
-  anchor?: { key: string; offset: number };
+  anchor?: { key: string; offset: number; rowKey?: string };
 }
 
 interface ConversationViewportInput {
   sessionId: string | null;
   loading: boolean;
   projection: SessionProjection | null;
+  openingWindow?: OpeningReadingWindow | null;
+  rememberAnchor?(sessionId: string, anchor: { key: string; offset: number } | null): void;
+  demandFullView?(window: OpeningReadingWindow): Promise<SessionProjection>;
   presentationLayoutKey: string;
   assistantDraftLayoutKey: string;
   timelineExtentKey: string;
@@ -26,14 +32,21 @@ export function useConversationViewport({
   sessionId,
   loading,
   projection,
+  openingWindow,
+  rememberAnchor,
+  demandFullView,
   presentationLayoutKey,
   assistantDraftLayoutKey,
   timelineExtentKey,
 }: ConversationViewportInput) {
+  const readingId = projection?.sessionId ?? openingWindow?.sessionId;
+  const waitingForRows = loading && !openingWindow;
+  const previousOpening = useRef<OpeningReadingWindow | null>(null);
   const [followingLatest, setFollowingLatest] = useState(true);
   const [hasContentBelow, setHasContentBelow] = useState(false);
   const [latestRequest, setLatestRequest] = useState(0);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const mountReadingPage = useRef<((key: string | null) => void) | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const activeViewRef = useRef<string | null>(sessionId);
@@ -56,7 +69,11 @@ export function useConversationViewport({
     if (!body) return { scrollTop: observedScrollTopRef.current };
     const top = body.getBoundingClientRect().top;
     const node = firstReadingAnchor(anchors.read(body).nodes, top);
-    return { scrollTop: body.scrollTop, ...(node ? { anchor: { key: node.dataset.conversationAnchor!, offset: node.getBoundingClientRect().top - top } } : {}) };
+    const bounds = node?.getBoundingClientRect();
+    // Between a disclosure and the next message the next ordered row can lie below
+    // the viewport. Its offset is still the reader's reference when the disclosure grows.
+    return { scrollTop: body.scrollTop, ...(node && bounds
+      ? { anchor: { key: node.dataset.conversationAnchor!, offset: bounds.top - top } } : {}) };
   }, [anchors]);
   useEffect(() => registerInterfaceReloadView('conversationViewports', () => {
     const id = activeViewRef.current;
@@ -95,8 +112,10 @@ export function useConversationViewport({
         mode: following ? 'following' : 'detached',
         ...position,
       });
+      if (following) rememberAnchor?.(activeSessionId, null);
+      else if (position.anchor) rememberAnchor?.(activeSessionId, position.anchor);
     }
-  }, [applyLatestFollowMode, capturePosition]);
+  }, [applyLatestFollowMode, capturePosition, rememberAnchor]);
 
   const anchorDisclosure = useCallback((node: HTMLElement) => {
     const body = bodyRef.current;
@@ -110,7 +129,8 @@ export function useConversationViewport({
     // Retain the anchor through virtual-row measurements until the reader moves.
     sessionViewportsRef.current.set(id, {
       mode: 'detached', scrollTop: body.scrollTop,
-      anchor: { key, offset: node.getBoundingClientRect().top - body.getBoundingClientRect().top },
+      anchor: { key, offset: node.getBoundingClientRect().top - body.getBoundingClientRect().top,
+        rowKey: node.dataset.conversationAnchor ?? node.parentElement?.closest<HTMLElement>('[data-conversation-anchor]')?.dataset.conversationAnchor },
     });
   }, [anchors, applyLatestFollowMode]);
 
@@ -168,22 +188,33 @@ export function useConversationViewport({
   }, [applyLatestFollowMode, sessionId]);
 
   useLayoutEffect(() => {
-    if (!projection) setShownSession(null);
-    if (!sessionId || !loading || projection !== null) return;
+    if (!readingId) setShownSession(null);
+    if (!sessionId || !waitingForRows || readingId) return;
     if (pendingViewportRestoreRef.current === sessionId) return;
     if (scrollFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollFrameRef.current);
       scrollFrameRef.current = null;
     }
     pendingViewportRestoreRef.current = sessionId;
-  }, [loading, projection, sessionId]);
+  }, [waitingForRows, readingId, sessionId]);
+
+  useLayoutEffect(() => {
+    const old = previousOpening.current;
+    previousOpening.current = openingWindow ?? null;
+    if (old && projection && old.sessionId === sessionId && projection.sessionId === sessionId) {
+      // Keep the exact reader-owned point across the sparse → canonical handoff. If
+      // they scrolled into a gap, the last sampled scroll position remains authoritative.
+      pendingViewportRestoreRef.current = sessionId;
+      setShownSession(null);
+    }
+  }, [openingWindow, projection, sessionId]);
 
   useLayoutEffect(() => {
     if (
       !sessionId
       || pendingViewportRestoreRef.current !== sessionId
-      || loading
-      || projection?.sessionId !== sessionId
+      || waitingForRows
+      || readingId !== sessionId
     ) return;
     const body = bodyRef.current;
     if (!body) return;
@@ -191,38 +222,64 @@ export function useConversationViewport({
     const following = saved?.mode !== 'detached';
     applyLatestFollowMode(following);
     let frame: number | null = null;
+    let waitingForComposer = false;
+    const boundary = body.parentElement;
     const check = () => {
-      frame = null;
       if (pendingViewportRestoreRef.current !== sessionId || activeViewRef.current !== sessionId) return true;
+      waitingForComposer = !syncConversationComposerBoundary(boundary);
+      if (waitingForComposer) return false;
       anchors.invalidate();
       if (following) writeScrollTop(body.scrollHeight);
       else restorePosition(saved!);
-      if (!firstConversationFrameReady(body, anchors.read(body).nodes)) return false;
+      // Sparse spacers have geometry, not readable content. A remote restore is ready only
+      // when a requested row is inside the viewport and its regular rich renderer is settled.
+      const mounted = anchors.read(body);
+      if (openingWindow?.source === 'revisionWindow') {
+        const wanted = following ? openingWindow.anchorKey : saved?.anchor?.rowKey ?? saved?.anchor?.key ?? openingWindow.anchorKey;
+        const node = mounted.byKey.get(wanted);
+        const bounds = body.getBoundingClientRect(), rect = node?.getBoundingClientRect();
+        if (!rect || !rect.height || rect.bottom <= bounds.top || rect.top >= bounds.bottom) return false;
+      }
+      if (!firstConversationFrameReady(body, mounted.nodes)) return false;
       pendingViewportRestoreRef.current = null;
       setShownSession(sessionId);
       return true;
     };
     // A cached/simple viewport can be positioned and revealed in this commit.
     if (check()) return;
-    const schedule = () => { if (frame === null) frame = requestAnimationFrame(() => { if (check()) dispose(); }); };
+    const schedule = () => {
+      if (frame === null) frame = requestAnimationFrame(() => { frame = null; if (check()) dispose(); });
+    };
+    // The layout renderer can attach the composer's portal after React's commit but
+    // before paint. Consume that actual attachment now; waiting for ResizeObserver
+    // and then another animation frame flashes the opening status on a ready return.
+    const panel = boundary?.parentElement;
+    const attachment = waitingForComposer && panel ? new MutationObserver(() => {
+      if (!syncConversationComposerBoundary(boundary)) return;
+      attachment?.disconnect();
+      flushSync(() => { if (check()) dispose(); });
+    }) : null;
+    if (attachment && panel) attachment.observe(panel, { childList: true, subtree: true });
+    boundary?.addEventListener('achbit:conversation-boundary-ready', schedule);
     const changes = new MutationObserver(schedule);
     changes.observe(body, { childList: true, subtree: true, attributes: true,
-      attributeFilter: ['data-conversation-pending', 'data-virtual-rendered', 'hidden'] });
+      attributeFilter: ['data-conversation-pending', 'data-reading-image', 'data-virtual-rendered', 'hidden'] });
     const resize = new ResizeObserver(schedule);
     resize.observe(body);
     if (transcriptRef.current) resize.observe(transcriptRef.current);
     const dispose = () => {
-      changes.disconnect(); resize.disconnect();
+      attachment?.disconnect(); changes.disconnect(); resize.disconnect(); boundary?.removeEventListener('achbit:conversation-boundary-ready', schedule);
       if (frame !== null) cancelAnimationFrame(frame);
     };
     return dispose;
   }, [
     applyLatestFollowMode,
-    loading,
+    waitingForRows,
     anchors,
     presentationLayoutKey,
     restorePosition,
-    projection?.sessionId,
+    readingId,
+    openingWindow,
     sessionId,
     timelineExtentKey,
     writeScrollTop,
@@ -251,7 +308,15 @@ export function useConversationViewport({
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
   }, []);
 
+  const requestFullOnMovement = () => {
+    if (openingWindow?.source === 'revisionWindow' && (openingWindow.hasAfter || openingWindow.hasBefore)) {
+      // The store owns cancellation/errors. The gesture is not replayed as a synthetic click.
+      void demandFullView?.(openingWindow).catch(() => {});
+    }
+  };
   const scrollToLatest = () => {
+    requestFullOnMovement();
+    mountReadingPage.current?.(null);
     setLatestRequest((value) => value + 1);
     setLatestFollowMode(true);
     scheduleScrollToLatest();
@@ -259,20 +324,29 @@ export function useConversationViewport({
 
   const scrollToAnchor = useCallback((key: string) => {
     const body = bodyRef.current;
-    const node = body && anchors.read(body).byKey.get(key);
-    if (!body || !node) return;
+    if (!body) return;
+    if (!anchors.read(body).byKey.has(key)) mountReadingPage.current?.(key);
+    const node = anchors.read(body).byKey.get(key);
+    if (!node) return;
     const target = node.getClientRects().length ? node : node.closest('.conversation-round');
     if (!target) return;
     applyLatestFollowMode(false);
     writeScrollTop(body.scrollTop + target.getBoundingClientRect().top - body.getBoundingClientRect().top - 12);
-    if (activeViewRef.current) sessionViewportsRef.current.set(activeViewRef.current, {
-      mode: 'detached', ...capturePosition(),
-    });
-  }, [anchors, applyLatestFollowMode, capturePosition, writeScrollTop]);
+    // Anchor the addressed message, not the last few pixels of the preceding row.
+    // Offscreen placeholders above the jump may resolve or change height next frame.
+    if (activeViewRef.current) {
+      const anchor = { key, offset: target.getBoundingClientRect().top - body.getBoundingClientRect().top };
+      sessionViewportsRef.current.set(activeViewRef.current, { mode: 'detached', scrollTop: body.scrollTop, anchor });
+      rememberAnchor?.(activeViewRef.current, anchor);
+    }
+  }, [anchors, applyLatestFollowMode, rememberAnchor, writeScrollTop]);
 
   const beginReading = (target: EventTarget | null) => {
     const body = bodyRef.current;
-    if (!body || !followingLatestRef.current || body.scrollTop <= 0 || pendingViewportRestoreRef.current !== null) return;
+    if (!body || !followingLatestRef.current || pendingViewportRestoreRef.current !== null
+      || body.scrollHeight <= body.clientHeight || (body.scrollTop <= 0 && observedScrollTopRef.current <= 0)) return;
+    // A passive wheel listener may run after the compositor has already reached zero.
+    // The last position we wrote still proves this was an upward reading gesture.
     // Code blocks and expanded documents may consume this gesture themselves.
     for (let node = target as HTMLElement | null; node && node !== body; node = node.parentElement) {
       if (node.scrollHeight <= node.clientHeight) continue;
@@ -286,11 +360,13 @@ export function useConversationViewport({
   const bodyHandlers: React.HTMLAttributes<HTMLDivElement> = {
     tabIndex: 0,
     onWheel: (event) => {
+      if (!event.defaultPrevented && !event.ctrlKey && event.deltaY !== 0) requestFullOnMovement();
       if (!event.defaultPrevented && !event.ctrlKey && event.deltaY < 0) beginReading(event.target);
     },
     onTouchStart: (event) => { touchYRef.current = event.touches.length === 1 ? event.touches[0].clientY : null; },
     onTouchMove: (event) => {
       const y = event.touches.length === 1 ? event.touches[0].clientY : null;
+      if (!event.defaultPrevented && y !== null && touchYRef.current !== null && y !== touchYRef.current) requestFullOnMovement();
       if (!event.defaultPrevented && y !== null && touchYRef.current !== null && y > touchYRef.current) beginReading(event.target);
       touchYRef.current = y;
     },
@@ -298,6 +374,7 @@ export function useConversationViewport({
     onTouchCancel: () => { touchYRef.current = null; },
     onKeyDown: (event) => {
       if (event.defaultPrevented || (event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) requestFullOnMovement();
       if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)
         || (event.key === ' ' && event.shiftKey && event.target === event.currentTarget)) beginReading(event.target);
     },
@@ -305,17 +382,19 @@ export function useConversationViewport({
       const body = event.currentTarget;
       if (event.target !== body || event.button !== 0) return;
       const rect = body.getBoundingClientRect();
-      if (body.offsetWidth > body.clientWidth && event.clientX >= rect.left + body.clientWidth) beginReading(body);
+      if (body.offsetWidth > body.clientWidth && event.clientX >= rect.left + body.clientWidth) { requestFullOnMovement(); beginReading(body); }
     },
     onScroll: (event) => {
-      if (event.target !== event.currentTarget || (loading && projection === null)) return;
+      if (event.target !== event.currentTarget || (waitingForRows && projection === null)) return;
       if (followingLatestRef.current) scheduleScrollToLatest();
       else sampleReaderPosition();
       updateContentBelow();
     },
   };
 
-  return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, preparingViewport: !!sessionId && !!projection && shownSession !== sessionId, showJumpToLatest: !followingLatest && hasContentBelow,
+  const saved = sessionId ? sessionViewportsRef.current.get(sessionId) : undefined;
+  const openingAnchor = saved?.mode === 'detached' ? saved.anchor?.rowKey ?? saved.anchor?.key : undefined;
+  return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, mountReadingPage, openingAnchor, preparingViewport: !!sessionId && !!readingId && shownSession !== sessionId, showJumpToLatest: !followingLatest && hasContentBelow,
     setLatestFollowMode, anchorDisclosure, scrollToLatest, scrollToAnchor, latestRequest, preserveReadingPosition };
 }
 

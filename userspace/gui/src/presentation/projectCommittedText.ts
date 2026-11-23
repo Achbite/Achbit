@@ -7,7 +7,7 @@ export interface CommittedTextBlock {
 }
 
 /** Content only: Session owns order and facts; each shell owns layout and interaction. */
-export function projectCommittedText(projection: SessionProjection): Map<string, CommittedTextBlock> {
+export function projectCommittedText(projection: Pick<SessionProjection, 'messages' | 'narratives'>): Map<string, CommittedTextBlock> {
   const blocks = new Map<string, CommittedTextBlock>();
   for (const message of projection.messages) {
     if (message.role !== 'user' && message.role !== 'assistant') continue;

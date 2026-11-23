@@ -1,3 +1,4 @@
+import type { SessionProjection } from '@achbit/protocol';
 import { composerContentKey, readResubmittedInputs, rememberResubmittedInputs, restoreUnappliedInputs } from './composerRecovery';
 import type { QueuedInputProjection } from '@achbit/protocol';
 import { formatBrowserAnnotation, type BrowserAnnotation } from './browserReview';
@@ -208,13 +209,20 @@ export function useAgentComposer(
   const canEditMessage = Boolean(sessionId && projection && !loading && !submitting && !catalogBusy
     && !pendingPlan && !pendingInteraction && !pendingApproval
     && (!projection.run || ['completed', 'failed', 'cancelled', 'indeterminate'].includes(projection.run.status)));
-  const beginMessageEdit = (message: ProjectionMessage) => {
-    if (!canEditMessage || !sessionId || !projection || message.role !== 'user' || message.replyToInteraction || message.runId) return;
+  const beginMessageEdit = (message: ProjectionMessage, restored?: SessionProjection) => {
+    const live = useLocalAgentStore.getState();
+    // A click on a retained window may be awaiting its original full read. Recheck
+    // selection and the exact canonical message before letting that click open an edit.
+    const owner = restored ?? projection;
+    const allowed = restored ? live.projection === restored && !live.loading && !live.submitting && !live.catalogBusy
+      && !restored.pendingApproval && !restored.pendingInteraction && !restored.pendingPlan
+      && (!restored.run || ['completed','failed','cancelled','indeterminate'].includes(restored.run.status)) : canEditMessage;
+    if (!allowed || !sessionId || !owner || live.sessionId !== sessionId || message.role !== 'user' || message.replyToInteraction || message.runId) return;
     const key = `${conversationKey}:edit:${message.messageId}`;
     // The ordinary composer keeps its own draft, attachments and selection.
     setComposerStateForKey(key, { ...emptyComposerState(), draft: message.content,
       selectionStart: message.content.length, selectionEnd: message.content.length, focused: true });
-    setMessageEdit({ sessionId, message, revision: projection.revision });
+    setMessageEdit({ sessionId, message, revision: owner.revision });
   };
   const cancelMessageEdit = () => { if (!submitting) setMessageEdit(null); };
 

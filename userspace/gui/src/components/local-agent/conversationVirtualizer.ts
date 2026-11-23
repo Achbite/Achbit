@@ -3,9 +3,31 @@ interface RowLayout {
   state: Map<string, unknown>;
 }
 
+/** Estimated offscreen geometry only. Never retain content, mounted controls or a projection here. */
+export class PageMeasurements {
+  private environment = '';
+  readonly heights = new Map<string, number>();
+  validate(environment: string) {
+    if (environment === this.environment) return true;
+    this.environment = environment; this.heights.clear(); return false;
+  }
+  record(key: string, height: number) {
+    this.heights.delete(key); this.heights.set(key, height);
+    // One key + number per visited page, not a row/content copy. Bound even a single huge session.
+    while (this.heights.size > 256) this.heights.delete(this.heights.keys().next().value!);
+  }
+}
+
 /** UI measurements and disclosure state, scoped to the recently visited sessions. */
 export class ConversationLayoutCache {
   private sessions = new Map<string, Map<string, RowLayout>>();
+
+  private pageMeasurements = new WeakMap<object, PageMeasurements>();
+  pages(snapshot: object): PageMeasurements {
+    let value = this.pageMeasurements.get(snapshot);
+    if (!value) { value = new PageMeasurements(); this.pageMeasurements.set(snapshot, value); }
+    return value;
+  }
 
   session(id: string): Map<string, RowLayout> {
     const rows = this.sessions.get(id) ?? new Map<string, RowLayout>();
@@ -39,7 +61,14 @@ export class ConversationVirtualizer {
 
   layout(key: string): RowLayout {
     let layout = this.layouts.get(key);
-    if (!layout) { layout = { state: new Map() }; this.layouts.set(key, layout); }
+    if (!layout) layout = { state: new Map() };
+    this.layouts.delete(key); this.layouts.set(key, layout);
+    // Old per-row estimates/disclosures need not grow with all history ever scrolled.
+    // The active row always keeps its live state. Evict only inactive entries.
+    if (this.layouts.size > 768) for (const previous of this.layouts.keys()) {
+      if (previous !== key && !this.rows.has(previous)) this.layouts.delete(previous);
+      if (this.layouts.size <= 768) break;
+    }
     return layout;
   }
 
@@ -91,6 +120,8 @@ export class ConversationVirtualizer {
       this.updateVisibility(previous);
     }
   }
+
+  previewKeys(): IterableIterator<string> { return this.retainedPreviews.keys(); }
 
   measure(node: HTMLElement, measuredHeight?: number): void {
     if (node.hidden || node.dataset.virtualRendered !== 'true') return;

@@ -15,6 +15,8 @@ import type {
   ConversationCatalogManagement,
   ConversationCommand,
   ConversationSessionStatus,
+  ConversationReadingWindow,
+  ProjectionMessage,
   ContextCompositionMessageBlock,
   ContextCompositionProjection,
   ContextUsageProjection,
@@ -121,7 +123,13 @@ export async function watchConversationCatalog(signal: AbortSignal, changed: () 
 }
 
 export async function getConversationStatuses(signal?: AbortSignal): Promise<ConversationSessionStatus[]> {
-  const value = await request<unknown>(`${API_BASE}/conversation/statuses`, { signal });
+  return (await readConversationStatusReceipt(signal)).items;
+}
+
+/** Capability belongs to this Host HTTP response, not the JSON fields of an individual Session. */
+export async function readConversationStatusReceipt(signal?: AbortSignal) {
+  const response = await conversationFetch(`${API_BASE}/conversation/statuses`, { signal });
+  const value = await envelopeData<unknown>(response);
   if (!Array.isArray(value) || !value.every((item) => (
     isExactRecord(item, ['sessionId', 'revision', 'run'])
     && isIdentifier(item.sessionId)
@@ -134,7 +142,7 @@ export async function getConversationStatuses(signal?: AbortSignal): Promise<Con
         || ['approval', 'userInput', 'plan'].includes(String(item.run.waitingReason)))
     ))
   ))) throw new Error('conversation_statuses_invalid');
-  return value as ConversationSessionStatus[];
+  return { items: value as ConversationSessionStatus[], readingWindow: response.headers.get('x-achbit-reading-window') === '1' };
 }
 
 export async function getPluginCatalog(
@@ -364,8 +372,8 @@ export function isBinaryFileChange(error: unknown): boolean {
     && error.code === 'file_change_binary_content';
 }
 
-export async function request<T>(url: string, init: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+function conversationFetch(url: string, init: RequestInit) {
+  return fetch(url, {
     ...init,
     headers: {
       ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -373,6 +381,13 @@ export async function request<T>(url: string, init: RequestInit): Promise<T> {
       ...init.headers,
     },
   });
+}
+
+export async function request<T>(url: string, init: RequestInit): Promise<T> {
+  return envelopeData<T>(await conversationFetch(url, init));
+}
+
+async function envelopeData<T>(response: Response): Promise<T> {
   let envelope: ApiEnvelope<T>;
   try {
     envelope = await response.json() as ApiEnvelope<T>;
@@ -479,7 +494,7 @@ function decodeProjection(value: unknown, expectedSessionId?: string): SessionPr
   const pendingPlan = value.pendingPlan as {planId: string; revision: number} | null;
   const timeline = value.timeline as Array<Record<string, unknown>>;
   const projectionRevision = value.revision as number;
-  const messages = value.messages as Array<Record<string, unknown>>;
+  const messages = value.messages;
   const narratives = value.narratives as Array<Record<string, unknown>>;
   const activities = value.activities as Array<Record<string, unknown>>;
   const planKeys = plans.map((plan) => planReferenceKey(plan));
@@ -609,7 +624,7 @@ function isQueuedInput(value: unknown): boolean {
 
 function timelineReferencesAreValid(
   timeline: Array<Record<string, unknown>>,
-  messages: Array<Record<string, unknown>>,
+  messages: ProjectionMessage[],
   narratives: Array<Record<string, unknown>>,
   plans: Array<{ planId: string; revision: number }>,
   activities: Array<Record<string, unknown>>,
@@ -790,7 +805,7 @@ function isSessionDisplay(value: unknown): boolean {
     && typeof value.creationTitle === 'string';
 }
 
-function isProjectionMessage(value: unknown): boolean {
+function isProjectionMessage(value: unknown): value is ProjectionMessage {
   if (!isExactRecord(value, [
     'messageId', 'role', 'content', 'filesystemReferences',
     'pluginSelections', 'feedback', 'sequence', 'createdAt',
@@ -1683,6 +1698,83 @@ export async function readConversation(sessionId: string, query: Omit<import('@a
     throw new Error('conversation_read_identity_mismatch');
   }
   return page;
+}
+
+// Exact UTF-8 size of this plain JSON value, stopping at the negotiated bound. Do not
+// stringify/clone an oversized body (including nested attachments) just to reject it.
+function fitsReadingWindow(value: unknown): boolean {
+  let left = 256 * 1024;
+  const text = (s: string) => {
+    left -= s.length + 2;
+    for (let i = 0; left >= 0 && i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c < 32) left -= c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 1 : 5;
+      else if (c === 34 || c === 92 || c >= 128 && c < 2048) left--;
+      else if (c >= 0xd800 && c <= 0xdfff) {
+        const next = s.charCodeAt(i+1);
+        if (c < 0xdc00 && next >= 0xdc00 && next <= 0xdfff) { left -= 2; i++; } else left -= 5;
+      } else if (c >= 2048) left -= 2;
+    }
+  };
+  const visit = (x: unknown) => {
+    if (typeof x === 'string') return text(x);
+    if (!x || typeof x !== 'object') { left -= String(x).length; return; }
+    left -= 2; let first = true;
+    for (const key in x) {
+      if (left < 0) break;
+      if (!first) left--; first = false;
+      if (!Array.isArray(x)) { text(key); left--; }
+      visit((x as Record<string, unknown>)[key]);
+    }
+  };
+  visit(value); return left >= 0;
+}
+
+/** A new wire view, not the old journal excerpt. Decode every canonical message using the
+ * same validator as /projection. Only the explicit discriminator denotes a normal fallback. */
+export async function readRevisionWindow(sessionId: string, throughSequence: number, signal: AbortSignal,
+  anchorKey?: string, limit = 12): Promise<ConversationReadingWindow> {
+  if (!isPositiveNaturalNumber(throughSequence) || !Number.isInteger(limit) || limit < 1 || limit > 24
+    || (anchorKey !== undefined && !isStreamId(anchorKey))) throw new Error('conversation_read_window_query_invalid');
+  const data = await request<unknown>(`${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/read`, {
+    method: 'POST', body: JSON.stringify({ view: 'readingWindow', throughSequence, ...(anchorKey !== undefined ? { anchorKey } : {}), limit }), signal,
+  });
+  signal.throwIfAborted();
+  if (!isExactRecord(data, ['sessionId', 'revision', 'view', 'items', 'nextBefore', 'readingWindow'])
+    || !Array.isArray(data.items) || data.items.length || data.nextBefore !== null) throw new Error('conversation_read_window_invalid');
+  if (data.sessionId !== sessionId || data.view !== 'readingWindow') throw new Error('conversation_read_identity_mismatch');
+  if (data.revision !== throughSequence) throw new Error('conversation_read_window_revision_mismatch');
+  const w = data.readingWindow;
+  if (isExactRecord(w, ['kind']) && w.kind === 'requiresProjection') return { kind: 'requiresProjection' };
+  if (!isExactRecord(w, ['kind', 'anchorKey', 'rows', 'navigation', 'startIndex', 'totalRows']) || w.kind !== 'ready'
+    || !isStreamId(w.anchorKey) || !isNaturalNumber(w.startIndex) || !isPositiveNaturalNumber(w.totalRows)
+    || !Array.isArray(w.rows) || !w.rows.length || w.rows.length > limit || w.totalRows > throughSequence || w.startIndex > w.totalRows - w.rows.length
+    || !isExactRecord(w.navigation, ['keys', 'labels']) || !isArrayOf(w.navigation.keys, isStreamId)
+    || !isArrayOf(w.navigation.labels, (x): x is string => typeof x === 'string') || w.navigation.keys.length !== w.navigation.labels.length
+    || w.navigation.keys.length > Math.min(4096, w.totalRows) || new Set(w.navigation.keys).size !== w.navigation.keys.length) throw new Error('conversation_read_window_invalid');
+  const keys = new Set<string>(), timelines = new Set<string>(), messages = new Set<string>();
+  const rows: Extract<ConversationReadingWindow, { kind: 'ready' }>['rows'] = [];
+  for (const r of w.rows) {
+    if (!isExactRecord(r, ['key', 'timelineId', 'sequence', 'message'], ['streamId']) || !isStreamId(r.key) || !isIdentifier(r.timelineId)
+      || !isPositiveNaturalNumber(r.sequence) || r.sequence > throughSequence || !isProjectionMessage(r.message)
+      || r.message.sequence !== r.sequence || (r.message.role !== 'user' && r.message.role !== 'assistant') || r.message.replyToInteraction
+      || (r.message.role === 'assistant' ? !isStreamId(r.streamId) || r.key !== r.streamId : r.streamId !== undefined || r.key !== r.message.messageId)
+      || keys.has(r.key) || timelines.has(r.timelineId) || messages.has(r.message.messageId)) throw new Error('conversation_read_window_invalid');
+    keys.add(r.key); timelines.add(r.timelineId); messages.add(r.message.messageId);
+    rows.push({ key: r.key, timelineId: r.timelineId, sequence: r.sequence, ...(typeof r.streamId === 'string' ? { streamId: r.streamId } : {}), message: r.message });
+  }
+  if (!keys.has(w.anchorKey) || (anchorKey === undefined ? w.startIndex + rows.length !== w.totalRows || w.anchorKey !== rows.at(-1)!.key : w.anchorKey !== anchorKey)) throw new Error('conversation_read_window_anchor_mismatch');
+  if (!fitsReadingWindow(data)) throw new Error('conversation_read_window_invalid');
+  const nav = new Map(w.navigation.keys.map((key, i) => [key, i])); let previous = -1;
+  for (const row of rows) {
+    const index = nav.get(row.key);
+    if (row.message.role === 'user') {
+      if (index === undefined || index <= previous) throw new Error('conversation_read_window_invalid');
+      previous = index;
+    } else if (index !== undefined) throw new Error('conversation_read_window_invalid');
+  }
+  return { kind: 'ready', anchorKey: w.anchorKey, startIndex: w.startIndex, totalRows: w.totalRows, rows,
+    navigation: { keys: w.navigation.keys, labels: w.navigation.labels } };
 }
 
 /** Read the last individually measured request, not the potentially multi-step last response total. */

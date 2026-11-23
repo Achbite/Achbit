@@ -48,6 +48,11 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const draftProjectId = useLocalAgentStore((state) => state.draftProjectId);
   const catalog = useLocalAgentStore((state) => state.catalog);
   const projection = useLocalAgentStore((state) => state.projection);
+  const candidate = useLocalAgentStore(state => state.openingReadingWindow);
+  const rememberAnchor = useLocalAgentStore(state => state.rememberReadingAnchor);
+  const presented = useLocalAgentStore(state => state.readingWindowPresented);
+  const resolveWindow = useLocalAgentStore(state => state.awaitReadingProjection);
+  const openingWindow = !projection && candidate?.sessionId === sessionId && candidate?.surface && !showReasoning ? candidate : null;
   const loading = useLocalAgentStore((state) => state.loading);
   const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
   const loadingPurpose = useLocalAgentStore((state) => state.loadingPurpose);
@@ -57,7 +62,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const [uiActionError, setUiActionError] = useState<string | null>(null);
   const conversationLayouts = useRef(new ConversationLayoutCache());
   useEffect(() => setUiActionError(null), [sessionId]);
-  const presentation = usePresentedCommittedContent(projection, language);
+  const presentation = usePresentedCommittedContent(projection, language, openingWindow);
   const activeSummary = catalog.sessions.find((session) => session.id === sessionId);
   const activeProject = catalog.projects.find((project) => (
     project.id === (activeSummary?.projectId ?? draftProjectId)
@@ -80,28 +85,37 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
       ? block.status
       : block.content.length}`
   )).join('|') ?? ''}|${JSON.stringify(assistantDraft?.planPreview ?? null)}`;
-  const timelineExtentKey = projection?.timeline.map((item) => (
-    item.kind === 'toolGroup'
-      ? `${item.timelineId}:${item.activityIds.length}`
-      : item.timelineId
-  )).join('|') ?? '';
-  const hasConversationContent = conversationItems.length > 0
+  const timelineExtentKey = useMemo(() => projection?.timeline.map((item) => (
+    item.kind === 'toolGroup' ? `${item.timelineId}:${item.activityIds.length}` : item.timelineId
+  )).join('|') ?? '', [projection?.timeline]);
+  const hasConversationContent = !!openingWindow || conversationItems.length > 0
     || Boolean(assistantDraft)
     || Boolean(projection?.pendingInteraction)
     || Boolean(projection?.pendingApproval)
     || Boolean(projection?.pendingPlan)
     || Boolean(projection?.terminalError);
   useProfilesUpdated(refreshProfiles);
-  const updates = useConversationUpdates(sessionId, refresh, hostReady);
+  const updates = useConversationUpdates(refresh, hostReady);
   const viewport = useConversationViewport({
     sessionId,
     loading,
     projection,
-    presentationLayoutKey: presentation.layoutKey,
+    openingWindow, rememberAnchor, demandFullView: resolveWindow, presentationLayoutKey: presentation.layoutKey,
     assistantDraftLayoutKey,
     timelineExtentKey,
   });
   const { bodyRef, bodyHandlers, showJumpToLatest, scrollToLatest } = viewport;
+  useEffect(() => {
+    if (candidate?.source !== 'revisionWindow' || candidate.sessionId !== sessionId || projection) return;
+    if (!openingWindow) { void resolveWindow(candidate).catch(() => {}); return; } // Full restore reports failures in the owning store.
+    if (viewport.preparingViewport) return;
+    // A fetched page or a mounted inert body is not a presented answer. Allow a visible
+    // formatted frame through before kicking off the background full projection.
+    let frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => {
+      if (!bodyRef.current?.inert && bodyRef.current?.isConnected) presented(openingWindow);
+    }); });
+    return () => cancelAnimationFrame(frame);
+  }, [candidate, sessionId, projection, openingWindow, viewport.preparingViewport, bodyRef, presented, resolveWindow]);
   const composer = useAgentComposer(language, viewport.setLatestFollowMode);
   const automaticApproval = isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run) ? projection!.pendingApproval : null;
   const automaticPlan = isAutomaticPlanReview(projection?.pendingPlan ?? null, projection?.effectivePermissions) ? projection!.pendingPlan : null;
@@ -159,7 +173,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
       <div ref={bodyRef} className="local-agent__body" aria-live="polite" inert={viewport.preparingViewport}
         data-preparing-viewport={viewport.preparingViewport || undefined} {...bodyHandlers}>
         <ConversationTranscript
-          layoutCache={conversationLayouts.current}
+          layoutCache={conversationLayouts.current} openingWindow={openingWindow}
           displaySettledRunIds={display.displaySettledRunIds}
           onDisplayed={display.onDisplayed}
           showReasoning={showReasoning}
