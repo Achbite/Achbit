@@ -1,7 +1,8 @@
 import { registerInterfaceReloadView, restoredInterfaceView } from '../../services/interfaceReload';
 import type React from 'react';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { SessionProjection } from '@achbit/protocol';
+import type { OpeningHistoryPage } from '../../services/localAgentApi';
 import { ConversationAnchors, firstReadingAnchor } from './conversationAnchors';
 import { firstConversationFrameReady } from './firstConversationFrame';
 
@@ -17,6 +18,7 @@ interface ConversationViewportInput {
   sessionId: string | null;
   loading: boolean;
   projection: SessionProjection | null;
+  opening?: OpeningHistoryPage | null;
   presentationLayoutKey: string;
   assistantDraftLayoutKey: string;
   timelineExtentKey: string;
@@ -26,6 +28,7 @@ export function useConversationViewport({
   sessionId,
   loading,
   projection,
+  opening,
   presentationLayoutKey,
   assistantDraftLayoutKey,
   timelineExtentKey,
@@ -39,7 +42,15 @@ export function useConversationViewport({
   const activeViewRef = useRef<string | null>(sessionId);
   const sessionViewportsRef = useRef(new Map<string, SessionViewport>(restoredInterfaceView<[string, SessionViewport][]>('conversationViewports', [])));
   const pendingViewportRestoreRef = useRef<string | null>(null);
-  const [shownSession, setShownSession] = useState<string | null>(null);
+  const timelineRef = useRef(projection?.timeline);
+  timelineRef.current = projection?.timeline;
+  const entryView = useMemo(() => sessionId ? sessionViewportsRef.current.get(sessionId) : undefined, [sessionId]);
+  // Never flash the tail in place of an older saved reading position. A reader
+  // who detached inside the opening messages keeps that area until handoff.
+  const allowOpeningTail = entryView?.mode !== 'detached' || !!entryView.anchor?.key.startsWith('opening:');
+  const openingVisible = !!sessionId && opening?.sessionId === sessionId && !projection && allowOpeningTail
+    && opening.messages.some(message => !message.truncated && message.content.trim());
+  const surface = projection?.sessionId === sessionId && projection ? 'timeline' : openingVisible ? 'opening' : null;
   const followingLatestRef = useRef(true);
   // Every programmatic write records its actual, browser-clamped position.
   const observedScrollTopRef = useRef(0);
@@ -60,9 +71,14 @@ export function useConversationViewport({
   }, [anchors]);
   useEffect(() => registerInterfaceReloadView('conversationViewports', () => {
     const id = activeViewRef.current;
-    if (id) sessionViewportsRef.current.set(id, { mode: followingLatestRef.current ? 'following' : 'detached', ...capturePosition() });
+    const body = bodyRef.current;
+    // Don't replace a known reading position with placeholder geometry on
+    // interface reload. This check never controls visibility or interaction.
+    if (id && body && pendingViewportRestoreRef.current === null && firstConversationFrameReady(body, anchors.read(body).nodes)) {
+      sessionViewportsRef.current.set(id, { mode: followingLatestRef.current ? 'following' : 'detached', ...capturePosition() });
+    }
     return [...sessionViewportsRef.current];
-  }), [capturePosition]);
+  }), [anchors, capturePosition]);
   const writeScrollTop = useCallback((top: number) => {
     const body = bodyRef.current;
     if (!body) return;
@@ -75,7 +91,16 @@ export function useConversationViewport({
     const body = bodyRef.current;
     if (!body) return;
     const anchor = saved.anchor;
-    const node = anchor ? anchors.read(body).byKey.get(anchor.key) : undefined;
+    let node = anchor ? anchors.read(body).byKey.get(anchor.key) : undefined;
+    if (!node && anchor?.key.startsWith('opening:')) {
+      const id = anchor.key.slice('opening:'.length);
+      const row = timelineRef.current?.find(item => item.kind === 'message' && item.messageId === id);
+      if (row?.kind === 'message') {
+        const key = row.streamId ?? id;
+        node = anchors.read(body).byKey.get(key);
+        if (node) anchor.key = key;
+      }
+    }
     writeScrollTop(node && !node.hidden && anchor
       ? body.scrollTop + node.getBoundingClientRect().top - body.getBoundingClientRect().top - anchor.offset
       : saved.scrollTop);
@@ -155,7 +180,6 @@ export function useConversationViewport({
 
   useLayoutEffect(() => {
     pendingViewportRestoreRef.current = sessionId;
-    setShownSession(null);
     if (activeViewRef.current !== sessionId) {
       if (scrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scrollFrameRef.current);
@@ -168,70 +192,35 @@ export function useConversationViewport({
   }, [applyLatestFollowMode, sessionId]);
 
   useLayoutEffect(() => {
-    if (!projection) setShownSession(null);
-    if (!sessionId || !loading || projection !== null) return;
+    if (!sessionId || !loading || surface) return;
     if (pendingViewportRestoreRef.current === sessionId) return;
     if (scrollFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollFrameRef.current);
       scrollFrameRef.current = null;
     }
     pendingViewportRestoreRef.current = sessionId;
-  }, [loading, projection, sessionId]);
+  }, [loading, surface, sessionId]);
 
   useLayoutEffect(() => {
-    if (
-      !sessionId
-      || pendingViewportRestoreRef.current !== sessionId
-      || loading
-      || projection?.sessionId !== sessionId
-    ) return;
+    if (!sessionId || !surface) return;
     const body = bodyRef.current;
     if (!body) return;
     const saved = sessionViewportsRef.current.get(sessionId);
     const following = saved?.mode !== 'detached';
     applyLatestFollowMode(following);
-    let frame: number | null = null;
-    const check = () => {
-      frame = null;
-      if (pendingViewportRestoreRef.current !== sessionId || activeViewRef.current !== sessionId) return true;
-      anchors.invalidate();
-      if (following) writeScrollTop(body.scrollHeight);
-      else restorePosition(saved!);
-      if (!firstConversationFrameReady(body, anchors.read(body).nodes)) return false;
-      pendingViewportRestoreRef.current = null;
-      setShownSession(sessionId);
-      return true;
-    };
-    // A cached/simple viewport can be positioned and revealed in this commit.
-    if (check()) return;
-    const schedule = () => { if (frame === null) frame = requestAnimationFrame(() => { if (check()) dispose(); }); };
-    const changes = new MutationObserver(schedule);
-    changes.observe(body, { childList: true, subtree: true, attributes: true,
-      attributeFilter: ['data-conversation-pending', 'data-virtual-rendered', 'hidden'] });
-    const resize = new ResizeObserver(schedule);
-    resize.observe(body);
-    if (transcriptRef.current) resize.observe(transcriptRef.current);
-    const dispose = () => {
-      changes.disconnect(); resize.disconnect();
-      if (frame !== null) cancelAnimationFrame(frame);
-    };
-    return dispose;
-  }, [
-    applyLatestFollowMode,
-    loading,
-    anchors,
-    presentationLayoutKey,
-    restorePosition,
-    projection?.sessionId,
-    sessionId,
-    timelineExtentKey,
-    writeScrollTop,
-  ]);
+    // Position the available rows once. Later virtual-row and rich-content
+    // resizes use the ordinary anchor owner, which yields to reader input.
+    pendingViewportRestoreRef.current = null;
+    anchors.invalidate();
+    if (following) writeScrollTop(body.scrollHeight);
+    else restorePosition(saved!);
+  }, [sessionId, surface, applyLatestFollowMode, anchors, restorePosition, writeScrollTop]);
 
   useEffect(() => {
     if (followingLatest) scheduleScrollToLatest();
   }, [
     assistantDraftLayoutKey,
+    presentationLayoutKey,
     followingLatest,
     scheduleScrollToLatest,
     timelineExtentKey,
@@ -308,14 +297,14 @@ export function useConversationViewport({
       if (body.offsetWidth > body.clientWidth && event.clientX >= rect.left + body.clientWidth) beginReading(body);
     },
     onScroll: (event) => {
-      if (event.target !== event.currentTarget || (loading && projection === null)) return;
+      if (event.target !== event.currentTarget || (loading && !surface)) return;
       if (followingLatestRef.current) scheduleScrollToLatest();
       else sampleReaderPosition();
       updateContentBelow();
     },
   };
 
-  return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, preparingViewport: !!sessionId && !!projection && shownSession !== sessionId, showJumpToLatest: !followingLatest && hasContentBelow,
+  return { bodyRef, transcriptRef, messageEndRef, anchors, bodyHandlers, followingLatest, allowOpeningTail, initialAnchorKey: entryView?.mode === 'detached' ? entryView.anchor?.key : undefined, showJumpToLatest: !followingLatest && hasContentBelow,
     setLatestFollowMode, anchorDisclosure, scrollToLatest, scrollToAnchor, latestRequest, preserveReadingPosition };
 }
 

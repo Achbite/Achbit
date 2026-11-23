@@ -120,6 +120,9 @@ export interface LocalAgentState {
   refreshPluginCatalog(): Promise<void>;
   startNewSession(projectId?: string | null): void;
   activateSession(sessionId: string): Promise<void>;
+  readOpeningMessages(sessionId: string): Promise<void>;
+  observeHistory(event: 'ready' | 'change' | 'closed'): void;
+  historyObservation(): object | null;
   selectModel(profileId: string, effort: LlmReasoningEffort | null): Promise<boolean>;
   setSubagentSettings(patches: Partial<AgentSettings>): Promise<void>;
   setMode(mode: 'minimal' | 'full'): Promise<CommandReply>;
@@ -200,7 +203,16 @@ async function waitForExecution(signal?: AbortSignal): Promise<void> {
 let generation = 0;
 let catalogVersion = 0;
 let viewReadController = new AbortController();
+let openingRead: { sessionId: string; read(): Promise<number>; cancel(): void } | null = null;
+// Only a complete read made within one uninterrupted Host observation can skip
+// revalidation on return. Child decisions and inherited fields can change at
+// the same parent revision, so any event invalidates the proof conservatively.
+let observedViews = new WeakSet<CachedSessionView>();
+let streamReady = false;
+let hostGeneration = 0;
 function advanceView(): number {
+  openingRead?.cancel();
+  openingRead = null;
   viewReadController.abort();
   viewReadController = new AbortController();
   return ++generation;
@@ -217,26 +229,38 @@ function cacheProjection(projection: SessionProjection): CachedSessionView {
   while (projectionCache.size > 6) projectionCache.delete(projectionCache.keys().next().value!);
   return view;
 }
-function readSessionView(sessionId: string, signal?: AbortSignal, boundary: number | (() => Promise<number>) = 0): Promise<CachedSessionView> {
+function readSessionView(sessionId: string, signal?: AbortSignal, boundary: number | (() => Promise<number>) = 0,
+  onDecoded?: (projection: SessionProjection) => void): Promise<CachedSessionView> {
+  const host = hostGeneration;
+  let observed: WeakSet<CachedSessionView> | null = null;
+  const floor = () => Math.max(store.getState().sessionStatuses[sessionId]?.revision ?? 0,
+    store.getState().openingHistory?.sessionId === sessionId ? store.getState().openingHistory!.revision : 0);
   const read = (projectionReadQueues.get(sessionId) ?? Promise.resolve())
     .then(async () => {
       signal?.throwIfAborted();
       // Start the bounded page first, but let transport and Session recovery
       // overlap. Neither response enters the cache until both are validated.
+      observed = streamReady ? observedViews : null;
       const [minimumRevision, first] = await Promise.all([
-        typeof boundary === 'number' ? boundary : boundary(), getLocalAgentProjection(sessionId, signal),
+        typeof boundary === 'number' ? boundary : boundary(), getLocalAgentProjection(sessionId, signal).then(p => {
+          signal?.throwIfAborted();
+          if (host === hostGeneration && p.revision >= floor()) onDecoded?.(p);
+          return p;
+        }),
       ]);
       signal?.throwIfAborted();
-      if (first.revision >= minimumRevision) return first;
+      if (first.revision >= Math.max(minimumRevision, floor())) return first;
       signal?.throwIfAborted();
       const fresh = await getLocalAgentProjection(sessionId, signal);
-      if (fresh.revision < minimumRevision) throw new Error('session_projection_revision_behind');
+      if (fresh.revision < Math.max(minimumRevision, floor())) throw new Error('session_projection_revision_behind');
       return fresh;
     })
     .then((projection) => {
       signal?.throwIfAborted();
+      if (host !== hostGeneration) throw new Error('host_instance_replaced');
       const cached = projectionCache.get(sessionId);
       const current = cacheProjection(projection);
+      if (observed && observed === observedViews && current.projection.revision === projection.revision) observed.add(current);
       const notice = runHandoffNotice(cached?.projection, current.projection,
         store.getState().profiles.find(profile => profile.id === current.projection.contextHandoff?.profileId)?.name,
         normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']));
@@ -322,7 +346,12 @@ const store = create<LocalAgentState>((set, get) => ({
   initialize: async (runtimeReady) => {
     if (initialization) return await initialization;
     if (runtimeReady) {
-      set({ runtimeReady: false });
+      hostGeneration++;
+      streamReady = false;
+      observedViews = new WeakSet();
+      projectionCache.clear();
+      projectionReadQueues.clear();
+      set({ runtimeReady: false, projection: null, contextWindowReading: null, openingHistory: null, sessionStatuses: {} });
       executionReady = runtimeReady.then(() => { set({ runtimeReady: true }); });
     }
     const currentGeneration = advanceView();
@@ -490,6 +519,18 @@ const store = create<LocalAgentState>((set, get) => ({
     });
   },
 
+  historyObservation: () => streamReady ? observedViews : null,
+  observeHistory: event => {
+    streamReady = event !== 'closed';
+    observedViews = new WeakSet();
+  },
+  // Only a mounted tail reader asks for this optional page when a status already
+  // supplied the revision. Headless navigation and a detached reader do not need it.
+  readOpeningMessages: async sessionId => {
+    const opening = openingRead;
+    if (opening?.sessionId === sessionId && !get().openingHistory?.messages.length) await opening.read();
+  },
+
   activateSession: async (sessionId) => {
     if (get().sessionId === sessionId && (get().projection || get().loading)) return;
     const currentGeneration = advanceView();
@@ -518,11 +559,13 @@ const store = create<LocalAgentState>((set, get) => ({
     }
     activeSubmissionCount = 0;
     const cached = projectionCache.get(sessionId) ?? null;
-    if (cached) cacheProjection(cached.projection);
+    if (cached) { projectionCache.delete(sessionId); projectionCache.set(sessionId, cached); }
     // Live text can change without a journal revision. A cached draft followed
     // by its catch-up snapshot would replay text received while the user was away.
     const observed = get().sessionStatuses[sessionId];
-    const settledCache = cached && !cached.projection.assistantDraft
+    const settledCache = cached && !cached.projection.assistantDraft && !cached.projection.pendingApproval
+      && !cached.projection.pendingPlan && !cached.projection.pendingInteraction && !cached.projection.pendingAgentDecisions?.length
+      && !['running', 'waiting', 'releasing'].includes(observed?.run?.status ?? '')
       && (observed?.revision ?? 0) <= cached.projection.revision
       && !['running', 'waiting', 'releasing'].includes(cached.projection.run?.status ?? '') ? cached : null;
     const visibleCached = get().runtimeReady ? settledCache : null;
@@ -539,7 +582,8 @@ const store = create<LocalAgentState>((set, get) => ({
       selectedProfileId: cached?.projection.modelSettings?.profileId ?? summary.profileId ?? null,
       reasoningEffortOverride: cached?.projection.modelSettings?.reasoningEffortOverride ?? null,
       ...(visibleCached ?? { projection: null, contextWindowReading: null }),
-      openingHistory: null,
+      openingHistory: !visibleCached && cached && get().runtimeReady && observed?.revision === cached.projection.revision
+        ? openingText(cached.projection) : null,
       draftProjectId: null,
     });
     try {
@@ -547,21 +591,43 @@ const store = create<LocalAgentState>((set, get) => ({
       if (currentGeneration !== generation) return;
       if (settledCache) {
         if (!visibleCached) set({ ...settledCache, loading: false, loadingPurpose: null });
-        await get().refresh();
+        if (!observedViews.has(settledCache)) await get().refresh();
         return;
       }
       const revision = get().sessionStatuses[sessionId]?.revision;
       const pair = new AbortController();
       const reading = AbortSignal.any([signal, pair.signal]);
-      // A known status already proves the minimum revision. Don't scan the
-      // journal twice just to obtain an unused excerpt for this same boundary.
-      const readBoundary = !cached && revision === undefined ? async () => {
-        const page = await readOpeningHistory(sessionId, reading);
+      const minimum = Math.max(cached?.projection.revision ?? 0, revision ?? 0);
+      let pageRead: Promise<number> | undefined;
+      const read = () => pageRead ??= readOpeningHistory(sessionId, reading).then(page => {
         reading.throwIfAborted();
-        if (page.messages.length && currentGeneration === generation) set({ openingHistory: page });
+        if (currentGeneration === generation && page.revision >= Math.max(minimum,
+          get().sessionStatuses[sessionId]?.revision ?? 0, get().openingHistory?.revision ?? 0)) set({ openingHistory: page });
         return page.revision;
-      } : Math.max(cached?.projection.revision ?? 0, revision ?? 0);
-      const view = await readSessionView(sessionId, reading, readBoundary).finally(() => pair.abort());
+      });
+      const opening = { sessionId, read, cancel: () => pair.abort() };
+      openingRead = opening;
+      const needsBoundary = !cached && revision === undefined;
+      // The shared statuses read may establish the missing boundary first.
+      // Don't keep navigation behind an optional page once that happens.
+      const boundary = () => new Promise<number>((resolve, reject) => {
+        const stop = store.subscribe(s => {
+          const status = s.sessionStatuses[sessionId];
+          if (status) resolve(status.revision);
+        });
+        reading.addEventListener('abort', () => { stop(); reject(reading.reason); }, { once: true });
+        const known = get().sessionStatuses[sessionId];
+        if (known) resolve(known.revision);
+        else void read().then(resolve, reject);
+      });
+      const view = await readSessionView(sessionId, reading, needsBoundary ? boundary : minimum, needsBoundary ? first => {
+        // A complete snapshot may arrive before the independent revision read.
+        // Its text is readable, but it cannot authorize a command yet.
+        if (!get().openingHistory && currentGeneration === generation) set({ openingHistory: openingText(first) });
+      } : undefined).finally(() => {
+        if (openingRead === opening) openingRead = null;
+        pair.abort();
+      });
       if (currentGeneration !== generation) return;
       set({
         sessionId,
@@ -570,6 +636,9 @@ const store = create<LocalAgentState>((set, get) => ({
         ...view, openingHistory: null,
         loading: false, loadingPurpose: null,
       });
+      // A change might have been delivered while refresh() was still skipping a
+      // loading view. Catch it up through the ordinary coalesced refresh.
+      if (streamReady && !observedViews.has(view)) void get().refresh();
     } catch (error) {
       if (currentGeneration === generation) {
         set({
@@ -640,6 +709,7 @@ const store = create<LocalAgentState>((set, get) => ({
     }
 
     const promise = (async () => {
+      const observed = streamReady ? observedViews : null;
       const statuses = (async () => {
         try {
           const items = await getConversationStatuses(signal);
@@ -662,10 +732,12 @@ const store = create<LocalAgentState>((set, get) => ({
       try {
         const items = await statuses;
         if (!sessionId || generation !== refreshGeneration || (get().loading && !get().projection)) return;
-        const cached = projectionCache.get(sessionId)?.projection;
+        const cachedView = projectionCache.get(sessionId);
+        const cached = cachedView?.projection;
         const status = items?.find((item) => item.sessionId === sessionId);
         if (cached && !cached.agentContext && !cached.agentChildren?.length && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
           && !['running', 'waiting', 'releasing'].includes(status.run?.status ?? '')) {
+          if (observed && observed === observedViews) observed.add(cachedView!);
           return;
         }
         const view = await readSessionView(sessionId, signal);
@@ -1448,6 +1520,22 @@ store.subscribe((state, previous) => {
   });
 });
 return store;
+}
+
+// A reading aid, never a partial SessionProjection. Limit synchronous formatting
+// to the same small messages the journal's opening page can deliver.
+function openingText(p: SessionProjection): OpeningHistoryPage {
+  const messages: OpeningHistoryPage['messages'] = [];
+  for (let i = p.timeline.length - 1; i >= 0 && messages.length < 4; i--) {
+    const row = p.timeline[i]!;
+    if (row.kind !== 'message') continue;
+    const message = p.messages.findLast(m => m.messageId === row.messageId);
+    if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
+    const content = message.displayContent ?? message.content;
+    const truncated = content.length > 12 * 1024;
+    messages.push({ id: message.messageId, role: message.role, content: truncated ? '' : content, truncated });
+  }
+  return { sessionId: p.sessionId, revision: p.revision, messages: messages.reverse() };
 }
 
 export const useLocalAgentStore = createLocalAgentStore();

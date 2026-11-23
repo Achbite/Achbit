@@ -51,6 +51,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const loading = useLocalAgentStore((state) => state.loading);
   const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
   const loadingPurpose = useLocalAgentStore((state) => state.loadingPurpose);
+  const opening = useLocalAgentStore((state) => state.openingHistory);
   const refresh = useLocalAgentStore((state) => state.refresh);
   const hostReady = useAppStatusStore((state) => state.apiStatus === 'connected');
   const refreshProfiles = useLocalAgentStore((state) => state.refreshProfiles);
@@ -79,11 +80,11 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
       ? block.status
       : block.content.length}`
   )).join('|') ?? ''}|${JSON.stringify(assistantDraft?.planPreview ?? null)}`;
-  const timelineExtentKey = projection?.timeline.map((item) => (
+  const timelineExtentKey = useMemo(() => projection?.timeline.map((item) => (
     item.kind === 'toolGroup'
       ? `${item.timelineId}:${item.activityIds.length}`
       : item.timelineId
-  )).join('|') ?? '';
+  )).join('|') ?? '', [projection?.timeline]);
   const hasConversationContent = conversationItems.length > 0
     || Boolean(assistantDraft)
     || Boolean(projection?.pendingInteraction)
@@ -91,11 +92,12 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     || Boolean(projection?.pendingPlan)
     || Boolean(projection?.terminalError);
   useProfilesUpdated(refreshProfiles);
-  const updates = useConversationUpdates(sessionId, refresh, hostReady);
+  const updates = useConversationUpdates(refresh, hostReady);
   const viewport = useConversationViewport({
     sessionId,
     loading,
     projection,
+    opening,
     presentationLayoutKey: presentation.layoutKey,
     assistantDraftLayoutKey,
     timelineExtentKey,
@@ -151,12 +153,10 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   );
 
   return (
-    <AgentNavigationScope key={sessionId} sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
+    <AgentNavigationScope key={sessionId} sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={projection?.agentTasks} pendingDecisions={projection?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent || sessionId && (loading || !projection) ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
-      {viewport.preparingViewport && <div className="local-agent__opening-status local-agent__empty" role="status">{t(language, 'agent.chat.opening')}</div>}
-      <div ref={bodyRef} className="local-agent__body" aria-live="polite" inert={viewport.preparingViewport}
-        data-preparing-viewport={viewport.preparingViewport || undefined} {...bodyHandlers}>
+      <div ref={bodyRef} className="local-agent__body" aria-live="polite" {...bodyHandlers}>
         <ConversationTranscript
           layoutCache={conversationLayouts.current}
           displaySettledRunIds={display.displaySettledRunIds}

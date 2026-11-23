@@ -2554,5 +2554,6 @@
 .local-agent__composer--collapsed .local-agent__draft-attachments[data-reader-open] { display: flex; position: absolute; bottom: calc(100% + 10px); left: 0; width: min(420px, 100%); max-height: 180px; padding: 10px; border: 1px solid var(--ac-border); border-radius: 12px; background: var(--ac-surface-raised); box-shadow: var(--ac-shadow-panel); }
 .local-agent__attachment-summary { flex: none; white-space: nowrap; }
 
-.local-agent__body[data-preparing-viewport] { opacity: 0; }
-.local-agent__opening-status { position: absolute; inset: 0; pointer-events: none; }
+.local-agent__reading-note { color: var(--ac-muted); font-size: var(--ac-font-caption); margin: 0 0 1em; }
+.local-agent__opening-messages { overflow-wrap: anywhere; }
+.local-agent__opening-messages :is(pre, table) { max-width: 100%; overflow-x: auto; }
