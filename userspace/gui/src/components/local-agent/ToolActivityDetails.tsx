@@ -10,7 +10,7 @@ import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { ApprovalActivity } from './ApprovalActivity';
-import { AgentGroupSummary } from './agentNavigation';
+import { AgentActivityDisclosure } from './agentNavigation';
 import { FileChanges } from './FileChanges';
 import { FileReadPreview } from './FileReadPreview';
 import { changedFiles } from './fileChangeSummary';
@@ -70,6 +70,10 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
     : { kind: 'activities' as const, activities: values, ...(blocks.length ? { blocks } : {}), expanded };
   const hostedEntry = (key: string, hosted: ProviderHostedActivityProjection, status: ActivityProjection['status']) =>
     <ProviderHostedEntry key={key} entryKey={key} hosted={hosted} status={status} language={language} onExpand={onExpand} />;
+  if (!hasTools && first?.agent) return <UiRegion slot="activity.row" data={regionData(activities)} actions={{ setExpanded: changeExpanded }}>
+    <article {...identity.part('root')} className="local-agent__tool-group"><AgentActivityDisclosure activities={activities} language={language} expanded={expanded}
+      summaryAction={identity.action('toggle','click')} onChange={(next, node) => { onExpand(node); setExpanded(next); }} /></article>
+  </UiRegion>;
   return (
     <UiRegion slot="activity.row" data={regionData(activities)} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
       <div className="local-agent__tool-group-heading">{hasTools && <UiRegion slot="activity.summary" data={regionData(tools)} actions={{ setExpanded: changeExpanded }}><button
@@ -92,7 +96,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
         <span className="local-agent__tool-group-chevron" aria-hidden="true">
           <AchbitShellIcon name="chevronRight" />
         </span>
-      </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
+      </button></UiRegion>}</div>
       {expanded && hasTools && (
         <UiRegion slot="activity.detail" data={regionData(tools)} actions={{ setExpanded: changeExpanded }}><div className="local-agent__tool-group-items">
           {[...tools.map((activity) => (

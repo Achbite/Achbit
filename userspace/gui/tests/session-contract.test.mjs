@@ -4625,7 +4625,7 @@ test('child decisions use lightweight references without mounting collapsed hist
   const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const [{ AgentTasksPanel }, { AgentNavigationScope, AgentGroupSummary }] = await loadGuiModules(t, [
+  const [{ AgentTasksPanel }, { AgentNavigationScope, AgentActivityDisclosure }] = await loadGuiModules(t, [
     '/src/components/local-agent/AgentTasksPanel.tsx', '/src/components/local-agent/agentNavigation.tsx',
   ]);
   const projection = projectSession(emptySessionState('session:root'));
@@ -4636,7 +4636,7 @@ test('child decisions use lightweight references without mounting collapsed hist
   const activity = { activityId: 'activity:child', kind: 'agent', label: 'Writer', status: 'active',
     agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase: 'started' } };
   const html = renderToStaticMarkup(createElement(AgentNavigationScope, { tasks: [task], pendingDecisions: projection.pendingAgentDecisions },
-    createElement(AgentGroupSummary, { activities: [activity], language: 'en-US' }), createElement(AgentTasksPanel, { projection, language: 'en-US' })));
+    createElement(AgentActivityDisclosure, { activities: [activity], language: 'en-US', expanded: true, onChange() {} }), createElement(AgentTasksPanel, { projection, language: 'en-US' })));
   assert.match(html, /Writer/);
   assert.match(html, /Needs your input/);
   assert.doesNotMatch(html, /Loading conversation|agent-tasks__drawer|<article/);
@@ -4648,7 +4648,7 @@ test('child decisions use lightweight references without mounting collapsed hist
   await assert.rejects(decodeGuiProjection(malformed), /conversation_projection_invalid/, 'an empty decision reference is not a pending question');
 });
 
-test('child entries stay beside ordinary tool folds with one shared status and no extra agent fold', async t => {
+test('child updates have their own compact disclosure beside ordinary tools with one shared terminal status', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const [{ ToolActivityGroup }, { AgentNavigationScope }, { ConversationVirtualRow }] = await loadGuiModules(t, [
@@ -4668,19 +4668,19 @@ test('child entries stay beside ordinary tool folds with one shared status and n
     createElement(ConversationVirtualRow, { rowKey: 'test', eager: true, virtualizer: { layout: () => layout },
       children: () => createElement(ToolActivityGroup, { activities, language: 'zh-CN', onExpand() {}, onOpenWorkspaceResource() {} }) })));
   const onlyAgent = renderGroup([agent]);
-  assert.match(onlyAgent, /Frontend/);
-  assert.doesNotMatch(onlyAgent, /已调用子代理|aria-expanded|local-agent__tool-group-summary/);
-  const mixed = renderGroup([read, agent]);
-  assert.match(mixed, /已读取文件/);
-  assert.match(mixed, /Frontend/);
+  assert.match(onlyAgent, /1 个子代理/);
+  assert.match(onlyAgent, /aria-expanded="false"/);
+  assert.doesNotMatch(onlyAgent, /Frontend|local-agent__tool-group-summary/);
+  assert.match(renderGroup([read]), /已读取文件/);
   layout.state.set('tool-group:expanded', true);
-  const expanded = renderGroup([read, agent]);
-  assert.equal(expanded.match(/>Frontend</g)?.length, 1, 'expanding tool calls does not repeat a child control');
+  assert.equal(renderGroup([agent]).match(/>Frontend</g)?.length, 1, 'an expanded disclosure has one Reader control per activity');
   const secondAgent = { ...agent, activityId: 'activity:second', label: 'Tests',
     agent: { taskId: 'task:b', agentSessionId: 'session:b', phase: 'completed' } };
+  assert.equal(renderGroup([agent, secondAgent]).match(/aria-pressed="false"/g)?.length, 2, 'each member retains its own clickable history entry');
+  layout.state.set('tool-group:expanded', false);
   const twoMembers = renderGroup([agent, secondAgent]);
-  assert.equal(twoMembers.match(/>已完成</g)?.length, 1, 'members in the same state share one compact status label');
-  assert.equal(twoMembers.match(/aria-pressed="false"/g)?.length, 2, 'each member retains its own clickable history entry');
+  assert.match(twoMembers, /2 个子代理/);
+  assert.equal(twoMembers.match(/>已完成</g)?.length, 1, 'completed tasks have one shared status on the closed summary');
 });
 
 test('member updates stay at their arrival position and remain distinct from completed tasks', async t => {
@@ -4704,7 +4704,7 @@ test('member updates stay at their arrival position and remain distinct from com
   assert.deepEqual(await decodeGuiProjection(projection), projection);
   const before = structuredClone(projection);
   const rows = projectionItems(projection);
-  assert.deepEqual(rows.map(row => row.values.map(value => value.activityId)), [['activity:read'], ['activity:update'], ['activity:finished']]);
+  assert.deepEqual(rows.map(row => row.values.map(value => value.activityId)), [['activity:read'], ['activity:update', 'activity:finished']]);
   const html = renderToStaticMarkup(createElement(AgentNavigationScope, { tasks: [{ taskId: 'task:frontend', status: 'completed' }] },
     createElement(AgentGroupSummary, { activities: [update, finished], language: 'zh-CN' })));
   assert.match(html, /已更新/); assert.match(html, /已完成/);
@@ -4715,7 +4715,7 @@ test('member updates stay at their arrival position and remain distinct from com
 test('a reused child keeps historical task outcomes while only the matching live task needs input', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const { AgentNavigationScope, AgentGroupSummary } = await loadGuiModule(t, '/src/components/local-agent/agentNavigation.tsx');
+  const { AgentNavigationScope, AgentActivityDisclosure } = await loadGuiModule(t, '/src/components/local-agent/agentNavigation.tsx');
   const tasks = [
     { taskId: 'task:old', agentSessionId: 'session:reused', childRunId: 'run:old', status: 'completed' },
     { taskId: 'task:current', agentSessionId: 'session:reused', childRunId: 'run:current', status: 'running' },
@@ -4723,20 +4723,22 @@ test('a reused child keeps historical task outcomes while only the matching live
   const decision = { agentSessionId: 'session:reused', displayName: 'North', runId: 'run:current',
     plan: { planId: 'plan:current', revision: 1 }, interactionIds: [] };
   const render = task => renderToStaticMarkup(createElement(AgentNavigationScope, { tasks, pendingDecisions: [decision] },
-    createElement(AgentGroupSummary, { language: 'en-US', activities: [{ activityId: `activity:${task.taskId}`, kind: 'agent',
+    createElement(AgentActivityDisclosure, { language: 'en-US', expanded: true, onChange() {}, activities: [{ activityId: `activity:${task.taskId}`, kind: 'agent',
       label: 'North', status: task.status === 'running' ? 'active' : task.status,
       agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase: 'started' } }] })));
   assert.match(render(tasks[0]), />Completed</);
   assert.doesNotMatch(render(tasks[0]), /Needs your input/);
   assert.match(render(tasks[1]), />Needs your input</);
   const contiguous = renderToStaticMarkup(createElement(AgentNavigationScope, { tasks, pendingDecisions: [decision] },
-    createElement(AgentGroupSummary, { language: 'en-US', activities: tasks.map(task => ({
+    createElement(AgentActivityDisclosure, { language: 'en-US', expanded: true, onChange() {}, activities: tasks.map(task => ({
       activityId: `activity:${task.taskId}`, kind: 'agent', label: 'North',
       status: task.status === 'running' ? 'active' : task.status,
       agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase: 'started' },
     })) })));
   assert.equal(contiguous.match(/aria-pressed="false"/g)?.length, 2, 'contiguous tasks on one Session keep separate history entries');
-  assert.match(contiguous, />Completed</);
+  assert.match(contiguous, />1 subagent</);
+  assert.equal(contiguous.match(/>Started</g)?.length, 2, 'both distinct task starts stay in the event list');
+  assert.doesNotMatch(contiguous, />Completed</, 'a mixed summary is not all complete');
   assert.match(contiguous, />Needs your input</);
   tasks[1].childRunId = 'run:other';
   assert.doesNotMatch(render(tasks[1]), /Needs your input/, 'Session identity alone does not match a current decision');
@@ -5302,13 +5304,14 @@ test('approval operation details include file access while automated review is p
 });
 
 
-test('continuous actions include permissions and Agent events, separated only by visible text or decisions', async t => {
+test('completed permissions stay with their ordinary tools; real child events get their own disclosure before visible text', async t => {
   const { projectionItems } = await loadGuiModule(t, '/src/components/local-agent/conversationItems.ts');
   const { emptySessionState, projectSession } = await import('../../session-core/dist/index.js');
   const projection = projectSession(emptySessionState('session:actions'));
   projection.narratives = [1, 6].map(sequence => ({ narrativeId: `text:${sequence}`, runId: 'run:one', content: `Output ${sequence}`, sequence }));
   projection.activities = ['tool', 'approval', 'tool', 'agent', 'tool'].map((kind, index) => ({
     activityId: `action:${index}`, kind, status: 'completed', label: kind, runId: 'run:one', sequence: index + 2,
+    ...(kind === 'agent' ? { agent: { phase: 'updated', agentSessionId: 'session:worker' } } : {}),
   }));
   projection.timeline = [
     { kind: 'narrative', narrativeId: 'text:1', streamId: 'stream:1', sequence: 1 },
@@ -5320,8 +5323,10 @@ test('continuous actions include permissions and Agent events, separated only by
   ];
   const original = structuredClone(projection);
   const items = projectionItems(projection);
-  assert.deepEqual(items.map(item => item.type), ['narrative', 'toolGroup', 'narrative', 'toolGroup']);
-  assert.deepEqual(items[1].values.map(activity => activity.kind), ['tool', 'approval', 'tool', 'agent']);
+  assert.deepEqual(items.map(item => item.type), ['narrative', 'toolGroup', 'toolGroup', 'narrative', 'toolGroup']);
+  assert.deepEqual(items[1].values.map(activity => [activity.activityId,activity.kind]), [['action:0','tool'], ['action:1','approval'], ['action:2','tool']]);
+  assert.deepEqual(items[2].values.map(activity => [activity.activityId,activity.agent]), [['action:3',{phase:'updated',agentSessionId:'session:worker'}]]);
+  assert.deepEqual(items[4].values.map(activity => activity.activityId), ['action:4']);
   assert.deepEqual(projection, original);
 });
 

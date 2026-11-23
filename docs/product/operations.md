@@ -89,6 +89,8 @@ If a subagent needs execution permission, the main GUI presents the original chi
 
 In the CLI or TUI, `/reply 1` allows a single pending human approval and `/reply 2` denies it. If several approvals are pending, use `/reply --approval <approvalId> <decision>` with the ID shown beside the operation. A model review is not a pending human decision. If the selected request changed, inspect the current decision before replying.
 
+In the conversation, routine subagent updates are folded into a summary. Expand it to see the original events in order or open an agent in Reader. The count is of distinct agents, not update messages; pending decisions remain actionable.
+
 Reader's Subagents view inspects recorded work without resuming it. Closing that view does not cancel the task. Review a child's actual pending decision rather than treating its report as approval.
 
 ## Host lifetime

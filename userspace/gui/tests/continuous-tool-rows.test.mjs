@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { loadGuiModule, loadGuiModules } from './gui-projection-contract.mjs';
+import { findReactElement, loadGuiModule, loadGuiModules } from './gui-projection-contract.mjs';
 
 const runId = 'run:work';
 const block = (id, index) => ({ kind: 'providerHosted', providerToolType: 'web_search', providerCallId: id,
@@ -57,6 +57,67 @@ test('visible draft text, plans, other runs and member notices remain boundaries
   p.timeline.splice(1,0,{kind:'narrative',narrativeId:'empty',streamId:'s',sequence:2});
   assert.equal(projectionItems(p).length,1,'a whitespace-only historical placeholder is not a boundary');
   assert.equal(projectionItems({...p,narratives:[{...p.narratives[0],sourceReferences:{citations:[],unresolved:true}}]}).length,3,'even without text a visible source notice stays in place');
+});
+
+test('child notices fold across independent tools, with chronological Reader actions and stable virtual disclosure', async t => {
+  const [{projectionItems, conversationRounds}, {ToolActivityGroup}, {ConversationVirtualRow}, {AgentNavigationScope, AgentGroupSummary}, {READER_OPEN_EVENT}] = await loadGuiModules(t, [
+    '/src/components/local-agent/conversationItems.ts','/src/components/local-agent/ToolActivityDetails.tsx','/src/components/local-agent/ConversationVirtualRow.tsx',
+    '/src/components/local-agent/agentNavigation.tsx','/src/components/local-agent/readerState.ts']);
+  const notice = (sequence, agentSessionId, phase, status = 'completed') => ({kind:'agent', activityId:`notice:${sequence}`, runId, sequence,
+    label:'Reviewer', status, agent: {agentSessionId, phase, ...(phase === 'updated' ? {} : {taskId:`task:${agentSessionId}`})} });
+  const read = n => ({...local, sequence:n, activityId:`read:${n}`});
+  const [a,b] = ['session:gui', 'session:kernel'];
+  const activities = [read(1),notice(2,a,'started'),notice(3,a,'updated'),read(4),notice(5,b,'started'),
+    notice(6,a,'updated'),read(7),notice(8,a,'completed'),notice(9,b,'completed')];
+  const rows = cells => conversationRounds(projectionItems(snapshot(cells.map(x => [`turn:${x.sequence}`, x]))), [], runId)[0].rows;
+  const early = rows(activities.slice(0,4)), final = rows(activities);
+  assert.deepEqual(final.map(r => r.item.values.map(x => x.sequence)), [[1],[2,3,5,6,8,9],[4,7]]);
+  assert.deepEqual(early.map(r => r.key), final.map(r => r.key), 'later agent updates and ordinary calls cannot rekey earlier disclosures');
+  const cache = new Map(), virtualizer = { layout(key) { if (!cache.has(key)) cache.set(key,{state:new Map()}); return cache.get(key); } };
+  const render = list => renderToStaticMarkup(createElement(AgentNavigationScope, {sessionId:'session:parent'}, list.map(row => createElement(ConversationVirtualRow,
+    {key:row.key, rowKey:row.key, eager:true, virtualizer, children:() => createElement(ToolActivityGroup, {activities:row.item.values, language:'zh-CN', onExpand(){},onOpenWorkspaceResource(){}})}))));
+  const closed = render(final);
+  assert.equal((closed.match(/class="agent-tasks__fold"/g) ?? []).length, 1);
+  assert.match(closed, /2 个子代理/); assert.match(closed, />已完成</); assert.doesNotMatch(closed, /Reviewer/);
+  assert.equal((closed.match(/class="local-agent__tool-group-summary"/g) ?? []).length, 2, 'both tool disclosures still render');
+  assert.match(render(rows(activities.slice(1,3))), /1 个子代理/);
+  assert.doesNotMatch(render(rows([notice(3,a,'updated'),notice(6,a,'updated')])), /已完成/, 'delivery is not task completion');
+  const memberKey = early[1].key;
+  virtualizer.layout(memberKey).state.set('tool-group:expanded',true);
+  const expanded = render(final);
+  assert.deepEqual([...expanded.matchAll(/aria-label="Reviewer · ([^"]+)"/g)].map(match => match[1]),
+    ['已开始','已更新','已开始','已更新','已完成','已完成']);
+  assert.match(expanded, /<details[^>]*open/); assert.equal((expanded.match(/class="local-agent__tool-group-summary"[^>]*aria-expanded="false"/g) ?? []).length,2);
+  const failed = render(rows([...activities.slice(0,8),notice(9,b,'completed','failed')]));
+  const summary = failed.match(/<summary\b[^>]*>[\s\S]*?<\/summary>/)[0];
+  assert.match(summary, />失败</); assert.doesNotMatch(summary, />已完成</);
+  const previousWindow = globalThis.window; globalThis.window = new EventTarget(); t.after(() => { globalThis.window = previousWindow; });
+  const opened = []; window.addEventListener(READER_OPEN_EVENT,event => opened.push(event.detail.target));
+  function ClickEventEntries() {
+    const tree = AgentGroupSummary({activities:final[1].item.values, language:'zh-CN'});
+    for (const row of tree.props.children) findReactElement(row,node => typeof node.props.onClick === 'function').props.onClick();
+    return null;
+  }
+  renderToStaticMarkup(createElement(AgentNavigationScope,{sessionId:'session:parent'},createElement(ClickEventEntries)));
+  assert.deepEqual(opened.map(x => x.agentSessionId),[a,a,b,a,a,b]);
+  assert.ok(opened.every(x => x.parentSessionId === 'session:parent'));
+  assert.equal(new Set(opened.map(x => x.entryId)).size,6, 'retained child still has a distinct Reader entry for each event');
+});
+
+test('child folds do not move notices across a user message, pending approval, interaction or parent run', async t => {
+  const {projectionItems} = await loadGuiModule(t,'/src/components/local-agent/conversationItems.ts');
+  const update = (i, run = runId) => ({ kind:'agent',activityId:`u:${i}`,sequence:i,runId:run,label:'Gui',status:'completed',agent:{phase:'updated',agentSessionId:'session:gui'} });
+  const approval = {...local, kind:'approval', activityId:'approval:p', status:'waiting', sequence:3};
+  const question = {...local,kind:'interaction',activityId:'interaction:q',callId:'q',sequence:6};
+  const cells = [update(1),update(2),approval,update(4),update(5),question,update(7),update(8),update(10),update(11,'other')];
+  const p = snapshot(cells.map(x => [`r:${x.sequence}`,x]));
+  p.interactions = [{callId:'q',sequence:6,runId,status:'pending'}];
+  p.messages = [{messageId:'user-boundary',role:'user',content:'Next request',runId,sequence:9}];
+  p.timeline.splice(8,0,{kind:'message',messageId:'user-boundary',sequence:9});
+  const rows = projectionItems(p);
+  assert.deepEqual(rows.map(r => r.type === 'toolGroup' ? r.values.map(v => v.activityId) : r.type),
+    [['u:1','u:2'],['approval:p'],['u:4','u:5'],'interaction',['u:7','u:8'],'message',['u:10'],['u:11']]);
+  assert.equal(rows[1].values[0].status,'waiting'); assert.equal(rows[3].value.status,'pending');
 });
 
 test('folded conflict counts follow Provider requests across split and merged rows, not every rejected or failed call', async t => {

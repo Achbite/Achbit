@@ -38,7 +38,8 @@ export type HostedDraftGroup = { type: 'providerHostedGroup'; runId: string; tur
 export const hostedEntryKey = (runId: string, turnId: string, callId: string): string =>
   `hosted:${JSON.stringify([runId, turnId, callId])}`;
 
-const hasMemberNotice = (values: ActivityProjection[]) => values.some(a => a.agent && a.agent.phase !== 'started');
+const decisionActivity = (a: ActivityProjection) => a.kind === 'plan' || a.kind === 'interaction' || a.status === 'waiting'
+  || (a.kind === 'approval' && (a.status === 'active' || a.status === 'requested')) || a.notExecuted?.reason === 'approvalRequired';
 
 export type AssistantDraftItem =
   | { type: 'planPreview'; value: NonNullable<NonNullable<SessionProjection['assistantDraft']>['planPreview']>; key: string }
@@ -157,14 +158,28 @@ export function projectionItems(projection: SessionProjection | null): Projectio
     }
     return rows;
   });
+  // Keep one disclosure anchored to the first child event in an uninterrupted segment.
+  // Later notices can pass ordinary tools into that disclosure; tools never change order.
+  let agents: Extract<ProjectionItem, { type: 'toolGroup' }> | undefined;
   for (const item of displayItems) {
-    const previous = grouped.at(-1);
-    if (item.type === 'toolGroup' && previous?.type === 'toolGroup'
-      && item.values[0]?.runId === previous.values[0]?.runId
-      // An arriving member notification belongs at its event position, after preceding tools.
-      && !hasMemberNotice(item.values) && !hasMemberNotice(previous.values)) {
-      previous.values.push(...item.values);
-    } else grouped.push(item);
+    if (item.type !== 'toolGroup') { agents = undefined; grouped.push(item); continue; }
+    for (const [i, a] of item.values.entries()) {
+      if (agents?.values[0]?.runId !== a.runId) agents = undefined;
+      if (a.agent) {
+        if (agents) agents.values.push(a);
+        else {
+          agents = { ...item, groupId: `agent-fold:${a.activityId}`, sequence: a.sequence, values: [a] };
+          grouped.push(agents);
+        }
+        continue;
+      }
+      const barrier = decisionActivity(a);
+      if (barrier) agents = undefined;
+      const previous = grouped.at(-1);
+      if (!barrier && previous?.type === 'toolGroup' && !previous.values[0]?.agent
+        && previous.values[0]?.runId === a.runId && !decisionActivity(previous.values.at(-1)!)) previous.values.push(a);
+      else grouped.push({ ...item, groupId: i ? `${item.groupId}:${a.activityId}` : item.groupId, sequence: a.sequence, values: [a] });
+    }
   }
   if (batchAtActivity.size) for (const item of grouped) {
     if (item.type !== 'toolGroup') continue;
@@ -226,7 +241,7 @@ export function conversationRounds(items: ProjectionItem[], drafts: AssistantDra
       const round = rounds.at(-1);
       const last = round?.runId === currentRunId ? round.rows.at(-1) : undefined;
       if (last?.draft?.type === 'providerHostedGroup') last.draft = { ...draft, blocks: [...last.draft.blocks, ...blocks] };
-      else if (last?.item?.type === 'toolGroup' && !hasMemberNotice(last.item.values)) last.draft = { ...draft, blocks };
+      else if (last?.item?.type === 'toolGroup' && !last.item.values[0]?.agent && !decisionActivity(last.item.values.at(-1)!)) last.draft = { ...draft, blocks };
       else append(currentRunId, { key: keyOf(blocks[0]!), draft: { ...draft, blocks } });
     }
     if (rounds.at(-1)?.runId !== currentRunId) rounds.push({ key: currentRunId, runId: currentRunId, rows: [] });
