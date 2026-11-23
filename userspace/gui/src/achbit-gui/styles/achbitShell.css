@@ -242,7 +242,6 @@
   display: inline-flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; app-region: no-drag;
 }
 .achbit-local-agent-settings__close:hover { background: var(--ac-surface-hover); }
-.achbit-local-agent-settings__close kbd { font: 10px var(--ac-font-ui); color: var(--ac-faint); border: 1px solid var(--ac-border); border-radius: 4px; padding: 0 3px; }
 
 .achbit-gui-sidebar-actions,
 .achbit-gui-session-list,

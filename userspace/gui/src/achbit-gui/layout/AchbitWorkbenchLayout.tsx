@@ -22,6 +22,7 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import AchbitSidebar from './AchbitSidebar';
 import { ModelSettingsNavigation, type ModelSettingsTarget } from '../../components/settings-center/modelSettingsNavigation';
+import { useSettingsEscape } from '../../components/settings-center/useSettingsEscape';
 import SidebarMenu from './SidebarMenu';
 import { useReadRunMarkers } from './useReadRunMarkers';
 import { useCompletionNotifications } from './useCompletionNotifications';
@@ -174,20 +175,15 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     }
     previousSettingsOpen.current = settingsOpen;
   }, [settingsOpen, interaction]);
+  useSettingsEscape(settingsOpen, () => setSettingsOpen(false), 'workbench');
   useEffect(() => {
     if (!settingsOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       // Blank-area clicks can focus body, outside the React workbench subtree.
-      // An inner dialog or control that consumes Escape retains priority.
-      if (event.defaultPrevented || event.isComposing
+      // Keep other shortcuts out of the workbench. Escape bubbles through the settings layers.
+      if (event.key === 'Escape' || event.defaultPrevented || event.isComposing
         || document.querySelector('dialog[open]')) return;
-      if (event.key !== 'Escape') {
-        event.stopPropagation();
-        return;
-      }
-      event.preventDefault();
       event.stopPropagation();
-      setSettingsOpen(false);
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
@@ -390,7 +386,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
         titlebar: <><AchbitTitlebar sessionHeaderRef={setSessionHeader} language={language} settings={settingsOpen ? <>
         <strong>{t(language, 'settings.title')}</strong>
         <button type="button" ref={settingsClose} className="achbit-local-agent-settings__close" onClick={() => setSettingsOpen(false)}>
-          {t(language, 'achbitGui.settings.close')} <kbd>esc</kbd>
+          {t(language, 'achbitGui.settings.close')}
         </button>
       </> : undefined} /></>,
         navigation: <UiRegion slot="navigation" data={{ kind: 'navigation', projects: sidebarOrder.projects, sessions: sidebarOrder.sessions, activeSessionId, busy: selectionBusy }}

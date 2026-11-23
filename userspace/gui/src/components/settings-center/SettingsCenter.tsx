@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { UI_ICON_ROLES } from '../../ui-components';
 import { SettingsSearchContext, SettingsSearchTargets, matchesSettingsQuery, type SettingsSearchEntry } from './settingsSearch';
 import { settingsSearchDefinitions } from './sections/CategorizedSettingsSections';
+import { useSettingsEscape } from './useSettingsEscape';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
@@ -68,6 +69,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
   ];
 
   const searching = !!searchQuery.trim();
+  useSettingsEscape(searching, () => setSearchQuery(''));
   const environment = useSettingsStore((state) => state.environment);
   const definitions = settingsSearchDefinitions(language, environment?.os);
   const entries = [

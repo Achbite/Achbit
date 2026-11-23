@@ -11,6 +11,7 @@ import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { useSettingsStore } from '../../../state/settingsStore';
 import { useSettingsSearchEntries } from '../settingsSearch';
 import { useSettingsHelp } from '../SettingsHelp';
+import { useSettingsEscape } from '../useSettingsEscape';
 import { AgentSettingsSection } from './CategorizedSettingsSections';
 import ModelEditor, { newModelDraft } from '../model-services/ModelEditor';
 import ModelPickerDialog from '../model-services/ModelPickerDialog';
@@ -174,21 +175,13 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
   const addButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!active) return;
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]') || (event.target instanceof Element && event.target.closest('[data-escape-layer="open"]'))) return;
-      if (page.kind === 'list') return;
-      event.preventDefault(); event.stopPropagation();
-      const origin = captureFocusReturn();
-      setPage({ kind: 'list' });
-      requestAnimationFrame(() => returnInteractionFocus({ ...origin, target: addButton.current }, interaction?.keyboard ?? true));
-    };
-    // Inner editors own Escape first (for example, cancelling a number draft).
-    // Handle navigation only after their React handlers have had a chance to stop it.
-    document.addEventListener('keydown', escape);
-    return () => document.removeEventListener('keydown', escape);
-  }, [active, page.kind, interaction]);
+  const backToPeriod = useRef<(() => boolean) | null>(null);
+  useSettingsEscape(active && page.kind !== 'list', () => {
+    if (backToPeriod.current?.()) return;
+    const origin = captureFocusReturn();
+    setPage({ kind: 'list' });
+    requestAnimationFrame(() => returnInteractionFocus({ ...origin, target: addButton.current }, interaction?.keyboard ?? true));
+  });
   const refresh = useCallback(async (id?: string) => {
     const [connectionsResult, profilesResult] = await Promise.all([getModelConnections(), getLlmProfiles()]);
     setCatalog(data(connectionsResult));
@@ -245,7 +238,7 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
       <div className="model-actions model-divider"><button onClick={() => setPage({ kind: 'web' })}>{text('Web 工具', 'Web tools')} ›</button><button className="model-push" onClick={() => void refresh().catch(e => setError(message(e)))}>{text('重新加载', 'Reload')}</button></div>
     </>}
     {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} targetProfileId={page.kind === 'connection' ? page.profileId : undefined} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onMode={mode => setPage({ kind: 'new', mode })} onSaved={refresh} onBack={goBack} />}
-    {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} />}
+    {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} backToPeriodRef={backToPeriod} />}
     {page.kind === 'web' && <AgentSettingsSection category="services" />}
   </section>;
 }
