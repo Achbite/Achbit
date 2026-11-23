@@ -1,13 +1,12 @@
 import type { ConversationReadingWindow, ConversationSessionStatus, ProjectionMessage, SessionProjection } from '@achbit/protocol';
 import type { CachedSessionView } from './contextWindowReading';
 
-const MiB = 1024 * 1024;
-/** Admission accounting, not a measurement of a JS engine's heap. One active canonical view is exempt. */
-const FULL = { count: 6, perEntry: 8 * MiB, total: 24 * MiB, timelineEntries: 32768 };
+// The selected view counts toward six but spends no inactive timeline rows.
+const FULL = { count: 6, timelineEntries: 32_768 };
 const WINDOWS = { count: 2, perEntry: 256 * 1024, total: 384 * 1024, perEntryRows: 24, totalRows: 36 };
 
-// Charge string storage in UTF-16 bytes and every scalar, object key and array slot. Bounded walk:
-// no serialization/encoding of a jumbo message, and no whole-history scratch buffer to size it.
+// Estimate retained reading windows and their metadata only, never whole projections.
+// Bound the walk without serializing message bodies or allocating an encoded copy.
 function charge(value: unknown, limit: number, depth = 0): number {
   if (limit < 0 || depth > 96) return Infinity;
   if (typeof value === 'string') return 16 + 2 * value.length;
@@ -142,7 +141,6 @@ function sameWireValue(a: unknown, b: unknown): boolean {
 export class RecentSessionViews {
   private strong = new Map<string, CachedSessionView>();
   private soft = new Map<string, Candidate>();
-  private sizes = new WeakMap<SessionProjection, number>();
   private recency = new WeakMap<CachedSessionView, number>();
   private clock = 0;
   // If a renderer still holds the exact projection, its measured context reading travels
@@ -177,24 +175,17 @@ export class RecentSessionViews {
     this.trim(selectedId);
   }
 
-  private size(view: CachedSessionView) {
-    const p = view.projection;
-    let bytes = this.sizes.get(p);
-    if (bytes === undefined) { bytes = charge(p, FULL.perEntry); this.sizes.set(p, bytes); }
-    return bytes + charge(view.contextWindowReading, FULL.perEntry - bytes);
-  }
-
   shouldRemember(p: SessionProjection) {
     const active = this.strong.get(p.sessionId);
     if (active?.projection !== p || !independent(p) || p.queuedInputs.length || p.terminalError
       || p.deliverables.length || p.artifacts.length || p.fileChangeRounds?.length) return false;
-    // At most six already-sized views. The exact same projection is never walked again for sizing.
-    let bytes = this.size(active), rows = p.timeline.length;
-    if (bytes > FULL.perEntry || rows > FULL.timelineEntries) return true;
-    for (const other of this.strong.values()) if (other !== active) {
-      bytes += this.size(other); rows += other.projection.timeline.length;
+    // Capture only if deselection could exceed the row budget. No message body needs sizing.
+    let rows = 0;
+    for (const view of this.strong.values()) {
+      rows += view.projection.timeline.length;
+      if (rows > FULL.timelineEntries) return true;
     }
-    return bytes > FULL.total || rows > FULL.timelineEntries;
+    return false;
   }
 
   remember(p: SessionProjection, range: ReadingWindowRange | null) {
@@ -223,16 +214,15 @@ export class RecentSessionViews {
   }
 
   trim(selectedId: string | null) {
-    let bytes = 0, rows = 0, count = selectedId && this.strong.has(selectedId) ? 1 : 0;
+    let rows = 0, count = selectedId && this.strong.has(selectedId) ? 1 : 0;
     for (const [id, view] of [...this.strong].reverse()) {
       if (id === selectedId) continue;
       const p = view.projection;
-      const size = this.size(view);
-      if (count < FULL.count && size <= FULL.perEntry && bytes + size <= FULL.total && rows + p.timeline.length <= FULL.timelineEntries) {
-        count++; bytes += size; rows += p.timeline.length; continue;
+      if (count < FULL.count && rows + p.timeline.length <= FULL.timelineEntries) {
+        count++; rows += p.timeline.length; continue;
       }
       this.strong.delete(id);
-      // A count-only eviction of old small views follows the original six-item policy.
+      // Exceeding the six-view limit alone does not leave a soft candidate.
       if (!independent(p) || count >= FULL.count) continue;
       const captured = this.capture?.sessionId === id && this.capture.revision === p.revision ? this.capture : null;
       const weak = typeof WeakRef === 'function' ? new WeakRef(view) : undefined;
