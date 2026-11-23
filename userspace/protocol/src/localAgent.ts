@@ -2350,6 +2350,9 @@ export type ToolExecutionRecord =
   | (ToolExecutionRecordBase & { outcome: 'cancelled'; output?: unknown })
   | (ToolExecutionRecordBase & { outcome: 'indeterminate'; output?: unknown; error: LocalAgentError });
 
+/** Roles recorded by Session when a control invalidates its entire Provider batch. */
+export const CONTROL_TURN_ISSUE = { source: 'control_turn_source', peer: 'control_turn_peer' } as const;
+
 export interface ToolInputIssue {
   path: string;
   rule: string;

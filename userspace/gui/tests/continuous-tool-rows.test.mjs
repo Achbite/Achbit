@@ -59,6 +59,39 @@ test('visible draft text, plans, other runs and member notices remain boundaries
   assert.equal(projectionItems({...p,narratives:[{...p.narratives[0],sourceReferences:{citations:[],unresolved:true}}]}).length,3,'even without text a visible source notice stays in place');
 });
 
+test('folded conflict counts follow Provider requests across split and merged rows, not every rejected or failed call', async t => {
+  const [{projectionItems},{ToolActivityGroup},{ConversationVirtualRow}] = await loadGuiModules(t,[
+    '/src/components/local-agent/conversationItems.ts','/src/components/local-agent/ToolActivityDetails.tsx','/src/components/local-agent/ConversationVirtualRow.tsx']);
+  const rejected = (id, rules, code = 'session_control_turn_conflict') => ({...local, callId: id, activityId: `tool:${id}`,
+    status: 'rejected', inputRejection: { code, message: `original error ${id}`, issues: rules.map(rule => ({ rule,
+      path: rule === 'required' ? '$.delivery' : '$', message: `original issue ${id}` })) } });
+  const first = rejected('source-a', ['control_turn_source']);
+  const peers = Array.from({length: 4}, (_, n) => rejected(`held:${n}`, ['control_turn_peer']));
+  const second = rejected('bad-field', ['required','control_turn_source'], 'session_control_shape_invalid');
+  const ordinary = rejected('individual', ['json_object'], 'provider_tool_call_arguments_invalid');
+  const service = rejected('service', ['session_control_schema'], 'agent_loop_failed');
+  const legacy = rejected('no-role', ['control_turn']);
+  const failed = {...local, activityId:'tool:failed', status:'failed', tool:{operation:'bash', resources:[], error:{code:'exit_nonzero', message:'command failed'}}};
+  const entries = [['a',first], ...peers.map(a => ['a',a]), ['b',second], ['b',rejected('held:b',['control_turn_peer'])],
+    ['b',ordinary], ['c',service], ['d',legacy], ['e',failed], ['f',local]];
+  const p = snapshot(entries);
+  p.narratives = [{narrativeId:'middle',runId,content:'Interposed narrative'}];
+  p.timeline.splice(1,0,{kind:'narrative',narrativeId:'middle',streamId:'middle',sequence:2});
+  const groups = projectionItems(p).filter(item => item.type === 'toolGroup');
+  assert.equal(groups.length, 2, 'existing continuous disclosure still merges adjacent requests');
+  assert.deepEqual(groups.map(group => group.batchConflicts), [[{providerRequestId:'a',sources:1,peers:4}], [{providerRequestId:'b',sources:1,peers:1}]]);
+  const layout={state:new Map()};
+  const render=group=>renderToStaticMarkup(createElement(ConversationVirtualRow,{rowKey:group.groupId,eager:true,virtualizer:{layout:()=>layout},
+    children:()=>createElement(ToolActivityGroup,{activities:group.values,batchConflicts:group.batchConflicts,language:'zh-CN',onExpand(){},onOpenWorkspaceResource(){}})}));
+  assert.match(render(groups[0]), /1 项触发冲突，4 项随批未执行/u);
+  assert.match(render(groups[1]), /1 项触发冲突，1 项随批未执行/u);
+  layout.state.set('tool-group:expanded',true);
+  for (const a of [second, service, failed]) layout.state.set(`tool:${a.activityId}:expanded`,true);
+  const html=render(groups[1]);
+  assert.match(html,/session_control_shape_invalid/u); assert.match(html,/original error bad-field/u); assert.match(html,/\$\.delivery/u);
+  assert.match(html,/随批未执行/u); assert.match(html,/original error service/u); assert.match(html,/command failed/u);
+});
+
 test('the shared disclosure keeps an opened search and the real command error when the search settles', async t => {
   const [{projectionItems,assistantDraftItems,conversationRounds,hostedEntryKey},{ToolActivityGroup},{ConversationVirtualRow}] = await loadGuiModules(t,[
     '/src/components/local-agent/conversationItems.ts','/src/components/local-agent/ToolActivityDetails.tsx','/src/components/local-agent/ConversationVirtualRow.tsx']);

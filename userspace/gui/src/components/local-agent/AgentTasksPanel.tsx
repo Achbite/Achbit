@@ -156,7 +156,7 @@ export function AgentConversationHistory({ projection, name, language, expanded 
     {rounds.flatMap(round => round.rows).map(({ key, item, draft }) => {
       if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
         const group = item?.type === 'toolGroup' ? item : undefined;
-        return <ToolActivityGroup key={key} activities={group?.values ?? []} hostedKeys={group?.hostedKeys}
+        return <ToolActivityGroup key={key} activities={group?.values ?? []} hostedKeys={group?.hostedKeys} batchConflicts={group?.batchConflicts}
           hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection.artifacts} language={language} onExpand={() => {}}
           pendingApproval={projection.pendingApproval} reviewingApproval={isAutomaticApproval(projection.pendingApproval, projection.run)} onOpenWorkspaceResource={openResource} />;
       }

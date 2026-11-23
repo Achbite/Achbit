@@ -255,7 +255,7 @@ export function ConversationTranscript({
   const renderRow = ({ item, draft }: ConversationRow) => {
     if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
       const group = item?.type === 'toolGroup' ? item : undefined;
-      return <ToolActivityGroup activities={group?.values ?? []} hostedKeys={group?.hostedKeys}
+      return <ToolActivityGroup activities={group?.values ?? []} hostedKeys={group?.hostedKeys} batchConflicts={group?.batchConflicts}
         hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection?.artifacts}
         pendingApproval={projection?.pendingApproval} reviewingApproval={isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run)}
         language={language} onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}

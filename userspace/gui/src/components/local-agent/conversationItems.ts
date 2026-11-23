@@ -1,4 +1,12 @@
-import type { ActivityProjection, AssistantDraftBlockProjection, SessionProjection } from '@achbit/protocol';
+import { CONTROL_TURN_ISSUE, type ActivityProjection, type AssistantDraftBlockProjection, type SessionProjection } from '@achbit/protocol';
+
+export interface BatchConflictSummary { providerRequestId: string; sources: number; peers: number }
+
+export function batchConflictRole(activity: ActivityProjection): 'source' | 'peer' | undefined {
+  if (activity.kind !== 'tool' || activity.status !== 'rejected') return;
+  const issue = activity.inputRejection?.issues.find(issue => issue.rule === CONTROL_TURN_ISSUE.source || issue.rule === CONTROL_TURN_ISSUE.peer);
+  if (issue) return issue.rule === CONTROL_TURN_ISSUE.source ? 'source' : 'peer';
+}
 
 export type ProjectionItem =
   | {
@@ -20,6 +28,7 @@ export type ProjectionItem =
       sequence: number;
       groupId: string;
       values: ActivityProjection[];
+      batchConflicts?: BatchConflictSummary[];
       /** Shared lookup for this snapshot; a Provider call ID is scoped to its request. */
       hostedKeys?: ReadonlyMap<string, string>;
     };
@@ -75,6 +84,10 @@ export function projectionItems(projection: SessionProjection | null): Projectio
   const activities = new Map(projection.activities.map((value) => [value.activityId, value]));
   const interactions = new Map(projection.interactions.map(value => [value.callId, value]));
   const hostedKeys = new Map<string, string>();
+  // A request can span narrative rows, and consecutive requests share disclosures.
+  // Count only Session's explicit per-call roles; anchor each request's notice once.
+  const batchCounts = new Map<string, BatchConflictSummary>();
+  const batchAtActivity = new Map<string, BatchConflictSummary>();
   const items = projection.timeline.map((item): ProjectionItem => {
     switch (item.kind) {
       case 'message':
@@ -109,7 +122,17 @@ export function projectionItems(projection: SessionProjection | null): Projectio
       case 'toolGroup': {
         const values = item.activityIds.map(id => requiredProjectionValue(activities.get(id), 'conversation_timeline_activity_missing'));
         for (const a of values) {
-          if (a.providerHosted && item.providerRequestId) hostedKeys.set(a.activityId, hostedEntryKey(a.runId, item.providerRequestId, a.providerHosted.providerCallId));
+          if (!item.providerRequestId) continue;
+          if (a.providerHosted) hostedKeys.set(a.activityId, hostedEntryKey(a.runId, item.providerRequestId, a.providerHosted.providerCallId));
+          const role = batchConflictRole(a);
+          if (!role) continue;
+          let batch = batchCounts.get(item.providerRequestId);
+          if (!batch) {
+            batch = { providerRequestId: item.providerRequestId, sources: 0, peers: 0 };
+            batchCounts.set(item.providerRequestId, batch);
+            batchAtActivity.set(a.activityId, batch);
+          }
+          if (role === 'source') batch.sources++; else batch.peers++;
         }
         return { type: 'toolGroup', sequence: item.sequence, groupId: item.timelineId, values, hostedKeys };
       }
@@ -142,6 +165,11 @@ export function projectionItems(projection: SessionProjection | null): Projectio
       && !hasMemberNotice(item.values) && !hasMemberNotice(previous.values)) {
       previous.values.push(...item.values);
     } else grouped.push(item);
+  }
+  if (batchAtActivity.size) for (const item of grouped) {
+    if (item.type !== 'toolGroup') continue;
+    const batches = item.values.flatMap(a => batchAtActivity.get(a.activityId) ?? []);
+    if (batches.length) item.batchConflicts = batches;
   }
   projectionItemCache.set(projection, grouped);
   return grouped;

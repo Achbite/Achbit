@@ -382,6 +382,65 @@ test('a session control mixed with child creation is rejected before either oper
   assert.match(errors[1].error.message, /session\(action=schedule\) \[mixed:session\].*该调用触发冲突/u);
 });
 
+test('control conflicts preserve each input, identify the source and only hold back otherwise admissible siblings', async t => {
+  const ownerId = 'session:control-correction';
+  const read = (id, path = 'evidence.txt') => [id, 'fs_read', JSON.stringify({ path })];
+  // A valid exclusive call, a valid agent-only action, then an invalid action which
+  // must not mask an independent malformed sibling or make its fields an execution.
+  const batches = [
+    [['describe', 'session', '{"action":"describe"}'], ...[0, 1, 2, 3].map(i => read(`held:${i}`))],
+    [['send', 'agent', '{"action":"send","agentId":"session:member","text":"Evidence"}'], read('held:send')],
+    [['typo', 'agent', '{"action":"statuz"}'], read('held:typo'), ['bad:json', 'fs_read', '{"path":']],
+    [['fields', 'session', '{"action":"describe","timeoutSeconds":5}'], read('held:fields')],
+  ];
+  const executions = [];
+  const tool = { name: 'fs.read', toolBindingRef: 'binding:batch-read', origin: 'coreBuiltin', availability: 'callable',
+    description: 'Read a file', possibleEffects: ['workspaceRead'], inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } } };
+  const fixture = await serviceFixture(t, ownerId, async function* ({ request, turn }) {
+    if (turn > 1 && turn <= batches.length + 1) {
+      const last = batches[turn - 2];
+      const results = last.map(([id]) => JSON.parse(request.messages.find(message => message.role === 'tool' && message.providerCallId === id).content));
+      assert.ok(results.every(result => result.executed === false));
+      const errors = results.map(result => result.error);
+      assert.ok(errors[0].issues.some(issue => issue.rule === 'control_turn_source' && issue.message.includes(last[0][0])));
+      for (const [index, [id]] of last.entries()) if (id.startsWith('held:')) {
+        assert.equal(errors[index].code, 'session_control_turn_conflict');
+        assert.deepEqual(errors[index].issues.map(issue => issue.rule), ['control_turn_peer']);
+      }
+      if (turn === 4) {
+        assert.equal(errors[0].code, 'agent_action_invalid');
+        assert.ok(errors[0].issues.some(issue => issue.path === '$.action'));
+        assert.equal(errors[2].code, 'provider_tool_call_arguments_invalid');
+        assert.deepEqual(errors[2].issues.map(issue => issue.rule), ['json_object']);
+      }
+      if (turn === 5) {
+        assert.equal(errors[0].code, 'session_control_shape_invalid');
+        assert.ok(errors[0].issues.some(issue => issue.path === '$.timeoutSeconds' && issue.rule === 'additionalProperties'));
+      }
+    }
+    if (turn <= batches.length) {
+      for (const [index, [id, name, raw]] of batches[turn - 1].entries()) yield turn % 2 === 1
+        ? providerEvent(request.requestId, 'tool.call', { callId: id, name, arguments: raw })
+        : providerEvent(request.requestId, 'output.item.completed', { outputIndex: index, item: { type: 'function_call', call_id: id, name, arguments: raw } });
+    } else if (turn === batches.length + 1) {
+      assert.deepEqual(executions, [], 'no rejected batch was split or executed');
+      yield call(request, 'corrected:read', 'fs_read', { path: 'corrected.txt' });
+    } else { assert.equal(turn, batches.length + 2); yield answer(request, 'Correction received.'); }
+    yield done(request);
+  }, { preparation: { tools: [tool] }, kernel: () => emptyKernel({ async execute(request) {
+    executions.push(request.input.path); return completedExecutionReply(request, { content: 'corrected result' });
+  } }) });
+  await fixture.service.submit(messageCommand(ownerId, 'command:control-correction', 'Inspect the batch rules.'));
+  await completed(fixture.service, ownerId);
+  const events = await readEvents(fixture.journal, ownerId);
+  const rejected = events.filter(e => e.type === 'provider.turn.settled').flatMap(e =>
+    e.payload.toolCallInputs?.filter(call => call.error).map(c => [c.providerCallId, c.arguments])
+    ?? e.payload.orderedOutputBlocks?.filter(c => c.kind === 'toolCallRejected').map(c => [c.providerCallId, c.item.arguments]) ?? []);
+  assert.deepEqual(rejected, batches.flat().map(([id, , raw]) => [id, raw]));
+  assert.deepEqual(executions, ['corrected.txt']);
+  assert.equal(events.some(e => ['agent.control.completed', 'session.control.completed', 'agent.message.sent'].includes(e.type)), false);
+});
+
 test('a retained child continues across parent runs with its original Session, model and conversation', async t => {
   const ownerId = 'session:retained-member';
   const rootTurns = new Map();

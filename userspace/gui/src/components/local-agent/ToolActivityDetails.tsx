@@ -1,6 +1,6 @@
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import { hostedEntryKey, type HostedBlock, type HostedDraftGroup } from './conversationItems';
+import { batchConflictRole, hostedEntryKey, type BatchConflictSummary, type HostedBlock, type HostedDraftGroup } from './conversationItems';
 import { isPendingShell, shellCommandPreview } from './shellProgress';
 import './shellProgress.css';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -31,6 +31,7 @@ interface ToolActivityGroupProps {
   pendingApproval?: SessionProjection['pendingApproval'];
   reviewingApproval?: boolean;
   activities: ActivityProjection[];
+  batchConflicts?: BatchConflictSummary[];
   hostedDraft?: HostedDraftGroup;
   hostedKeys?: ReadonlyMap<string, string>;
   language: UiLanguage;
@@ -40,7 +41,7 @@ interface ToolActivityGroupProps {
 
 export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
   artifacts = [],
-  activities, hostedDraft, hostedKeys, pendingApproval, reviewingApproval = false,
+  activities, batchConflicts, hostedDraft, hostedKeys, pendingApproval, reviewingApproval = false,
   language,
   onExpand,
   onOpenWorkspaceResource,
@@ -62,7 +63,8 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
   const tools = activities.filter(activity => !activity.agent);
   const blocks = hostedDraft?.blocks ?? [];
   const hasTools = tools.length > 0 || blocks.length > 0;
-  const summary = toolGroupSummary(tools, language, blocks);
+  const summary = [toolGroupSummary(tools, language, blocks), ...(batchConflicts ?? []).map(({ sources, peers }) =>
+    t(language, 'agent.tool.batchConflict.summary', { sources, peers }))].join(' · ');
   const regionData = (values: ActivityProjection[]) => !activities.length && hostedDraft
     ? { kind: 'providerHosted' as const, blocks, expanded }
     : { kind: 'activities' as const, activities: values, ...(blocks.length ? { blocks } : {}), expanded };
@@ -257,7 +259,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
         {activity.status !== 'completed' && !activity.notExecuted && (
           <span>{stopping && canStop ? t(language, 'agent.tool.shell.stopping')
             : activity.status === 'cancelled' && (shell || process) ? t(language, 'agent.tool.shell.stopped')
-              : toolActivityStatus(activity.status, language)}</span>
+              : batchRejectionStatus(activity, language) ?? toolActivityStatus(activity.status, language)}</span>
         )}
         {activity.status === 'active' && activity.startedAt && (
           <ToolElapsed startedAt={activity.startedAt} language={language} />
@@ -330,7 +332,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
           {activity.notExecuted && <p role="status">{notExecutedStatus(activity, language)}</p>}
           {activity.inputRejection && (
             <div className="local-agent__input-rejection">
-              <p>{activity.inputRejection.message}</p>
+              <p><code>{activity.inputRejection.code}</code>: {activity.inputRejection.message}</p>
               {activity.inputRejection.issues.map((issue, index) => (
                 <div key={`${issue.path}:${issue.rule}:${index}`}>
                   <code>{issue.path}</code><span>{issue.message}</span>
@@ -511,6 +513,12 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
     operation,
     target: target ? ` · ${target}` : '',
   });
+}
+
+function batchRejectionStatus(activity: ActivityProjection, language: UiLanguage): string | undefined {
+  if (activity.inputRejection?.code !== 'session_control_turn_conflict') return;
+  const role = batchConflictRole(activity);
+  if (role) return t(language, `agent.tool.batchConflict.${role}`);
 }
 
 function notExecutedStatus(activity: ActivityProjection, language: UiLanguage): string {

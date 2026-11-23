@@ -64,6 +64,24 @@ async function setup(t, name, provider, kernel = emptyKernel(), codingContext = 
 const terminal = projection => ['completed', 'failed', 'cancelled'].includes(projection.run?.status);
 const answer = request => providerEvent(request.requestId, 'assistant.message', { messageId: `answer:${request.requestId}`, content: 'Done.' });
 
+test('a control name absent from this request has no batch authority over a valid file read', async t => {
+  const effects = [];
+  const { actor, requests } = await setup(t, 'absent-control', async function* (request, turn) {
+    if (turn === 1) {
+      assert.ok(!request.tools.some(tool => tool.name === 'session'));
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'unbound', name: 'session', input: { action: 'wait' } });
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'bound', name: 'read', input: { path: 'notes.txt' } });
+    } else yield answer(request);
+    yield providerEvent(request.requestId, 'completed', {});
+  }, emptyKernel({ async execute(request) { effects.push(request.input.path); return completedExecutionReply(request, { content: 'readable' }); } }));
+  const projection = await waitForProjection(actor, terminal);
+  assert.equal(projection.run.status, 'completed');
+  assert.deepEqual(effects, ['notes.txt']);
+  const replies = requests[1].messages.filter(message => message.role === 'tool');
+  assert.match(replies.find(item => item.providerCallId === 'unbound').content, /not available/u);
+  assert.equal(replies.find(item => item.providerCallId === 'bound').content, 'readable');
+});
+
 test('coding prompt uses PI section order and actual declarations without product or environment leakage', async () => {
   const runtime = coding(runtimeSnapshot('run:pi-prompt', { tools, permissions, contextWindowTokens: 32000 }));
   runtime.environment.productDocsPath = '/bundle/docs/product';

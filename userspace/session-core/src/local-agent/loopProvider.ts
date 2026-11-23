@@ -1,7 +1,7 @@
 import {
   SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLUGIN_ACTIVATE,
   SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_SESSION, SESSION_CONTROL_AGENT,
-  SESSION_CONTROL_TODO_UPDATE, decodeProviderNativeReplay,
+  SESSION_CONTROL_TODO_UPDATE, CONTROL_TURN_ISSUE, decodeProviderNativeReplay,
 } from '@achbit/protocol';
 import type {
   ProviderRequest, ProviderEvent, ProviderTokenUsage, ProviderNativeReplay, JsonObject, ProviderOutputBlock, ProviderToolCallInput,
@@ -427,24 +427,45 @@ async function consumeProviderOutput(
       },
     }, toolCodec), request)
   ));
+  const logicalCallByProviderCallId = new Map<string, string>();
+  const logicalCallIds = new Set<string>();
+  const logicalId = (native: string): string => {
+    const existing = logicalCallByProviderCallId.get(native);
+    if (existing) return existing;
+    const id = deps.nextId('call');
+    if (!id || id === native || logicalCallIds.has(id)) throw new LoopFailure('logical_call_identity_invalid',
+      'Session 必须为每个 Provider call 生成非空、唯一且不复用原生值的 LogicalCallId。');
+    logicalCallIds.add(id);
+    logicalCallByProviderCallId.set(native, id);
+    return id;
+  };
+  const controlWires = new Set(toolCodec.controlDefinitions.map(tool => tool.name));
+  const isDeclaredControl = (block: DecodedProviderOutputBlock) =>
+    typeof block.item.name === 'string' && controlWires.has(block.item.name);
+  const decodeControl = (callId: string, name: string, input: JsonObject) => {
+    const wire = toolCodec.wireByCanonical.get(name);
+    return wire && controlWires.has(wire) ? installedControls(controls).decode(callId, name, input) : null;
+  };
   // A conflicting control batch is rejected as a whole, before requesting any effect.
   const inputBlocks = [...decodedOutputBlocks, ...aggregateBlocks].filter((block) => (
     block.kind === 'toolCall' || block.kind === 'toolCallRejected'
   ));
-  const exclusiveCalls = inputBlocks.filter((block) => (
+  // Batch policy is a property of this request's control binding, never of an undeclared wire spelling.
+  const controlBlocks = inputBlocks.filter(isDeclaredControl);
+  const exclusiveCalls = controlBlocks.filter((block) => (
     block.name === SESSION_CONTROL_INTERACTION_REQUEST || block.name === SESSION_CONTROL_PLAN_PUBLISH
       || block.name === SESSION_CONTROL_PLUGIN_ACTIVATE || block.name === SESSION_CONTROL_ARTIFACT_PRESENT
       || block.name === SESSION_CONTROL_SESSION
       || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall'
         || agentTurnPolicy(block.input) === 'exclusive')
   ));
-  const incompatibleAgentCalls = inputBlocks.filter(block => block.name === SESSION_CONTROL_AGENT
+  const incompatibleAgentCalls = controlBlocks.filter(block => block.name === SESSION_CONTROL_AGENT
     && block.kind === 'toolCall' && agentTurnPolicy(block.input) === 'agents'
-    && inputBlocks.some(other => other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE));
+    && inputBlocks.some(other => !isDeclaredControl(other) || other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE));
   const conflictSources = exclusiveCalls.length > 0 ? exclusiveCalls : incompatibleAgentCalls;
-  const todoCalls = inputBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE);
+  const todoCalls = controlBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE);
   const conflict = conflictSources.length > 0 && inputBlocks.length > 1
-    ? { calls: conflictSources, reason: '控制调用违反独占或 agent 批次组合规则' }
+    ? { calls: conflictSources, reason: exclusiveCalls.length ? '独占控制必须单独提交' : '此 agent 操作只能与其他 agent 操作及最多一次 todo.update 同批，普通工具须另行提交' }
     : todoCalls.length > 1
       ? { calls: todoCalls, reason: '每个 Provider turn 最多包含一个 todo.update，请合并步骤更新' }
       : undefined;
@@ -452,20 +473,25 @@ async function consumeProviderOutput(
     const sources = conflict.calls.map(block => `${block.name}${block.kind === 'toolCall' && typeof block.input.action === 'string' ? `(action=${block.input.action})` : ''} [${block.providerCallId}]`).join('、');
     for (const blocks of [decodedOutputBlocks, aggregateBlocks]) {
       for (const [index, block] of blocks.entries()) {
-        if (block.kind !== 'toolCall') continue;
-        const message = `${conflict.reason}；冲突来源：${sources}。${conflict.calls.includes(block) ? '该调用触发冲突' : '本调用随批次拒绝'}，本批次未执行。`;
-        blocks[index] = {
-          outputIndex: block.outputIndex,
-          item: block.item,
-          kind: 'toolCallRejected',
-          providerCallId: block.providerCallId,
-          name: block.name,
-          error: {
-            code: 'session_control_turn_conflict',
-            message,
-            issues: [{ path: '$', rule: 'control_turn', message }],
-          },
-        };
+        if (block.kind !== 'toolCall' && block.kind !== 'toolCallRejected') continue;
+        const source = conflict.calls.includes(block);
+        let error = block.kind === 'toolCallRejected' ? block.error : undefined;
+        // Preserve a known field error even when the batch cannot execute. Only the
+        // installed control decoder is pure here; never prepare or dispatch Kernel calls.
+        if (block.kind === 'toolCall') {
+          try { decodeControl(logicalId(block.providerCallId), block.name, block.input); }
+          catch (cause) {
+            if (!(cause instanceof SessionControlError)) throw cause;
+            error = { code: cause.code, message: cause.message, issues: cause.issues };
+          }
+        }
+        const message = `${conflict.reason}；冲突来源：${sources}。${source ? '该调用触发冲突' : '本调用随批次拒绝'}，本批次未执行。`;
+        const role = { path: '$', rule: source ? CONTROL_TURN_ISSUE.source : CONTROL_TURN_ISSUE.peer, message };
+        // An independently invalid sibling was not rejected *because of* this conflict.
+        blocks[index] = { outputIndex: block.outputIndex, item: block.item, kind: 'toolCallRejected',
+          providerCallId: block.providerCallId, name: block.name,
+          error: error ? (source ? { ...error, issues: [...error.issues, role] } : error)
+            : { code: 'session_control_turn_conflict', message, issues: [role] } };
       }
     }
   }
@@ -580,34 +606,8 @@ async function consumeProviderOutput(
     }
     seenHostedSearchCalls.add(block.providerCallId);
   }
-  const logicalCallIds = new Set<string>();
-  const calls = providerCalls.map((call) => {
-    const callId = deps.nextId('call');
-    if (!callId || callId === call.providerCallId || logicalCallIds.has(callId)) {
-      throw new LoopFailure(
-        'logical_call_identity_invalid',
-        'Session 必须为每个 Provider call 生成非空、唯一且不复用原生值的 LogicalCallId。',
-      );
-    }
-    logicalCallIds.add(callId);
-    return {
-      callId,
-      providerCallId: call.providerCallId,
-      name: call.name,
-      input: call.input,
-    };
-  });
-  const logicalCallByProviderCallId = new Map(calls.map((call) => (
-    [call.providerCallId, call.callId] as const
-  )));
-  for (const call of rejectedCalls) {
-    const callId = deps.nextId('call');
-    if (!callId || callId === call.providerCallId || logicalCallIds.has(callId)) {
-      throw new LoopFailure('logical_call_identity_invalid', 'Session 拒绝调用缺少独立且唯一的 LogicalCallId。');
-    }
-    logicalCallIds.add(callId);
-    logicalCallByProviderCallId.set(call.providerCallId, callId);
-  }
+  const calls = providerCalls.map(call => ({ ...call, callId: logicalId(call.providerCallId) }));
+  for (const call of rejectedCalls) logicalId(call.providerCallId);
   const orderedMessageBlocks = decodedOutputBlocks.filter(
     (block): block is Extract<DecodedProviderOutputBlock, { kind: 'message' }> => (
       block.kind === 'message'
@@ -737,8 +737,7 @@ async function consumeProviderOutput(
   let progress: Extract<ProviderTurn, { kind: 'tools' }>['progress'];
   for (const call of calls) {
     try {
-      const isControl = toolCodec.controlDefinitions.some(tool => toolCodec.canonicalByWire.get(tool.name) === call.name);
-      const control = isControl ? installedControls(controls).decode(call.callId, call.name, call.input) : null;
+      const control = decodeControl(call.callId, call.name, call.input);
       if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
       else if (control?.kind === 'agent' && (agentBatch || agentTurnPolicy(call.input) === 'tools')) dispatchCalls.push({ ...call, owner: 'agent', operation: control.operation });
       else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
@@ -750,7 +749,9 @@ async function consumeProviderOutput(
         providerCallId: call.providerCallId,
         toolName: call.name,
         input: { ...call.input },
-        error: { code: error.code, message: error.message },
+        // This event carries LocalAgentError, not a second input-rejection contract.
+        // Name the actual fields in the existing message for a standalone decoder error as well.
+        error: { code: error.code, message: [...error.issues.filter(issue => issue.path !== '$').map(issue => issue.path), error.message].join(': ') },
       };
       if (call.name === SESSION_CONTROL_TODO_UPDATE) {
         progress = { kind: 'controlRejected', rejection };
