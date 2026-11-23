@@ -19,6 +19,7 @@ pub(crate) fn localhost_cors_layer() -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
+        .expose_headers([header::HeaderName::from_static("x-achbit-reading-window")])
         .allow_headers([
             header::CONTENT_TYPE,
             header::HeaderName::from_static(crate::host_connection::HOST_SHELL_TOKEN_HEADER),

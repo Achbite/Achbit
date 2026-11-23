@@ -5,6 +5,9 @@ use serde_json::{json, Map, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
+mod reading_facts;
+pub(crate) use reading_facts::{ReadingFactsEncoder, READING_FACTS_V1};
+
 const SESSION_STORE_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/session.sql");
 const EVENT_VERSION: &str = "achbit.session-event.v5";
 const COMMAND_VERSION: &str = "achbit.command.v3";

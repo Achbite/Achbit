@@ -202,26 +202,32 @@ pub(crate) async fn conversation_catalog_events(State(state): State<HostState>) 
         .into_response()
 }
 
-pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
+pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> Response {
     let session_ids: Vec<String> = {
         let gui = state.gui.lock().expect("gui state lock");
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
-            return ApiResponse::error("conversation_catalog_unavailable", error);
+            return ApiResponse::error("conversation_catalog_unavailable", error).into_response();
         }
         match visible_session_ids(&gui.conversation_catalog, &state.catalog_reader) {
             Ok(ids) => ids,
-            Err(error) => return ApiResponse::error(error.code, error.message),
+            Err(error) => return ApiResponse::error(error.code, error.message).into_response(),
         }
     };
     match request_service(
         state.session_service.clone(),
         "statuses",
-        json!({ "sessionIds": session_ids }),
+        json!({ "sessionIds": session_ids, "includeReadingWindowCapability": true }),
     )
     .await
     {
-        Ok(value) => ApiResponse::ok(value),
-        Err(error) => session_service_error(error),
+        Ok(mut value) if value["readingWindowVersion"] == 1 && value["statuses"].is_array() => (
+            [("x-achbit-reading-window", "1")],
+            ApiResponse::ok(value["statuses"].take()),
+        )
+            .into_response(),
+        // An older bridge or alternative service returns the original array and no capability.
+        Ok(value) => ApiResponse::ok(value).into_response(),
+        Err(error) => session_service_error(error).into_response(),
     }
 }
 

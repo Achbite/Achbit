@@ -187,6 +187,7 @@ fn localhost_cors_layer() -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
+        .expose_headers([header::HeaderName::from_static("x-achbit-reading-window")])
         .allow_headers([
             header::CONTENT_TYPE,
             header::HeaderName::from_static(HOST_UI_TOKEN_HEADER),
@@ -740,6 +741,13 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 async fn proxy_response(response: reqwest::Response) -> Response {
     let status = response.status();
+    const READING_WINDOW: &str = "x-achbit-reading-window";
+    let reading_window = status.is_success()
+        && response.url().path() == "/api/conversation/statuses"
+        && response
+            .headers()
+            .get(READING_WINDOW)
+            .is_some_and(|v| v == "1");
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -778,6 +786,9 @@ async fn proxy_response(response: reqwest::Response) -> Response {
     match tokio::time::timeout(Duration::from_secs(60), response.bytes()).await {
         Ok(Ok(bytes)) => {
             let mut builder = Response::builder().status(status);
+            if reading_window {
+                builder = builder.header(READING_WINDOW, "1");
+            }
             if let Some(content_type) = content_type {
                 builder = builder.header(header::CONTENT_TYPE, content_type);
             }

@@ -4,7 +4,8 @@ use crate::local_agent_kernel::{
 };
 use crate::local_agent_provider_runtime::{ProviderRuntimeRegistry, ProviderRuntimeSnapshot};
 use crate::local_agent_store::{
-    JournalEventPublication, LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime,
+    JournalEventPublication, LocalAgentJournal, LocalAgentStoreError, ReadingFactsEncoder,
+    RunProviderRuntime, READING_FACTS_V1,
 };
 use crate::prelude::*;
 use crate::*;
@@ -1656,13 +1657,19 @@ pub(crate) async fn local_agent_events_read(
     if let Err(response) = require_session_service(&state, &headers) {
         return response.into_response();
     }
-    journal_read_response(
-        &headers,
-        state
-            .local_agent
-            .journal
-            .read_events_publication(&session_id, query.after.unwrap_or(0)),
-    )
+    let after = query.after.unwrap_or(0);
+    let publication = state
+        .local_agent
+        .journal
+        .read_events_publication(&session_id, after);
+    // Negotiate only on this already authenticated route and only for complete, from-zero reads.
+    if after == 0 && accepts(&headers, READING_FACTS_V1) {
+        return match publication {
+            Ok(events) => journal_stream_response(events, true),
+            Err(error) => store_error(error).into_response(),
+        };
+    }
+    journal_read_response(&headers, publication)
 }
 
 pub(crate) async fn local_agent_message_history(
@@ -1679,23 +1686,23 @@ pub(crate) async fn local_agent_message_history(
     )
 }
 
+fn accepts(headers: &HeaderMap, media_type: &str) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|accept| {
+            accept
+                .split(',')
+                .any(|item| item.trim().eq_ignore_ascii_case(media_type))
+        })
+}
+
 fn journal_read_response(
     headers: &HeaderMap,
     publication: Result<JournalEventPublication, LocalAgentStoreError>,
 ) -> Response {
     match publication {
-        Ok(events)
-            if headers
-                .get(axum::http::header::ACCEPT)
-                .and_then(|h| h.to_str().ok())
-                .is_some_and(|accept| {
-                    accept
-                        .split(',')
-                        .any(|item| item.trim().eq_ignore_ascii_case("application/json-seq"))
-                }) =>
-        {
-            journal_sequence_response(events)
-        }
+        Ok(events) if accepts(headers, "application/json-seq") => journal_sequence_response(events),
         Ok(events) => Json(ApiResponse {
             ok: true,
             data: Some(events),
@@ -1708,13 +1715,22 @@ fn journal_read_response(
 }
 
 fn journal_sequence_response(publication: JournalEventPublication) -> Response {
+    journal_stream_response(publication, false)
+}
+
+fn journal_stream_response(publication: JournalEventPublication, reading_facts: bool) -> Response {
     // All rows and permissions have been read successfully and the SQLite
     // statement is closed before a slow client can apply backpressure.
     let stream = async_stream::stream! {
         let count = publication.value.len();
         let mut chunk = Vec::new();
+        let mut encoder = ReadingFactsEncoder::default();
         for event in publication.value {
-            if let Err(error) = append_json_record(&mut chunk, &event) {
+            let encoded = if reading_facts {
+                chunk.push(0x1e);
+                encoder.write(&mut chunk, event).map(|()| chunk.push(b'\n'))
+            } else { append_json_record(&mut chunk, &event) };
+            if let Err(error) = encoded {
                 yield Err(error);
                 return;
             }
@@ -1727,7 +1743,14 @@ fn journal_sequence_response(publication: JournalEventPublication) -> Response {
         yield append_json_record(&mut chunk, &receipt).map(|()| bytes::Bytes::from(chunk));
     };
     (
-        [(axum::http::header::CONTENT_TYPE, "application/json-seq")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            if reading_facts {
+                READING_FACTS_V1
+            } else {
+                "application/json-seq"
+            },
+        )],
         axum::body::Body::from_stream(stream),
     )
         .into_response()

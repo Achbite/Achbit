@@ -110,6 +110,8 @@ A Host used only by ordinary CLI/TUI clients still exits after the last client d
 
 **Settings → General → Prevent idle sleep during tasks** (`workbench.preventIdleSleep`, on by default) applies to work from all clients sharing the Host. Achbit requests that the system stay awake during execution and timed waits. Idle sessions and tasks only waiting for your input do not keep it awake. Turning the setting off releases Achbit’s request without stopping a task; turning it back on applies to work already in progress. It does not keep the display on or change the system’s power settings.
 
+[Opening a saved conversation](conversation-reading.md) describes the optional, revision-bound desktop reading window, its fallbacks and the complete authoritative projection.
+
 Switching conversations changes the view, not the previous task. Reopening a GUI does not retarget a waiting run; **Continue in this window** explicitly rebinds future requests. Earlier pending calls retain their original target. Observe again after rebinding.
 
 ## Models and context

@@ -29,6 +29,7 @@ import { decodeConversationReadQuery, readConversation, readSessionEvents } from
 import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
 import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
+import { selectReadingWindow } from './readingWindow.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry, type ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import type { InstructionContribution } from './skillPlugins.js';
@@ -57,6 +58,8 @@ export interface SessionCompositionFactory {
 
 /** Complete Host-facing surface; a service implementation is selected only at startup. */
 export interface SessionServicePort extends ConversationPort {
+  /** Optional: replacement services must explicitly opt in before a Host advertises this view. */
+  readonly readingWindowVersion?: 1;
   createSession: SessionService['createSession'];
   deleteSession: SessionService['deleteSession'];
   snapshot: SessionService['snapshot'];
@@ -96,6 +99,7 @@ const historyByteLimit = 8 * 1024 * 1024;
 const historyIdleMs = 30_000;
 
 export class SessionService implements ConversationPort {
+  readonly readingWindowVersion = 1;
   readonly #actors = new Map<string, Promise<SessionActor>>();
   readonly #openingActors = new Set<string>();
   readonly #actorUsers = new Map<string, number>();
@@ -379,7 +383,7 @@ export class SessionService implements ConversationPort {
 
     let pending = this.#historyReads.get(sessionId);
     if (!pending || pending.version !== version) {
-      const result = readSessionEvents(this.journal, sessionId).then(async events => {
+      const result = readSessionEvents(this.journal, sessionId, true).then(async events => {
         const projection = projectSessionHistory(sessionId, events);
         // A commit during replay must never bind an older projection to a newer
         // version. Ignore a read that another version or disposal superseded.
@@ -532,6 +536,15 @@ export class SessionService implements ConversationPort {
 
   async read(input: unknown): Promise<ConversationReadResult> {
     const query = decodeConversationReadQuery(input);
+    if (query.view === 'readingWindow') {
+      // Includes live Actor state, archived child lineage and actionable permissions. The same
+      // versioned full projection can serve the subsequent restoration without another journal replay.
+      const projection = await this.snapshot(query.sessionId);
+      if (projection.revision !== query.throughSequence || (await this.readRunLifecycle(query.sessionId)).revision !== projection.revision) {
+        throw new Error('conversation_read_revision_changed');
+      }
+      return selectReadingWindow(projection, query);
+    }
     if (query.throughSequence === undefined && query.view === 'reasoning' && query.providerRequestId && this.#actors.has(query.sessionId)) {
       const actor = await this.#actors.get(query.sessionId)!;
       const projection = await actor.snapshot();

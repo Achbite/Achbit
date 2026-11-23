@@ -421,7 +421,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       };
       break;
     case 'message.committed':
-      next.messages = [...next.messages];
+      if (!replay) next.messages = [...next.messages];
       next.acceptedInputs = { ...next.acceptedInputs };
       {
         next.queuedInputs = next.queuedInputs.filter((input) => input.messageId !== event.payload.messageId);
@@ -477,7 +477,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       }
       break;
     case 'message.feedback.updated': {
-      next.messages = [...next.messages];
+      if (!replay) next.messages = [...next.messages];
       const index = next.messages.findIndex((message) => message.messageId === event.payload.messageId);
       if (index < 0 || next.messages[index].role !== 'assistant') {
         throw new Error('message_feedback_target_missing');
@@ -486,7 +486,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     }
     case 'narrative.committed':
-      next.narratives = [...next.narratives];
+      if (!replay) next.narratives = [...next.narratives];
       assertProviderMessageReference(
         requiredProviderTurn(next, event.runId, event.payload.providerRequestId, 'agent'),
         'narrative',

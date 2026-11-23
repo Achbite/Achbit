@@ -195,7 +195,9 @@ async function dispatch(
       if (!Array.isArray(sessionIds) || !sessionIds.every(validId)) {
         throw new Error('conversation_status_query_invalid');
       }
-      return await service.statuses(sessionIds);
+      const statuses = await service.statuses(sessionIds);
+      return request.data.includeReadingWindowCapability === true && service.readingWindowVersion === 1
+        ? { statuses, readingWindowVersion: 1 } : statuses;
     }
     case 'read':
       return await service.read(request.data);

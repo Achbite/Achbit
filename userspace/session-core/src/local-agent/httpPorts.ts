@@ -47,7 +47,8 @@ import {
 } from '@achbit/protocol';
 import { createProviderToolAliases } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
-import { readJournalSequence, type JournalPermissions, type JournalPublication } from './journalSequence.js';
+import { readJournalSequence, READING_FACTS_V1, type JournalPermissions, type JournalPublication } from './journalSequence.js';
+import { checkCompleteHistory, projectionEventBatch } from './conversationRead.js';
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
 import { environmentInstruction } from './sessionEnvironment.js';
@@ -219,11 +220,23 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
   }
 
   async *read(sessionId: string, afterSequence = 0): AsyncIterable<SessionEvent> {
+    yield* await this.eventBatch(sessionId, afterSequence, false);
+  }
+
+  [projectionEventBatch](sessionId: string): Promise<SessionEvent[]> {
+    return this.eventBatch(sessionId, 0, true);
+  }
+
+  private async eventBatch(sessionId: string, afterSequence: number, projectionOnly: boolean): Promise<SessionEvent[]> {
     const path = `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`;
-    const response = await this.request(path, { headers: { accept: 'application/json-seq' } });
-    const result = await this.decodeEvents(response, path);
+    const accept = projectionOnly ? `${READING_FACTS_V1}, application/json-seq` : 'application/json-seq';
+    const response = await this.request(path, { headers: { accept } });
+    const media = response.headers.get('content-type')?.split(';', 1)[0].trim();
+    const result = projectionOnly && response.ok && media === READING_FACTS_V1
+      ? await readJournalSequence(response.body, true, sessionId) : await this.decodeEvents(response, path, projectionOnly);
+    if (projectionOnly) checkCompleteHistory(result.value, sessionId);
     this.publishPermissions(result.permissions);
-    yield* result.value;
+    return result.value;
   }
 
   async readMessageHistory(sessionId: string): Promise<{ revision: number; events: SessionEvent[] } | undefined> {
@@ -239,9 +252,9 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     return { revision: result.revision, events: result.value };
   }
 
-  private async decodeEvents(response: Response, path: string): Promise<JournalPublication<SessionEvent[]>> {
+  private async decodeEvents(response: Response, path: string, projectionOnly = false): Promise<JournalPublication<SessionEvent[]>> {
     const sequence = response.headers.get('content-type')?.split(';', 1)[0].trim() === 'application/json-seq';
-    return response.ok && sequence ? await readJournalSequence(response.body)
+    return response.ok && sequence ? await readJournalSequence(response.body, projectionOnly)
       : await this.decodeJson<JournalPublication<SessionEvent[]>>(response, path);
   }
 

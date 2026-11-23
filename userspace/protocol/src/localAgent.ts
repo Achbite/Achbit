@@ -1889,7 +1889,9 @@ export interface ConversationReadQuery {
   sessionId: string;
   /** Inclusive snapshot boundary, applied before revisions and semantic reduction; not a page cursor. */
   throughSequence?: number;
-  view?: 'summary' | 'messages' | 'tools' | 'plans' | 'context' | 'reasoning' | 'images';
+  view?: 'summary' | 'messages' | 'tools' | 'plans' | 'context' | 'reasoning' | 'images' | 'readingWindow';
+  /** GUI readingWindow only: a canonical transcript row key. Omit to open the tail. */
+  anchorKey?: string;
   imageIds?: string[];
   offset?: number;
   before?: number;
@@ -1900,12 +1902,28 @@ export interface ConversationReadQuery {
   providerRequestId?: string;
 }
 
+export interface ConversationReadingRow {
+  key: string;
+  timelineId: string;
+  sequence: number;
+  streamId?: string;
+  /** The complete canonical projected message; never a history excerpt. */
+  message: ProjectionMessage;
+}
+
+export type ConversationReadingWindow =
+  | { kind: 'requiresProjection' }
+  | { kind: 'ready'; anchorKey: string; startIndex: number; totalRows: number;
+      rows: ConversationReadingRow[]; navigation: { keys: string[]; labels: string[] } };
+
 /** A bounded journal read. Reading does not open/recover an Actor or run a Provider. */
 export interface ConversationReadResult {
   sessionId: string;
   revision: number;
   view: NonNullable<ConversationReadQuery['view']>;
   summary?: JsonObject;
+  /** Present only for the explicitly requested, revision-bound readingWindow view. */
+  readingWindow?: ConversationReadingWindow;
   items: JsonObject[];
   nextBefore: number | null;
 }
