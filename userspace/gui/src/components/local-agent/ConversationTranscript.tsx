@@ -248,10 +248,10 @@ export function ConversationTranscript({
             ? undefined
             : 'local-agent__message-content'}
           >
-            <BufferedMarkdown
-              text={item.block.displayContent ?? item.block.content}
-              streamIdentity={item.block.streamId}
-            />
+            {item.block.kind === 'narrative' ? <BufferedMarkdown
+              text={item.block.displayContent ?? item.block.content} streamIdentity={item.block.streamId} />
+              : <div className="local-agent__message-text"><BufferedMarkdown
+                text={item.block.displayContent ?? item.block.content} streamIdentity={item.block.streamId} /></div>}
           </div>
         </article>
       ) : <PlanPreviewCard preview={item.value} key={item.key} language={language} onToggle={onPlanToggle} />;

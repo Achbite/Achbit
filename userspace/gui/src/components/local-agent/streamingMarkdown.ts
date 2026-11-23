@@ -5,16 +5,73 @@ import rehypeKatex from 'rehype-katex';
 import { defaultUrlTransform } from 'react-markdown';
 import { parseLocalTarget } from './resourceLinks';
 import type { Root as MarkdownRoot } from 'mdast';
-import type { Root, RootContent } from 'hast';
+import type { Element, Root, RootContent } from 'hast';
+
+declare module 'hast' { interface ElementData { formulaSource?: string; formulaError?: string } }
 
 export { formatDecisionProse } from './markdownGrammar';
 
-const converter = unified().use(remarkRehype, { allowDangerousHtml: true }).use(rehypeKatex);
+const converter = unified().use(remarkRehype, { allowDangerousHtml: true });
+// rehype-katex reports the actual parser error on VFile even when its recovery pass
+// can draw a red fragment. Keep that diagnostic on the exact original formula, rather
+// than presenting a partially typeset expression as a successful, exportable one.
+const typesetter = unified().use(rehypeKatex).use(() => (_tree, file) => {
+  for (const diagnostic of file.messages) {
+    const input = diagnostic.ancestors?.at(-1);
+    if (diagnostic.source !== 'rehype-katex' || input?.type !== 'element') continue;
+    const element = input as Element;
+    element.data = { ...element.data, formulaError: diagnostic.cause instanceof Error ? diagnostic.cause.message : diagnostic.reason };
+  }
+});
 export interface MarkdownBlock { key: string; tree: Root; streaming: boolean }
 
-function renderTree(root: MarkdownRoot) {
+// The Markdown parser determines the math scope (including quoted/list items and math code fences).
+// At EOF it also accepts an implicit close: while streaming this is not yet a finished equation.
+function openMathTail(position: Element['position'], source: string) {
+  const start = position?.start.offset, end = position?.end.offset;
+  if (start === undefined || end === undefined || end < source.trimEnd().length) return false;
+  const span = source.slice(start, end), fence = /^(\${2,}|`{3,}|~{3,})/u.exec(span)?.[0];
+  if (!fence) return false;
+  const close = /[\r\n][ \t>]*(\${2,}|`{3,}|~{3,})[ \t]*$/u.exec(span)?.[1];
+  return !close || close[0] !== fence[0] || close.length < fence.length;
+}
+
+function typesetMath(tree: Root, liveSource?: string) {
+  const math: { parent: Element | Root; index: number; code: Element; position: Element['position']; source: string }[] = [];
+  const visit = (parent: Element | Root) => parent.children.forEach((node, index) => {
+    if (node.type !== 'element') return;
+    const code = node.tagName === 'pre' ? node.children[0] : node;
+    if (code?.type !== 'element' || code.tagName !== 'code' || !Array.isArray(code.properties.className) || !code.properties.className.includes('language-math')) {
+      visit(node); return;
+    }
+    if (node.tagName === 'pre' && liveSource !== undefined && openMathTail(node.position, liveSource)) {
+      parent.children[index] = { type: 'element', tagName: 'span', position: node.position,
+        properties: { className: ['conversation-math__pending'] }, children: [] };
+      return;
+    }
+    math.push({ parent, index, code, position: node.position, source: code.children.map(n => n.type === 'text' ? n.value : '').join('') });
+  });
+  visit(tree);
+  if (!math.length) return;
+  // rehype-katex replaces each original scope with a single span. Keep its parser location
+  // for stable save actions, and a single textual representation for inline-only controls.
+  typesetter.runSync(tree);
+  for (const { parent, index, code, position, source } of math) {
+    const error = code.data?.formulaError;
+    if (error) {
+      parent.children[index] = { type: 'element', tagName: 'span', position, data: { formulaSource: source },
+        properties: { className: ['katex-error'], title: error, ariaLabel: error }, children: [{ type: 'text', value: source }] };
+      continue;
+    }
+    const result = parent.children[index];
+    if (result?.type === 'element') { result.position = position; result.data = { ...result.data, formulaSource: source }; }
+  }
+}
+
+function renderTree(root: MarkdownRoot, liveSource?: string) {
   let nodes = 0;
   const tree = converter.runSync(root) as Root;
+  typesetMath(tree, liveSource);
   // Preserve react-markdown's literal HTML and URL policy with the same grammar.
   const clean = (node: Root | RootContent): void => {
     nodes++;
@@ -42,8 +99,8 @@ const completedDocuments = new Map<string, { blocks: MarkdownBlock[]; nodes: num
 let completedCharacters = 0;
 let completedNodes = 0;
 
-function markdownBlocks(root: MarkdownRoot): { blocks: MarkdownBlock[]; nodes: number } {
-  const { tree, nodes } = renderTree(root);
+function markdownBlocks(root: MarkdownRoot, liveSource?: string): { blocks: MarkdownBlock[]; nodes: number } {
+  const { tree, nodes } = renderTree(root, liveSource);
   const blocks = tree.children.flatMap((node, index) => {
     if (node.type === 'text' && !node.value.trim()) return [];
     return [{ key: String(node.position?.start.offset ?? `generated:${index}`), tree: { type: 'root' as const, children: [node] }, streaming: false }];
@@ -106,19 +163,21 @@ export class StreamingMarkdownParser {
     }
     this.text = text; this.streaming = streaming;
     if (!streaming) { this.blocks = fullBlocks(text); return this.blocks; }
-    const root = parser.parse(text.slice(this.offset));
+    const source = text.slice(this.offset);
+    const root = parser.parse(source);
     // Definitions have document-wide meaning. Reconcile those documents as a whole.
     if (root.children.some((node) => node.type === 'definition' || node.type === 'footnoteDefinition')) this.documentReferences = true;
     if (this.documentReferences) {
+      const document = this.offset ? parser.parse(text) : root;
       this.offset = 0; this.frozen = [];
-      this.blocks = fullBlocks(text, false).map((block) => ({ ...block, streaming: true }));
+      this.blocks = markdownBlocks(document, text).blocks.map((block) => ({ ...block, streaming: true }));
       return this.blocks;
     }
     const base = this.offset;
     const freezeCount = Math.max(0, root.children.length - 2);
     const tail = root.children.map((node, index): MarkdownBlock => ({
       key: String(base + node.position!.start.offset!),
-      tree: renderTree({ type: 'root', children: [node] }).tree,
+      tree: renderTree({ type: 'root', children: [node] }, index >= freezeCount ? source : undefined).tree,
       streaming: index >= freezeCount,
     }));
     this.blocks = [...this.frozen, ...tail];

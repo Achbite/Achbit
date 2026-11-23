@@ -9,11 +9,11 @@ import './viewerDialog.css';
 import './imageReview.css';
 
 /** Reuse the loaded image; fitting and zooming are local presentation state. */
-export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, intrinsicSize, triggerRef, hideTrigger, createImage }: {
+export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, onThumbnailReady, intrinsicSize, triggerRef, hideTrigger, createImage }: {
   createImage?(signal: AbortSignal): Promise<ContentImage>;
   triggerIdentity?: Readonly<Record<`data-ui-${string}`, string>>;
   source?: string; alt: string; children?: ReactNode; className?: string; imageClassName?: string;
-  title?: string; onError?(): void;
+  title?: string; onError?(): void; onThumbnailReady?(image: HTMLImageElement): void;
   intrinsicSize?: { width: number; height: number };
   triggerRef?: Ref<HTMLButtonElement>; hideTrigger?: boolean;
 }) {
@@ -67,7 +67,7 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
       data-frameless={frameless || undefined}
       aria-label={`${t(language, 'content.image.expand')}${alt ? ` · ${alt}` : ''}`} title={title}
       onClick={show}>
-      {children ?? <img className={imageClassName} src={source} alt={alt} loading="lazy" onError={onError} />}
+      {children ?? <img className={imageClassName} src={source} alt={alt} width={intrinsicSize?.width} height={intrinsicSize?.height} loading="lazy" onLoad={onThumbnailReady ? event => onThumbnailReady(event.currentTarget) : undefined} onError={onError} />}
     </button>
     <dialog ref={dialog} className="conversation-viewer-dialog conversation-image-review__dialog" aria-label={alt || t(language, 'content.image.expand')}
       onClose={() => { setOpen(false); drag.current = null; }}
