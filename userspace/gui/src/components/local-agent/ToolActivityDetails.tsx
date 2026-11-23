@@ -1,7 +1,7 @@
-import { useLocalAgentStore } from '../../state/localAgentStore';
+import { ShellLiveOutput, useShellStop } from './ShellCommandProgress';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { batchConflictRole, hostedEntryKey, type BatchConflictSummary, type HostedBlock, type HostedDraftGroup } from './conversationItems';
-import { isPendingShell, shellCommandPreview } from './shellProgress';
+import { isPendingShell, isRunningShell, shellCommandPreview, type BlockingShell } from './shellProgress';
 import './shellProgress.css';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
@@ -28,6 +28,7 @@ function shellWriteScopeLabel(language: UiLanguage, writeScope: string): string 
 
 interface ToolActivityGroupProps {
   artifacts?: readonly ArtifactProjection[];
+  foregroundShells?: readonly BlockingShell[];
   pendingApproval?: SessionProjection['pendingApproval'];
   reviewingApproval?: boolean;
   activities: ActivityProjection[];
@@ -40,7 +41,7 @@ interface ToolActivityGroupProps {
 }
 
 export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
-  artifacts = [],
+  artifacts = [], foregroundShells = [],
   activities, batchConflicts, hostedDraft, hostedKeys, pendingApproval, reviewingApproval = false,
   language,
   onExpand,
@@ -61,6 +62,7 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
     setExpanded(next);
   };
   const tools = activities.filter(activity => !activity.agent);
+  const runningShell = !expanded && tools.some(a => isRunningShell(a) && !foregroundShells.some(f => f.activityId === a.activityId && f.runId === a.runId));
   const blocks = hostedDraft?.blocks ?? [];
   const hasTools = tools.length > 0 || blocks.length > 0;
   const summary = [toolGroupSummary(tools, language, blocks), ...(batchConflicts ?? []).map(({ sources, peers }) =>
@@ -93,8 +95,11 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
           />
         </span>
         <strong>{summary}</strong>
-        <span className="local-agent__tool-group-chevron" aria-hidden="true">
-          <AchbitShellIcon name="chevronRight" />
+        <span className="local-agent__tool-group-tail">
+          {runningShell && <span className="local-agent__shell-running" role="img" aria-label={t(language, 'agent.tool.shell.running')} title={t(language, 'agent.tool.shell.running')}>
+            <span className="local-agent__run-spinner" aria-hidden="true" />
+          </span>}
+          <span className="local-agent__tool-group-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
         </span>
       </button></UiRegion>}</div>
       {expanded && hasTools && (
@@ -212,13 +217,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   const process = tool?.process;
   const result = shell?.result;
   const output = activity.liveOutput ?? process?.output;
-  const [stopping, setStopping] = useState(false);
-  const [stopError, setStopError] = useState<string>();
-  const canStop = Boolean(sessionId && activity.runId && activity.callId
-    && activity.status === 'active' && isPendingShell(activity));
-  useEffect(() => {
-    if (activity.status !== 'active') setStopping(false);
-  }, [activity.status]);
+  const { canStop, stopping, stop, error: stopError } = useShellStop(sessionId, activity);
   const resources = tool?.resources.filter((resource) => !(resource.kind === 'workspacePath'
     && tool.fileChanges?.some((change) => change.workspaceId === resource.workspaceId && change.path === resource.logicalPath))) ?? [];
   const file = activity.status === 'completed' && isFileMutationOperation(tool?.operation) && files.length === 1 ? files[0] : undefined;
@@ -274,12 +273,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
       </button>
       {canStop && <button {...identity.action('stop', 'click')} type="button" className="local-agent__tool-stop"
         aria-label={t(language, stopping ? 'agent.tool.shell.stopping' : 'agent.tool.shell.stop')}
-        disabled={stopping} onClick={() => {
-          if (stopping) return;
-          setStopping(true); setStopError(undefined);
-          void useLocalAgentStore.getState().cancelTool(sessionId!, activity.runId!, activity.callId!)
-            .catch(error => { setStopError(String(error)); setStopping(false); });
-        }}>
+        disabled={stopping} onClick={() => void stop()}>
         <AchbitShellIcon name={stopping ? 'spinner' : 'stop'} className={stopping ? 'local-agent__run-status-spinner' : undefined} />
         {!stopping && <span className="local-agent__tool-stop-hint" aria-hidden="true">{t(language, 'agent.tool.shell.stop')}</span>}
       </button>}
@@ -411,20 +405,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
             <span>{t(language, 'agent.tool.shell.duration', {duration: process.result.durationMs})}</span>
             {process.result.timedOut && <span>{t(language, 'agent.tool.shell.timedOut')}</span>}
           </div>}
-          {!result && (output || isPendingShell(activity)) && (
-            <div className="local-agent__shell-result">
-              {output?.truncated && <small>{t(language, 'agent.tool.shell.truncated')}</small>}
-              {(['stdout', 'stderr'] as const).map((stream) => output?.[stream] && (
-                <section key={stream}>
-                  <span>{t(language, `agent.tool.shell.${stream}`)}</span>
-                  <pre>{output[stream]}</pre>
-                </section>
-              ))}
-              {!output?.stdout && !output?.stderr && (
-                <small>{language === 'zh-CN' ? '尚无输出' : 'No output yet'}</small>
-              )}
-            </div>
-          )}
+          {!result && (output || isPendingShell(activity)) && <ShellLiveOutput output={output} language={language} />}
         </div>
         </UiPluginSlotView>
       )}

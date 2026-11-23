@@ -8,6 +8,8 @@ import AchbitShellIcon from '../shared/AchbitShellIcon';
 import SessionModelSelector from './SessionModelSelector';
 import TotalCacheUsage from './TotalCacheUsage';
 import { ComposerDecisionPanels, ComposerQuestionPrompt } from './ComposerDecisionPanels';
+import { BlockingShellPrompt } from './BlockingShellPrompt';
+import type { BlockingShell } from './shellProgress';
 import { ComposerPermissionControl } from './ComposerPermissionControl';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
@@ -21,6 +23,7 @@ import { observeConversationComposerBoundary } from './conversationComposerBound
 import { composerDecisionView } from './composerDecisions';
 
 interface ConversationComposerProps {
+  foregroundShells?: readonly BlockingShell[];
   changeBar?: React.ReactNode;
   conversationBodyRef?: React.RefObject<HTMLDivElement | null>;
   readerExpanded?: boolean;
@@ -32,7 +35,7 @@ interface ConversationComposerProps {
 }
 
 export function ConversationComposer({
-  changeBar,
+  foregroundShells, changeBar,
   conversationBodyRef,
   readerExpanded = false,
   language,
@@ -42,13 +45,14 @@ export function ConversationComposer({
   onEditBrowserReview,
 }: ConversationComposerProps) {
   const identity = useUiOwner('composer.controls', undefined, { conversationKey: composer.conversationKey });
+  const showingShellWait = Boolean(foregroundShells?.length);
   const boundaryCleanup = useRef<(() => void) | undefined>(undefined);
   const setComposerShell = useCallback((shell: HTMLElement | null) => {
     boundaryCleanup.current?.();
     boundaryCleanup.current = shell
-      ? observeConversationComposerBoundary(shell, conversationBodyRef?.current?.parentElement ?? null)
+      ? observeConversationComposerBoundary(shell, conversationBodyRef?.current?.parentElement ?? null, showingShellWait)
       : undefined;
-  }, [conversationBodyRef]);
+  }, [conversationBodyRef, showingShellWait]);
   const connections = useLocalAgentStore(state => state.connections);
   const { concurrentDecisionKey, showApproval } = composerDecisionView(composer, composer.selectedTextDecision);
   const { setSelectedTextDecision } = composer;
@@ -277,6 +281,7 @@ export function ConversationComposer({
       </div>}
       <div id={decisionContentId} className="local-agent__composer-content">
       <ComposerQuestionPrompt language={language} composer={visibleComposer} />
+      {projection && showingShellWait && foregroundShells && <BlockingShellPrompt key={`${projection.sessionId}:${projection.run?.runId}`} sessionId={projection.sessionId} shells={foregroundShells} language={language} />}
       <div
         className={`local-agent__composer local-agent__composer--${inputMode}${readerInputCollapsed ? ' local-agent__composer--collapsed' : ''}`}
         data-press-feedback={pressFeedback ?? undefined}

@@ -16,6 +16,7 @@ import { useAgentComposer } from './useAgentComposer';
 import { FileChanges, roundChangeActivities } from './FileChanges';
 import { useDisplayedConversation } from './ConversationDisplayProvider';
 import { ConversationComposer } from './ConversationComposer';
+import { blockingShells } from './shellProgress';
 import { ComposerDecisionPanels } from './ComposerDecisionPanels';
 import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
 import { ConversationTranscript } from './ConversationTranscript';
@@ -66,6 +67,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     || projection?.display.creationTitle.trim()
     || t(language, 'agent.session.newTitle');
   const conversationItems = projectionItems(projection);
+  const foregroundShells = useMemo(() => sessionId === projection?.sessionId ? blockingShells(projection) : [], [sessionId, projection]);
   const assistantDraft = projection?.assistantDraft ?? null;
   const display = useDisplayedConversation();
   const showChangeBar = projection?.run && !display.displaySettledRunIds.has(projection.run.runId)
@@ -177,6 +179,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           onEditMessage={composer.beginMessageEdit}
           unappliedRecovery={composer.unappliedRecovery}
           automaticReview={automaticReview}
+          foregroundShells={foregroundShells}
           foregroundInteractionId={composer.foregroundInteractionId}
           onFocusInteraction={composer.focusInteraction}
           readInteractionDraft={composer.readInteractionDraft}
@@ -204,6 +207,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         <button type="button" onClick={updates.retry}>{t(language, 'achbitGui.statusAction.retry')}</button>
       </DismissibleError>}
       <ConversationComposer
+        foregroundShells={foregroundShells}
         conversationBodyRef={bodyRef}
         readerExpanded={resourcePreview.visible}
         onEditBrowserReview={resourcePreview.editBrowserReview}

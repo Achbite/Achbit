@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
+import { loopSnapshot, projectSession } from '../dist/index.js';
 import { actorWith, createSession, fakeRunPreparation, emptyKernel, workspaceBinding,
   providerEvent, messageCommand, completedExecutionReply, readEvents } from './local-agent-fixtures.mjs';
 
@@ -80,9 +81,12 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
   t.mock.timers.tick(300_000);
   assert.equal(requests.length, 2, 'a long background command does not create a model review while the Loop is active');
   assert.equal((await readEvents(journal, sessionId)).some(e => e.type === 'process.wait.changed'), false);
+  const blocking = async () => (await actor.snapshot()).activities.filter(a => a.tool?.process?.blocking).map(a => a.tool.process.jobId);
+  assert.deepEqual(await blocking(), [], 'background runtime alone is not a dependency');
   releaseIndependent();
   const waits = async () => (await readEvents(journal, sessionId)).filter(e => e.type === 'process.wait.changed');
   await until(async () => (await waits()).at(-1)?.payload.phase === 'waiting');
+  assert.deepEqual(await blocking(), ['job:1'], 'the current explicit wait marks its originating command');
   const first = (await waits())[0].payload;
   assert.equal(first.reviewAt - first.startedAt, scenario === 'explicit-timeout' ? 5_000 : scenario === 'long-explicit' ? 180_000 : 120_000);
   assert.ok(requests.slice(1,3).every(request => request.messages.every(m => !m.content.includes('background-progress-only'))),
@@ -124,6 +128,7 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
     }
   }
   await until(async () => (await actor.snapshot()).run?.status === 'completed');
+  assert.deepEqual(await blocking(), [], 'neither cancelled nor settled jobs retain a blocking flag');
   const reviewed = !['completion-race','user-cancel','user-input'].includes(scenario);
   assert.equal((await waits()).filter(e => e.payload.phase === 'review').length, reviewed ? 1 : 0);
   const reviewEvidence = requests[3].messages.filter(m => m.role === 'user' && m.content.startsWith('{')).map(m => JSON.parse(m.content)).filter(m => Array.isArray(m.jobs));
@@ -136,6 +141,16 @@ for (const scenario of ['normal', 'repair', 'user-cancel', 'completion-race', 'b
   assert.equal(requests.length, scenario === 'repair' ? 7 : ['user-cancel','completion-race'].includes(scenario) ? 4 : 5);
   if (['explicit-timeout','long-explicit'].includes(scenario)) assert.equal(jobs.get('job:1').status, 'cancelled', 'a waited-for job was cancelled by a model decision');
   if (scenario === 'user-cancel') assert.equal(jobs.get('job:1').status, 'cancelled');
+  if (scenario === 'normal' || scenario === 'user-input') {
+    const journalEvents = await readEvents(journal, sessionId);
+    for (const [index, event] of journalEvents.entries()) {
+      if (event.type !== 'process.wait.changed') continue;
+      const state = loopSnapshot(sessionId, journalEvents.slice(0, index + 1)).state;
+      const ids = projectSession(state).activities.filter(a => a.tool?.process?.blocking).map(a => a.tool.process.jobId);
+      assert.deepEqual(ids, event.payload.phase === 'waiting' ? event.payload.jobIds : [], `reopened ${event.payload.phase} wait`);
+      assert.ok(Object.values(state.activities).every(a => a.tool?.process?.blocking === undefined), 'display never mutates the original tool receipt');
+    }
+  }
   assert.equal(commands.filter(c => c.toolName === 'fs.read').length, scenario === 'batch-wait' ? 3 : scenario.startsWith('batch-') ? 2 : 1);
   if (scenario.startsWith('batch-')) {
     const skipped = (await readEvents(journal, sessionId)).filter(e => e.type === 'tool.not-executed');

@@ -157,6 +157,7 @@ test('a running Shell stays folded until explicit disclosure, retaining live out
   t.mock.method(Date, 'now', () => Number(activity.startedAt) + 120000);
   const quiet = render(activity);
   assert.match(quiet,/aria-expanded="false"/);
+  assert.match(quiet,/aria-label="Shell 正在运行"[\s\S]*?local-agent__tool-group-chevron/, 'one running marker precedes the existing chevron');
   assert.doesNotMatch(quiet,/sleep 120|尚无输出|120 秒|<pre>|local-agent__tool-stop/);
   layout.state.set('tool-group:expanded',true);
   const entries = render(activity);

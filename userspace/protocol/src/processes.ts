@@ -20,7 +20,8 @@ export function isManagedProcessSnapshot(v: unknown): v is ManagedProcessSnapsho
 }
 /** Wire-shape validation only; Session owns the projection and outcome. */
 export function isProcessActivity(v: unknown): v is ProcessActivityProjection {
-  if (!object(v) || !text(v.jobId) || !text(v.command) || !isProcessOutput(v.output)) return false;
+  if (!object(v) || !text(v.jobId) || !text(v.command) || !isProcessOutput(v.output)
+    || (v.blocking !== undefined && typeof v.blocking !== 'boolean')) return false;
   return v.result === undefined || object(v.result)
     && (v.result.exitCode === null || Number.isSafeInteger(v.result.exitCode))
     && natural(v.result.durationMs) && typeof v.result.timedOut === 'boolean';

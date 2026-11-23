@@ -2438,6 +2438,8 @@ export interface ManagedProcessSnapshot {
 
 export interface ProcessActivityProjection {
   jobId: string;
+  /** The current run is suspended on this still-active managed execution. */
+  blocking?: boolean;
   command: string;
   output: ToolOutputProjection;
   result?: { exitCode: number | null; durationMs: number; timedOut: boolean };

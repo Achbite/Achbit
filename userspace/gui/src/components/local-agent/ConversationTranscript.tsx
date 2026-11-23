@@ -21,6 +21,7 @@ import { BufferedMarkdown, MarkdownContent, MarkdownInline } from './BufferedMar
 import { StreamingMarkdownParser } from './streamingMarkdown';
 import PlanCard from './PlanCard';
 import { ToolActivityGroup } from './ToolActivityDetails';
+import type { BlockingShell } from './shellProgress';
 import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow } from './conversationItems';
 import type { ConversationViewport } from './useConversationViewport';
 import { ConversationNavigation } from './ConversationNavigation';
@@ -44,6 +45,7 @@ interface ConversationTranscriptProps {
   loading: boolean;
   showReasoning?: boolean;
   automaticReview?: React.ReactNode;
+  foregroundShells?: readonly BlockingShell[];
   foregroundInteractionId?: string | null;
   onFocusInteraction?: () => void;
   readInteractionDraft?: (interactionId: string) => string;
@@ -69,6 +71,7 @@ export function ConversationTranscript({
   language,
   showReasoning = false,
   automaticReview,
+  foregroundShells = [],
   foregroundInteractionId,
   onFocusInteraction,
   readInteractionDraft,
@@ -255,7 +258,7 @@ export function ConversationTranscript({
   const renderRow = ({ item, draft }: ConversationRow) => {
     if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
       const group = item?.type === 'toolGroup' ? item : undefined;
-      return <ToolActivityGroup activities={group?.values ?? []} hostedKeys={group?.hostedKeys} batchConflicts={group?.batchConflicts}
+      return <ToolActivityGroup activities={group?.values ?? []} foregroundShells={foregroundShells} hostedKeys={group?.hostedKeys} batchConflicts={group?.batchConflicts}
         hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection?.artifacts}
         pendingApproval={projection?.pendingApproval} reviewingApproval={isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run)}
         language={language} onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}
@@ -268,7 +271,8 @@ export function ConversationTranscript({
       {automaticReview}
       {projection && providerRetryAttempt(projection, currentActivity) !== null
         ? <ProviderRetryStatus projection={projection} language={language} activity={currentActivity} />
-        : projection?.run && projection.run.status !== 'completed' && (
+        : projection?.run && projection.run.status !== 'completed'
+          && !(foregroundShells.length && !currentActivity && projection.run.status === 'running') && (
         <ProviderStageStatus run={projection.run} language={language}
           reasoning={showReasoning && assistantDraft ? { sessionId: projection.sessionId, requestId: assistantDraft.turnId } : undefined}
           key={`${projection.run.runId}:${assistantDraft?.turnId ?? 'idle'}`}

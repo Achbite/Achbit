@@ -92,6 +92,8 @@ export interface SessionState {
   run: SessionProjection['run'];
   activities: Record<string, ActivityProjection>;
   processes: Record<string, ManagedProcessSnapshot>;
+  /** Presentation of the journal's current wait, not a second scheduling barrier. */
+  processWait?: { runId: string; jobIds: string[] };
   artifacts: Record<string, ArtifactProjection>;
   deliverables: Record<string, DeliverableProjection>;
   terminalError: SessionProjection['terminalError'];
@@ -359,6 +361,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       break;
     }
     case 'run.started':
+      delete next.processWait;
       if (event.payload.contextStart) {
         next.contextHandoff = { ...event.payload.contextStart, runId: event.runId,
           profileId: event.payload.runtimeSnapshot.provider.profileId, status: 'reading' };
@@ -857,6 +860,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         event.type === 'agent.control.completed' ? SESSION_CONTROL_AGENT : SESSION_CONTROL_SESSION, event.sequence);
       break;
     case 'process.wait.changed':
+      if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('wake_run_not_active');
+      if (event.payload.phase === 'waiting') next.processWait = { runId: event.runId, jobIds: [...event.payload.jobIds] };
+      else delete next.processWait; // Review/resumed means the Loop can do other work again.
+      break;
     case 'wake.scheduled':
     case 'wake.cancelled':
     case 'wake.triggered':
@@ -1200,6 +1207,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       assertCurrentRun(next, event.runId, 'run_workspace_snapshot_missing');
       break;
     case 'run.finishing':
+      delete next.processWait;
       next.pendingRunSettlements = { ...next.pendingRunSettlements };
       assertCurrentRun(next, event.runId, 'run_finishing_identity_mismatch');
       if (
@@ -1406,6 +1414,16 @@ export function projectSession(
     const records = rounds.get(activity.runId) ?? [];
     records.push(activity.tool.recordId); rounds.set(activity.runId, records);
   }
+  const wait = state.processWait;
+  const blockingCalls = new Map<string, string>();
+  if (wait && state.run?.runId === wait.runId && state.run.status === 'running') {
+    for (const id of wait.jobIds) {
+      const job = state.processes[id];
+      if (job?.status === 'active' && job.sessionId === state.sessionId && job.runId === wait.runId) {
+        blockingCalls.set(job.callId, id);
+      }
+    }
+  }
   const draft = assistantDraft ? structuredClone(assistantDraft) : null;
   for (const block of draft?.blocks ?? []) {
     if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
@@ -1475,7 +1493,15 @@ export function projectSession(
     run: state.run ? cloneRun(state.run) : null,
     activities: Object.values(state.activities)
       .sort((left, right) => left.sequence - right.sequence)
-      .map(cloneActivity),
+      .map(activity => {
+        const copy = cloneActivity(activity);
+        if (copy.tool?.process && copy.status === 'active' && copy.runId === wait?.runId && copy.callId
+          && blockingCalls.get(copy.callId) === copy.tool.process.jobId) {
+          // Never annotate the reducer's original activity or its nested process in-place.
+          copy.tool.process = { ...copy.tool.process, blocking: true };
+        }
+        return copy;
+      }),
     artifacts: Object.values(state.artifacts).map((artifact) => ({ ...artifact })),
     deliverables: Object.values(state.deliverables).sort(compareDeliverables).map(item => ({ ...item })),
     terminalError: state.terminalError ? { ...state.terminalError } : null,

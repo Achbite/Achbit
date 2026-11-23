@@ -85,6 +85,20 @@ test('a deferred UI region binds the explicit conversation viewport before its s
   assert.equal(fixture.properties.size, 0);
 });
 
+test('a blocking Shell reserves its card instead of extending history beneath it', async t => {
+  const { observeConversationComposerBoundary } = await loadGuiModule(t, '/src/components/local-agent/conversationComposerBoundary.ts');
+  const fixture = boundaryFixture(t);
+  const card = { getBoundingClientRect: () => ({ top: 508 }) };
+  const shell = { querySelector: selector => selector === '.local-agent__shell-wait' ? card : fixture.surface };
+  const stop = observeConversationComposerBoundary(shell, fixture.viewport, true);
+  t.after(stop);
+  assert.equal(fixture.value(), '8px');
+  assert.deepEqual(fixture.observers[0].nodes, [fixture.viewport, shell, card]);
+  fixture.geometry.surfaceTop += 120;
+  fixture.observers[0].callback();
+  assert.equal(fixture.value(), '8px', 'opening output must not move history over the waiting command');
+});
+
 test('a standalone composer without a transcript installs no observer', async t => {
   const { observeConversationComposerBoundary } = await loadGuiModule(t, '/src/components/local-agent/conversationComposerBoundary.ts');
   const fixture = boundaryFixture(t);
