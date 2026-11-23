@@ -2,6 +2,8 @@
 
 The desktop can present a revision-bound reading window before restoring the complete Session projection. This is an authenticated, read-only GUI API, not an Agent tool. It does not resume a task, grant access to a resource, or change the journal. Ordinary `messages` pages are excerpts and cannot substitute for a reading window.
 
+After you switch conversations, the desktop keeps up to six recently used complete views, including the selected one. The inactive views may contain up to 32,768 timeline entries in total. A long message counts as one entry: its byte size alone does not evict the view. Reopening an unchanged, retained conversation can therefore reuse the full text without downloading it again. A changed revision, a different Host or an evicted view may require a fresh read. This policy is not a process-memory cap and does not change the size limits for partial reading windows.
+
 A successful `GET /api/conversation/statuses` may include `x-achbit-reading-window: 1`. This advertises the current Session service's support; the response body remains the original array. Without that header, use the existing projection path. The full snapshot remains authoritative for commands and dependent controls.
 
 ```
