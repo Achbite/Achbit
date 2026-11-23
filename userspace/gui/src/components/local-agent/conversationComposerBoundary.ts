@@ -1,8 +1,8 @@
 /** Extend the transcript through transparent accessories, never beneath an actionable wait card. */
-export function observeConversationComposerBoundary(shell: HTMLElement, viewport: HTMLElement | null, showingShellWait = false): () => void {
+export function observeConversationComposerBoundary(shell: HTMLElement, viewport: HTMLElement | null, showingShellWait = false, childInline = false): () => void {
   // UiRegion commits the composer into a detached portal host before attaching it.
   // The conversation owner supplies its viewport; ancestor lookup here is too early.
-  const surface = shell.querySelector<HTMLElement>(showingShellWait ? '.local-agent__shell-wait' : '.local-agent__composer');
+  const surface = shell.querySelector<HTMLElement>(childInline ? '[data-agent-review="inline"]' : showingShellWait ? '.local-agent__shell-wait' : '.local-agent__composer');
   // A standalone composer or an entirely replaced region need not own a transcript.
   if (!viewport || !surface) return () => {};
   const property = '--conversation-composer-overlap';

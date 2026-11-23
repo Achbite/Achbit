@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createElement } from 'react';
+import { Children, createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModules } from './gui-projection-contract.mjs';
 
@@ -46,7 +46,7 @@ test('child Plan reviews advance independently and a revised scope can prompt ag
     return null;
   }
   renderToStaticMarkup(createElement(Probe));
-  assert.equal(mounted.props.decision, first, 'the parent entry mounts the pending review without opening child history');
+  assert.equal(mountedRoute(mounted).props.decision, first, 'the parent entry mounts the pending review without opening child history');
   dismissed.add(review.key);
   assert.equal(nextAgentPlanReview(decisions, dismissed).decision, second);
   dismissed.add(nextAgentPlanReview(decisions, dismissed).key);
@@ -98,8 +98,9 @@ test('the parent conversation offers a child permission directly and defers only
   let mounted;
   function Probe() { mounted = AgentPlanReview({ decisions: [decision], language: 'en-US', refresh: async () => {} }); return null; }
   renderToStaticMarkup(createElement(Probe));
-  assert.equal(mounted.props.decision, decision);
-  assert.equal(mounted.key, approval.key);
+  const active = mountedRoute(mounted);
+  assert.equal(active.props.decision, decision);
+  assert.equal(active.key, approval.key);
   later.add(approval.key);
   const both = { ...decision, plan: { planId: 'plan:worker', revision: 1 } };
   const plan = nextAgentPlanReview([both], later);
@@ -120,6 +121,33 @@ function viewOf(render) {
   function Probe() { result = render(); return null; }
   renderToStaticMarkup(createElement(Probe));
   return result;
+}
+
+function mountedRoute(view) {
+  return findReactElement(view, e => e.props.decision && typeof e.props.onResolved === 'function');
+}
+
+function includesElement(root, predicate) {
+  return Children.toArray(root).some(node => isValidElement(node)
+    && (predicate(node) || includesElement(node.props.children, predicate)));
+}
+
+function inlineRegion(surface, ModalDialog, title) {
+  assert.ok(surface, 'the verified child is available in the parent');
+  assert.equal(includesElement(surface, e => e.type === ModalDialog || e.type === 'dialog'
+    || e.props.role === 'dialog' || e.props['aria-modal'] === true || e.props['aria-modal'] === 'true'),
+    false, 'showing a forwarded child permission or question must not open a modal');
+  return findReactElement(surface, e => e.type === 'section' && e.props['aria-label'] === title);
+}
+
+function laterButton(surface) {
+  return findReactElement(surface, e => typeof e.props.onClick === 'function' && e.props.children === 'Review later');
+}
+
+function pressEscape(target) {
+  const event = { key: 'Escape', nativeEvent: {}, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {} };
+  target.props.onKeyDown(event);
+  return event;
 }
 
 function childApprovalFixture() {
@@ -162,7 +190,7 @@ test('the direct child Reader offers only the actionable sibling and submits its
 
 test('a directly opened conversation cannot retarget the visible human approval after withdrawal or navigation', async t => {
   const oldStorage = globalThis.sessionStorage;
-  globalThis.sessionStorage = { getItem: () => null };
+  globalThis.sessionStorage = { getItem: () => null, removeItem() {} };
   t.after(() => { if (oldStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = oldStorage; });
   const [{ useAgentComposer }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
     '/src/components/local-agent/useAgentComposer.ts', '/src/state/localAgentStore.ts']);
@@ -182,20 +210,24 @@ test('a directly opened conversation cannot retarget the visible human approval 
   await assert.rejects(composer.respondApproval('allow'), /approval_response_missing/);
 });
 
-test('the routed dialog acts on just the original child approval, even when it is not first', async t => {
-  const [{ AgentReviewDialog }, { ChildDecisions }, { ComposerDecisionPanels }] = await loadGuiModules(t, [
-    '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/AgentTasksPanel.tsx', '/src/components/local-agent/ComposerDecisionPanels.tsx',
+test('the inline composer acts on just the advertised child approval; only a child Plan opens a modal', async t => {
+  const [{ AgentReviewSurface }, { ChildDecisions }, { ComposerDecisionPanels }, { ModalDialog }] = await loadGuiModules(t, [
+    '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/AgentTasksPanel.tsx', '/src/components/local-agent/ComposerDecisionPanels.tsx', '/src/ui-components/index.ts',
   ]);
   const { decision, target, projection } = childApprovalFixture(), calls = [];
   let deferred = 0;
   const child = { projection, submitting: false, readError: null, submit: async command => { calls.push(command); } };
-  const dialog = kind => viewOf(() => AgentReviewDialog({ kind, decision, language: 'en-US', child,
-    onDismiss: () => { deferred++; }, onResolved: () => assert.fail('render cannot resolve a decision') }));
-  const permission = dialog('approval'), selected = findReactElement(permission, e => e.type === ChildDecisions);
-  const html = renderToStaticMarkup(selected);
+  const surface = kind => viewOf(() => AgentReviewSurface({ kind, decision, language: 'en-US', child,
+    onDismiss: () => { deferred++; }, onResolved: () => assert.fail('observing a decision cannot resolve it') }));
+  const permission = surface('approval'), region = inlineRegion(permission, ModalDialog, 'Tool permission');
+  const selected = findReactElement(region, e => e.type === ChildDecisions);
+  const html = renderToStaticMarkup(permission);
+  assert.doesNotMatch(html, /<dialog\b|role="dialog"|aria-modal="true"/);
   assert.ok(html.includes(target.preview.summary));
   assert.doesNotMatch(html, /Unrelated operation|Unrelated Plan|Unrelated question/);
-  const planOnly = renderToStaticMarkup(findReactElement(dialog('plan'), e => e.type === ChildDecisions));
+  const modal = findReactElement(surface('plan'), e => e.type === ModalDialog);
+  assert.ok(modal.props['aria-label'] || modal.props['aria-labelledby'], 'the retained Plan dialog has an accessible name');
+  const planOnly = renderToStaticMarkup(findReactElement(modal, e => e.type === ChildDecisions));
   assert.match(planOnly, /Unrelated Plan/);
   assert.doesNotMatch(planOnly, /Inspect the requested directory|Unrelated operation|Unrelated question/);
 
@@ -203,25 +235,28 @@ test('the routed dialog acts on just the original child approval, even when it i
   const controls = viewOf(() => ComposerDecisionPanels(panel.props));
   const action = name => findReactElement(controls, e => e.props['data-ui-action'] === `composer.decision.${name}`);
   const section = findReactElement(controls, e => e.type === 'section' && e.props['aria-labelledby']);
-  section.props.onKeyDown({ key: 'Escape', nativeEvent: {}, preventDefault: () => assert.fail('leave Escape to the modal'), stopPropagation() {} });
-  findReactElement(permission, e => e.props['aria-label'] === 'Tool permission').props.onClose();
-  findReactElement(permission, e => e.type === 'button' && e.props.children === 'Review later').props.onClick();
-  assert.equal(deferred, 2); assert.deepEqual(calls, [], 'neither closing nor deferring grants or denies');
-  action('allow').props.onClick(); action('deny').props.onClick();
+  // The shared approval control may leave Escape to the enclosing inline region, but it must never deny here.
+  const key = pressEscape(section);
+  if (!key.defaultPrevented) region.props.onKeyDown(key);
+  laterButton(region).props.onClick();
+  assert.equal(deferred, 2); assert.deepEqual(calls, [], 'Escape and Review later neither grant nor deny');
+  assert.notEqual(action('deny').props['aria-keyshortcuts'], 'Escape', 'the child must not advertise a denial shortcut it does not perform');
+  action('allow').props.onClick(); action('allow-session').props.onClick(); action('deny').props.onClick();
   const common = { schemaVersion: 'achbit.command.v3', sessionId: 'session:worker', type: 'approval.respond', runId: decision.runId, ...decision.approval };
   assert.deepEqual(calls.map(({ commandId, ...command }) => command), [
-    { ...common, decision: 'allow', authorizationScope: 'runCommand' }, { ...common, decision: 'deny' },
+    { ...common, decision: 'allow', authorizationScope: 'runCommand' },
+    { ...common, decision: 'allow', authorizationScope: 'sessionCommand' }, { ...common, decision: 'deny' },
   ]);
-  assert.equal(new Set(calls.map(c => c.commandId)).size, 2);
+  assert.equal(new Set(calls.map(c => c.commandId)).size, 3);
 });
 
 test('the parent waits for the child model handoff and never opens a stale or resolved approval', async t => {
-  const [{ AgentPlanReview, AgentReviewDialog }, { ChildDecisions }, { ComposerDecisionPanels }, { pendingChildApproval }] = await loadGuiModules(t, [
+  const [{ AgentPlanReview, AgentReviewSurface }, { ChildDecisions }, { ComposerDecisionPanels }, { pendingChildApproval }] = await loadGuiModules(t, [
     '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/AgentTasksPanel.tsx',
     '/src/components/local-agent/ComposerDecisionPanels.tsx', '/src/components/local-agent/useAgentChildConversation.ts',
   ]);
   const { decision, target, other, projection } = childApprovalFixture(), calls = [];
-  const show = (snapshot, route = decision) => viewOf(() => AgentReviewDialog({ kind: 'approval', decision: route, language: 'en-US',
+  const show = (snapshot, route = decision) => viewOf(() => AgentReviewSurface({ kind: 'approval', decision: route, language: 'en-US',
     child: { projection: snapshot, readError: null, submitting: false, submit: async command => { calls.push(command); } },
     onDismiss() {}, onResolved() {} }));
   assert.equal(show(null), null, 'the unverified loading state does not interrupt the parent');
@@ -232,7 +267,7 @@ test('the parent waits for the child model handoff and never opens a stale or re
   assert.equal(show({ ...projection, run: { ...projection.run, status: 'completed' } }), null);
   const delegated = { ...target, preview: { ...target.preview, approvalReviewer: 'agent' } };
   const observed = (approval, run = projection.run) => ({ ...projection, pendingApprovals: [other, approval], run });
-  assert.equal(show(observed(delegated)), null, 'no modal during automatic review');
+  assert.equal(show(observed(delegated)), null, 'no actionable surface during automatic review');
   const handoff = { ...delegated, preview: { ...delegated.preview, review: { decision: 'ask', reason: 'Review provider unavailable' } } };
   // The Session withholds this route during format recovery; the GUI cannot infer a handoff from child preview text alone.
   assert.equal(viewOf(() => AgentPlanReview({ decisions: [], language: 'en-US', refresh: async () => {} })), null);
@@ -271,8 +306,8 @@ test('parent-routed child interaction: pure requests mount and deferring one pre
   const { decision, question, confirmation } = childInteractionFixture();
   const mount = decisions => viewOf(() => AgentPlanReview({ decisions, language: 'en-US', refresh: async () => {} }));
   assert.equal(mount([]), null, 'messages without a user decision route have no review');
-  const entry = mount([decision]);
-  assert.ok(entry, 'a route containing only interactionIds opens directly in the parent');
+  const entry = mountedRoute(mount([decision]));
+  assert.ok(entry, 'a pure interaction route is offered in the parent composer');
   assert.equal(entry.props.decision, decision);
   assert.equal(entry.props.interactionId, question.interactionId);
   const approval = call => ({ ...decision, approval: { callId: `call:${call}`, approvalId: `approval:${call}` } });
@@ -290,35 +325,52 @@ test('parent-routed child interaction: pure requests mount and deferring one pre
 });
 
 test('parent-routed child interaction: free text and confirmation choices submit to the exact child', async t => {
-  const [{ AgentReviewDialog }, { ChildDecisions }, { InteractionCard }, { InteractionOptions }] = await loadGuiModules(t, [
+  const [{ AgentReviewSurface }, { ChildDecisions }, { ComposerQuestionPrompt, ComposerDecisionPanels }, { InteractionOptions }, { ModalDialog }] = await loadGuiModules(t, [
     '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/AgentTasksPanel.tsx',
-    '/src/components/local-agent/InteractionCard.tsx', '/src/components/local-agent/InteractionOptions.tsx',
+    '/src/components/local-agent/ComposerDecisionPanels.tsx', '/src/components/local-agent/InteractionOptions.tsx', '/src/ui-components/index.ts',
   ]);
   const { decision, question, confirmation, projection } = childInteractionFixture();
-  const calls = []; let deferred = 0;
+  const calls = [], text = 'Put it in the shared reports directory.';
+  let draft = 'A reply already in progress', deferred = 0;
   const controls = (interaction, snapshot, title) => {
-    const dialog = viewOf(() => AgentReviewDialog({ kind: 'interaction', decision, interactionId: interaction.interactionId,
+    const surface = viewOf(() => AgentReviewSurface({ kind: 'interaction', decision, interactionId: interaction.interactionId,
       language: 'en-US', child: { projection: snapshot, submitting: false, readError: null, submit: async cmd => { calls.push(cmd); } },
+      draft: interaction === question ? draft : '', onDraftChange: value => { draft = value; },
       onDismiss: () => { deferred++; }, onResolved: () => assert.fail('render is not a resolution') }));
-    assert.ok(dialog, 'the original pending interaction has an actionable dialog');
-    findReactElement(dialog, e => e.props['aria-label'] === title).props.onClose();
-    findReactElement(dialog, e => e.props.children === 'Review later').props.onClick();
-    const selected = findReactElement(dialog, e => e.type === ChildDecisions);
-    const html = renderToStaticMarkup(selected);
+    const region = inlineRegion(surface, ModalDialog, title);
+    const html = renderToStaticMarkup(surface);
     assert.ok(html.includes(interaction.prompt));
     assert.ok(!html.includes(interaction === question ? confirmation.prompt : question.prompt));
-    assert.doesNotMatch(html, /Unrelated operation|Unrelated Plan/);
-    return findReactElement(viewOf(() => ChildDecisions(selected.props)), e => e.type === InteractionCard);
+    assert.doesNotMatch(html, /Unrelated operation|Unrelated Plan|<dialog\b|role="dialog"|aria-modal="true"/);
+    const selected = findReactElement(region, e => e.type === ChildDecisions);
+    const content = viewOf(() => ChildDecisions(selected.props));
+    const prompt = findReactElement(content, e => e.type === ComposerQuestionPrompt);
+    const panel = findReactElement(content, e => e.type === ComposerDecisionPanels);
+    assert.equal(prompt.props.composer.pendingInteraction, interaction);
+    assert.equal(panel.props.composer.pendingInteraction, interaction);
+    const owner = findReactElement(content, e => typeof e.type === 'function' && e.props.question === interaction && typeof e.props.onAnswer === 'function');
+    return { region, prompt: viewOf(() => ComposerQuestionPrompt(prompt.props)), panel: viewOf(() => ComposerDecisionPanels(panel.props)),
+      form: viewOf(() => owner.type(owner.props)) };
   };
-  const free = controls(question, projection, 'Question'); // Continue while the child has a running Provider turn.
+  const free = controls(question, projection, 'Question'); // The child can still be running.
+  const input = findReactElement(free.form, e => e.type === 'textarea');
+  assert.equal(input.props.value, draft);
+  input.props.onChange({ target: { value: text } });
+  assert.equal(draft, text, 'editing updates this child reply without answering');
+  findReactElement(free.prompt, e => e.props['data-ui-action'] === 'composer.question.close').props.onClick();
+  pressEscape(free.region);
   const choice = controls(confirmation, { ...projection, run: { ...projection.run, status: 'waiting', waitingReason: 'userInput' } }, 'Confirmation');
+  assert.equal(includesElement(choice.form, e => e.type === 'textarea'), false, 'choice-only confirmation cannot submit free text');
+  laterButton(choice.region).props.onClick();
+  pressEscape(choice.region);
   assert.equal(deferred, 4);
-  assert.deepEqual(calls, [], 'closing and reviewing later neither answer nor stop the child');
-  const text = 'Put it in the shared reports directory.';
-  const editing = viewOf(() => InteractionCard({ ...free.props, draft: text }));
-  findReactElement(editing, e => e.type === 'form').props.onSubmit({ preventDefault() {} });
-  const confirming = viewOf(() => InteractionCard(choice.props));
-  const options = findReactElement(confirming, e => e.type === InteractionOptions);
+  assert.deepEqual(calls, [], 'typing, closing and deferring neither answer nor stop the child');
+  const returned = controls(question, projection, 'Question');
+  assert.equal(findReactElement(returned.form, e => e.type === 'textarea').props.value, text);
+  findReactElement(returned.form, e => e.type === 'form').props.onSubmit({ preventDefault() {}, stopPropagation() {} });
+  const options = findReactElement(choice.panel, e => e.type === InteractionOptions);
+  assert.equal(options.props.surface, 'composer');
+  assert.equal(options.props.interactionId, confirmation.interactionId);
   findReactElement(viewOf(() => InteractionOptions(options.props)), e => e.props.title === 'Keep private').props.onClick();
   const common = { schemaVersion: 'achbit.command.v3', sessionId: decision.agentSessionId, runId: decision.runId, type: 'interaction.respond' };
   assert.deepEqual(calls.map(({ commandId, ...command }) => command), [
@@ -330,11 +382,11 @@ test('parent-routed child interaction: free text and confirmation choices submit
 });
 
 test('parent-routed child interaction: stale or unadvertised targets never substitute another pending item', async t => {
-  const [{ AgentReviewDialog }, { pendingChildInteraction }] = await loadGuiModules(t, [
+  const [{ AgentReviewSurface }, { pendingChildInteraction }] = await loadGuiModules(t, [
     '/src/components/local-agent/AgentPlanReview.tsx', '/src/components/local-agent/useAgentChildConversation.ts',
   ]);
   const { decision, question, confirmation, projection } = childInteractionFixture();
-  const show = (snapshot, route) => viewOf(() => AgentReviewDialog({ kind: 'interaction', decision: route,
+  const show = (snapshot, route) => viewOf(() => AgentReviewSurface({ kind: 'interaction', decision: route,
     interactionId: question.interactionId, language: 'en-US', child: { projection: snapshot, readError: null, submitting: false },
     onDismiss() {}, onResolved() {} }));
   assert.equal(show(null, decision), null, 'an unverified child snapshot does not interrupt the parent');
@@ -354,6 +406,67 @@ test('parent-routed child interaction: stale or unadvertised targets never subst
   assert.equal(pendingChildInteraction(projection, question, decision), question);
 });
 
+test('a parent decision keeps its composer by default; the user may select and defer the advertised child item', async t => {
+  const [{ AgentPlanReview }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
+  const { decision, question } = childInteractionFixture();
+  const readOnly = { decisions: [decision], language: 'en-US', preferParent: true,
+    refresh: () => assert.fail('switching between offers must not resolve a decision') };
+  let frames = 0;
+  const resting = [];
+  function Probe() {
+    const frame = frames++;
+    const view = AgentPlanReview(readOnly);
+    if (frame === 1) {
+      const active = mountedRoute(view);
+      assert.equal(active.props.decision, decision);
+      assert.equal(active.props.interactionId, question.interactionId);
+      active.props.onDismiss();
+    } else {
+      const opener = findReactElement(view, e => typeof e.props.onClick === 'function' && e.props['aria-expanded'] === false);
+      resting.push(opener);
+      if (!frame) opener.props.onClick();
+    }
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  assert.equal(frames, 3);
+  for (const opener of resting) {
+    assert.match(renderToStaticMarkup(opener), /Pending decisions/);
+    assert.notEqual(opener.props['aria-haspopup'], 'dialog');
+  }
+  const plan = { ...decision, plan: { planId: 'plan:upgrade', revision: 3 } };
+  assert.equal(mountedRoute(viewOf(() => AgentPlanReview({ ...readOnly, decisions: [plan] }))).props.kind, 'plan',
+    'the normal child Plan review remains available even while the parent has a pending item');
+});
+
+test('the actual parent composer isolates a forwarded answer draft by parent, child, run and question', async t => {
+  const previousStorage = globalThis.sessionStorage, saved = new Map();
+  globalThis.sessionStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  t.after(() => { if (previousStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = previousStorage; });
+  const [{ useLocalAgentStore: store }, { useAgentComposer }, { ConversationComposer }, { AgentPlanReview }] = await loadGuiModules(t, [
+    '/src/state/localAgentStore.ts', '/src/components/local-agent/useAgentComposer.ts', '/src/components/local-agent/ConversationComposer.tsx',
+    '/src/components/local-agent/AgentPlanReview.tsx',
+  ]);
+  const { decision, question } = childInteractionFixture();
+  const child = { ...decision, interactionIds: [question.interactionId] }, parent = 'session:parent';
+  function route(sessionId, item) {
+    const projection = { sessionId, run: null, interactions: [], plans: [], contextCompositions: [], queuedInputs: [], pendingAgentDecisions: [item] };
+    store.setState({ sessionId, projection, loading: false, submitting: false });
+    Object.assign(store.getInitialState(), store.getState());
+    const composer = viewOf(() => useAgentComposer('en-US', () => {}));
+    const tree = viewOf(() => ConversationComposer({ composer, showChildDecisions: true, language: 'en-US', uiActionError: null }));
+    const entry = findReactElement(tree, e => e.type === AgentPlanReview);
+    assert.equal(composer.draft, '', 'the parent ordinary message draft is not a forwarded answer');
+    return mountedRoute(viewOf(() => AgentPlanReview(entry.props))).props;
+  }
+  route(parent, child).onDraftChange('Only this child should receive this answer.');
+  for (const [owner, item] of [[parent, { ...child, agentSessionId: 'session:sibling' }], [parent, { ...child, runId: 'run:later' }],
+    [parent, { ...child, interactionIds: ['question:other'] }], ['session:another-parent', child]]) {
+    assert.equal(route(owner, item).draft, '', 'a different published target never inherits the previous answer');
+  }
+  assert.equal(route(parent, child).draft, 'Only this child should receive this answer.', 'returning to the exact offer restores the controlled draft');
+});
+
 test('deferred child decisions reopen from the main view without reviving a stale or withdrawn item', async t => {
   const [{ AgentPlanReview }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
   const { decision } = childInteractionFixture();
@@ -368,13 +481,14 @@ test('deferred child decisions reopen from the main view without reviving a stal
       refresh: async () => { refreshed++; } });
     if (step === 2 || step === 4) {
       assert.ok(view, 'all deferred is a non-modal invitation, not a dead end');
-      const open = findReactElement(view, e => e.props['aria-haspopup'] === 'dialog');
+      const open = findReactElement(view, e => typeof e.props.onClick === 'function' && e.props['aria-expanded'] === false);
+      assert.notEqual(open.props['aria-haspopup'], 'dialog', 'reopening an approval is not a dialog action');
       invitations.push({ view, open });
       open.props.onClick();
     } else if (step === 6) {
       assert.equal(view, null, 'the parent withdrew the first route; the child already reported the second stale');
     } else {
-      const active = findReactElement(view, e => typeof e.props.onResolved === 'function' && e.props.decision);
+      const active = mountedRoute(view);
       assert.equal(active.props.decision, step === 0 || step === 3 ? first : second);
       if (step === 5) active.props.onResolved(); else active.props.onDismiss();
     }
@@ -386,7 +500,7 @@ test('deferred child decisions reopen from the main view without reviving a stal
   // A nested SSR render clears React's current hook owner; render captured markup after its action sequence.
   assert.equal(invitations.length, 2);
   for (const { view, open } of invitations) {
-    assert.doesNotMatch(renderToStaticMarkup(view), /role="dialog"|aria-modal/);
+    assert.doesNotMatch(renderToStaticMarkup(view), /<dialog\b|role="dialog"|aria-modal|aria-haspopup="dialog"/);
     assert.match(renderToStaticMarkup(open), /Pending decisions/);
   }
 });

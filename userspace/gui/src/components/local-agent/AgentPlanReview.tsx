@@ -1,5 +1,5 @@
 import { ConversationBodyLinkScope, useConversationBodyLinks } from './useConversationBodyLinks';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import type { PendingAgentDecision, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { Button, ModalDialog } from '../../ui-components';
@@ -56,22 +56,40 @@ export function matchesAgentPlanReview(decision: PendingAgentDecision, projectio
     && plan.runId === decision.runId && plan.planId === decision.plan.planId && plan.revision === decision.plan.revision);
 }
 
-export function AgentPlanReview({ decisions, language, refresh }: {
+type DraftAccess = { read(key: string): string; write(key: string, text: string): void };
+
+/** Plans keep their explicit review dialog. Tool permissions and questions share the parent composer. */
+export function AgentPlanReview({ decisions, language, refresh, preferParent = false, drafts, onInlineChange }: {
   decisions: readonly PendingAgentDecision[]; language: UiLanguage; refresh(): Promise<void>;
+  preferParent?: boolean; drafts?: DraftAccess; onInlineChange?(present: boolean): void;
 }) {
   const [skipped, setSkipped] = useState<ReadonlyMap<string, ReviewState>>(() => new Map());
   const [reopened, setReopened] = useState<string | null>(null);
-  const automatic = nextAgentReview(decisions, skipped);
+  const [pinned, setPinned] = useState<string | null>(null);
+  const published = useMemo(() => new Map(Array.from(agentReviews(decisions), route => [route.key, route] as const)), [decisions]);
+  const manual = reopened ? published.get(reopened) : undefined;
+  const held = pinned && !skipped.has(pinned) ? published.get(pinned) : undefined;
+  // A new sibling must not replace the answer being edited. An existing parent decision or draft
+  // stays in place unless the user explicitly opens a child item. Plans retain their own flow.
+  const automatic = nextReview(preferParent ? Array.from(published.values()).filter(r => r.kind === 'plan') : published.values(), skipped);
+  const review = manual ?? (held && (!preferParent || held.kind === 'plan') ? held : automatic);
+  useLayoutEffect(() => { setPinned(review?.key ?? null); }, [review?.key]);
   const later: ReviewRoute[] = [];
-  if (skipped.size && (!automatic || reopened)) {
-    const published = new Map(Array.from(agentReviews(decisions), route => [route.key, route] as const));
-    for (const [key, state] of skipped) {
-      const route = published.get(key);
-      if (state === 'later' && route) later.push(route);
-    }
+  // Offer untouched siblings before postponed ones, even when the parent has kept its own draft.
+  if (preferParent) for (const route of published.values()) {
+    if (route.kind !== 'plan' && !skipped.has(route.key)) later.push(route);
   }
-  const manual = later.find(route => route.key === reopened);
-  const review = manual ?? automatic;
+  for (const [key, state] of skipped) {
+    const route = published.get(key);
+    if (state === 'later' && route) later.push(route);
+  }
+  useEffect(() => {
+    setSkipped(current => {
+      if ([...current.keys()].every(key => published.has(key))) return current;
+      return new Map([...current].filter(([key]) => published.has(key)));
+    });
+    setReopened(current => current && !published.has(current) ? null : current);
+  }, [published]);
   const key = review?.key;
   const finish = useCallback((state: ReviewState) => {
     if (!key) return;
@@ -83,25 +101,29 @@ export function AgentPlanReview({ decisions, language, refresh }: {
     setReopened(null);
   }, [key]);
   const dismiss = useCallback(() => finish('later'), [finish]);
-  const resolved = useCallback(() => { finish('resolved'); void refresh(); }, [finish, refresh]);
-  let dialog = null;
+  const resolved = useCallback(() => { if (key && drafts?.read(key)) drafts.write(key, ''); finish('resolved'); void refresh(); }, [key, drafts, finish, refresh]);
+  let surface = null;
   if (review) {
     const { key, ...target } = review;
-    dialog = <AgentReviewRoute key={key} {...target} language={language} onDismiss={dismiss} onResolved={resolved} />;
+    surface = <AgentReviewRoute key={key} {...target} language={language} onDismiss={dismiss} onResolved={resolved}
+      draft={drafts?.read(key)} onDraftChange={drafts ? value => drafts.write(key, value) : undefined} onInlineChange={onInlineChange} />;
   }
-  if (!later.length || (automatic && !manual)) return dialog;
-  // Keep the opener mounted for native dialog focus return. Opening it never answers or clears another item.
-  return <><Button className="agent-plan-review__reopen" variant="secondary" size="compact" aria-haspopup="dialog"
-    onClick={() => setReopened(later[0].key)}>{t(language, 'agent.decision.pending')} ({later.length})</Button>{dialog}</>;
+  if (!later.length || (review && !manual)) return surface;
+  // Keep a deferred item's opener reachable. Opening and postponing are presentation only.
+  const next = later[0]!;
+  return <><Button className="agent-plan-review__reopen" variant="secondary" size="compact"
+    aria-haspopup={next.kind === 'plan' ? 'dialog' : undefined} aria-expanded={Boolean(manual)}
+    onClick={() => manual ? dismiss() : setReopened(next.key)}>{t(language, 'agent.decision.pending')} ({later.length})</Button>{surface}</>;
 }
 
-type ReviewProps = ChildReviewTarget & { language: UiLanguage; onDismiss(): void; onResolved(): void };
+type ReviewProps = ChildReviewTarget & { language: UiLanguage; onDismiss(): void; onResolved(): void;
+  draft?: string; onDraftChange?(value: string): void; onInlineChange?(present: boolean): void };
 function AgentReviewRoute(props: ReviewProps) {
   const child = useAgentChildConversation(props.decision.agentSessionId, true, props);
-  return <AgentReviewDialog {...props} child={child} />;
+  return <AgentReviewSurface {...props} child={child} />;
 }
 
-export function AgentReviewDialog(props: ReviewProps & { child: ReturnType<typeof useAgentChildConversation> }) {
+export function AgentReviewSurface(props: ReviewProps & { child: ReturnType<typeof useAgentChildConversation> }) {
   const { child, decision, kind, language, onDismiss, onResolved } = props;
   const projection = child.projection;
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -117,27 +139,41 @@ export function AgentReviewDialog(props: ReviewProps & { child: ReturnType<typeo
   useEffect(() => { if (stale) onResolved(); }, [stale, onResolved]);
   // Session only routes final human handoffs. A sibling may still be running; this child read
   // must match the exact item and, for a delegated review, contain its ask before showing it.
-  if (stale || (kind !== 'plan' && !projection && !child.readError) || awaitsApprovalReviewer(approval)) return null;
+  const visible = !stale && (kind === 'plan' || Boolean(item || child.readError)) && !awaitsApprovalReviewer(approval);
+  const inline = visible && kind !== 'plan';
+  const { onInlineChange } = props;
+  useLayoutEffect(() => {
+    if (!inline) return;
+    onInlineChange?.(true);
+    return () => onInlineChange?.(false);
+  }, [inline, onInlineChange]);
+  if (!visible) return null;
   const title = t(language, kind === 'plan' ? 'agent.plan.review' : kind === 'approval' ? 'agent.approval.toolPermission'
     : interaction?.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question');
+  const postpone = <Button variant="ghost" size="compact" disabled={child.submitting} onClick={onDismiss}>{t(language, 'agent.team.reviewLater')}</Button>;
+  const contents = <>
+    {bodyLinks.selection}
+    {linkError && <p role="alert" className="agent-tasks__error">{linkError}</p>}
+    {child.readError && <div role="alert" className="agent-tasks__error"><p>{child.readError}</p>
+      <Button size="compact" onClick={() => void child.refresh()}>{t(language, 'agent.team.refresh')}</Button></div>}
+    {child.commandError && <p role="alert" className="agent-tasks__error">{child.commandError}</p>}
+    {!projection && !child.readError && <p role="status">{t(language, 'agent.team.loading')}</p>}
+    {projection && item && <ChildDecisions child={child} projection={projection} language={language} only={item}
+      inComposer={inline} draft={props.draft} onDraftChange={props.onDraftChange} onDefer={onDismiss} />}
+  </>;
   return <ConversationBodyLinkScope.Provider value={bodyLinks.open}><ConversationSessionScope.Provider value={decision.agentSessionId}>
-    <ModalDialog className="agent-plan-review" aria-label={title}
-      busy={child.submitting} onClose={onDismiss}>
+    {inline ? <section data-agent-review="inline" className="agent-review-inline" aria-label={title} onKeyDown={event => {
+      if (event.key !== 'Escape' || event.repeat || event.nativeEvent.isComposing || event.defaultPrevented
+        || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || child.submitting) return;
+      event.preventDefault(); event.stopPropagation(); onDismiss();
+    }}>
+      <header className="agent-review-inline__source"><span>{t(language, 'agent.team.title')} · <strong>{decision.displayName}</strong></span>{postpone}</header>
+      {contents}
+    </section> : <ModalDialog className="agent-plan-review" aria-label={title} busy={child.submitting} onClose={onDismiss}>
       <section className="local-agent agent-plan-review__card">
-        <header className="agent-plan-review__heading">
-          <div><h2>{title}</h2><p>{decision.displayName}</p></div>
-          <button type="button" disabled={child.submitting} onClick={onDismiss}>{t(language, 'agent.team.reviewLater')}</button>
-        </header>
-        <div className="agent-plan-review__body">
-          {bodyLinks.selection}
-          {linkError && <p role="alert" className="agent-tasks__error">{linkError}</p>}
-          {child.readError && <div role="alert" className="agent-tasks__error"><p>{child.readError}</p>
-            <button type="button" onClick={() => void child.refresh()}>{t(language, 'agent.team.refresh')}</button></div>}
-          {child.commandError && <p role="alert" className="agent-tasks__error">{child.commandError}</p>}
-          {!projection && !child.readError && <p role="status">{t(language, 'agent.team.loading')}</p>}
-          {projection && item && <ChildDecisions child={child} projection={projection} language={language} only={item} />}
-        </div>
+        <header className="agent-plan-review__heading"><div><h2>{title}</h2><p>{decision.displayName}</p></div>{postpone}</header>
+        <div className="agent-plan-review__body">{contents}</div>
       </section>
-    </ModalDialog>
+    </ModalDialog>}
   </ConversationSessionScope.Provider></ConversationBodyLinkScope.Provider>;
 }

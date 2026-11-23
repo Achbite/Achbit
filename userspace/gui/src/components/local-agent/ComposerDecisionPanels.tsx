@@ -11,7 +11,7 @@ import { planOperationDetail } from './planReview';
 import { ApprovalOperationDetails } from './ApprovalOperationDetails';
 import { ApprovalReviewReason } from './ApprovalReviewReason';
 import { InteractionOptions } from './InteractionOptions';
-import { awaitsApprovalReviewer, isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
+import { isAutomaticApproval, isAutomaticPlanReview } from './composerDecisions';
 import type { LocalAgentState } from '../../state/localAgentStore';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useConversationSessionId } from './ConversationSessionScope';
@@ -19,7 +19,12 @@ import { useConversationSessionId } from './ConversationSessionScope';
 type DecisionComposer = Pick<AgentComposer, 'pendingPlan' | 'pendingScopeAddition' | 'pendingInteraction'
   | 'pendingApproval' | 'submitting' | 'submitPlanDecision' | 'respondInteraction' | 'respondApproval' | 'projection'>;
 
-export function ComposerQuestionPrompt({ language, composer }: { language: UiLanguage; composer: AgentComposer }) {
+type QuestionComposer = Pick<AgentComposer, 'conversationKey' | 'interactionNavigation' | 'pendingPlan' | 'pendingScopeAddition'
+  | 'pendingInteraction' | 'submitting' | 'submitPlanDecision' | 'respondInteraction' | 'projection'>;
+
+export function ComposerQuestionPrompt({ language, composer, forwarded }: {
+  language: UiLanguage; composer: QuestionComposer; forwarded?: { onDefer?: () => void };
+}) {
   const { pendingPlan, pendingScopeAddition, pendingInteraction, interactionNavigation, submitting, submitPlanDecision, respondInteraction, projection } = composer;
   const identity = useUiOwner('composer.question', undefined, {
     conversationKey: composer.conversationKey, interactionId: pendingInteraction?.interactionId, planId: pendingPlan?.planId,
@@ -30,7 +35,7 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
   };
   return <>
       {(pendingPlan || pendingInteraction) && (
-        <section id={pendingPlan ? undefined : 'conversation-interaction'} tabIndex={-1}
+        <section id={pendingPlan ? undefined : forwarded ? `${identity.instanceId}-interaction` : 'conversation-interaction'} tabIndex={-1}
           className={`local-agent__interaction-panel${pendingPlan ? ' local-agent__interaction-panel--plan' : ''}`}>
             <PanelHeader className="local-agent__interaction-panel-heading">
               <span className="local-agent__interaction-caption">
@@ -50,13 +55,13 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
                   title={t(language, 'agent.interaction.next')} disabled={submitting || interactionNavigation.index === interactionNavigation.count - 1}
                   onClick={interactionNavigation.next} />
               </div>}
-              {(pendingPlan || pendingInteraction?.allowFreeform) && <CloseButton
+              {(forwarded ? forwarded.onDefer : pendingPlan || pendingInteraction?.allowFreeform) && <CloseButton
                 {...identity.action('close', 'click')}
                 size="compact"
                 aria-label={t(language, pendingPlan ? 'agent.plan.closeReview' : confirmation ? 'agent.interaction.closeConfirmation' : 'agent.interaction.closeQuestion')}
-                title={t(language, pendingPlan ? 'agent.plan.ignoreAndStop' : 'agent.interaction.skip')}
+                title={t(language, forwarded ? 'agent.team.reviewLater' : pendingPlan ? 'agent.plan.ignoreAndStop' : 'agent.interaction.skip')}
                 disabled={submitting}
-                onClick={() => pendingPlan
+                onClick={forwarded ? forwarded.onDefer : () => pendingPlan
                   ? void submitPlanDecision({ kind: 'cancel' })
                   : void sendDecision(t(language, 'agent.interaction.skip'))}
               />}
@@ -85,8 +90,8 @@ export function ComposerQuestionPrompt({ language, composer }: { language: UiLan
   </>;
 }
 
-export function ComposerDecisionPanels({ language, composer, onSetPermissions, approvalInDialog = false }: {
-  language: UiLanguage; composer: DecisionComposer; onSetPermissions?: LocalAgentState['setPermissions']; approvalInDialog?: boolean;
+export function ComposerDecisionPanels({ language, composer, onSetPermissions, deferApprovalOnEscape = false }: {
+  language: UiLanguage; composer: DecisionComposer; onSetPermissions?: LocalAgentState['setPermissions']; deferApprovalOnEscape?: boolean;
 }) {
   const {
     pendingPlan,
@@ -121,7 +126,8 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions, a
   const [ruleSaving, setRuleSaving] = useState(false);
   const pendingRuleSave = useRef<symbol | null>(null);
   const [ruleError, setRuleError] = useState<string | null>(null);
-  const reviewing = approvalInDialog ? awaitsApprovalReviewer(pendingApproval) : isAutomaticApproval(pendingApproval, projection?.run);
+  const reviewing = isAutomaticApproval(pendingApproval, projection?.run);
+  const approvalTitleId = deferApprovalOnEscape ? `${identity.instanceId}-approval` : `approval-${pendingApproval?.approvalId}`;
   const reviewingPlan = isAutomaticPlanReview(pendingPlan, projection?.effectivePermissions);
   useLayoutEffect(() => {
     pendingRuleSave.current = null;
@@ -161,8 +167,9 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions, a
   };
   useLayoutEffect(() => {
     // A native Reader WebView can own focus while this document still reports body.
-    if (pendingApproval && !reviewing && document.hasFocus() && document.activeElement === document.body) approvalRef.current?.focus({ preventScroll: true });
-  }, [pendingApproval?.approvalId, reviewing]);
+    // A forwarded request must not take over a keystroke meant for the parent conversation.
+    if (pendingApproval && !reviewing && !deferApprovalOnEscape && document.hasFocus() && document.activeElement === document.body) approvalRef.current?.focus({ preventScroll: true });
+  }, [pendingApproval?.approvalId, reviewing, deferApprovalOnEscape]);
   const answerApproval = async (decision: 'allow' | 'deny', scope?: ShellAuthorizationScope) => {
     if (!pendingApproval || submitting || reviewing) return;
     try { await respondApproval(decision, scope); } catch { /* The store retains the original error. */ }
@@ -224,11 +231,11 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions, a
           ref={approvalRef}
           tabIndex={-1}
           className="local-agent__decision"
-          aria-labelledby={`approval-${pendingApproval.approvalId}`}
+          aria-labelledby={approvalTitleId}
           onKeyDown={(event) => {
-            if (event.repeat || event.nativeEvent.isComposing || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
-            // Escape belongs to the native parent dialog there: deferral is not a denial.
-            if ((event.key === 'Escape' && !approvalInDialog) || (event.key === 'Enter' && event.target === approvalRef.current)) {
+            if (event.repeat || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
+            // The forwarding surface owns deferral; Escape is never a child approval response there.
+            if ((event.key === 'Escape' && !deferApprovalOnEscape) || (event.key === 'Enter' && event.target === approvalRef.current)) {
               event.preventDefault();
               event.stopPropagation();
               void answerApproval(event.key === 'Escape' ? 'deny' : 'allow', event.key === 'Enter' ? primaryScope : undefined);
@@ -241,7 +248,7 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions, a
             </span>
             <span>{t(language, sessionBrowser ? 'agent.approval.browser' : 'agent.approval.toolPermission')}</span>
           </header>
-          <strong className="local-agent__decision-title" id={`approval-${pendingApproval.approvalId}`}>
+          <strong className="local-agent__decision-title" id={approvalTitleId}>
                 {sessionBrowser
                   ? t(language, 'agent.approval.browserQuestion')
                   : t(language, 'agent.approval.question')}
@@ -287,10 +294,10 @@ export function ComposerDecisionPanels({ language, composer, onSetPermissions, a
               {...identity.action('deny', 'click')}
               type="button"
               aria-label={t(language, 'agent.approval.deny')}
-              aria-keyshortcuts={approvalInDialog ? undefined : 'Escape'}
+              aria-keyshortcuts={deferApprovalOnEscape ? undefined : 'Escape'}
               disabled={submitting || reviewing}
               onClick={() => void answerApproval('deny')}
-            ><span>{t(language, 'agent.approval.deny')}</span>{!approvalInDialog && <kbd aria-hidden="true">Esc</kbd>}</button>
+            ><span>{t(language, 'agent.approval.deny')}</span>{!deferApprovalOnEscape && <kbd aria-hidden="true">Esc</kbd>}</button>
             <button
               {...identity.action('allow', 'click')}
               type="button"

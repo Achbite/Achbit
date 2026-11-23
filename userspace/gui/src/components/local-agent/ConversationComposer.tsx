@@ -11,6 +11,7 @@ import { ComposerDecisionPanels, ComposerQuestionPrompt } from './ComposerDecisi
 import { BlockingShellPrompt } from './BlockingShellPrompt';
 import type { BlockingShell } from './shellProgress';
 import { ComposerPermissionControl } from './ComposerPermissionControl';
+import { AgentPlanReview } from './AgentPlanReview';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import type { AgentComposer } from './useAgentComposer';
 import { pastedTextTitle } from '../../services/pastedText';
@@ -24,6 +25,7 @@ import { composerDecisionView } from './composerDecisions';
 
 interface ConversationComposerProps {
   foregroundShells?: readonly BlockingShell[];
+  showChildDecisions?: boolean;
   changeBar?: React.ReactNode;
   conversationBodyRef?: React.RefObject<HTMLDivElement | null>;
   readerExpanded?: boolean;
@@ -35,7 +37,7 @@ interface ConversationComposerProps {
 }
 
 export function ConversationComposer({
-  foregroundShells, changeBar,
+  foregroundShells, showChildDecisions = false, changeBar,
   conversationBodyRef,
   readerExpanded = false,
   language,
@@ -45,14 +47,16 @@ export function ConversationComposer({
   onEditBrowserReview,
 }: ConversationComposerProps) {
   const identity = useUiOwner('composer.controls', undefined, { conversationKey: composer.conversationKey });
+  const [childInline, setChildInline] = useState(false);
+  const refresh = useLocalAgentStore(state => state.refresh);
   const showingShellWait = Boolean(foregroundShells?.length);
   const boundaryCleanup = useRef<(() => void) | undefined>(undefined);
   const setComposerShell = useCallback((shell: HTMLElement | null) => {
     boundaryCleanup.current?.();
     boundaryCleanup.current = shell
-      ? observeConversationComposerBoundary(shell, conversationBodyRef?.current?.parentElement ?? null, showingShellWait)
+      ? observeConversationComposerBoundary(shell, conversationBodyRef?.current?.parentElement ?? null, showingShellWait, childInline)
       : undefined;
-  }, [conversationBodyRef, showingShellWait]);
+  }, [conversationBodyRef, showingShellWait, childInline]);
   const connections = useLocalAgentStore(state => state.connections);
   const { concurrentDecisionKey, showApproval } = composerDecisionView(composer, composer.selectedTextDecision);
   const { setSelectedTextDecision } = composer;
@@ -123,20 +127,42 @@ export function ConversationComposer({
     canSend,
     showStopAction,
   } = visibleComposer;
-  const regionData = { kind: 'composer' as const, draft, canSend, canStop: showStopAction, attachments: pendingFilesystemPaths };
+  const parentInputKey = JSON.stringify([composer.conversationKey, pendingPlan?.planId, pendingPlan?.revision,
+    pendingInteraction?.interactionId, composer.editingMessage?.message.messageId]);
+  const parentInputKeyRef = useRef(parentInputKey);
+  parentInputKeyRef.current = parentInputKey;
+  const priorSelection = useRef<{ key: string; text: string; start: number; end: number; direction: HTMLTextAreaElement['selectionDirection'] } | null>(null);
+  const onChildInlineChange = useCallback((visible: boolean) => {
+    const input = textareaRef.current;
+    if (visible && input) priorSelection.current = { key: parentInputKeyRef.current, text: input.value,
+      start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection };
+    setChildInline(visible);
+  }, [textareaRef]);
+  const wasInline = useRef(false);
+  useLayoutEffect(() => {
+    const returning = wasInline.current && !childInline;
+    wasInline.current = childInline;
+    if (!returning) return;
+    const prior = priorSelection.current, input = textareaRef.current;
+    priorSelection.current = null;
+    if (input && prior?.key === parentInputKey && prior.text === input.value) {
+      input.setSelectionRange(prior.start, prior.end, prior.direction); // Never steal focus from the user's new control.
+    }
+  }, [childInline, parentInputKey, textareaRef]);
+  const regionData = { kind: 'composer' as const, draft, canSend: !childInline && canSend, canStop: !childInline && showStopAction, attachments: pendingFilesystemPaths };
   const regionActions = {
-    updateDraft: (text: string) => updateDraft(text, text.length),
-    submitDraft,
-    stopRun: async () => { if (showStopAction) await cancelRun(); },
-    pickAttachments: () => setAttachmentDialogOpen(true),
-    addAttachments: composer.selectMessageAttachments,
+    updateDraft: (text: string) => { if (!childInline) updateDraft(text, text.length); },
+    submitDraft: async () => { if (!childInline) await submitDraft(); },
+    stopRun: async () => { if (!childInline && showStopAction) await cancelRun(); },
+    pickAttachments: () => { if (!childInline) setAttachmentDialogOpen(true); },
+    addAttachments: async (...args: Parameters<typeof composer.selectMessageAttachments>) => { if (!childInline) await composer.selectMessageAttachments(...args); },
   };
   const debugActions = {
-    submitDraft: { unavailableReason: canSend ? null : 'composer_cannot_send' },
-    stopRun: { unavailableReason: showStopAction ? null : 'composer_no_stoppable_run' },
-    updateDraft: { unavailableReason: null },
-    pickAttachments: { unavailableReason: null },
-    addAttachments: { unavailableReason: null },
+    submitDraft: { unavailableReason: regionData.canSend ? null : 'composer_cannot_send' },
+    stopRun: { unavailableReason: regionData.canStop ? null : 'composer_no_stoppable_run' },
+    updateDraft: { unavailableReason: childInline ? 'composer_child_decision' : null },
+    pickAttachments: { unavailableReason: childInline ? 'composer_child_decision' : null },
+    addAttachments: { unavailableReason: childInline ? 'composer_child_decision' : null },
   };
   const pickerId = useId();
   const commandMenuId = useId();
@@ -163,7 +189,7 @@ export function ConversationComposer({
   const inputMode = pendingApproval ? 'approval' : pendingPlan ? 'plan' : pendingInteraction ? 'interaction' : 'message';
   const compactInput = inputMode !== 'message';
   // Decisions and message edits stay complete; attachments do not expand a reading draft.
-  const canCollapseInput = readerExpanded && !compactInput && !composer.editingMessage;
+  const canCollapseInput = readerExpanded && !childInline && !compactInput && !composer.editingMessage;
   const readerInputCollapsed = canCollapseInput && !readerInputExpanded;
   const [readerAttachmentsOpen, setReaderAttachmentsOpen] = useState(false);
   const attachmentSummary = useRef<HTMLButtonElement>(null);
@@ -191,7 +217,7 @@ export function ConversationComposer({
 
   useLayoutEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
-  }, [draft, inputMode, readerInputCollapsed, textareaRef]);
+  }, [draft, inputMode, readerInputCollapsed, textareaRef, childInline]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -205,12 +231,13 @@ export function ConversationComposer({
     });
     observer.observe(textarea);
     return () => observer.disconnect();
-  }, [inputMode, textareaRef]);
+  }, [inputMode, textareaRef, childInline]);
 
   return (
-    <UiRegion slot="composer.layout" data={regionData} actions={regionActions} debugActions={debugActions}><footer ref={setComposerShell} className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval
+    <UiRegion slot="composer.layout" data={regionData} actions={regionActions} debugActions={debugActions}><footer ref={setComposerShell} className={`local-agent__composer-shell${pendingPlan || pendingInteraction || pendingApproval || childInline
       ? ' local-agent__composer-shell--decision'
       : ''}${canCollapseInput ? ' local-agent__composer-shell--reader' : ''}${readerInputCollapsed ? ' local-agent__composer-shell--collapsed' : ''}`} onKeyDown={(event) => {
+          if (childInline) return; // A child's keys must never cancel or submit the parent's decision or edit.
           if (composer.editingMessage && event.key === 'Escape' && !event.repeat
             && !event.nativeEvent.isComposing && !event.defaultPrevented) {
             event.preventDefault();
@@ -266,7 +293,13 @@ export function ConversationComposer({
       </div>
       {projection?.queuedInputs.filter(input => input.status === 'queued').map(input => <QueuedInputPreview
         key={input.commandId} sessionId={projection.sessionId} input={input} language={language} />)}
-      {concurrentDecisionKey && <div className="local-agent__decision-switcher" role="group"
+      {showChildDecisions && Boolean(projection?.pendingAgentDecisions?.length) && <AgentPlanReview
+        key={composer.conversationKey} decisions={projection!.pendingAgentDecisions!} language={language} refresh={refresh}
+        preferParent={Boolean(pendingPlan || pendingInteraction || pendingApproval || composer.editingMessage || !draftEmpty
+          || submitting || showingShellWait || pluginPickerOpen || attachmentMenuOpen || composer.attachmentDialogOpen || composer.permissionMenuOpen
+          || (typeof document !== 'undefined' && textareaRef.current && document.activeElement === textareaRef.current))}
+        drafts={{ read: composer.readInteractionDraft, write: composer.updateInteractionDraft }} onInlineChange={onChildInlineChange} />}
+      {!childInline && concurrentDecisionKey && <div className="local-agent__decision-switcher" role="group"
         aria-label={t(language, 'agent.decision.pending')}>
         <button type="button" aria-pressed={showApproval} aria-controls={decisionContentId}
           onClick={() => setSelectedTextDecision(null)}>
@@ -279,7 +312,7 @@ export function ConversationComposer({
             : composer.pendingInteraction?.kind === 'confirmation' ? 'agent.interaction.confirmation' : 'agent.interaction.question')}
         </button>
       </div>}
-      <div id={decisionContentId} className="local-agent__composer-content">
+      {!childInline && <div id={decisionContentId} className="local-agent__composer-content">
       <ComposerQuestionPrompt language={language} composer={visibleComposer} />
       {projection && showingShellWait && foregroundShells && <BlockingShellPrompt key={`${projection.sessionId}:${projection.run?.runId}`} sessionId={projection.sessionId} shells={foregroundShells} language={language} />}
       <div
@@ -675,8 +708,8 @@ export function ConversationComposer({
         </div>
         </>}
       </div>
-      </div>
-      {!pendingPlan && !pendingInteraction && !pendingApproval && (
+      </div>}
+      {!childInline && !pendingPlan && !pendingInteraction && !pendingApproval && (
         <div className="local-agent__composer-hint">
           <TotalCacheUsage projection={projection} language={language} />
         </div>

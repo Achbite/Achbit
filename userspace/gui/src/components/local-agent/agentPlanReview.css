@@ -4,5 +4,9 @@ dialog.app-modal.agent-plan-review { display:grid; place-items:center; padding:2
 .agent-plan-review__heading h2 { margin:0; font:inherit; font-weight:600; }
 .agent-plan-review__heading p { margin:4px 0 0; color:var(--ac-muted); }
 .agent-plan-review__heading > button { flex:none; }
-.agent-plan-review__reopen { grid-column:1; grid-row:-1 / span 1; justify-self:center; margin-block-end:var(--ac-control-gap); }
+.agent-plan-review__reopen { align-self:center; flex:none; margin-block-end:var(--ac-control-gap); }
+.agent-review-inline { display:flex; flex-direction:column; min-height:0; width:min(760px,100%); margin-inline:auto; overflow:auto; }
+.agent-review-inline__source { display:flex; align-items:center; justify-content:space-between; flex:none; gap:var(--ac-control-gap); color:var(--ac-muted); font-size:var(--ac-font-caption); }
+.agent-review-inline__source > span { min-width:0; overflow-wrap:anywhere; }
+.agent-review-inline__source > button { flex:none; }
 .agent-plan-review__body { overflow:auto; min-height:0; padding:4px 22px 20px; }

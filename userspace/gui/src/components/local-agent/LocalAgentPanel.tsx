@@ -25,7 +25,6 @@ import { ReaderControls, ResourcePreview, useResourcePreview } from './ResourceP
 import { ArtifactLinks, ArtifactShortcuts } from './ArtifactLinks';
 import './localAgentPanel.css';
 import { AgentNavigationScope, requestAgentOverview } from './agentNavigation';
-import { AgentPlanReview } from './AgentPlanReview';
 import type { ReaderNavigation } from './readerState';
 
 export interface ConversationReaderLayout {
@@ -207,6 +206,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         <button type="button" onClick={updates.retry}>{t(language, 'achbitGui.statusAction.retry')}</button>
       </DismissibleError>}
       <ConversationComposer
+        showChildDecisions={hostReady && projection?.sessionId === sessionId}
         foregroundShells={foregroundShells}
         conversationBodyRef={bodyRef}
         readerExpanded={resourcePreview.visible}
@@ -223,8 +223,6 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           if (useLocalAgentStore.getState().sessionId !== sessionId) throw new Error('conversation_session_changed');
           await composer.selectMessageAttachments(selections);
         }} />
-      {projection && hostReady && <AgentPlanReview key={sessionId} decisions={projection.pendingAgentDecisions ?? []}
-        language={language} refresh={refresh} />}
       {onReaderLayoutChange && <div ref={setConversationBounds} className="local-agent__conversation-overlay-bounds" aria-hidden="true" />}
       {composer.attachmentDialogOpen && (
         <ProjectFolderDialog

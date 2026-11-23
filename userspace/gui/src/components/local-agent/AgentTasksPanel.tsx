@@ -1,10 +1,13 @@
 import { ConversationBodyLinkScope, useConversationBodyLinks } from './useConversationBodyLinks';
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { CONVERSATION_COMMAND_VERSION, type AgentChildProjection, type AgentTaskProjection,
   type PlanResponse, type SessionProjection, type ShellAuthorizationScope, type UserSettings } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
-import { ComposerDecisionPanels } from './ComposerDecisionPanels';
+import { ComposerDecisionPanels, ComposerQuestionPrompt } from './ComposerDecisionPanels';
+import { submitReplyOnEnter } from './replyKeyboard';
+import { Button } from '../../ui-components';
+import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { ConversationSessionScope } from './ConversationSessionScope';
 import { InteractionCard } from './InteractionCard';
 import { PlanCardContent } from './PlanCard';
@@ -174,19 +177,24 @@ export function AgentConversationHistory({ projection, name, language, expanded 
   </div>;
 }
 
-/** A parent dialog handles one decision; the child Reader still shows its full decision history. */
+/** A forwarded control acts on one verified item; the Reader still shows the child's decision history. */
 export type ChildReviewItem = { kind: 'plan'; plan: NonNullable<SessionProjection['pendingPlan']> }
   | { kind: 'approval'; approval: NonNullable<SessionProjection['pendingApproval']> }
   | { kind: 'interaction'; interaction: SessionProjection['interactions'][number] };
 
-export function ChildDecisions({ child, projection, language, only }: {
+export function ChildDecisions({ child, projection, language, only, inComposer = false, draft, onDraftChange, onDefer }: {
   child: ReturnType<typeof useAgentChildConversation>; projection: SessionProjection; language: UiLanguage; only?: ChildReviewItem;
+  inComposer?: boolean; draft?: string; onDraftChange?(value: string): void; onDefer?(): void;
 }) {
   const [revisionText, setRevisionText] = useState('');
   const pendingPlan = only ? (only.kind === 'plan' ? only.plan : null) : projection.pendingPlan;
-  const pendingApproval = only ? (only.kind === 'approval' ? only.approval : null)
+  const pendingApproval = only ? (only.kind === 'approval' ? selectPendingApproval(projection, only.approval) : null)
     : selectPendingApproval(projection) ?? (isAutomaticApproval(projection.pendingApproval, projection.run) ? projection.pendingApproval : null);
-  const interactions = only ? (only.kind === 'interaction' ? [only.interaction] : []) : projection.interactions.filter(item => item.status === 'pending');
+  const pending = projection.interactions.filter(item => item.status === 'pending');
+  const routedQuestion = only?.kind === 'interaction' && projection.run?.runId === only.interaction.runId
+    && (projection.run.status === 'running' || projection.run.status === 'waiting')
+    ? pending.find(item => item.runId === only.interaction.runId && item.interactionId === only.interaction.interactionId) ?? null : null;
+  const interactions = only ? (routedQuestion ? [routedQuestion] : []) : pending;
   const previousPlan = pendingPlan ? projection.plans.find(plan => plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1) : undefined;
   const base = () => ({ schemaVersion: CONVERSATION_COMMAND_VERSION, commandId: `command:${crypto.randomUUID()}`, sessionId: projection.sessionId });
   const respondPlan = (response: PlanResponse) => {
@@ -206,16 +214,32 @@ export function ChildDecisions({ child, projection, language, only }: {
   };
   const setPermissions = (patches: UserSettings) => child.submit({ ...base(), type: 'session.permissions.set', patches });
   const disabled = child.submitting || Boolean(child.readError);
+  const question = inComposer ? routedQuestion : null;
+  const composer = {
+    pendingPlan, pendingScopeAddition: pendingPlan ? planScopeAddition(previousPlan, pendingPlan) : null,
+    pendingInteraction: question, pendingApproval, projection, submitting: disabled, respondInteraction, respondApproval,
+    submitPlanDecision: async (response: Extract<PlanResponse, { kind: 'confirm' | 'cancel' }>) => {
+      try { await respondPlan(response); } catch { /* Child command errors are shown by the owning view. */ }
+    },
+  };
+  const panels = <ComposerDecisionPanels language={language} composer={composer} onSetPermissions={setPermissions} deferApprovalOnEscape={only?.kind === 'approval'} />;
+  if (inComposer) {
+    if (pendingApproval && only?.kind === 'approval') return <div className="local-agent__composer local-agent__composer--approval">{panels}</div>;
+    if (!question) return null;
+    return <>
+      <ComposerQuestionPrompt language={language} composer={{ ...composer, conversationKey: projection.sessionId, interactionNavigation: null }} forwarded={{ onDefer }} />
+      <ChildQuestionForm key={JSON.stringify([projection.sessionId, question.runId, question.interactionId])} sessionId={projection.sessionId}
+        question={question} language={language} disabled={disabled} draft={draft} onDraftChange={onDraftChange} onAnswer={respondInteraction}>
+        {panels}
+      </ChildQuestionForm>
+    </>;
+  }
   return <div className="agent-tasks__decisions">
     {pendingPlan && <>
       <h4><MarkdownInline>{pendingPlan.title}</MarkdownInline></h4>
       <PlanCardContent plan={pendingPlan} previousPlan={previousPlan} workspaceBindings={projection.workspaceBindings} language={language} />
     </>}
-    <ComposerDecisionPanels language={language} onSetPermissions={setPermissions} approvalInDialog={only?.kind === 'approval'} composer={{
-      pendingPlan, pendingScopeAddition: pendingPlan ? planScopeAddition(previousPlan, pendingPlan) : null,
-      pendingInteraction: null, pendingApproval, projection, submitting: disabled,
-      respondInteraction, respondApproval, submitPlanDecision: async response => { try { await respondPlan(response); } catch { /* Shown above. */ } },
-    }} />
+    {panels}
     {pendingPlan && <form className="agent-tasks__revision" onSubmit={event => {
       event.preventDefault();
       if (!disabled && revisionText.trim()) void respondPlan({ kind: 'requestRevision', text: revisionText.trim() }).catch(() => {});
@@ -228,4 +252,52 @@ export function ChildDecisions({ child, projection, language, only }: {
     {interactions.map(interaction => <InteractionCard
       key={interaction.interactionId} interaction={interaction} language={language} disabled={disabled} onRespond={respondInteraction} />)}
   </div>;
+}
+
+/** Question-specific form owner: no draft, submit or keyboard event is routed to the parent message input. */
+function ChildQuestionForm({ sessionId, question, language, disabled, draft, onDraftChange, onAnswer, children }: {
+  sessionId: string; question: SessionProjection['interactions'][number]; language: UiLanguage; disabled: boolean;
+  draft?: string; onDraftChange?(text: string): void; onAnswer(text: string, id: string): Promise<unknown>; children: ReactNode;
+}) {
+  const identity = useUiOwner('composer.forwarded-answer', undefined, { sessionId, runId: question.runId, interactionId: question.interactionId });
+  const [localDraft, setLocalDraft] = useState('');
+  const value = draft ?? localDraft;
+  const input = useRef<HTMLTextAreaElement>(null);
+  const composing = useRef(false), commitFrame = useRef<number | null>(null);
+  useLayoutEffect(() => () => { if (commitFrame.current !== null) cancelAnimationFrame(commitFrame.current); }, []);
+  useLayoutEffect(() => {
+    const el = input.current;
+    if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; }
+  }, [value]);
+  const answer = (text: string) => {
+    if (disabled || !question.allowFreeform || !text.trim() || composing.current || commitFrame.current !== null) return;
+    // Only Session reconciliation consumes a routed draft. Keep it through failures and deferral.
+    void onAnswer(text, question.interactionId).catch(() => {});
+  };
+  return <form className="local-agent__composer local-agent__composer--interaction" onSubmit={event => {
+    event.preventDefault(); event.stopPropagation(); answer(value);
+  }}>
+    {children}
+    {question.allowFreeform && <>
+      <span className="local-agent__decision-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>
+      <textarea {...identity.action('input', 'type')} ref={input} rows={1} value={value} disabled={disabled}
+        aria-label={t(language, 'agent.question.answer')} placeholder={t(language, 'agent.composer.placeholder.interaction')}
+        onChange={event => (onDraftChange ?? setLocalDraft)(event.target.value)}
+        onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => {
+          composing.current = false;
+          if (commitFrame.current !== null) cancelAnimationFrame(commitFrame.current);
+          commitFrame.current = requestAnimationFrame(() => { commitFrame.current = null; });
+        }} onKeyDown={event => {
+          const ime = composing.current || commitFrame.current !== null || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
+          if (event.key === 'Enter' || (event.key === 'Escape' && ime)) event.stopPropagation();
+          if (!ime && !event.defaultPrevented) submitReplyOnEnter(event);
+        }} />
+      <div className="local-agent__composer-footer"><div className="local-agent__composer-actions">
+        <Button {...identity.action('skip', 'click')} size="compact" className="local-agent__interaction-secondary" disabled={disabled}
+          onClick={() => answer(t(language, 'agent.interaction.skip'))}>{t(language, 'agent.interaction.skip')}</Button>
+        <Button {...identity.action('submit', 'click')} type="submit" variant="primary" size="compact" className="local-agent__send local-agent__send--decision"
+          aria-label={t(language, 'agent.question.answer')} title={t(language, 'agent.composer.sendEnter')} disabled={disabled || !value.trim()}>{t(language, 'agent.composer.send')}</Button>
+      </div></div>
+    </>}
+  </form>;
 }
