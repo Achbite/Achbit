@@ -40,8 +40,8 @@ test('a closed coding surface describes only its callable tools and real Shell r
   assert.doesNotMatch(find(closed, 'read').description, /\b(?:maxBytes|startLine)\b/u);
   assert.match(find(closed, 'bash').description, /as the host user/u);
   assert.match(find(closed, 'bash').description, /Command environment: bash on fixture/u);
-  assert.doesNotMatch(find(closed, 'bash').description, /Use ls, rg or find when the target path is unknown\./u, 'lookup is already in the shared rules');
-  for (const open of [custom, full]) assert.match(find(open, 'bash').description, /Use ls, rg or find when the target path is unknown\./u);
+  assert.doesNotMatch(find(closed, 'bash').description, /Use ls or find/u, 'lookup is already in the shared rules');
+  for (const open of [custom, full]) assert.match(find(open, 'bash').description, /Use ls or find/u);
   assert.deepEqual(find(full, 'fs_read').description, tools[0].description);
   assert.ok(find(full, 'fs_read').inputSchema.properties.maxBytes);
   assert.ok(find(full, 'bash').inputSchema.properties.terminal);

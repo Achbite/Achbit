@@ -28,7 +28,9 @@ test('review includes successful script writes and subsequent edits instead of o
   const f = fixture('bash', { command: 'python3 checks/verify.py' }, [write, edit]);
   const before = structuredClone(f.snapshot);
   const { packet, receipt } = f.prepare();
-  assert.deepEqual(packet.recentObservations.records.map(record => JSON.parse(record.input.text)), [write.input, edit.input]);
+  const { workspaceId, ...writeArgs } = write.input;
+  assert.deepEqual(packet.recentObservations.records.map(record => JSON.parse(record.input.text)), [{ ...writeArgs, workspace: 'primary' }, edit.input]);
+  assert.equal(f.snapshot.events.find(event => event.type === 'tool.completed').payload.record.input.workspaceId, workspaceId);
   assert.ok(packet.recentObservations.records.every(record => !record.input.truncated));
   assert.equal(packet.grant, 'thisCallOnly');
   assert.deepEqual(JSON.parse(receipt.reviewInput.content), packet);

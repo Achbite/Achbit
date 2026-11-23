@@ -40,7 +40,7 @@ export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], 
     rules.add('Long shell commands are automatically managed. Continue independent file operations; final command results arrive automatically without polling. Read command-produced files after consuming the command result.');
     rules.add('Use dependency waiting when the next step needs a managed result, and status only for a current snapshot. A wait deadline leaves the command running; cancellation targets the returned job handle.');
   }
-  if (expanded && shell) rules.add('Preserve the target exit status in pipelines and diagnostics. Check it before using output. Bound runs and keep ownership of test processes until they exit. Clean up only resources this task is authorized to manage.');
+  if (expanded && shell) rules.add('Preserve the target exit status. Bound runs and keep ownership of test processes until they exit. Clean up only resources this task is authorized to manage.');
   rules.add('Reply concisely with clear file paths.');
   const extraTools = expanded || active.some(tool => tool.origin === 'coreBuiltin' && !codingToolNames.has(tool.name));
   return { id: 'achbit.coding-tools', text: [

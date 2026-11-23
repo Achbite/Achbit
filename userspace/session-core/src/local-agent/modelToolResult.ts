@@ -2,6 +2,7 @@ import { isManagedProcessSnapshot, type JsonObject, type LocalAgentError, type M
 import { encodeWorkspaceIdentity } from './providerToolCodec.js';
 import { LoopFailure } from './loopFailure.js';
 import { codingToolText } from './codingTools.js';
+import { validLogicalPath } from './workspaceBindings.js';
 
 type Approval = Extract<SessionEvent, { type: 'approval.resolved' }>['payload'];
 type Handles = ReadonlyMap<string, string>;
@@ -152,7 +153,21 @@ function outputForModel(record: ToolExecutionRecord, out: unknown, handles: Hand
       if (typeof out.content === 'string') return out.truncated
         ? { content: out.content, ...fields(out, 'nextByte', 'nextStartLine') } : out.content;
       if (Array.isArray(out.artifacts)) return { artifacts: resourceList(out.artifacts) };
-      if (record.outcome !== 'completed') return fields(out, 'stage', 'details');
+      if (record.outcome !== 'completed') {
+        const failure = fields(out, 'stage', 'details');
+        // Only a relative metadata miss in a recorded, addressable binding is evidence
+        // about that workspace. An absolute target does not become relative to the selected root.
+        if (handles.size > 1 && record.outcome === 'failed' && record.error.code === 'fs_read_metadata_failed'
+          && out.stage === 'metadata' && object(out.details) && out.details.ioKind === 'NotFound') {
+          const path = out.details.path, id = record.preparedEffect.workspaceId;
+          const workspace = id && handles.get(id);
+          if (workspace && typeof path === 'string' && validLogicalPath(path) && path !== '.' && !/^[A-Za-z]:/u.test(path)
+            && record.preparedEffect.logicalTargets.includes(path)) {
+            return { ...failure, workspace, recovery: 'This relative path was not found in the indicated workspace. Check the workspace and path together against the source reference or listing; do not probe other roots without evidence.' };
+          }
+        }
+        return failure;
+      }
       throw new LoopFailure('file_read_result_invalid', 'File read returned neither text, directory entries nor a resource.');
     case 'fs.write': case 'fs.edit': case 'fs.delete': return fileResult(record, out);
     case 'bash': case 'powershell': return shellOutput(out, record.outcome !== 'completed');

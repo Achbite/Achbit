@@ -10,6 +10,7 @@ import { codingToolInstruction } from '../dist/local-agent/codingTools.js';
 import { productDocumentation } from '../dist/local-agent/productInstructions.js';
 import { buildAgentProviderRequest } from '../dist/local-agent/contextComposer.js';
 import { readConversation } from '../dist/local-agent/conversationRead.js';
+import { toolResultContent } from '../dist/local-agent/modelToolResult.js';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
@@ -178,6 +179,34 @@ for (const mode of ['coding', 'full']) test(`an exact reference, a directory lis
   const projection = await waitForProjection(actor, terminal);
   assert.equal(projection.run.status, 'completed', JSON.stringify(projection.terminalError));
   assert.deepEqual(trace, [index, directory, `${directory}/${leaf}`].map(path => [root.workspaceId, path]));
+});
+
+test('file NotFound projects only the original addressable relative lookup, in both coding and full results', () => {
+  const handles = new Map([['id:first', 'primary'], ['id:source', 'workspace2']]);
+  const name = 'same-name/record.md';
+  const render = ({ path = name, id = 'id:source', target = path, stage = 'metadata', ioKind = 'NotFound', code = 'fs_read_metadata_failed' }, coding) => {
+    const error = { code, message: `Cannot inspect ${path}` }, output = { stage, details: { path, ioKind, osCode: ioKind === 'NotFound' ? 2 : 13 } };
+    const record = { toolName: 'fs.read', input: { workspaceId: id, path }, outcome: 'failed', error, output,
+      preparedEffect: { origin: 'coreBuiltin', operation: 'fs.read', workspaceId: id, logicalTargets: [target] } };
+    const before = structuredClone(record);
+    const body = JSON.parse(toolResultContent(record, undefined, handles, coding));
+    assert.deepEqual(record, before, 'a presentation is not an edit to the Kernel record');
+    assert.deepEqual(body.error, error);
+    assert.deepEqual(body.result.details, output.details);
+    assert.equal(body.result.stage, stage);
+    return { body, output };
+  };
+  for (const coding of [true, false]) {
+    const { body } = render({}, coding);
+    assert.equal(body.result.workspace, 'workspace2');
+    assert.match(body.result.recovery, /source reference or listing/);
+    assert.doesNotMatch(JSON.stringify(body), /id:source|primary/, 'no internal ID or guessed alternate workspace');
+    for (const example of [{ path: '/outside/item' }, { path: 'C:/outside/item' }, { id: 'id:not-exposed' },
+      { target: 'different/path' }, { ioKind: 'PermissionDenied' }, { code: 'tool_effect_denied' }, { stage: 'read' }]) {
+      const { body, output } = render(example, coding);
+      assert.deepEqual(body.result, output, 'do not offer root correction for inaccessible, absolute or unsupported evidence');
+    }
+  }
 });
 
 test('PI batch overlaps more than four reads and mutations, and a failed same-file predecessor does not skip its successor', async t => {

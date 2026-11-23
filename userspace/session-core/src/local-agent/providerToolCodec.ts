@@ -172,7 +172,7 @@ export function hostShellToolView(
       properties.command.description = 'Bash script in the selected workspace. Preserve the target command\'s exit status through pipelines and trailing diagnostics.';
     }
     const shell = tool.name === 'bash' ? 'Bash' : 'PowerShell';
-    const discovery = tool.name === 'bash' ? ' Use ls, rg or find when the target path is unknown.' : ' List or search when the target path is unknown.';
+    const discovery = tool.name === 'bash' ? ' Use ls or find when the target path is unknown.' : ' List or search when the target path is unknown.';
     const access = resourceHandles.length
       ? `Project and session directories use host-user filesystem permissions. File references (${resourceHandles.join(', ')}) retain their own access permissions.`
       : "Commands run as the host user and can write files writable by that user.";
