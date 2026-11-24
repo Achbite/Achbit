@@ -1,3 +1,5 @@
+import { selectTranscriptPage, type TimelineGroup } from './transcriptPage.js';
+import type { TranscriptComposition, TranscriptContent, TranscriptFacts, TranscriptPage, TranscriptRun } from '@achbit/protocol';
 import { isHandoffRead } from './modelContext.js';
 import { hasHostedSearchSteps } from './contextBudget.js';
 import { shellCommandIntents } from './shellIntent.js';
@@ -200,6 +202,7 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
 // These indexes live only for one ordered replay. They select the same facts as
 // incremental reduction without repeatedly scanning all earlier requests/calls.
 interface ReplayIndexes {
+  transcriptCompositions?: ReadonlyMap<string, TranscriptComposition>;
   borrowReceiptMessages: boolean;
   compositions: Map<string, number>;
   attempts: Map<string, Map<string, SessionState['providerAttempts'][string]>>;
@@ -211,13 +214,13 @@ function compositionIndex(state: SessionState, requestId: string, replay?: Repla
     : state.contextCompositions.findIndex(item => item.providerRequestId === requestId);
 }
 
-function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?: ReplayIndexes): SessionState {
+function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?: ReplayIndexes, readPlanOnly = false): SessionState {
   if (event.sessionId !== previous.sessionId) throw new Error('session_event_identity_mismatch');
   if (event.sequence !== previous.revision + 1) throw new Error('session_event_sequence_gap');
 
   const next: SessionState = { ...previous, revision: event.sequence };
   recordOwnership.set(next, replay ? 'exclusive' : new Set());
-  const lifecycleEvent = projectRunLifecycleEvent(event);
+  const lifecycleEvent = readPlanOnly ? null : projectRunLifecycleEvent(event);
   const lifecycle = lifecycleEvent ? reduceRunLifecycle({
     run: previous.run ? { runId: previous.run.runId, status: previous.run.status,
       ...(previous.run.waitingReason ? { waitingReason: previous.run.waitingReason } : {}) } : null,
@@ -234,7 +237,8 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       const previousAttempt = next.providerAttempts[fact.providerAttemptId];
       const related = replay ? [...(replay.attempts.get(fact.providerRequestId)?.values() ?? [])]
         : Object.values(next.providerAttempts).filter((item) => item.providerRequestId === fact.providerRequestId);
-      const composition = next.contextCompositions[compositionIndex(next, fact.providerRequestId, replay)];
+      const composition = replay?.transcriptCompositions?.get(fact.providerRequestId)
+        ?? next.contextCompositions[compositionIndex(next, fact.providerRequestId, replay)];
       if (!composition || composition.runId !== event.runId || composition.purpose !== fact.purpose) throw new Error('provider_attempt_composition_missing');
       if (fact.phase === 'started') {
         if (previousAttempt || fact.attempt !== related.length + 1
@@ -378,8 +382,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         next.tokenUsageHistory[event.runId] = {
           runId: event.runId,
           inputMessageId: event.payload.inputMessageId,
-          title: inputMessage.content.trim() ? inputMessage.content
-            : inputMessage.filesystemReferences.map((reference) => reference.displayName).join(', '),
+          title: runInputTitle(inputMessage),
           sequence: event.sequence,
           startedAt: event.occurredAt,
           providerCallCount: 0,
@@ -687,7 +690,8 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
     case 'artifacts.presented': {
       assertRunningRun(next, event.runId, 'artifact_presentation_run_not_active');
       recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId, 'artifact.present', event.sequence);
-      next.deliverables = advanceDeliverables(next, event);
+      // The transcript needs the call identity; presentation ownership can refer to an earlier turn.
+      if (!replay?.transcriptCompositions) next.deliverables = advanceDeliverables(next, event);
       break;
     }
     case 'todo.updated': {
@@ -696,7 +700,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (event.callId && event.payload.providerCallId) {
         recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId, 'todo.update', event.sequence);
       }
-      next.todoList = advanceTodoList(next.todoList, event);
+      if (!replay?.transcriptCompositions) next.todoList = advanceTodoList(next.todoList, event);
       break;
     }
     case 'tool.requested': {
@@ -954,8 +958,8 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (event.payload.providerRuntimeRef !== providerRuntimeForPurpose(runtime, event.payload.purpose).providerRuntimeRef) {
         throw new Error('provider_turn_runtime_identity_mismatch');
       }
-      const receipt = next.contextCompositions[compositionIndex(next, event.payload.providerRequestId, replay)];
-      if (!receipt || receipt.runId !== event.runId || receipt.purpose !== event.payload.purpose) {
+      const receipt = replay?.transcriptCompositions?.get(event.payload.providerRequestId) ?? next.contextCompositions[compositionIndex(next, event.payload.providerRequestId, replay)];
+      if (!receipt || receipt.sequence >= event.sequence || receipt.runId !== event.runId || receipt.purpose !== event.payload.purpose) {
         throw new Error('provider_turn_composition_missing');
       }
       if (next.providerTurns[event.payload.providerRequestId]) {
@@ -1359,24 +1363,102 @@ export function projectSessionHistory(sessionId: string, events: readonly Sessio
   return projectSession(replaySession(sessionId, events, true));
 }
 
-function replaySession(sessionId: string, events: readonly SessionEvent[], borrowReceiptMessages: boolean): SessionState {
+export function projectTranscriptFacts(sessionId: string, facts: TranscriptFacts, around = facts.end): TranscriptPage {
+  return transcriptPageAt(projectTranscriptTurn(sessionId, facts), around);
+}
+
+export function projectTranscriptTurn(sessionId: string, facts: TranscriptFacts) {
+  const { events, compositions, tip, ...range } = facts;
+  if (range.sessionId !== sessionId || events[0]?.type !== 'session.created' || events[0].sequence !== 1
+    || !(range.start >= 1 && range.start <= range.end && range.end <= range.revision)) throw new Error('conversation_transcript_range_invalid');
+  const slots = [...events.filter(e => e.sequence >= range.start && e.sequence <= range.end), ...compositions].map(e => e.sequence).sort((a,b) => a-b);
+  if (slots.length !== range.end - range.start + 1 || slots.some((n,i) => n !== range.start + i)) throw new Error('session_event_sequence_gap');
+  const edits = events.flatMap(e => e.type === 'conversation.revised' ? [e.payload] : []);
+  const visible = compositions.filter(c => !edits.some(e => c.sequence >= e.fromSequence && c.sequence <= e.throughSequence));
+  const receipts = new Map(visible.map(c => [c.providerRequestId,c]));
+  if (receipts.size !== visible.length) throw new Error('provider_request_receipt_duplicate');
+  const state = replaySession(sessionId, events, true, range, receipts);
+  const groups = timelineGroups(state, visible);
+  return { range, groups, content: transcriptContent(state, groups.flatMap(g => g.items)),
+    current: range.end === range.revision ? projectTranscriptRun(state) : undefined };
+}
+
+export type TranscriptTurn = ReturnType<typeof projectTranscriptTurn>;
+
+export function transcriptPageAt(turn: TranscriptTurn, around = turn.range.end): TranscriptPage {
+  const { range, groups, content: source } = turn;
+  const page = selectTranscriptPage(groups, range, around);
+  const within = (seq: number) => seq >= page.start && seq <= page.end;
+  const { timeline } = page;
+  const planKeys = new Set(timeline.flatMap(row => row.kind === 'plan' ? [JSON.stringify([row.planId, row.revision])] : []));
+  const toolIds = new Set(timeline.flatMap(row => row.kind === 'toolGroup' ? row.activityIds : []));
+  // File summaries need the immutable records for the whole run, even when earlier rows
+  // have left the GUI window. Publish the summary with that run's final displayed group.
+  const footerRuns = new Set<string>();
+  const activities = source.activities;
+  for (const activity of activities) {
+    if (activity.kind !== 'run') continue;
+    if (within(page.lastRowByRun.get(activity.runId) ?? activity.sequence)) footerRuns.add(activity.runId);
+  }
+  const selected = activities.filter(a => toolIds.has(a.activityId)
+    || ((a.kind === 'run' || a.kind === 'plan') && within(a.sequence)));
+  const fileActivities = activities.filter(a => footerRuns.has(a.runId) && a.tool?.fileChanges?.length && a.tool.recordId);
+  const fileChangeDetails = fileActivities.map(({ runId, activityId, tool }) => ({
+    runId, activityId, tool: { recordId: tool!.recordId!, fileChanges: tool!.fileChanges! },
+  }));
+  const calls = new Set(selected.flatMap(a => a.callId ? [a.callId] : []));
+  const messages = source.messages.filter(m => within(m.sequence));
+  const replies = new Set(messages.flatMap(m => m.replyToInteraction ? [m.replyToInteraction.interactionId] : []));
+  const fileChangeRounds = source.fileChangeRounds?.filter(r => footerRuns.has(r.runId));
+  const runTimings = source.runTimings?.filter(t => page.runIds.has(t.runId) || footerRuns.has(t.runId));
+  const content: TranscriptContent = {
+    sessionId: source.sessionId, revision: source.revision, workspaceBindings: source.workspaceBindings,
+    timeline, messages, narratives: source.narratives.filter(n => within(n.sequence)), activities: selected,
+    artifacts: source.artifacts.filter(a => calls.has(a.callId)),
+    plans: source.plans.filter(p => planKeys.has(JSON.stringify([p.planId, p.revision]))),
+    interactions: source.interactions.filter(i => within(i.sequence) || calls.has(i.callId) || replies.has(i.interactionId)),
+    ...(fileChangeRounds?.length ? { fileChangeRounds } : {}),
+    ...(runTimings?.length ? { runTimings } : {}),
+  };
+  return {
+    ...range, start: page.start, end: page.end, previous: page.start > 1 ? page.start - 1 : null,
+    next: page.end < range.revision ? page.end + 1 : null, content, fileChangeDetails,
+    ...(page.end === range.revision ? { current: turn.current } : {}),
+  };
+}
+
+function replaySession(sessionId: string, events: readonly SessionEvent[], borrowReceiptMessages: boolean,
+  range?: Pick<TranscriptFacts, 'start' | 'end' | 'revision'>, receipts?: ReadonlyMap<string,TranscriptComposition>): SessionState {
   let agents: AgentLifetime = { agentTasks: [], agentChildren: [] };
-  for (const [index, event] of events.entries()) {
+  let expected = 1;
+  let previous = 0;
+  for (const event of events) {
     if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
-    if (event.sequence !== index + 1) throw new Error('session_event_sequence_gap');
+    if (event.sequence <= previous || range && event.sequence > range.revision) throw new Error('session_event_sequence_gap');
+    if (!range) {
+      if (event.sequence !== expected++) throw new Error('session_event_sequence_gap');
+    }
+    previous = event.sequence;
     if (isAgentLifetimeEvent(event)) agents = reduceAgentLifetime(agents, event);
   }
   let state = emptySessionState(sessionId);
   // Archived child identities also label received messages during history-only replay.
   state.agentChildren = agents.agentChildren;
   const active = activeConversationEvents(events);
-  const replay: ReplayIndexes = { borrowReceiptMessages, compositions: new Map(), attempts: new Map(), calls: [] };
+  const replay: ReplayIndexes = { transcriptCompositions: receipts, borrowReceiptMessages, compositions: new Map(), attempts: new Map(), calls: [] };
+  const pageMessages = range ? new Set(active.flatMap(event => event.type === 'message.committed'
+    && event.sequence >= range.start && event.sequence <= range.end ? [event.payload.messageId] : [])) : undefined;
   for (const event of active) {
+    const outside = !!range && (event.sequence < range.start || event.sequence > range.end);
+    if (pageMessages && event.type === 'message.feedback.updated' && !pageMessages.has(event.payload.messageId)) continue;
+    // Delivery and accounting references may span multiple turns. They belong to the
+    // current controls / execution read; transcript rows only depend on their source tools.
+    if (range && (event.type === 'approval.revoked' || event.type === 'context.updated' || event.type.startsWith('context.compact'))) continue;
     // The lifetime stream above has already reduced these facts exactly once.
     if (isAgentLifetimeEvent(event)) {
       // Lifetime and visible history are different projections of the same fact.
       // Editing may hide an activity without deleting the archived child.
-      if (event.type === 'agent.task.created' || event.type === 'agent.task.completed') {
+      if (!outside && (event.type === 'agent.task.created' || event.type === 'agent.task.completed')) {
         const activityState = { ...state, agentTasks: agents.agentTasks };
         recordAgentActivity(activityState, event, event.type === 'agent.task.created' ? 'started' : 'completed');
         state = { ...state, activities: activityState.activities };
@@ -1384,9 +1466,10 @@ function replaySession(sessionId: string, events: readonly SessionEvent[], borro
       continue;
     }
     // Only explicitly superseded journal ranges may create a gap in active history.
-    state = reduceSessionEvent({ ...state, revision: event.sequence - 1 }, event, replay);
+    state = reduceSessionEvent({ ...state, revision: event.sequence - 1 }, event, replay, outside && event.type.startsWith('plan.'));
   }
   // Editing changes model history, but cannot erase usage already incurred.
+  if (range) return { ...state, ...agents, revision: range.revision };
   const activeSequences = new Set(active.map((event) => event.sequence));
   for (const event of events) {
     if (activeSequences.has(event.sequence)) continue;
@@ -1404,10 +1487,7 @@ function sourceReferenceProjection(state: SessionState, content: string, request
   return projectSourceContent(content, block?.item);
 }
 
-export function projectSession(
-  state: SessionState,
-  assistantDraft: AssistantDraftProjection | null = null,
-): SessionProjection {
+function transcriptContent(state: SessionState, timeline = projectTimeline(state)): TranscriptContent {
   const rounds = new Map<string, string[]>();
   for (const activity of Object.values(state.activities).sort((left, right) => left.sequence - right.sequence)) {
     if (!activity.tool?.fileChanges?.length || !activity.tool.recordId) continue;
@@ -1424,34 +1504,7 @@ export function projectSession(
       }
     }
   }
-  const draft = assistantDraft ? structuredClone(assistantDraft) : null;
-  for (const block of draft?.blocks ?? []) {
-    if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
-  }
-  // Journals without an explicit Session preference can still show their recorded task selection.
-  const savedSubagents = state.subagentSettings ?? (state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined);
   return {
-    ...(savedSubagents ? { subagentSettings: structuredClone(savedSubagents) } : {}),
-    ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
-    ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
-    ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
-    ...(state.agentChildren.length ? { agentChildren: structuredClone(state.agentChildren) } : {}),
-    ...(Object.keys(state.runTimings).length ? { runTimings: Object.values(state.runTimings).map(value => structuredClone(value)) } : {}),
-    ...(Object.keys(state.providerAttempts).length ? { providerAttempts: Object.values(state.providerAttempts)
-      .filter((attempt) => attempt.runId === state.run?.runId).map((attempt) => structuredClone(attempt)) } : {}),
-    ...(state.run && state.failureSnapshots[state.run.runId] ? { failureSnapshot: structuredClone(state.failureSnapshots[state.run.runId]) } : {}),
-    permissionOverrides: structuredClone(state.permissionOverrides),
-    effectivePermissions: state.run ? state.publishedPermissions ?? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions, ...state.permissionOverrides }) : null,
-    shellAuthorizations: structuredClone(state.shellAuthorizations),
-    schemaVersion: SESSION_PROJECTION_VERSION,
-    ...(rounds.size ? { fileChangeRounds: [...rounds].map(([runId, recordIds]) => ({ runId, recordIds })) } : {}),
-    sessionId: state.sessionId,
-    revision: state.revision,
-    display: { ...state.display },
-    modelSettings: state.modelSettings ? { ...state.modelSettings } : null,
-    mode: state.mode,
-    workspaceBindings: state.workspaceBindings.map((binding) => ({ ...binding })),
-    sessionDirectoryIndexes: state.sessionDirectoryIndexes.map((binding) => ({ ...binding })),
     messages: state.messages.map((message) => ({
       ...message,
       ...(message.role === 'assistant' ? sourceReferenceProjection(state, message.content, message.providerRequestId, message.messageId) : {}),
@@ -1459,38 +1512,11 @@ export function projectSession(
       filesystemReferences: message.filesystemReferences.map((reference) => ({ ...reference })),
       pluginSelections: message.pluginSelections.map((selection) => ({ ...selection })),
     })),
-    queuedInputs: state.queuedInputs.map((input) => ({
-      ...input,
-      filesystemReferences: input.filesystemReferences.map((reference) => ({ ...reference })),
-      pluginSelections: input.pluginSelections.map((selection) => ({ ...selection })),
-      status: state.tokenUsageHistory[input.runId]?.outcome ? 'notApplied' : 'queued',
-    })),
     narratives: state.narratives.map((narrative) => ({ ...narrative,
       ...sourceReferenceProjection(state, narrative.content, narrative.providerRequestId, narrative.narrativeId) })),
-    timeline: projectTimeline(state),
-    assistantDraft: draft,
+    timeline,
     interactions: state.interactions.map(item => cloneInteraction(item)!),
-    pendingInteraction: cloneInteraction(pendingInteraction(state)),
-    pendingApprovals: state.pendingApprovals.map(item => cloneApproval(item)!),
-    pendingApproval: cloneApproval(state.pendingApproval),
     plans: state.plans.map((plan) => clonePlanProjection(plan)),
-    activePlanRef: state.activePlanRef ? { ...state.activePlanRef } : null,
-    pendingPlan: state.pendingPlan ? clonePlanProjection(state.pendingPlan) : null,
-    todoList: cloneTodoList(state.todoList),
-    ...(state.contextHandoff ? { contextHandoff: { ...state.contextHandoff } } : {}),
-    contextUsage: state.contextUsage ? { ...state.contextUsage } : null,
-    // Keep the latest Agent usage receipt and the pending call composition.
-    contextCompositions: state.contextCompositions.filter((receipt, index) => (
-      receipt.providerRequestId === state.contextUsage?.providerRequestId
-      || index === state.contextCompositions.length - 1
-    )).map(cloneContextComposition),
-    tokenUsage: { ...state.tokenUsage },
-    // SessionService adds descendants at the public snapshot boundary.
-    totalTokenUsage: { ...state.tokenUsage },
-    tokenUsageHistory: Object.values(state.tokenUsageHistory)
-      .sort((left, right) => right.sequence - left.sequence)
-      .map((usage) => ({ ...usage })),
-    run: state.run ? cloneRun(state.run) : null,
     activities: Object.values(state.activities)
       .sort((left, right) => left.sequence - right.sequence)
       .map(activity => {
@@ -1503,8 +1529,78 @@ export function projectSession(
         return copy;
       }),
     artifacts: Object.values(state.artifacts).map((artifact) => ({ ...artifact })),
-    deliverables: Object.values(state.deliverables).sort(compareDeliverables).map(item => ({ ...item })),
+    ...(Object.keys(state.runTimings).length ? { runTimings: Object.values(state.runTimings).map(value => structuredClone(value)) } : {}),
+    ...(rounds.size ? { fileChangeRounds: [...rounds].map(([runId, recordIds]) => ({ runId, recordIds })) } : {}),
+    sessionId: state.sessionId,
+    revision: state.revision,
+    workspaceBindings: state.workspaceBindings.map((binding) => ({ ...binding })),
+  };
+}
+
+export function projectTranscriptRun(
+  state: SessionState,
+  assistantDraft: AssistantDraftProjection | null = null,
+): TranscriptRun {
+  const draft = assistantDraft ? structuredClone(assistantDraft) : null;
+  for (const block of draft?.blocks ?? []) {
+    if (block.kind !== 'providerHosted') Object.assign(block, projectDraftSourceContent(block.content));
+  }
+  // Journals without an explicit Session preference can still show their recorded task selection.
+  const savedSubagents = state.subagentSettings ?? (state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined);
+  return {
+    sessionId: state.sessionId, revision: state.revision, mode: state.mode,
+    run: state.run ? cloneRun(state.run) : null,
+    modelSettings: state.modelSettings ? { ...state.modelSettings } : null,
     terminalError: state.terminalError ? { ...state.terminalError } : null,
+    effectivePermissions: state.run ? state.publishedPermissions ?? permissionSettings({ ...state.runRuntimeSnapshots[state.run.runId]?.permissions, ...state.permissionOverrides }) : null,
+    pendingPlan: state.pendingPlan ? clonePlanProjection(state.pendingPlan) : null,
+    ...(savedSubagents ? { subagentSettings: structuredClone(savedSubagents) } : {}),
+    ...(state.agentContext ? { agentContext: structuredClone(state.agentContext) } : {}),
+    ...(state.agentTasks.length ? { agentTasks: structuredClone(state.agentTasks) } : {}),
+    ...(state.agentChildren.length ? { agentChildren: structuredClone(state.agentChildren) } : {}),
+    ...(Object.keys(state.providerAttempts).length ? { providerAttempts: Object.values(state.providerAttempts)
+      .filter((attempt) => attempt.runId === state.run?.runId).map((attempt) => structuredClone(attempt)) } : {}),
+    ...(state.run && state.failureSnapshots[state.run.runId] ? { failureSnapshot: structuredClone(state.failureSnapshots[state.run.runId]) } : {}),
+    queuedInputs: state.queuedInputs.map((input) => ({
+      ...input,
+      filesystemReferences: input.filesystemReferences.map((reference) => ({ ...reference })),
+      pluginSelections: input.pluginSelections.map((selection) => ({ ...selection })),
+      status: state.tokenUsageHistory[input.runId]?.outcome ? 'notApplied' : 'queued',
+    })),
+    assistantDraft: draft,
+    pendingInteraction: cloneInteraction(pendingInteraction(state)),
+    pendingApprovals: state.pendingApprovals.map(item => cloneApproval(item)!),
+    pendingApproval: cloneApproval(state.pendingApproval),
+    ...(state.contextHandoff ? { contextHandoff: { ...state.contextHandoff } } : {}),
+  };
+}
+
+export function projectSession(state: SessionState, assistantDraft: AssistantDraftProjection | null = null): SessionProjection {
+  return {
+    ...transcriptContent(state),
+    ...projectTranscriptRun(state, assistantDraft),
+    ...(state.recipe ? { recipe: structuredClone(state.recipe) } : {}),
+    permissionOverrides: structuredClone(state.permissionOverrides),
+    shellAuthorizations: structuredClone(state.shellAuthorizations),
+    schemaVersion: SESSION_PROJECTION_VERSION,
+    display: { ...state.display },
+    mode: state.mode,
+    sessionDirectoryIndexes: state.sessionDirectoryIndexes.map((binding) => ({ ...binding })),
+    activePlanRef: state.activePlanRef ? { ...state.activePlanRef } : null,
+    todoList: cloneTodoList(state.todoList),
+    contextUsage: state.contextUsage ? { ...state.contextUsage } : null,
+    // Keep the latest Agent usage receipt and the pending call composition.
+    contextCompositions: state.contextCompositions.filter((receipt, index) => (
+      receipt.providerRequestId === state.contextUsage?.providerRequestId
+      || index === state.contextCompositions.length - 1
+    )).map(cloneContextComposition),
+    tokenUsage: { ...state.tokenUsage },
+    // SessionService adds descendants at the public snapshot boundary.
+    totalTokenUsage: { ...state.tokenUsage },
+    tokenUsageHistory: Object.values(state.tokenUsageHistory)
+      .sort((left, right) => right.sequence - left.sequence)
+      .map((usage) => ({ ...usage })),
+    deliverables: Object.values(state.deliverables).sort(compareDeliverables).map(item => ({ ...item })),
   };
 }
 
@@ -1703,7 +1799,7 @@ function requiredProviderTurn(
   return turn;
 }
 
-function timelineIndexes(state: SessionState) {
+function timelineIndexes(state: SessionState, compositions: readonly TranscriptComposition[] = state.contextCompositions) {
   // Preserve first-match semantics while avoiding a full history scan per call.
   const firstBy = <T>(values: readonly T[], key: (value: T) => string) => {
     const result = new Map<string, T>();
@@ -1721,7 +1817,7 @@ function timelineIndexes(state: SessionState) {
   const messages = state.messages.filter(message => message.role === 'assistant');
   return {
     requestKey, approvals,
-    compositions: firstBy(state.contextCompositions, requestKey),
+    compositions: firstBy(compositions, requestKey),
     messages: firstBy(messages, requestKey),
     messageIds: firstBy(messages, message => JSON.stringify([message.messageId, message.providerRequestId])),
     narratives: firstBy(state.narratives, requestKey),
@@ -1731,16 +1827,17 @@ function timelineIndexes(state: SessionState) {
   };
 }
 
-export function projectTimeline(state: SessionState): SessionProjection['timeline'] {
-  const index = timelineIndexes(state);
-  const groups: Array<{
-    sequence: number;
-    items: SessionProjection['timeline'];
-  }> = [];
+export function projectTimeline(state: SessionState, compositions?: readonly TranscriptComposition[]): SessionProjection['timeline'] {
+  return timelineGroups(state, compositions).flatMap(group => group.items);
+}
+
+function timelineGroups(state: SessionState, compositions?: readonly TranscriptComposition[]): TimelineGroup[] {
+  const index = timelineIndexes(state, compositions);
+  const groups: TimelineGroup[] = [];
   for (const message of state.messages) {
     if (message.role !== 'user') continue;
     groups.push({
-      sequence: message.sequence,
+      sequence: message.sequence, runId: message.runId,
       items: [{
         kind: 'message',
         timelineId: `message:${message.messageId}`,
@@ -1751,7 +1848,7 @@ export function projectTimeline(state: SessionState): SessionProjection['timelin
   }
   for (const activity of Object.values(state.activities)) {
     if (activity.kind !== 'agent') continue;
-    groups.push({ sequence: activity.sequence, items: [{ kind: 'toolGroup',
+    groups.push({ sequence: activity.sequence, runId: activity.runId, items: [{ kind: 'toolGroup',
       timelineId: activity.activityId, sequence: activity.sequence, activityIds: [activity.activityId] }] });
   }
   for (const turn of Object.values(state.providerTurns)) {
@@ -1765,12 +1862,12 @@ export function projectTimeline(state: SessionState): SessionProjection['timelin
         ? turn.orderedOutputBlocks.flatMap(block => block.kind === 'toolCall' || block.kind === 'toolCallRejected' ? [block.callId] : [])
         : turn.toolCallInputs?.map(call => call.callId) ?? turn.orderedCallIds ?? [];
       const item = providerToolGroup(turn, callIds, index);
-      if (item) groups.push({ sequence: composition.sequence, items: [item] });
+      if (item) groups.push({ sequence: composition.sequence, runId: turn.runId, items: [item] });
       continue;
     }
     if (turn.orderedOutputBlocks) {
       const items = projectOrderedProviderTurnTimeline(state, turn, index);
-      if (items.length > 0) groups.push({ sequence: composition.sequence, items });
+      if (items.length > 0) groups.push({ sequence: composition.sequence, runId: turn.runId, items });
       continue;
     }
     const items: SessionProjection['timeline'] = [];
@@ -1810,11 +1907,9 @@ export function projectTimeline(state: SessionState): SessionProjection['timelin
     }
     const toolGroup = providerToolGroup(turn, orderedCallIds, index);
     if (toolGroup) items.push(toolGroup);
-    if (items.length > 0) groups.push({ sequence: composition.sequence, items });
+    if (items.length > 0) groups.push({ sequence: composition.sequence, runId: turn.runId, items });
   }
-  return groups
-    .sort((left, right) => left.sequence - right.sequence)
-    .flatMap((group) => group.items);
+  return groups.sort((left, right) => left.sequence - right.sequence);
 }
 
 function providerToolGroup(
@@ -2129,7 +2224,7 @@ function validateContextPartitions(
   ) throw new Error('context_partition_receipt_invalid');
 }
 
-function estimatePartitionTokens(
+export function estimatePartitionTokens(
   partitions: NonNullable<SessionProjection['contextCompositions'][number]['partitions']>,
   inputTokens: number,
 ): NonNullable<SessionProjection['contextCompositions'][number]['partitions']> {
@@ -2516,7 +2611,7 @@ function isCanonicalTerminalInput(value: unknown): value is { stdin: string } {
     && new TextEncoder().encode(value.stdin).byteLength <= 65_536;
 }
 
-function artifactsFromRecord(record: ToolExecutionRecord): ArtifactProjection[] {
+export function artifactsFromRecord(record: ToolExecutionRecord): ArtifactProjection[] {
   if (!('output' in record) || !isRecord(record.output)) return [];
   const artifacts = record.output.artifacts;
   if (artifacts === undefined) return [];
@@ -2626,6 +2721,10 @@ export function combineTokenUsage(
     cacheReadInputTokens: addTokenCount(own.cacheReadInputTokens, descendant.cacheReadInputTokens),
     cacheMissInputTokens: addTokenCount(own.cacheMissInputTokens, descendant.cacheMissInputTokens),
   });
+}
+
+export function runInputTitle(message: { content: string; filesystemReferences: ReadonlyArray<{ displayName: string }> }) {
+  return message.content.trim() ? message.content : message.filesystemReferences.map(ref => ref.displayName).join(', ');
 }
 
 /** Replay compact receipts without loading child prompts, outputs or execution state. */

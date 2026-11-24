@@ -215,7 +215,19 @@ async fn run() {
     achbit_host_connection::startup::timing("kernel.catalog_reader");
     let host_connection =
         HostConnection::from_environment().expect("初始化 Host Shell 本地连接凭证");
+    let service_token: Arc<str> =
+        Arc::from(local_agent_api::random_service_token().expect("初始化 Session 服务凭证"));
+    let (publish_reader, reader_service) = tokio::sync::watch::channel(None);
+    let reader_token = service_token.clone();
+    tokio::task::spawn_blocking(move || {
+        publish_reader.send_replace(Some(SessionServiceProcess::spawn(
+            &format!("http://{addr}"),
+            &reader_token,
+        )));
+    });
     let state = HostState {
+        reader_service,
+        service_token: service_token.clone(),
         updates: Arc::new(host_update::Updates::new().expect("Acquire installation lease")),
         host_connection,
         gui,
@@ -225,15 +237,17 @@ async fn run() {
         model_auth: Arc::new(model_auth::AuthService::default()),
         model_usage,
     };
+    let reading_host = state.clone();
     let execution = state.execution.clone();
     tokio::spawn(async move {
         let cleanup = execution.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::task::spawn_blocking(move || {
             let mut local_agent = LocalAgentRuntime::open(
                 &session_store_path,
                 &tool_record_store_path,
                 workspace_resolver,
                 &user_settings,
+                service_token,
             )
             .map_err(|message| {
                 let code = message
@@ -244,25 +258,7 @@ async fn run() {
                 SessionServiceError::new(code, message)
             })?;
             local_agent.kernel.desktop = desktop;
-            let session_service = match SessionServiceProcess::spawn(
-                &format!("http://{addr}"),
-                local_agent.service_token(),
-            ) {
-                Ok(service) => service,
-                Err(mut error) => {
-                    if let Err(message) = local_agent.shutdown_plugins() {
-                        cleanup.record_cleanup_failure();
-                        error
-                            .message
-                            .push_str(&format!("; Kernel cleanup failed: {message}"));
-                    }
-                    return Err(error);
-                }
-            };
-            Ok(host_runtime::ExecutionServices {
-                local_agent,
-                session_service,
-            })
+            Ok(local_agent)
         })
         .await
         .unwrap_or_else(|error| {
@@ -272,6 +268,23 @@ async fn run() {
                 error.to_string(),
             ))
         });
+        let reader = reading_host.reading_service().await;
+        let result = match (runtime, reader) {
+            (Ok(local_agent), Ok(session_service)) => Ok(host_runtime::ExecutionServices {
+                local_agent,
+                session_service,
+            }),
+            (Ok(local_agent), Err(mut error)) => {
+                if let Err(message) = local_agent.shutdown_plugins() {
+                    cleanup.record_cleanup_failure();
+                    error
+                        .message
+                        .push_str(&format!("; Kernel cleanup failed: {message}"));
+                }
+                Err(error)
+            }
+            (Err(error), _) => Err(error),
+        };
         if let Err(error) = &result {
             eprintln!("{}: {}", error.code, error.message);
         }

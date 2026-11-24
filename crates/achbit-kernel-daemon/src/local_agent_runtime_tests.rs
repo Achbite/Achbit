@@ -43,6 +43,7 @@ impl Fixture {
                     gui.clone(),
                 )),
                 &captured.user_settings,
+                Arc::from(random_service_token().unwrap()),
             )
             .unwrap()
         };

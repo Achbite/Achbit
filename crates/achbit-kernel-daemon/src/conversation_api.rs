@@ -116,20 +116,43 @@ struct FilesystemReferencePathInput {
 }
 
 pub(crate) async fn conversation_read(
-    ReadyState(state): ReadyState,
+    State(host): State<HostState>,
     Path(session_id): Path<String>,
     Json(mut body): Json<Value>,
-) -> Json<ApiResponse> {
+) -> Response {
     let Some(query) = body.as_object_mut() else {
-        return ApiResponse::error("conversation_read_invalid", "读取选项必须是对象。");
+        return ApiResponse::error("conversation_read_invalid", "读取选项必须是对象。")
+            .into_response();
     };
     if query.contains_key("sessionId") {
-        return ApiResponse::error("conversation_read_invalid", "sessionId 使用请求路径。");
+        return ApiResponse::error("conversation_read_invalid", "sessionId 使用请求路径。")
+            .into_response();
     }
+    let reader = matches!(
+        query.get("view").and_then(Value::as_str),
+        Some("transcript" | "overview")
+    );
     query.insert("sessionId".into(), Value::String(session_id));
-    match request_service(state.session_service.clone(), "read", body).await {
-        Ok(value) => ApiResponse::ok(value),
-        Err(error) => session_service_error(error),
+    let service = if reader {
+        host.conversation_reader().await
+    } else {
+        host.execution
+            .admit(false)
+            .map(|services| services.session_service)
+    };
+    let service = match service {
+        Ok(service) => service,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                session_service_error(error),
+            )
+                .into_response()
+        }
+    };
+    match request_service(service, "read", body).await {
+        Ok(value) => ApiResponse::ok(value).into_response(),
+        Err(error) => session_service_error(error).into_response(),
     }
 }
 
@@ -262,7 +285,7 @@ pub(crate) async fn conversation_plugin_catalog_get(
 }
 
 pub(crate) async fn conversation_resource_read(
-    ReadyState(state): ReadyState,
+    State(state): State<HostState>,
     Path(session_id): Path<String>,
     Json(body): Json<ReadConversationResourceRequest>,
 ) -> Response {
@@ -2180,19 +2203,6 @@ pub(crate) async fn conversation_command_submit(
         }
     }
     if input_field.is_some() {
-        let project_id = {
-            let gui = state.gui.lock().expect("gui state lock");
-            gui.conversation_catalog
-                .session(&session_id)
-                .and_then(|session| session.project_id.clone())
-        };
-        if let Some(project_id) = project_id {
-            if let Err(error) =
-                sync_project_workspaces(&state, &project_id, Some(&session_id)).await
-            {
-                return session_service_error(error);
-            }
-        }
         if let Err(error) = ensure_session_workdir(&state, &session_id).await {
             return session_service_error(error);
         }
@@ -2261,47 +2271,18 @@ pub(crate) async fn conversation_command_submit(
                 );
             }
         }
-        let submitted_task = matches!(
-            command["type"].as_str(),
-            Some("message.submit" | "context.focus")
-        );
-        // The session's effective model serves its title request. An ordinary
-        // message/focus is not a preference edit for future conversations.
-        let title_profile = if submitted_task {
-            match request_service(
-                state.session_service.clone(),
-                "snapshot",
-                json!({"sessionId":session_id}),
-            )
-            .await
-            {
-                Ok(projection) => projection["modelSettings"]["profileId"]
-                    .as_str()
-                    .map(str::to_string),
-                Err(error) => {
-                    eprintln!(
-                        "[conversation-profile] session={session_id} {}: {}",
-                        error.code, error.message
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        if let (Some(text), Some(profile_id), Some(command_id)) = (
-            title_input.as_deref(),
-            title_profile.as_deref(),
-            command["commandId"].as_str(),
-        ) {
+        if let (Some(text), Some(command_id)) =
+            (title_input.as_deref(), command["commandId"].as_str())
+        {
             if let Err(error) = schedule_conversation_title(
                 &state,
                 &session_id,
                 command_id,
-                profile_id,
                 text,
                 &command["filesystemReferences"],
-            ) {
+            )
+            .await
+            {
                 eprintln!("[conversation-title] session={session_id} command={command_id} {error}");
             }
         }
@@ -2525,11 +2506,10 @@ fn title_request_excerpt(text: &str, pasted_paths: &[PathBuf]) -> Result<String,
 }
 
 /// Title generation is Host metadata work; it never joins or advances the Session loop.
-fn schedule_conversation_title(
+async fn schedule_conversation_title(
     state: &AppState,
     session_id: &str,
     command_id: &str,
-    profile_id: &str,
     text: &str,
     filesystem_references: &Value,
 ) -> Result<(), String> {
@@ -2551,6 +2531,18 @@ fn schedule_conversation_title(
     if !recipe.product_component_enabled("achbit.conversation-title", true) {
         return Ok(());
     }
+    // Only the first accepted input needs the effective Session profile for its title.
+    // Never reconstruct a conversation solely to discard the answer on a later send.
+    let projection = request_service(
+        state.session_service.clone(),
+        "snapshot",
+        json!({"sessionId":session_id}),
+    )
+    .await
+    .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    let Some(profile_id) = projection["modelSettings"]["profileId"].as_str() else {
+        return Ok(());
+    };
     let mut gui = state.gui.lock().expect("gui state lock");
     if gui
         .conversation_catalog
@@ -2693,19 +2685,38 @@ async fn ensure_session_workdir(
         }
         binding
     };
-    let snapshot = request_service(
-        state.session_service.clone(),
-        "snapshot",
-        json!({"sessionId":session_id}),
-    )
-    .await?;
-    if snapshot["workspaceBindings"]
-        .as_array()
-        .is_some_and(|bindings| {
-            bindings
-                .iter()
-                .any(|candidate| candidate["workspaceId"] == binding.workspace_id)
-        })
+    let mut snapshot = session_workspace_snapshot(state, session_id).await?;
+    let project_to_sync = {
+        let gui = state.gui.lock().expect("gui state lock");
+        let catalog = &gui.conversation_catalog;
+        let session = catalog.session(session_id).ok_or_else(|| {
+            SessionServiceError::new("conversation_session_not_found", "对话不存在。")
+        })?;
+        if let Some(project_id) = &session.project_id {
+            let bindings = catalog
+                .project_binding_snapshot(project_id)
+                .map_err(|code| SessionServiceError::new(code, "项目不存在。"))?;
+            (session.workspace_bindings != bindings
+                || snapshot["baseWorkspaceBindings"] != json!(bindings))
+            .then(|| project_id.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(project_id) = project_to_sync {
+        sync_project_workspaces(state, &project_id, Some(session_id)).await?;
+        // A changed project may add or remove a binding for the managed directory.
+        snapshot = session_workspace_snapshot(state, session_id).await?;
+    }
+    let bindings = snapshot["workspaceBindings"].as_array().ok_or_else(|| {
+        SessionServiceError::new(
+            "session_workspace_bindings_invalid",
+            "Missing session workspace bindings",
+        )
+    })?;
+    if bindings
+        .iter()
+        .any(|candidate| candidate["workspaceId"] == binding.workspace_id)
     {
         return Ok(());
     }
@@ -2725,6 +2736,25 @@ async fn ensure_session_workdir(
         ));
     }
     Ok(())
+}
+
+async fn session_workspace_snapshot(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Value, SessionServiceError> {
+    let snapshot = request_service(
+        state.session_service.clone(),
+        "resourceSnapshot",
+        json!({"sessionId":session_id}),
+    )
+    .await?;
+    if snapshot["sessionId"] != session_id {
+        return Err(SessionServiceError::new(
+            "session_projection_identity_mismatch",
+            "Workspace view belongs to another session",
+        ));
+    }
+    Ok(snapshot)
 }
 
 fn prepare_session_workdir(

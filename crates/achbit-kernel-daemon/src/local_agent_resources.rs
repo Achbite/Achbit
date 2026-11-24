@@ -32,6 +32,7 @@ impl SessionResources {
         if target != self.caller
             && !self
                 .journal
+                .reader
                 .is_descendant_session(&self.caller, target)
                 .map_err(|cause| SessionServiceError::new(cause.code, cause.message))?
         {

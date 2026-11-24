@@ -20,6 +20,14 @@ test('private prefix frames reconstruct every original logical event, not just p
     return response([created,before,prefix,{readingPrefix:1,baseSequence:3,prefixCount:1,event:end},{...receipt,count:4}]);}});
   assert.deepEqual(await readSessionEvents(j,sid,true),[created,before,{...suffix,payload:{...suffix.payload,messages:[entry,...suffix.payload.messages]}},{...end,payload:{...end.payload,messages:[entry]}}]);
 });
+test('the execution-opening reader reconstructs the complete journal with independent, mutable nested records',async()=>{
+  const j=new HttpCommandJournal({apiBase:'http://fixture',serviceToken:'test',fetchImpl:async(_u,init)=>{
+    assert.ok(init.headers.accept.includes(media));return response([created,before,prefix,receipt]);}});
+  const rows=await readSessionEvents(j,sid,'execution');assert.deepEqual(rows[2].payload.messages,[entry,...suffix.payload.messages]);
+  rows[1].payload.messages[0].future.value.push(3);assert.deepEqual(rows[2].payload.messages[0].future.value,[1,2]);
+  const bad=new HttpCommandJournal({apiBase:'http://fixture',serviceToken:'test',fetchImpl:async()=>response([created,before,{...prefix,baseSequence:1},receipt])});
+  const publications=[];bad.subscribePermissions(sid,p=>publications.push(p));await assert.rejects(readSessionEvents(bad,sid,'execution'));assert.deepEqual(publications,[]);
+});
 test('damaged private bases, counts, identities and incomplete publications never publish permission changes',async()=>{
   for(const bad of [[created,prefix,receipt],[created,before,{...prefix,baseSequence:1},receipt],[created,before,{...prefix,prefixCount:3},receipt],
     [created,before,{...prefix,readingPrefix:2},receipt],[created,before,{...prefix,event:{...suffix,sessionId:'other'}},receipt],

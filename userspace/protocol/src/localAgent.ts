@@ -1889,7 +1889,9 @@ export interface ConversationReadQuery {
   sessionId: string;
   /** Inclusive snapshot boundary, applied before revisions and semantic reduction; not a page cursor. */
   throughSequence?: number;
-  view?: 'summary' | 'messages' | 'tools' | 'plans' | 'context' | 'reasoning' | 'images' | 'readingWindow';
+  view?: 'summary' | 'messages' | 'tools' | 'plans' | 'context' | 'reasoning' | 'images' | 'readingWindow' | 'transcript' | 'overview';
+  /** Sequence of a row in the desired committed turn. Omit to read the tail. */
+  around?: number;
   /** GUI readingWindow only: a canonical transcript row key. Omit to open the tail. */
   anchorKey?: string;
   imageIds?: string[];
@@ -1900,6 +1902,67 @@ export interface ConversationReadQuery {
   /** Exact committed message identity for bounded content chunks. */
   messageId?: string;
   providerRequestId?: string;
+}
+
+export type TranscriptComposition = Pick<ContextCompositionProjection, 'sequence' | 'runId' | 'providerRequestId' | 'purpose'>;
+
+export interface TranscriptFacts {
+  /** Identity of this immutable journal cut, internal to the reader and journal. */
+  tip: string;
+  sessionId: string;
+  revision: number;
+  start: number;
+  end: number;
+  previous: number | null;
+  next: number | null;
+  navigation: Array<{ sequence: number; key: string; label: string }>;
+  events: SessionEvent[];
+  compositions: TranscriptComposition[];
+}
+
+export type TranscriptContent = Pick<SessionProjection, 'sessionId' | 'revision' | 'messages' | 'narratives' | 'timeline'
+  | 'plans' | 'interactions' | 'activities' | 'artifacts' | 'workspaceBindings' | 'runTimings' | 'fileChangeRounds'>;
+
+/** Controls belonging to the current run. The Session rechecks commands at submission. */
+export type TranscriptRun = Pick<SessionProjection, 'sessionId' | 'revision' | 'run' | 'mode' | 'modelSettings' | 'subagentSettings'
+  | 'effectivePermissions' | 'assistantDraft' | 'pendingInteraction' | 'pendingApproval' | 'pendingApprovals' | 'pendingPlan'
+  | 'agentContext' | 'agentTasks' | 'agentChildren' | 'pendingAgentDecisions' | 'queuedInputs'
+  | 'terminalError' | 'failureSnapshot' | 'contextHandoff' | 'providerAttempts'>;
+
+export interface TranscriptOverview {
+  sessionId: string;
+  revision: number;
+  todoList: SessionProjection['todoList'];
+  todoRun: TokenUsageRoundProjection | null;
+  deliverables: DeliverableProjection[];
+  childDeliverables: DeliverableProjection[];
+  memberIds: string[];
+  totalTokenUsage: TokenUsageProjection;
+  measurement: {
+    usage: ContextUsageProjection;
+    receipt: Pick<ContextCompositionProjection, 'sequence' | 'partitions'>;
+  } | null;
+}
+
+/** Only the fields required by the conversation side panel cross this journal port. */
+export type OverviewFact =
+  | Extract<SessionEvent, { type: 'context.updated' | 'artifacts.presented' | 'todo.updated' | 'conversation.revised' }>
+  | (Pick<SessionEvent, 'sessionId' | 'sequence' | 'occurredAt'> & {runId: string} & (
+    | { type: 'provider.turn.settled'; payload: {providerRequestId: string; purpose: string; hosted: boolean} }
+    | { type: 'run.started'; payload: {boundary: number | null} }
+    | { type: 'run.settled'; payload: {outcome: RunSettlement['outcome']} }
+    | { type: 'message.committed'; payload: object }
+    | { type: 'tool.completed'; payload: {record: ToolExecutionRecord} }
+  ));
+
+export interface TranscriptPage extends Omit<TranscriptFacts, 'events' | 'compositions' | 'tip'> {
+  content: TranscriptContent;
+  /** Whole-run file receipts on the page containing its final group. Independent of visible tool rows. */
+  fileChangeDetails: Array<Pick<ActivityProjection, 'runId' | 'activityId'> & {
+    tool: Required<Pick<ToolActivityProjection, 'recordId' | 'fileChanges'>>;
+  }>;
+  /** Present on the tail. Earlier pages carry only their committed history. */
+  current?: TranscriptRun;
 }
 
 export interface ConversationReadingRow {
@@ -1924,6 +1987,8 @@ export interface ConversationReadResult {
   summary?: JsonObject;
   /** Present only for the explicitly requested, revision-bound readingWindow view. */
   readingWindow?: ConversationReadingWindow;
+  transcript?: TranscriptPage;
+  overview?: TranscriptOverview;
   items: JsonObject[];
   nextBefore: number | null;
 }
@@ -2588,6 +2653,7 @@ export interface ResourceJournalRead {
 export interface SessionResourceProjection {
   sessionId: string;
   revision: number;
+  baseWorkspaceBindings: WorkspaceBindingDisplay[];
   workspaceBindings: WorkspaceBindingDisplay[];
   messages: Array<Pick<SessionProjection['messages'][number], 'filesystemReferences'>>;
   shellAuthorizations: SessionProjection['shellAuthorizations'];
@@ -2601,6 +2667,10 @@ export interface JournalPort {
   read(sessionId: string, afterSequence?: number): AsyncIterable<SessionEvent>;
   readRunLifecycle(sessionId: string, afterSequence?: number): Promise<RunLifecycleRead>;
   readRunLifecycles?(cursors: readonly RunLifecycleCursor[]): Promise<RunLifecycleRead[] | undefined>;
+  readOverviewFacts(sessionId: string): Promise<{ sessionId: string; revision: number; events: OverviewFact[] }>;
+  readRunInput(sessionId: string, startSequence: number): Promise<{ messageId: string; content: string; filesystemReferences: Array<{ displayName: string }> }>;
+  readWindowPartitions(sessionId: string, usageSequence: number): Promise<Pick<ContextCompositionProjection, 'sequence' | 'partitions'>>;
+  readTranscriptFacts(sessionId: string, around?: number, knownTip?: string): Promise<TranscriptFacts | null>;
   readAgentLifecycle(sessionId: string): Promise<AgentLifecycleRead>;
   readProviderUsage(sessionId: string): Promise<ProviderUsageRead>;
   readResources(sessionId: string, recordIds?: readonly string[]): Promise<ResourceJournalRead>;

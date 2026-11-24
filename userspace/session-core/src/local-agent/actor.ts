@@ -50,9 +50,13 @@ import {
   type LoopCommand,
   type LoopSnapshot,
 } from './loop.js';
-import { projectSession, reduceSession } from './reducer.js';
+import { projectSession, projectTranscriptRun, reduceSession } from './reducer.js';
 
+// Internal ownership transfer from the SessionService opening this Actor. External
+// event readers keep the ordinary replay and independent request records.
+export const recoveredOpening = Symbol('already recovered opening');
 export interface SessionActorOptions {
+  [recoveredOpening]?: LoopSnapshot;
   mode?: SessionMode;
   createComposition?(mode: SessionMode): Promise<AgentComposition>;
   observation?: SessionObservationSink;
@@ -137,6 +141,8 @@ export class SessionActor {
     this.#agents = options.agents;
     this.#nextId = options.nextId ?? defaultIdFactory(sessionId);
     this.#initialEvents = options.initialEvents;
+    this.#snapshot = options[recoveredOpening];
+    if (this.#snapshot) this.#timing.restore(Object.values(this.#snapshot.state.runTimings));
     this.#unsubscribePermissions = journal.subscribePermissions(sessionId, settings => {
       this.#publishedPermissions = settings;
       if (this.#snapshot) this.#snapshot = { ...this.#snapshot, state: { ...this.#snapshot.state, publishedPermissions: settings } };
@@ -221,13 +227,22 @@ export class SessionActor {
     // Recovery can replace the cached revision while a reader awaits initialization.
     while (!this.#snapshot) await this.loadSnapshot();
     const projection = projectSession(this.#snapshot.state, this.#assistantDraft);
-    for (const activity of projection.activities) {
+    this.readToolOutput(projection.activities);
+    return projection;
+  }
+
+  readToolOutput(activities: SessionProjection['activities']) {
+    for (const activity of activities) {
       if (activity.status === 'active' && activity.callId) {
         const output = this.#liveToolOutput.get(activity.callId);
         if (output) activity.liveOutput = output;
       }
     }
-    return projection;
+  }
+
+  async transcriptRun() {
+    const { state } = await this.loadSnapshot();
+    return projectTranscriptRun(state, this.#assistantDraft);
   }
 
   async humanApprovalRoutes(runId: string) {

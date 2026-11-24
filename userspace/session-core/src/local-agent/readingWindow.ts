@@ -3,12 +3,15 @@ import type { ConversationReadingRow, ConversationReadQuery, ConversationReadRes
 const MAX_BYTES = 256 * 1024;
 const MAX_NAVIGATION = 4096;
 
-/** Select from the actual, fully validated Session projection. No second timeline/replay, no excerpt cursor. */
+export function requiresReadingProjection(sessionId: string, revision: number): ConversationReadResult {
+  return { sessionId, revision, view: 'readingWindow', items: [], nextBefore: null, readingWindow: { kind: 'requiresProjection' } };
+}
+
+/** Select readable rows only from the actual, fully validated projection. */
 export function selectReadingWindow(p: SessionProjection, query: ConversationReadQuery): ConversationReadResult {
   if (p.sessionId !== query.sessionId) throw new Error('session_event_identity_mismatch');
   if (p.revision !== query.throughSequence) throw new Error('conversation_read_revision_changed');
-  const result: ConversationReadResult = { sessionId: p.sessionId, revision: p.revision, view: 'readingWindow',
-    items: [], nextBefore: null, readingWindow: { kind: 'requiresProjection' } };
+  const result = requiresReadingProjection(p.sessionId, p.revision);
   // A run's own activity is not a transcript row. Decisions, child ownership, failures and other
   // composed surfaces, on the other hand, cannot be presented by a standalone message window.
   if (p.run && p.run.status !== 'completed' || p.assistantDraft || p.terminalError || p.failureSnapshot || p.agentContext

@@ -11,6 +11,15 @@ const MAX_PAGE_BYTES = 48 * 1024;
 export function decodeConversationReadQuery(value: unknown): ConversationReadQuery {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('conversation_read_invalid');
   const query = value as Record<string, unknown>;
+  if (query.view === 'overview') {
+    if (!identifier(query.sessionId) || Object.keys(query).some(key => key !== 'sessionId' && key !== 'view')) throw new Error('conversation_read_invalid');
+    return query as unknown as ConversationReadQuery;
+  }
+  if (query.view === 'transcript') {
+    if (!identifier(query.sessionId) || Object.keys(query).some(key => !['sessionId','view','around'].includes(key))
+      || query.around !== undefined && (!Number.isSafeInteger(query.around) || Number(query.around) < 1)) throw new Error('conversation_read_invalid');
+    return query as unknown as ConversationReadQuery;
+  }
   if (query.view === 'readingWindow') {
     if (!identifier(query.sessionId) || !Number.isSafeInteger(query.throughSequence) || Number(query.throughSequence) < 1
       || Object.keys(query).some(key => !['sessionId', 'view', 'throughSequence', 'limit', 'anchorKey'].includes(key))
@@ -41,7 +50,7 @@ export function decodeConversationReadQuery(value: unknown): ConversationReadQue
 
 // Optional in-process adapter fast path. The published journal protocol and ordinary event ownership are unchanged.
 export const projectionEventBatch = Symbol('private projection event batch');
-type ProjectionJournal = CommandJournalPort & { [projectionEventBatch]?(id: string): Promise<SessionEvent[]> };
+type ProjectionJournal = CommandJournalPort & { [projectionEventBatch]?(id: string, independentlyOwned: boolean): Promise<SessionEvent[]> };
 
 function checkEvent(event: SessionEvent, sessionId: string, sequence: number) {
   if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
@@ -55,8 +64,8 @@ export function checkCompleteHistory(events: readonly SessionEvent[], sessionId:
   for (let i = 0; i < events.length; i++) checkEvent(events[i]!, sessionId, i + 1);
   checkCreated(events);
 }
-export async function readSessionEvents(journal: ProjectionJournal, sessionId: string, projectionOnly = false): Promise<SessionEvent[]> {
-  const batch = projectionOnly ? await journal[projectionEventBatch]?.(sessionId) : undefined;
+export async function readSessionEvents(journal: ProjectionJournal, sessionId: string, mode: boolean | 'execution' = false): Promise<SessionEvent[]> {
+  const batch = mode ? await journal[projectionEventBatch]?.(sessionId, mode === 'execution') : undefined;
   if (batch) { checkCompleteHistory(batch, sessionId); return batch; }
   const events: SessionEvent[] = [];
   for await (const event of journal.read(sessionId)) {

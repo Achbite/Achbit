@@ -339,7 +339,7 @@ pub(crate) fn save_conversation_defaults(
     Ok(())
 }
 
-pub(crate) async fn llm_profiles_get(ReadyState(state): ReadyState) -> Json<ApiResponse> {
+pub(crate) async fn llm_profiles_get(State(state): State<HostState>) -> Json<ApiResponse> {
     let gui = state.gui.lock().expect("gui state lock");
     gui.llm_profiles
         .settings_response(&gui.paths.llm_profiles_path)

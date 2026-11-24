@@ -28,7 +28,7 @@ const recordObject = (value: unknown): value is Record<string, unknown> => !!val
 
 // The record separator cannot occur unescaped inside valid JSON, including legacy
 // pretty-printed payloads. Keep only unfinished record bytes outside the decoded events.
-export async function readJournalSequence(body: ReadableStream<Uint8Array> | null, projectionOnly = false, factsSessionId?: string): Promise<JournalPublication<SessionEvent[]>> {
+export async function readJournalSequence(body: ReadableStream<Uint8Array> | null, projectionOnly = false, factsSessionId?: string, independentlyOwned = false): Promise<JournalPublication<SessionEvent[]>> {
   if (!body) throw new Error('journal_sequence_invalid: no body');
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -55,8 +55,10 @@ export async function readJournalSequence(body: ReadableStream<Uint8Array> | nul
         || previousContextSequence === undefined || baseSequence !== previousContextSequence
         || typeof prefixCount !== 'number' || !Number.isSafeInteger(prefixCount) || prefixCount < 1
         || prefixCount > previousMessages.length) throw new Error('invalid reading facts prefix');
-      // Private, read-only replay input: no shared reference ever escapes to ordinary journal readers.
-      event.payload.messages = previousMessages.slice(0, prefixCount).concat(event.payload.messages);
+      // Archived projections may borrow immutable descriptors. A continuing Actor
+      // must own each request, including nested extensions, like ordinary full JSON.
+      const prefix = previousMessages.slice(0, prefixCount);
+      event.payload.messages = (independentlyOwned ? structuredClone(prefix) : prefix).concat(event.payload.messages);
       record = event;
     }
     if ('permissions' in record || 'count' in record) {

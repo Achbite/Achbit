@@ -1,3 +1,4 @@
+import { ownOverview } from './transcriptOverview.js';
 import { deserialize, serialize } from 'node:v8';
 import type { SessionObservationSink } from './observation.js';
 import { decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
@@ -23,13 +24,13 @@ import type {
   PendingAgentDecision,
   WorkspaceBindingDisplay,
 } from '@achbit/protocol';
-import { SessionActor, humanApprovalRoutes } from './actor.js';
+import { SessionActor, humanApprovalRoutes, recoveredOpening } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, providerUsageFromEvents, recoverSession } from './reducer.js';
+import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, projectTranscriptTurn, transcriptPageAt, type TranscriptTurn, providerUsageFromEvents, recoverSession } from './reducer.js';
 import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
-import { selectReadingWindow } from './readingWindow.js';
+import { requiresReadingProjection, selectReadingWindow } from './readingWindow.js';
 import { emptyRunLifecycle, reduceRunLifecycle, type RunLifecycleState } from './runLifecycle.js';
 import { SessionConfigurationRegistry, type ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import type { InstructionContribution } from './skillPlugins.js';
@@ -95,7 +96,7 @@ type StatusState = { revision: number; lifecycle: RunLifecycleState };
 
 // Retain only public projections for switching between two recently viewed sessions.
 const historyLimit = 2;
-const historyByteLimit = 8 * 1024 * 1024;
+const historyByteBudget = 16 * 1024 * 1024; // shared by the two entries
 const historyIdleMs = 30_000;
 
 export class SessionService implements ConversationPort {
@@ -107,7 +108,9 @@ export class SessionService implements ConversationPort {
   readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #statusStates = new Map<string, StatusState>();
   readonly #historyReads = new Map<string, { version: string | undefined; result: Promise<SessionProjection> }>();
-  readonly #historyViews = new Map<string, { version: string; data: Buffer; timer: NodeJS.Timeout }>();
+  readonly #historyViews = new Map<string, { version: string; data: Buffer; dependent: boolean; timer: NodeJS.Timeout }>();
+  // Keep the two sides of a page boundary within one byte budget. Only public display data is retained.
+  #transcriptTurns: Array<{ sessionId: string; tip: string; start: number; end: number; revision: number; data: Buffer }> = [];
   readonly #resourceReads = new Map<string, Promise<SessionResourceProjection>>();
   readonly #deletingSessionIds = new Set<string>();
   readonly #submissions = new Map<string, Set<Promise<CommandReply>>>();
@@ -405,12 +408,23 @@ export class SessionService implements ConversationPort {
 
   private rememberHistory(id: string, version: string, projection: SessionProjection): void {
     const data = serialize(projection);
-    if (data.byteLength > historyByteLimit) return;
+    if (data.byteLength > historyByteBudget) return;
+    const dependent = !!projection.agentContext;
     this.dropHistory(id);
-    if (this.#historyViews.size >= historyLimit) this.dropHistory(this.#historyViews.keys().next().value!);
+    // The output rail reads multiple child histories. Do not let it evict the root
+    // the user is reading. Both entry count and total retained bytes remain bounded.
+    const entries = [...this.#historyViews];
+    let bytes = entries.reduce((sum, [, entry]) => sum + entry.data.byteLength, data.byteLength);
+    while (this.#historyViews.size >= historyLimit || bytes > historyByteBudget) {
+      const child = entries.findIndex(([, entry]) => entry.dependent);
+      if (dependent && child < 0) return;
+      const [removed] = entries.splice(Math.max(0, child), 1);
+      bytes -= removed![1].data.byteLength;
+      this.dropHistory(removed![0]);
+    }
     const timer = setTimeout(() => this.dropHistory(id), historyIdleMs);
     timer.unref();
-    this.#historyViews.set(id, { version, data, timer });
+    this.#historyViews.set(id, { version, data, dependent, timer });
   }
 
   private dropHistory(id: string): void {
@@ -536,9 +550,87 @@ export class SessionService implements ConversationPort {
 
   async read(input: unknown): Promise<ConversationReadResult> {
     const query = decodeConversationReadQuery(input);
+    if (query.view === 'overview') {
+      const root = await ownOverview(this.journal, query.sessionId, true);
+      const parent = await this.agentRelations(query.sessionId);
+      const owner = parent.agentContext?.ownerSessionId ?? query.sessionId;
+      const seen = new Set([query.sessionId]);
+      const childDeliverables: typeof root.deliverables = [];
+      let totalTokenUsage = root.totalTokenUsage;
+      const visit = async (parent: Omit<AgentManagementSnapshot, 'run'>, show: boolean) => {
+        for (const member of parent.agentChildren ?? []) {
+          const id = member.agentSessionId;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const started = !!parent.agentTasks?.some(task => task.agentSessionId === id && task.childRunId);
+          let child: Omit<AgentManagementSnapshot, 'run'>;
+          try { child = await this.agentRelations(id); }
+          catch (error) { if (!started && isMissingSession(error)) continue; throw error; }
+          if (child.agentContext?.ownerSessionId !== owner || child.agentContext?.parentSessionId !== parent.sessionId) throw new Error('agent_lineage_mismatch');
+          const summary = await ownOverview(this.journal, id, false);
+          totalTokenUsage = combineTokenUsage(totalTokenUsage, summary.totalTokenUsage);
+          if (show && started) childDeliverables.push(...summary.surfaced);
+          await visit(child, show && started);
+        }
+      };
+      await visit(parent, true);
+      const { surfaced: _surfaced, ...own } = root;
+      return { sessionId: root.sessionId, revision: root.revision, view: 'overview', items: [], nextBefore: null,
+        overview: { ...own, totalTokenUsage, childDeliverables, memberIds: [...seen].slice(1) } };
+    }
+    if (query.view === 'transcript') {
+      const saved = this.#transcriptTurns.find(t => {
+        const anchor = query.around ?? t.revision;
+        return t.sessionId === query.sessionId && anchor >= t.start && anchor <= t.end;
+      });
+      // One journal read checks its transaction's tip and supplies new facts on a change.
+      const facts = await this.journal.readTranscriptFacts(query.sessionId, query.around, saved?.tip);
+      let turn: TranscriptTurn;
+      if (facts) turn = projectTranscriptTurn(query.sessionId, facts);
+      else if (saved) turn = deserialize(saved.data) as TranscriptTurn;
+      else throw new Error('conversation_transcript_cut_missing');
+      const transcript = transcriptPageAt(turn, query.around);
+      if (facts && !this.#lifetime.signal.aborted) {
+        this.#transcriptTurns = this.#transcriptTurns.filter(t => t.sessionId !== facts.sessionId || t.tip === facts.tip);
+        if (transcript.start !== facts.start || transcript.end !== facts.end) {
+          const data = serialize(turn);
+          if (data.byteLength <= historyByteBudget) {
+            const neighbor = this.#transcriptTurns.find(t => (t.sessionId !== facts.sessionId || t.start !== facts.start)
+              && t.data.byteLength + data.byteLength <= historyByteBudget);
+            const entry = { sessionId: facts.sessionId, tip: facts.tip, start: facts.start, end: facts.end, revision: facts.revision, data };
+            this.#transcriptTurns = neighbor ? [entry, neighbor] : [entry];
+          }
+        }
+      } else if (saved && this.#transcriptTurns.includes(saved)) {
+        this.#transcriptTurns = [saved, ...this.#transcriptTurns.filter(t => t !== saved)];
+      }
+      if (transcript.current) {
+        const actor = this.#actors.get(query.sessionId);
+        if (actor) {
+          const running = await actor;
+          const live = await running.transcriptRun();
+          // Draft deltas can advance at the same journal cut. A later commit belongs to the next page read.
+          if (live.revision === transcript.revision) {
+            transcript.current = live;
+            running.readToolOutput(transcript.content.activities);
+          }
+        }
+        const decisions = await this.agentDecisionRoutes(transcript.current);
+        if (decisions.length) transcript.current.pendingAgentDecisions = decisions;
+      }
+      return { sessionId: query.sessionId, revision: transcript.revision, view: 'transcript', items: [], nextBefore: transcript.previous, transcript };
+    }
     if (query.view === 'readingWindow') {
-      // Includes live Actor state, archived child lineage and actionable permissions. The same
-      // versioned full projection can serve the subsequent restoration without another journal replay.
+      // Family identities survive edits. This cheap read can only REFUSE to serve rows:
+      // it never publishes history, grants access or substitutes for snapshot validation.
+      const family = await this.journal.readAgentLifecycle(query.sessionId);
+      if (family.sessionId !== query.sessionId || family.events.some(e => e.sessionId !== query.sessionId)) throw new Error('session_event_identity_mismatch');
+      const first = family.events[0];
+      if (first?.type !== 'session.created' || first.sequence !== 1) throw new Error('session_creation_event_missing');
+      if (family.revision !== query.throughSequence) throw new Error('conversation_read_revision_changed');
+      if (first.payload.agentContext || family.events.some(e => e.type === 'agent.task.created')) {
+        return requiresReadingProjection(query.sessionId, family.revision);
+      }
       const projection = await this.snapshot(query.sessionId);
       if (projection.revision !== query.throughSequence || (await this.readRunLifecycle(query.sessionId)).revision !== projection.revision) {
         throw new Error('conversation_read_revision_changed');
@@ -562,6 +654,7 @@ export class SessionService implements ConversationPort {
     for (const timer of this.#idleTimers.values()) clearTimeout(timer);
     this.#idleTimers.clear();
     this.#historyReads.clear();
+    this.#transcriptTurns = [];
     for (const id of this.#historyViews.keys()) this.dropHistory(id);
     this.#disposeTask = this.disposeActors(cancelActiveRuns);
     return this.#disposeTask;
@@ -600,7 +693,7 @@ export class SessionService implements ConversationPort {
   }
 
   /** Journal-only management reads do not activate Providers, tools or Actors. */
-  private async agentManagement(sessionId: string): Promise<AgentManagementSnapshot & RunLifecycleState> {
+  private async agentRelations(sessionId: string): Promise<Omit<AgentManagementSnapshot, 'run'>> {
     const read = await this.journal.readAgentLifecycle(sessionId);
     if (read.sessionId !== sessionId || read.events.some(event => event.sessionId !== sessionId)) {
       throw new Error('session_event_identity_mismatch');
@@ -608,8 +701,13 @@ export class SessionService implements ConversationPort {
     if (read.events[0]?.type !== 'session.created') throw new Error('session_creation_event_missing');
     let relations = { agentTasks: [], agentChildren: [] } as import('./agentLifecycle.js').AgentLifecycleState;
     for (const event of read.events) if (event.type !== 'session.created') relations = reduceAgentLifecycle(relations, event);
+    return { sessionId, agentContext: read.events[0].payload.agentContext, ...relations };
+  }
+
+  private async agentManagement(sessionId: string): Promise<AgentManagementSnapshot & RunLifecycleState> {
+    const relations = await this.agentRelations(sessionId);
     const { lifecycle } = await this.readRunLifecycle(sessionId);
-    return { sessionId, agentContext: read.events[0].payload.agentContext, ...relations, ...lifecycle };
+    return { ...relations, ...lifecycle };
   }
 
   /** Physical references only; durable ownership remains in the Session journal. */
@@ -688,13 +786,14 @@ export class SessionService implements ConversationPort {
 
   private async openActor(sessionId: string): Promise<SessionActor> {
     this.assertOpen();
-    const events = await readSessionEvents(this.journal, sessionId);
+    const events = await readSessionEvents(this.journal, sessionId, 'execution');
     this.assertOpen();
     const first = events[0];
     if (!first) throw new Error('session_not_found');
     if (first.type !== 'session.created') throw new Error('session_creation_event_missing');
     const profileId = first.payload.profileId;
-    const state = recoverSession(sessionId, events);
+    const opening = loopSnapshot(sessionId, events);
+    const state = opening.state;
     const mode = state.run && !['completed', 'failed', 'cancelled', 'indeterminate'].includes(state.run.status)
       ? state.runRuntimeSnapshots[state.run.runId]?.mode ?? 'full' : state.mode;
     const createComposition = async (mode: SessionMode): Promise<AgentComposition> => {
@@ -731,7 +830,7 @@ export class SessionService implements ConversationPort {
     };
     const composition = await createComposition(mode);
     const actor = new SessionActor(sessionId, this.journal, composition, {
-      initialEvents: events, mode, createComposition,
+      [recoveredOpening]: opening, mode, createComposition,
       onLoopFinished: () => this.scheduleIdleRetirement(sessionId),
       ...(this.observation ? { observation: {
         accept: input => this.observation!.accept({ ...input, parentSessionId: first.payload.agentContext?.parentSessionId ?? null }),

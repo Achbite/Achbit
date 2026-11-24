@@ -148,6 +148,14 @@ pub(crate) fn build_app(state: HostState) -> Router {
             get(local_agent_events_read),
         )
         .route(
+            "/api/local-agent/journal/sessions/:session_id/overview",
+            get(local_agent_overview_facts),
+        )
+        .route(
+            "/api/local-agent/journal/sessions/:session_id/transcript",
+            get(local_agent_transcript_facts),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id/message-history",
             get(local_agent_message_history),
         )

@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 mod reading_facts;
+mod transcript;
 pub(crate) use reading_facts::{ReadingFactsEncoder, READING_FACTS_V1};
 
 const SESSION_STORE_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/session.sql");
@@ -31,7 +32,7 @@ impl LocalAgentStoreError {
 #[derive(Clone)]
 pub(crate) struct LocalAgentJournal {
     connection_id: Arc<str>,
-    connection: Arc<Mutex<Connection>>,
+    pub(crate) reader: SessionCatalogReader,
     permissions: Arc<RwLock<KernelPermissionModel>>,
 }
 
@@ -44,13 +45,190 @@ impl SessionCatalogReader {
         Ok(Self(Arc::new(Mutex::new(open_session_store(path)?))))
     }
 
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, LocalAgentStoreError> {
+        self.0.lock().map_err(|_| {
+            LocalAgentStoreError::new("session_store_lock_failed", "Session Store 锁已损坏。")
+        })
+    }
+
+    /// Resource field projection only. Membership, grants and edited visibility
+    /// are reduced by Session using the same rules as its full projection.
+    pub(crate) fn read_resources(
+        &self,
+        session_id: &str,
+        record_ids: &[String],
+    ) -> Result<Value, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        let record_ids = serde_json::to_string(record_ids).map_err(|error| {
+            LocalAgentStoreError::new("session_resource_query_invalid", error.to_string())
+        })?;
+        let connection = self.lock()?;
+        let revision: i64 = connection
+            .query_row(
+                "SELECT (SELECT COALESCE(MAX(sequence),0) FROM session_events WHERE session_id=?1)
+                 FROM sessions WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
+        // Never materialize model context or unrelated tool outputs. Requested
+        // records and artifact sources stay intact for Session's shared decoder.
+        let mut statement = connection.prepare(
+            "SELECT sequence,event_type,run_id,call_id,
+             CASE
+               WHEN event_type='session.created' THEN json_object('workspaceBindings',json_extract(payload_json,'$.workspaceBindings'))
+               WHEN event_type='session.workspaces.updated' THEN json_object('baseBindings',json_extract(payload_json,'$.baseBindings'),
+                 'workspaceBindings',json_extract(payload_json,'$.workspaceBindings'))
+               WHEN event_type='session.directory-index.attached' THEN json_object('workspaceBinding',json_extract(payload_json,'$.workspaceBinding'))
+               WHEN event_type='session.directory-index.detached' THEN json_object('workspaceId',json_extract(payload_json,'$.workspaceId'))
+               WHEN event_type='message.committed' THEN json_object('filesystemReferences',coalesce(json_extract(payload_json,'$.filesystemReferences'),json('[]')))
+               WHEN event_type='approval.requested' THEN json_object('approvalId',json_extract(payload_json,'$.approvalId'),
+                 'preview',json_patch(json_object('summary',json_extract(payload_json,'$.preview.summary')),
+                   CASE WHEN json_type(payload_json,'$.preview.authorizationContext') IS NULL THEN '{}'
+                   ELSE json_object('authorizationContext',json_extract(payload_json,'$.preview.authorizationContext')) END))
+               WHEN event_type='approval.resolved' THEN json_patch(json_object('approvalId',json_extract(payload_json,'$.approvalId'),
+                 'decision',json_extract(payload_json,'$.decision'),'authorityId',json_extract(payload_json,'$.authorityId')),
+                   CASE WHEN json_type(payload_json,'$.authorizationScope') IS NULL THEN '{}'
+                   ELSE json_object('authorizationScope',json_extract(payload_json,'$.authorizationScope')) END)
+               WHEN event_type='approval.revoked' THEN json_object('authorityId',json_extract(payload_json,'$.authorityId'))
+               WHEN event_type='conversation.revised' THEN json_object('fromSequence',json_extract(payload_json,'$.fromSequence'),
+                 'throughSequence',json_extract(payload_json,'$.throughSequence'))
+               WHEN event_type='tool.completed' THEN
+                 CASE WHEN json_type(payload_json,'$.record.output.artifacts') IS NOT NULL
+                   OR json_extract(payload_json,'$.record.recordId') IN (SELECT value FROM json_each(?2)) THEN payload_json ELSE '{}' END
+               WHEN event_type='process.updated' THEN json_object('job',json_object('callId',json_extract(payload_json,'$.job.callId')))
+               ELSE '{}'
+             END
+             FROM session_events WHERE session_id=?1 AND sequence<=?3 AND
+               (event_type IN ('session.created','session.workspaces.updated','session.directory-index.attached','session.directory-index.detached',
+                 'message.committed','approval.requested','approval.resolved','approval.revoked','run.settled','conversation.revised',
+                 'tool.completed','tool.input-rejected','tool.not-executed')
+                OR (json_array_length(?2)>0 AND event_type='process.updated')) ORDER BY sequence",
+        ).map_err(sql_error("session_resource_read_prepare_failed"))?;
+        let rows = statement
+            .query_map(params![session_id, record_ids, revision], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql_error("session_resource_read_failed"))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (sequence, kind, run_id, call_id, payload) =
+                row.map_err(sql_error("session_resource_read_failed"))?;
+            let mut event = json!({"sessionId":session_id,"sequence":sequence,"type":kind});
+            event["payload"] = decode_json(&payload, "session_event_corrupt")?;
+            if let Some(run_id) = run_id {
+                event["runId"] = json!(run_id);
+            }
+            if let Some(call_id) = call_id {
+                event["callId"] = json!(call_id);
+            }
+            events.push(event);
+        }
+        let mut result = json!({"sessionId":session_id,"revision":revision});
+        result["events"] = Value::Array(events);
+        Ok(result)
+    }
+
+    pub(crate) fn read_agent_lifecycle(
+        &self,
+        session_id: &str,
+    ) -> Result<Value, LocalAgentStoreError> {
+        validate_id("sessionId", session_id)?;
+        let connection = self.lock()?;
+        let revision: i64 = connection
+            .query_row(
+                "SELECT (SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id=?1)
+                 FROM sessions WHERE session_id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error("session_read_failed"))?
+            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
+        // Extract before materialization: runtime snapshots, messages, tool results
+        // and task request/result bodies are never decoded or returned by this read path.
+        let mut statement = connection.prepare(
+            "SELECT sequence, event_type, run_id, call_id,
+             CASE
+               WHEN event_type='session.created' THEN
+                 CASE WHEN json_type(payload_json, '$.agentContext') IS NULL THEN '{}'
+                 ELSE json_object('agentContext', json_extract(payload_json, '$.agentContext')) END
+               WHEN event_type='agent.task.created' THEN json_remove(payload_json, '$.text')
+               WHEN event_type='agent.task.completed' THEN json_object('taskId', json_extract(payload_json, '$.taskId'),
+                 'result', json_object('outcome', json_extract(payload_json, '$.result.outcome')))
+               ELSE payload_json
+             END
+             FROM session_events WHERE session_id=?1 AND sequence<=?2
+             AND event_type IN ('session.created','agent.task.created','agent.task.started','agent.task.completed','agent.closed')
+             ORDER BY sequence ASC",
+        ).map_err(sql_error("session_agent_lifecycle_read_prepare_failed"))?;
+        let rows = statement
+            .query_map(params![session_id, revision], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql_error("session_agent_lifecycle_read_failed"))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (sequence, event_type, run_id, call_id, payload) =
+                row.map_err(sql_error("session_agent_lifecycle_read_failed"))?;
+            let mut event = json!({"sessionId":session_id, "sequence":sequence,
+                "type":event_type, "payload":decode_json(&payload, "session_event_corrupt")?});
+            if let Some(run_id) = run_id {
+                event["runId"] = json!(run_id);
+            }
+            if let Some(call_id) = call_id {
+                event["callId"] = json!(call_id);
+            }
+            events.push(event);
+        }
+        Ok(json!({"sessionId":session_id, "revision":revision, "events":events}))
+    }
+
+    pub(crate) fn is_descendant_session(
+        &self,
+        parent: &str,
+        target: &str,
+    ) -> Result<bool, LocalAgentStoreError> {
+        let connection = self.lock()?;
+        let mut current = target.to_owned();
+        let mut visited = std::collections::HashSet::new();
+        while let Some(context) = read_agent_context(&connection, &current)? {
+            if !visited.insert(current) {
+                return Err(LocalAgentStoreError::new(
+                    "agent_lineage_cycle",
+                    "Agent 父子关系存在循环。",
+                ));
+            }
+            current = context["parentSessionId"]
+                .as_str()
+                .expect("validated agent context")
+                .to_owned();
+            if current == parent {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn visible_sessions(
         &self,
         ids: &[&str],
     ) -> Result<Vec<String>, LocalAgentStoreError> {
-        let connection = self.0.lock().map_err(|_| {
-            LocalAgentStoreError::new("session_store_lock_failed", "Session Store 锁已损坏。")
-        })?;
+        let connection = self.lock()?;
         let requested = serde_json::to_string(ids).map_err(|e| {
             LocalAgentStoreError::new("session_creation_read_failed", e.to_string())
         })?;
@@ -188,6 +366,14 @@ pub(crate) struct RunProviderRuntime {
 impl LocalAgentJournal {
     pub(crate) fn open(path: &Path) -> Result<Self, LocalAgentStoreError> {
         let connection = open_session_store(path)?;
+        // Index the kind together with JSON validity. Old stores build this once on the
+        // execution thread; SQLite maintains it with each journal append afterwards.
+        connection
+            .execute_batch(
+                "CREATE INDEX IF NOT EXISTS session_events_permission_replay
+             ON session_events(CASE WHEN json_valid(payload_json) THEN event_type ELSE '' END)",
+            )
+            .map_err(sql_error("session_store_index_create_failed"))?;
         let mut permissions = KernelPermissionModel::default();
         {
             let observed_types = encode_json(
@@ -200,7 +386,11 @@ impl LocalAgentJournal {
             // result so the original decoder still reports startup failures.
             let mut statement = connection.prepare(
                 "SELECT session_id,event_type,payload_json,run_id,call_id,sequence FROM session_events
-                 WHERE event_type IN (SELECT value FROM json_each(?1)) OR NOT json_valid(payload_json)
+                 WHERE rowid IN (
+                     SELECT rowid FROM session_events
+                     WHERE (CASE WHEN json_valid(payload_json) THEN event_type ELSE '' END)
+                           IN (SELECT value FROM json_each(?1) UNION ALL SELECT '')
+                 )
                  ORDER BY rowid",
             ).map_err(sql_error("permission_model_restore_failed"))?;
             let rows = statement
@@ -231,7 +421,7 @@ impl LocalAgentJournal {
         permissions.finish_restore();
         Ok(Self {
             connection_id: random_id("journal")?.into(),
-            connection: Arc::new(Mutex::new(connection)),
+            reader: SessionCatalogReader(Arc::new(Mutex::new(connection))),
             permissions: Arc::new(RwLock::new(permissions)),
         })
     }
@@ -654,92 +844,6 @@ impl LocalAgentJournal {
         Ok(events)
     }
 
-    /// Resource field projection only. Membership, grants and edited visibility
-    /// are reduced by Session using the same rules as its full projection.
-    pub(crate) fn read_resources(
-        &self,
-        session_id: &str,
-        record_ids: &[String],
-    ) -> Result<Value, LocalAgentStoreError> {
-        validate_id("sessionId", session_id)?;
-        let record_ids = serde_json::to_string(record_ids).map_err(|error| {
-            LocalAgentStoreError::new("session_resource_query_invalid", error.to_string())
-        })?;
-        let connection = self.lock()?;
-        let revision: i64 = connection
-            .query_row(
-                "SELECT (SELECT COALESCE(MAX(sequence),0) FROM session_events WHERE session_id=?1)
-                 FROM sessions WHERE session_id=?1",
-                [session_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql_error("session_read_failed"))?
-            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
-        // Never materialize model context or unrelated tool outputs. Requested
-        // records and artifact sources stay intact for Session's shared decoder.
-        let mut statement = connection.prepare(
-            "SELECT sequence,event_type,run_id,call_id,
-             CASE
-               WHEN event_type='session.created' THEN json_object('workspaceBindings',json_extract(payload_json,'$.workspaceBindings'))
-               WHEN event_type='session.workspaces.updated' THEN json_object('baseBindings',json_extract(payload_json,'$.baseBindings'),
-                 'workspaceBindings',json_extract(payload_json,'$.workspaceBindings'))
-               WHEN event_type='session.directory-index.attached' THEN json_object('workspaceBinding',json_extract(payload_json,'$.workspaceBinding'))
-               WHEN event_type='session.directory-index.detached' THEN json_object('workspaceId',json_extract(payload_json,'$.workspaceId'))
-               WHEN event_type='message.committed' THEN json_object('filesystemReferences',coalesce(json_extract(payload_json,'$.filesystemReferences'),json('[]')))
-               WHEN event_type='approval.requested' THEN json_object('approvalId',json_extract(payload_json,'$.approvalId'),
-                 'preview',json_patch(json_object('summary',json_extract(payload_json,'$.preview.summary')),
-                   CASE WHEN json_type(payload_json,'$.preview.authorizationContext') IS NULL THEN '{}'
-                   ELSE json_object('authorizationContext',json_extract(payload_json,'$.preview.authorizationContext')) END))
-               WHEN event_type='approval.resolved' THEN json_patch(json_object('approvalId',json_extract(payload_json,'$.approvalId'),
-                 'decision',json_extract(payload_json,'$.decision'),'authorityId',json_extract(payload_json,'$.authorityId')),
-                   CASE WHEN json_type(payload_json,'$.authorizationScope') IS NULL THEN '{}'
-                   ELSE json_object('authorizationScope',json_extract(payload_json,'$.authorizationScope')) END)
-               WHEN event_type='approval.revoked' THEN json_object('authorityId',json_extract(payload_json,'$.authorityId'))
-               WHEN event_type='conversation.revised' THEN json_object('fromSequence',json_extract(payload_json,'$.fromSequence'),
-                 'throughSequence',json_extract(payload_json,'$.throughSequence'))
-               WHEN event_type='tool.completed' THEN
-                 CASE WHEN json_type(payload_json,'$.record.output.artifacts') IS NOT NULL
-                   OR json_extract(payload_json,'$.record.recordId') IN (SELECT value FROM json_each(?2)) THEN payload_json ELSE '{}' END
-               WHEN event_type='process.updated' THEN json_object('job',json_object('callId',json_extract(payload_json,'$.job.callId')))
-               ELSE '{}'
-             END
-             FROM session_events WHERE session_id=?1 AND sequence<=?3 AND
-               (event_type IN ('session.created','session.workspaces.updated','session.directory-index.attached','session.directory-index.detached',
-                 'message.committed','approval.requested','approval.resolved','approval.revoked','run.settled','conversation.revised',
-                 'tool.completed','tool.input-rejected','tool.not-executed')
-                OR (json_array_length(?2)>0 AND event_type='process.updated')) ORDER BY sequence",
-        ).map_err(sql_error("session_resource_read_prepare_failed"))?;
-        let rows = statement
-            .query_map(params![session_id, record_ids, revision], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })
-            .map_err(sql_error("session_resource_read_failed"))?;
-        let mut events = Vec::new();
-        for row in rows {
-            let (sequence, kind, run_id, call_id, payload) =
-                row.map_err(sql_error("session_resource_read_failed"))?;
-            let mut event = json!({"sessionId":session_id,"sequence":sequence,"type":kind});
-            event["payload"] = decode_json(&payload, "session_event_corrupt")?;
-            if let Some(run_id) = run_id {
-                event["runId"] = json!(run_id);
-            }
-            if let Some(call_id) = call_id {
-                event["callId"] = json!(call_id);
-            }
-            events.push(event);
-        }
-        let mut result = json!({"sessionId":session_id,"revision":revision});
-        result["events"] = Value::Array(events);
-        Ok(result)
-    }
-
     /// Capture only catalog identities whose previous owner had begun finishing.
     /// Called once while opening the Kernel under the exclusive configuration-root lease.
     pub(crate) fn unfinished_catalogs(
@@ -953,67 +1057,6 @@ impl LocalAgentJournal {
     }
 
     /// Project journal fields only. Agent relationship semantics belong to Session.
-    pub(crate) fn read_agent_lifecycle(
-        &self,
-        session_id: &str,
-    ) -> Result<Value, LocalAgentStoreError> {
-        validate_id("sessionId", session_id)?;
-        let connection = self.lock()?;
-        let revision: i64 = connection
-            .query_row(
-                "SELECT (SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id=?1)
-                 FROM sessions WHERE session_id=?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql_error("session_read_failed"))?
-            .ok_or_else(|| LocalAgentStoreError::new("session_not_found", "Session 不存在。"))?;
-        // Extract before materialization: runtime snapshots, messages, tool results
-        // and task request/result bodies are never decoded or returned by this read path.
-        let mut statement = connection.prepare(
-            "SELECT sequence, event_type, run_id, call_id,
-             CASE
-               WHEN event_type='session.created' THEN
-                 CASE WHEN json_type(payload_json, '$.agentContext') IS NULL THEN '{}'
-                 ELSE json_object('agentContext', json_extract(payload_json, '$.agentContext')) END
-               WHEN event_type='agent.task.created' THEN json_remove(payload_json, '$.text')
-               WHEN event_type='agent.task.completed' THEN json_object('taskId', json_extract(payload_json, '$.taskId'),
-                 'result', json_object('outcome', json_extract(payload_json, '$.result.outcome')))
-               ELSE payload_json
-             END
-             FROM session_events WHERE session_id=?1 AND sequence<=?2
-             AND event_type IN ('session.created','agent.task.created','agent.task.started','agent.task.completed','agent.closed')
-             ORDER BY sequence ASC",
-        ).map_err(sql_error("session_agent_lifecycle_read_prepare_failed"))?;
-        let rows = statement
-            .query_map(params![session_id, revision], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })
-            .map_err(sql_error("session_agent_lifecycle_read_failed"))?;
-        let mut events = Vec::new();
-        for row in rows {
-            let (sequence, event_type, run_id, call_id, payload) =
-                row.map_err(sql_error("session_agent_lifecycle_read_failed"))?;
-            let mut event = json!({"sessionId":session_id, "sequence":sequence,
-                "type":event_type, "payload":decode_json(&payload, "session_event_corrupt")?});
-            if let Some(run_id) = run_id {
-                event["runId"] = json!(run_id);
-            }
-            if let Some(call_id) = call_id {
-                event["callId"] = json!(call_id);
-            }
-            events.push(event);
-        }
-        Ok(json!({"sessionId":session_id, "revision":revision, "events":events}))
-    }
-
     pub(crate) fn read_command(
         &self,
         session_id: &str,
@@ -1125,31 +1168,6 @@ impl LocalAgentJournal {
             .map_err(sql_error("session_command_append_failed"))?;
         self.commit_with_permissions(transaction, &committed, "session_command_commit_failed")?;
         Ok(json!({"reply": admitted, "events": committed}))
-    }
-
-    pub(crate) fn is_descendant_session(
-        &self,
-        parent: &str,
-        target: &str,
-    ) -> Result<bool, LocalAgentStoreError> {
-        let mut current = target.to_owned();
-        let mut visited = std::collections::HashSet::new();
-        while let Some(context) = self.agent_context(&current)? {
-            if !visited.insert(current) {
-                return Err(LocalAgentStoreError::new(
-                    "agent_lineage_cycle",
-                    "Agent 父子关系存在循环。",
-                ));
-            }
-            current = context["parentSessionId"]
-                .as_str()
-                .expect("validated agent context")
-                .to_owned();
-            if current == parent {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     pub(crate) fn run_workspace_binding_ids(
@@ -1771,9 +1789,7 @@ impl LocalAgentJournal {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, LocalAgentStoreError> {
-        self.connection.lock().map_err(|_| {
-            LocalAgentStoreError::new("session_store_lock_failed", "Session Store 锁已损坏。")
-        })
+        self.reader.lock()
     }
 }
 
@@ -7437,7 +7453,7 @@ mod tests {
             "payload":{"taskId":"task:child","result":{"outcome":"completed","content":"Large result body","finalMessageId":"message:child"}}})).unwrap();
         journal.append(&json!({"type":"message.committed","sessionId":session_id,
             "payload":{"messageId":"message:owner","role":"user","content":"Large conversation body"}})).unwrap();
-        let read = journal.read_agent_lifecycle(session_id).unwrap();
+        let read = journal.reader.read_agent_lifecycle(session_id).unwrap();
         assert_eq!(read["revision"], 7);
         assert_eq!(read["events"].as_array().unwrap().len(), 4);
         assert_eq!(
@@ -7468,6 +7484,7 @@ mod tests {
         );
         assert_eq!(
             journal
+                .reader
                 .read_agent_lifecycle("session:missing")
                 .unwrap_err()
                 .code,
@@ -7593,7 +7610,7 @@ mod tests {
                     params![id,index as i64+2,format!("event:resource:{index}"),kind,payload.to_string()]).unwrap();
             }
         }
-        let roots = journal.read_resources(id, &[]).unwrap();
+        let roots = journal.reader.read_resources(id, &[]).unwrap();
         assert_eq!(roots["revision"], 6);
         assert_eq!(roots["events"].as_array().unwrap().len(), 5);
         assert_eq!(
@@ -7606,6 +7623,7 @@ mod tests {
             json!(["/reference"])
         );
         let selected = journal
+            .reader
             .read_resources(id, &["record:wanted".into()])
             .unwrap();
         assert_eq!(selected["events"][2]["payload"], wanted);
@@ -7626,7 +7644,7 @@ mod tests {
              VALUES (?1,7,'event:artifact','tool.completed','run:resource','call:artifact',?2,'now')",
             params![id,artifact.to_string()],
         ).unwrap();
-        let with_artifact = journal.read_resources(id, &[]).unwrap();
+        let with_artifact = journal.reader.read_resources(id, &[]).unwrap();
         assert_eq!(with_artifact["revision"], 7);
         assert_eq!(
             with_artifact["events"].as_array().unwrap().last().unwrap()["payload"],
@@ -7638,6 +7656,7 @@ mod tests {
             .contains("CONTEXT_BODY_NOT_NEEDED"));
         assert_eq!(
             journal
+                .reader
                 .read_resources("session:missing", &[])
                 .unwrap_err()
                 .code,
@@ -7655,7 +7674,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let error = journal.read_resources(id, &[]).unwrap_err();
+        let error = journal.reader.read_resources(id, &[]).unwrap_err();
         assert_eq!(error.code, "session_resource_read_failed");
         assert!(error.message.contains("malformed JSON"));
     }

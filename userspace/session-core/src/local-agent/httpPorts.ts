@@ -223,17 +223,18 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     yield* await this.eventBatch(sessionId, afterSequence, false);
   }
 
-  [projectionEventBatch](sessionId: string): Promise<SessionEvent[]> {
-    return this.eventBatch(sessionId, 0, true);
+  [projectionEventBatch](sessionId: string, independentlyOwned = false): Promise<SessionEvent[]> {
+    return this.eventBatch(sessionId, 0, true, independentlyOwned);
   }
 
-  private async eventBatch(sessionId: string, afterSequence: number, projectionOnly: boolean): Promise<SessionEvent[]> {
+  private async eventBatch(sessionId: string, afterSequence: number, projectionOnly: boolean, independentlyOwned = false): Promise<SessionEvent[]> {
     const path = `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`;
     const accept = projectionOnly ? `${READING_FACTS_V1}, application/json-seq` : 'application/json-seq';
     const response = await this.request(path, { headers: { accept } });
     const media = response.headers.get('content-type')?.split(';', 1)[0].trim();
     const result = projectionOnly && response.ok && media === READING_FACTS_V1
-      ? await readJournalSequence(response.body, true, sessionId) : await this.decodeEvents(response, path, projectionOnly);
+      ? await readJournalSequence(response.body, true, sessionId, independentlyOwned)
+      : await this.decodeEvents(response, path, projectionOnly && !independentlyOwned);
     if (projectionOnly) checkCompleteHistory(result.value, sessionId);
     this.publishPermissions(result.permissions);
     return result.value;
@@ -272,6 +273,27 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     return await this.json(
       `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/run-lifecycle?after=${afterSequence}`,
     );
+  }
+
+  async readOverviewFacts(sessionId: string): ReturnType<import('@achbit/protocol').JournalPort['readOverviewFacts']> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/overview`);
+  }
+
+  async readRunInput(sessionId: string, startSequence: number): ReturnType<import('@achbit/protocol').JournalPort['readRunInput']> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/overview?runInput=${startSequence}`);
+  }
+
+  async readWindowPartitions(sessionId: string, usageSequence: number): ReturnType<import('@achbit/protocol').JournalPort['readWindowPartitions']> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/overview?measurement=${usageSequence}`);
+  }
+
+  async readTranscriptFacts(sessionId: string, around?: number, knownTip?: string): Promise<import('@achbit/protocol').TranscriptFacts | null> {
+    const query = new URLSearchParams();
+    if (around !== undefined) query.set('around', String(around));
+    if (knownTip !== undefined) query.set('knownTip', knownTip);
+    const path = `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/transcript?${query}`;
+    const response = await this.request(path);
+    return response.status === 204 ? null : this.decodeJson(response, path);
   }
 
   async readAgentLifecycle(sessionId: string): Promise<import('@achbit/protocol').AgentLifecycleRead> {

@@ -50,12 +50,18 @@ impl HostRuntime {
     pub(crate) fn stop_admission(&self) {
         self.stopping.store(true, Ordering::SeqCst);
     }
-    pub(crate) fn admit(&self, internal: bool) -> Result<ExecutionServices, SessionServiceError> {
-        if !internal && self.stopping.load(Ordering::SeqCst) {
+    pub(crate) fn admit_read(&self) -> Result<(), SessionServiceError> {
+        if self.stopping.load(Ordering::SeqCst) {
             return Err(SessionServiceError::new(
                 "host_stopping",
                 "Host is shutting down.",
             ));
+        }
+        Ok(())
+    }
+    pub(crate) fn admit(&self, internal: bool) -> Result<ExecutionServices, SessionServiceError> {
+        if !internal {
+            self.admit_read()?;
         }
         self.current().unwrap_or_else(|| {
             Err(SessionServiceError::new(
