@@ -235,4 +235,4 @@ root.render(new URLSearchParams(location.search).has('fullSettings')
   ? <SettingsCenter apiStatus="connected" serverVersion="preview" />
   : <Fixture />);
 window.addEventListener('achbit:request-interface-reload', () => { calls.push('interface-reload'); });
-window.addEventListener('pagehide', () => { root.unmount(); void stopMonitor.then(stop => stop()); window.__TAURI__ = originalTauri; window.fetch = originalFetch; window.__ACHBIT_BROWSER_PREVIEW__ = originalPreview; }, { once: true });
+window.addEventListener('pagehide', () => { root.unmount(); stopMonitor(); window.__TAURI__ = originalTauri; window.fetch = originalFetch; window.__ACHBIT_BROWSER_PREVIEW__ = originalPreview; }, { once: true });

@@ -116,8 +116,9 @@ document.documentElement.dataset.shell = isTauriShell ? 'tauri' : 'browser';
 installNativeContextMenuGuard();
 
 async function mountProduct(rootEl: HTMLElement) {
+  // A restarted window consumes its saved views and drafts before React reads them.
   await restoreAfterProductUpdate();
-  const stopProductUpdates = await installProductUpdateMonitor();
+  const stopProductUpdates = installProductUpdateMonitor();
   const stopReloadShortcut = installInterfaceReloadShortcut();
   const stopUpdateMonitor = installInterfaceUpdateMonitor();
   const interaction = createInteractionFocus();
