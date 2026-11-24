@@ -233,7 +233,7 @@ const agentTurnPolicies = {
   models: 'tools',
   spawn: 'agents',
   assign: 'agents',
-  send: 'agents',
+  send: 'tools',
   compact: 'exclusive',
   wait: 'exclusive',
   cancel: 'exclusive',
@@ -294,7 +294,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
         requireIsolatedProcesses: { type: 'boolean', description: 'Run Shell commands through the selected isolation backend.' },
       } } } : {}),
     }, ['task', 'name', 'delivery', ...(options.helperMenu ? ['preset'] : [])])] : []),
-    ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
+    ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Independent sends and ordinary tools may share a turn. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
     ...(delegation && options.coordinator !== false && options.canSpawn !== false ? [
       operation('assign', 'Coordinator only: asynchronously assign a new task to an idle retained agent, preserving its Session, model and configuration. Use send for an active task.',
         { agentId: id, task: { ...id, description: 'Necessary context, scope and expected evidence for the new task.' } }, ['agentId', 'task']),
@@ -328,7 +328,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
           : 'Coordinate with available teammates, agree on shared interfaces and one writer per shared file. Return a final answer with evidence when the task is complete. Call action=models for contacts and operations.'
         : 'Proactively delegate useful independent work using available templates; keep short or tightly coupled work local. Supply necessary context, scope, file references and expected evidence. Coordinate one writer per shared file, wait at dependencies, and verify final results before integrating them. Call action=models for operations and configuration.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
-        action: { type: 'string', minLength: 1, description: 'models lists arguments and turn rules. Submit singleCall alone; keep agentCalls separate from ordinary tools.' },
+        action: { type: 'string', minLength: 1, description: 'models lists arguments and turn rules. models and send may accompany ordinary tools and at most one todo.update. Keep agentCalls separate from ordinary tools; submit singleCall alone.' },
       } },
     },
     {

@@ -6,7 +6,7 @@ import { SessionCapabilityManager } from '../dist/local-agent/sessionCapabilitie
 import { messagesFromJournal } from '../dist/local-agent/contextComposer.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import {
-  completedExecutionReply, emptyKernel, fakeRunPreparation, forwardingJournal, messageCommand, providerEvent, readEvents,
+  completedExecutionReply, emptyKernel, failedExecutionReply, fakeRunPreparation, forwardingJournal, messageCommand, providerEvent, readEvents,
   recordedSubagentSettings, waitUntil, workspaceBinding,
 } from './local-agent-fixtures.mjs';
 
@@ -293,7 +293,12 @@ for (const scenario of [
       for (const [id] of calls.slice(0, 3)) assert.match(results.find(message => message.providerCallId === id).content, /read evidence:/u);
       const discovery = results.find(message => message.providerCallId === 'discovery:models');
       if (scenario.catalogFailure) assert.match(discovery.content, /model_catalog_unavailable/u);
-      else assert.ok(JSON.parse(discovery.content).operations.some(operation => operation.action === 'models'));
+      else {
+        const policies = Object.fromEntries(JSON.parse(discovery.content).operations.map(op => [op.action,op.turn]));
+        assert.equal(policies.models,'independentTools'); assert.equal(policies.send,'independentTools');
+        assert.deepEqual(policies.spawn,{async:'agentCalls',wait:'singleCall'}); assert.equal(policies.assign,'agentCalls');
+        for (const exclusive of ['wait','cancel','compact','close']) assert.equal(policies[exclusive],'singleCall');
+      }
       assert.equal(results.some(message => message.content.includes('session_control_turn_conflict')), false);
       yield answer(request, 'All independent results were received.');
     }
@@ -319,6 +324,82 @@ for (const scenario of [
     assert.equal(facts[3].type, 'session.control.rejected');
     assert.equal(facts[3].payload.error.message, 'model_catalog_unavailable');
   }
+});
+
+// TCR: T-020/locality-fix/revision-window/self-measure-01/TCR-session-send.md.
+// These are running Session actors, not a mocked message port. Hold the recipients through
+// the mixed turn so neither an idle-member rejection nor a second assignment can fake delivery.
+for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','exclusive','agent-only','agent-only-with-read']) test(`send batch: ${kind}`, async t => {
+  const ownerId = `session:send-batch:${kind}`, unrelated = 'session:unrelated', release = Promise.withResolvers();
+  const denied = ['two-todos','exclusive','agent-only-with-read'].includes(kind), failing = kind === 'individual-failures';
+  const tool = {name:'fs.read',toolBindingRef:'binding:send-read',description:'Read a file.',origin:'coreBuiltin',availability:'callable',possibleEffects:['workspaceRead'],
+    inputSchema:{type:'object',additionalProperties:false,required:['path'],properties:{path:{type:'string'}}}};
+  const executions=[], entered=new Set(), targetIds=[], asked=[];
+  const fixture = await serviceFixture(t,ownerId,async function* ({sessionId,request,turn,service,signal}) {
+    if (sessionId !== ownerId) {
+      entered.add(sessionId);
+      await Promise.race([release.promise, new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}))]);
+      signal.throwIfAborted(); yield answer(request,'Done.');
+    } else if (turn === 1) {
+      for (const name of ['north','south']) yield call(request,`setup:${name}`,'agent',{action:'spawn',name,task:'Receive the note.',delivery:'async'});
+    } else if (turn === 2) {
+      await waitUntil(()=>entered.size===2,'both message recipients are running');
+      targetIds.push(...(await service.snapshot(ownerId)).agentTasks.map(task=>task.agentSessionId));
+      asked.push(['letter:north','agent',{action:'send',agentId:targetIds[0],text:'North note'}]);
+      if (kind !== 'agent-only') asked.push(['read:ok','fs_read',{path:'ok'}]);
+      asked.push(['letter:south','agent',{action:'send',agentId:failing?unrelated:targetIds[1],text:'South note'}]);
+      if (failing) asked.push(['read:fail','fs_read',{path:'fail'}],['letter:invalid','agent',{action:'send',text:'Missing destination'}]);
+      if (['mixed-todo','two-todos','agent-only-with-read'].includes(kind)) asked.push(['progress:a','todo_update',{items:[{status:'inProgress',text:'Inspect both notes.'}]}]);
+      if (kind === 'two-todos') asked.push(['progress:b','todo_update',{items:[]}]);
+      if (kind === 'exclusive') asked.push(['blocked:wait','agent',{action:'wait'}]);
+      if (kind.startsWith('agent-only')) asked.push(['spawn:one','agent',{action:'spawn',delivery:'async',name:'extra',task:'Report separately.'}]);
+      for (const [i,[id,name,input]] of asked.entries()) yield kind === 'mixed-todo' || failing
+        ? providerEvent(request.requestId,'output.item.completed',{outputIndex:i,item:{type:'function_call',call_id:id,name,arguments:JSON.stringify(input),status:'completed'}})
+        : call(request,id,name,input);
+    } else { release.resolve(); yield answer(request,'Finish without reissuing calls.'); }
+    yield done(request);
+  },{preparation:{tools:[tool]},kernel:()=>emptyKernel({async execute(request){
+    executions.push(request); return request.input.path==='fail'
+      ? failedExecutionReply(request,{}, {code:'file_read_failed',message:'Original file error'}) : completedExecutionReply(request,{content:'Read once.'});
+  }})});
+  try {
+    await fixture.service.createSession({sessionId:unrelated,displayTitle:'Unrelated',workspaceBindings:[]});
+    await fixture.service.submit(messageCommand(ownerId,'command:send-batch','Send two notes and inspect the file.'));
+    const state=await completed(fixture.service,ownerId), events=await readEvents(fixture.journal,ownerId);
+    const results=fixture.requests.get(ownerId)[2].messages.filter(m=>m.role==='tool' && asked.some(([id])=>id===m.providerCallId));
+    assert.deepEqual(results.map(m=>m.providerCallId).sort(),asked.map(([id])=>id).sort(),'one result per original call, with the original identity');
+    const result=id=>JSON.parse(results.find(m=>m.providerCallId===id).content);
+    if (denied) {
+      const sources=kind==='two-todos'?['progress:a','progress:b']:kind==='exclusive'?['blocked:wait']:['spawn:one'];
+      for (const [id] of asked) {
+        const e=result(id); assert.equal(e.executed,false); assert.equal(e.error.code,'session_control_turn_conflict');
+        assert.deepEqual(e.error.issues.map(i=>i.rule),[sources.includes(id)?'control_turn_source':'control_turn_peer']);
+        if (kind!=='two-todos') assert.doesNotMatch(e.error.message,/todo\.update/iu,'one or no Todo is not the incompatibility');
+      }
+    } else {
+      assert.deepEqual(result('letter:north'),{agentId:targetIds[0],delivered:true});
+      if (!failing) assert.deepEqual(result('letter:south'),{agentId:targetIds[1],delivered:true});
+      else { assert.match(results.find(m=>m.providerCallId==='letter:south').content,/agent_message_target_not_related/u);
+        assert.match(results.find(m=>m.providerCallId==='letter:invalid').content,/agentId/u);
+        assert.match(results.find(m=>m.providerCallId==='read:fail').content,/Original file error/u); }
+      if (kind!=='agent-only') assert.match(results.find(m=>m.providerCallId==='read:ok').content,/Read once/u);
+    }
+    assert.deepEqual(executions.map(r=>r.input.path),denied||kind==='agent-only'?[]:failing?['ok','fail']:['ok']);
+    assert.ok(executions.every(r=>r.sessionId===ownerId && r.runId===state.run.runId && r.toolBindingRef===tool.toolBindingRef));
+    assert.equal(events.filter(e=>e.type==='tool.completed').length,executions.length);
+    assert.equal(events.filter(e=>e.type==='todo.updated').length,+(kind==='mixed-todo'));
+    assert.equal(state.agentTasks.length,kind==='agent-only'?3:2,'only explicitly admitted spawns create tasks');
+    for(const [i,id] of targetIds.entries()) {
+      const received=(await readEvents(fixture.journal,id)).filter(e=>e.type==='agent.message.received');
+      assert.deepEqual(received.map(e=>[e.sessionId,e.runId,e.payload.sourceSessionId,e.payload.text]),denied||failing&&i===1?[]:
+        [[id,state.agentTasks.find(t=>t.agentSessionId===id).childRunId,ownerId,i?'South note':'North note']]);
+    }
+    assert.equal((await readEvents(fixture.journal,unrelated)).some(e=>e.type==='agent.message.received'||e.type==='run.started'),false);
+    const effects=events.filter(e=>['agent.control.completed','session.control.rejected','tool.requested','todo.updated'].includes(e.type)
+      && asked.some(([id])=>id===e.payload.providerCallId));
+    assert.deepEqual(effects.map(e=>e.payload.providerCallId),denied?[]:asked.map(([id])=>id),'settled facts preserve call order; incompatible batches did not dispatch');
+    assert.equal(new Set(effects.map(e=>e.callId)).size,effects.length);
+  } finally { release.resolve(); }
 });
 
 test('plugin activation mixed with discovery and a read rejects the entire batch with its conflict source', async t => {
@@ -389,7 +470,7 @@ test('control conflicts preserve each input, identify the source and only hold b
   // must not mask an independent malformed sibling or make its fields an execution.
   const batches = [
     [['describe', 'session', '{"action":"describe"}'], ...[0, 1, 2, 3].map(i => read(`held:${i}`))],
-    [['send', 'agent', '{"action":"send","agentId":"session:member","text":"Evidence"}'], read('held:send')],
+    [['assign', 'agent', '{"action":"assign","agentId":"session:member","task":"Review evidence"}'], read('held:assign')],
     [['typo', 'agent', '{"action":"statuz"}'], read('held:typo'), ['bad:json', 'fs_read', '{"path":']],
     [['fields', 'session', '{"action":"describe","timeoutSeconds":5}'], read('held:fields')],
   ];

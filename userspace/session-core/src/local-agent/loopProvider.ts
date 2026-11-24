@@ -465,7 +465,7 @@ async function consumeProviderOutput(
   const conflictSources = exclusiveCalls.length > 0 ? exclusiveCalls : incompatibleAgentCalls;
   const todoCalls = controlBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE);
   const conflict = conflictSources.length > 0 && inputBlocks.length > 1
-    ? { calls: conflictSources, reason: exclusiveCalls.length ? '独占控制必须单独提交' : '此 agent 操作只能与其他 agent 操作及最多一次 todo.update 同批，普通工具须另行提交' }
+    ? { calls: conflictSources, reason: exclusiveCalls.length ? '独占控制必须单独提交' : '此 agent 操作不能与普通工具同批，请将两者分开提交' }
     : todoCalls.length > 1
       ? { calls: todoCalls, reason: '每个 Provider turn 最多包含一个 todo.update，请合并步骤更新' }
       : undefined;
