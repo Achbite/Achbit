@@ -6,6 +6,5 @@ export const ConversationSessionScope = createContext<string | undefined>(undefi
 
 export function useConversationSessionId(): string | null {
   const scoped = useContext(ConversationSessionScope);
-  const selected = useLocalAgentStore(state => state.sessionId);
-  return scoped ?? selected;
+  return useLocalAgentStore(state => scoped ?? state.sessionId);
 }

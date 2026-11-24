@@ -477,6 +477,7 @@ test('late history restoration still receives the initial default model', async 
   const initializing=store.getState().initialize();
   await waitUntil(()=>store.getState().defaultProfileId==='profile:default','initial profiles');
   await store.getState().activateSession(sessionId);
+  assert.equal(store.getState().selectedProfileId,'profile:default', 'the first view already has the known default while plugin discovery is pending');
   release(); await initializing;
   assert.equal(store.getState().sessionId,sessionId);
   assert.equal(store.getState().selectedProfileId,'profile:default');
@@ -505,6 +506,7 @@ test('late history restoration cannot swallow the initial profile error', async 
   assert.equal(store.getState().sessionId,sessionId);
   assert.equal(store.getState().errorSource,'profiles');
   assert.equal(store.getState().error,'original profile failure');
+  assert.deepEqual(store.getState().profileRead, { phase: 'error', message: 'original profile failure' });
 });
 
 
@@ -539,7 +541,7 @@ test('catalog is selectable while execution waits; only the latest choice reads 
   assert.equal(store.getState().sessionId,ids[2]);
   assert.equal(store.getState().runtimeReady,false);
   assert.equal(store.getState().loading,true);
-  assert.deepEqual(reads,[]); assert.deepEqual(other,[]);
+  assert.deepEqual(reads,[]); assert.ok(other.every(path => path.endsWith('/profiles')), 'model discovery can already describe the selected conversation');
   let activated=false; void c.then(()=>{activated=true;});
   await Promise.resolve(); assert.equal(activated,false,'activation is not complete until its projection arrives');
   ready(); ready(); await Promise.all([initializing,c]);
@@ -612,12 +614,16 @@ test('replacing a pending or ready Host installs its own gate and preserves the 
   const startup=createHostCatalogStartup(ready=>{const promise=store.getState().initialize(ready);initializations.push(promise);return promise;});
   const ids=['session:host-a','session:host-b'];let catalogs=0,plugins=0,profiles=0;const reads=[];
   const journal = await historyJournal(ids);
+  const firstProfiles = Promise.withResolvers(); t.after(firstProfiles.resolve);
   installGuiFetch(t, async (url, init) => {
     if(url.pathname.endsWith('/catalog')){catalogs++;return Response.json({ok:true,data:{projects:[],sessions:ids.map(id=>({id,title:id,workspaceBindings:[],createdAt:'1',updatedAt:'1'}))}});}
-    if (url.pathname.endsWith('/read')) return historyResponse(journal, url, init);
-    if(url.pathname.endsWith('/projection')){const id=decodeURIComponent(url.pathname.split('/').at(-2));reads.push(id);return historyResponse(journal, url, init);}
+    if (url.pathname.endsWith('/projection')) { reads.push(decodeURIComponent(url.pathname.split('/').at(-2))); return historyResponse(journal,url,init); }
+
     if(url.pathname.endsWith('/plugins')){plugins++;return Response.json({ok:true,data:{revision:'catalog:ready',plugins:[]}});}
-    if(url.pathname.endsWith('/profiles')){profiles++;return Response.json({ok:true,data:{profiles:[]}});}
+    if(url.pathname.endsWith('/profiles')){
+      if (++profiles === 1) { await firstProfiles.promise; return Response.json({ok:false,message:'old_host_profile_error'}); }
+      return Response.json({ok:true,data:{profiles:[]}});
+    }
     if(url.pathname.endsWith('/statuses'))return Response.json({ok:true,data:[]});
     throw new Error(`Unexpected request: ${url.pathname}`);
   });
@@ -631,15 +637,17 @@ test('replacing a pending or ready Host installs its own gate and preserves the 
   assert.equal(store.getState().runtimeReady,false);
   const b=store.getState().activateSession(ids[1]);
   await startup.observe(status(102,true));await Promise.all([...initializations,b]);
-  assert.deepEqual(reads,[ids[1]]);
+  firstProfiles.resolve();await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(store.getState().error,null,'a late model read from the previous Host cannot overwrite this selection');
+  assert.equal(reads.at(-1),ids[1]); const firstHostReads=reads.length;
   assert.equal(store.getState().projection.sessionId,ids[1]);
   await startup.observe(status(103));
   assert.equal(store.getState().runtimeReady,false);
   assert.equal(store.getState().sessionId,ids[1]);
   await startup.observe(status(103,true));await Promise.all(initializations);
-  await waitUntil(()=>reads.length===2,'current view revalidated after replacement');
-  assert.equal(catalogs,3);assert.equal(plugins,2);assert.equal(profiles,2);
-  assert.deepEqual(reads,[ids[1],ids[1]]);
+  await waitUntil(()=>reads.length===firstHostReads+1,'current view revalidated after replacement');
+  assert.equal(catalogs,3);assert.equal(plugins,2);assert.equal(profiles,3,'one model catalog per published Host, even when execution has not started');
+  assert.deepEqual(reads.slice(-2),[ids[1],ids[1]]);
   assert.equal(store.getState().sessionId,ids[1]);
 });
 
@@ -678,4 +686,82 @@ test('a transport failure while starting can resume on the same live Host',async
   assert.equal(store.getState().runtimeReady,true);assert.equal(store.getState().error,null);
   await startup.observe({...pending,kernel:'ready',session:'ready'});
   assert.equal(initializations.length,2,'ordinary repeated readiness does not restart initialization');
+});
+
+test('a selected conversation opens with its model catalog and complete snapshot, independent of response order', async t => {
+  for (const delayed of ['profiles', 'projection']) await t.test(delayed, async t => {
+    const id = 'session:first-screen';
+    const journal = await historyJournal([id]);
+    const { promise: pending, resolve: release } = Promise.withResolvers();
+    t.after(release);
+    installGuiFetch(t, async (url, init) => {
+      if (url.pathname.endsWith('/catalog')) return Response.json({ ok: true, data: { projects: [],
+        sessions: [{ id, title: 'History', workspaceBindings: [], createdAt: '1', updatedAt: '1' }] } });
+      if (url.pathname.endsWith('/plugins')) return Response.json({ ok: true, data: { revision: 'plugins:test', plugins: [] } });
+      if (url.pathname.endsWith('/statuses')) return Response.json({ ok: true, data: [] });
+      if (url.pathname.endsWith('/profiles')) {
+        if (delayed === 'profiles') await pending;
+        return Response.json({ ok: true, data: { profiles: [] } });
+      }
+      if (delayed === 'projection' && url.pathname.endsWith('/projection')) await pending;
+      return historyResponse(journal, url, init);
+    });
+    const [{ useLocalAgentStore: store, conversationOpening }] = await loadGuiModules(t, ['/src/state/localAgentStore.ts']);
+    const initialization = store.getState().initialize();
+    await waitUntil(() => store.getState().catalogStatus === 'ready', 'catalog');
+    const opening = store.getState().activateSession(id);
+    await waitUntil(() => delayed === 'profiles' ? !!store.getState().projection : store.getState().profileRead.phase === 'ready', 'independent read');
+    assert.equal(conversationOpening(store.getState()).phase, 'loading');
+    release();
+    await opening;
+    await initialization;
+    await waitUntil(() => conversationOpening(store.getState()).phase === 'ready', 'whole first screen');
+    assert.deepEqual(store.getState().profiles, [], 'a successfully read empty catalog is authoritative');
+    assert.equal(store.getState().projection.todoList, null, 'a real empty task list opens normally');
+    assert.equal(store.getState().projection.sessionId, id);
+  });
+});
+
+test('a failed first-screen read exposes its original error and a new selection owns its data', async t => {
+  const [{ useLocalAgentStore: store, conversationOpening }] = await loadGuiModules(t, ['/src/state/localAgentStore.ts']);
+  const first = 'session:opening-a', second = 'session:opening-b';
+  const journal = await historyJournal([first, second]);
+  const stale = Promise.withResolvers(); t.after(stale.resolve);
+  let firstRead = true;
+  installGuiFetch(t, async (url, init) => {
+    if (url.pathname.endsWith('/statuses')) return Response.json({ ok: true, data: [] });
+    if (url.pathname.endsWith('/projection') && decodeURIComponent(url.pathname).includes(first)) {
+      if (firstRead) { firstRead = false; return Response.json({ ok: false, message: 'projection_source_failed' }); }
+      await stale.promise;
+    }
+    return historyResponse(journal, url, init);
+  });
+  store.setState({ profileRead: { phase: 'ready' }, catalog: { projects: [],
+    sessions: [first, second].map(id => ({ id, title: 'History', createdAt: '1', updatedAt: '1', workspaceBindings: [] })) } });
+  await store.getState().activateSession(first);
+  await waitUntil(() => store.getState().error, 'original failure');
+  assert.deepEqual(conversationOpening(store.getState()), { phase: 'error', message: 'conversation_request_failed:projection_source_failed' });
+  const retry = store.getState().activateSession(first);
+  assert.equal(conversationOpening(store.getState()).phase, 'loading');
+  await store.getState().activateSession(second);
+  await waitUntil(() => conversationOpening(store.getState()).phase === 'ready', 'new selection');
+  stale.resolve();
+  await retry;
+  assert.equal(store.getState().projection.sessionId, second);
+});
+
+test('an absent models payload remains a read error until the catalog really arrives', async t => {
+  let payload;
+  installGuiFetch(t, async url => {
+    assert.ok(url.pathname.endsWith('/profiles'));
+    return Response.json({ ok: true, data: payload });
+  });
+  const [{ useLocalAgentStore: store, conversationOpening }] = await loadGuiModules(t, ['/src/state/localAgentStore.ts']);
+  store.setState({ sessionId: 'session:opening', selectedProfileId: 'model:bound' });
+  await store.getState().refreshProfiles();
+  assert.deepEqual(conversationOpening(store.getState()), { phase: 'error', message: 'llm_profiles_unavailable' });
+  payload = { profiles: [] };
+  await store.getState().refreshProfiles();
+  assert.equal(store.getState().profileRead.phase, 'ready');
+  assert.equal(store.getState().selectedProfileId, 'model:bound', 'a truly missing binding keeps its identity');
 });

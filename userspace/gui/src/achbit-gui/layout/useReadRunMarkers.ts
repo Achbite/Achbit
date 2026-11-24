@@ -10,7 +10,7 @@ export function runReadMarker(run: ConversationSessionStatus['run']): string | n
 }
 
 /** Local reading state only; the Session run and its terminal status stay intact. */
-export function useReadRunMarkers(projection: SessionProjection | null, visible: boolean) {
+export function useReadRunMarkers(projection: Pick<SessionProjection, 'sessionId' | 'run'> | null, visible: boolean) {
   const [readRuns, setReadRuns] = useState<Record<string, string>>(readStoredRuns);
   const sessionId = projection?.sessionId;
   const marker = runReadMarker(projection?.run ?? null);

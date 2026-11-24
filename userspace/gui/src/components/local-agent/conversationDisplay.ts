@@ -1,8 +1,10 @@
 import type { SessionProjection } from '@achbit/protocol';
 
+export type DisplayFacts = Pick<SessionProjection, 'sessionId' | 'run' | 'timeline' | 'messages' | 'assistantDraft' | 'deliverables'>;
+
 /** UI delivery order only. Execution and artifact facts remain in Session. */
 export function conversationDisplay(
-  projection: SessionProjection | null,
+  projection: DisplayFacts | null,
   liveRuns: ReadonlySet<string>,
   displayed: ReadonlyMap<string, string>,
 ) {

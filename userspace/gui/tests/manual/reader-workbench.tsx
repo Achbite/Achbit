@@ -1,6 +1,7 @@
 import readme from '../../../../README.md?raw';
 import development from '../../../../docs/development.md?raw';
 import React from 'react';
+import { emptySessionState, projectSession } from '../../../session-core/src/local-agent/reducer';
 import { createRoot } from 'react-dom/client';
 import AchbitWorkbenchLayout from '../../src/achbit-gui/layout/AchbitWorkbenchLayout';
 import { ConversationDisplayProvider } from '../../src/components/local-agent/ConversationDisplayProvider';
@@ -117,7 +118,8 @@ host.openFile = async path => { opened.push(path); };
 saveViewState(sessionId + ':selection', file('Agent.md'));
 saveViewState(sessionId + ':visible', true);
 saveViewState('file-tree', false);
-useLocalAgentStore.setState({ sessionId, runtimeReady: true });
+useLocalAgentStore.setState({ sessionId, runtimeReady: true, profileRead: { phase: 'ready' },
+  projection: projectSession(emptySessionState(sessionId)) });
 Object.assign(window, { readerWorkbench: { open: (name: string) => requestReader(sessionId, file(name)), openDiff, progressiveSource, saves, copies, longCode, manyCodeLines, opened, folders, external, watching,
   changeDirectory() { treeGeneration++; directoryListeners.forEach(update => update()); },
   directoryMemory: () => ({ reads: treeResources.length, removed: treeResources.filter(item => item.generation < treeGeneration).length,

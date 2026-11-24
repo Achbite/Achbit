@@ -12,7 +12,7 @@ export function isRunningShell(a: ActivityProjection): boolean {
 
 export type BlockingShell = ActivityProjection & { callId: string; tool: NonNullable<ActivityProjection['tool']> & { process: ProcessActivityProjection } };
 
-export function blockingShells(projection: SessionProjection | null): BlockingShell[] {
+export function blockingShells(projection: Pick<SessionProjection, 'run' | 'activities'> | null): BlockingShell[] {
   if (projection?.run?.status !== 'running') return [];
   const runId = projection.run.runId;
   return projection.activities.filter((a): a is BlockingShell => a.runId === runId && !!a.callId

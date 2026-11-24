@@ -680,6 +680,7 @@
     "agent.composer.placeholder.task": "Describe a coding task…",
     "agent.composer.stopCurrentRun": "Stop current run",
     "agent.composer.sending": "Sending",
+    "agent.composer.accepted": "Accepted",
     "agent.composer.send": "Send",
     "agent.composer.stop": "Stop",
     "agent.composer.sendEnter": "Send (Enter)",

@@ -1,4 +1,4 @@
-import type { ActivityProjection, FileChangeProjection, SessionProjection } from '@achbit/protocol';
+import type { ActivityProjection, FileChangeProjection, TranscriptContent } from '@achbit/protocol';
 import { isBinaryFileChange, type readFileChange } from '../../services/localAgentApi';
 import type { ChangedRange, ChangePreview } from './fileChangeLineCounts';
 
@@ -7,9 +7,15 @@ export type ChangedFile = { key: string; path: string; changes: Change[] };
 export type ChangeCounts = { added: number; removed: number };
 
 /** Content statistics follow displayed rows, not the entire archived round. */
-export function displayedChangedFiles(files: readonly ChangedFile[], compact: boolean, expanded: boolean, showAll: boolean): readonly ChangedFile[] {
-  if (!compact && !expanded) return [];
-  return compact || showAll ? files : files.slice(0, 3);
+export function displayedChangedFiles(files: readonly ChangedFile[], open: boolean, showAll: boolean): readonly ChangedFile[] {
+  if (!open) return [];
+  return showAll ? files : files.slice(0, 3);
+}
+
+/** Net lines depend on immutable first-before/last-after receipts, not transient edits in between. */
+export function changeStatisticsRevision(file: ChangedFile): string {
+  const first = file.changes[0]!, last = file.changes.at(-1)!;
+  return JSON.stringify([first.recordId, first.index, last.recordId, last.index]);
 }
 export type FileChangeStatistics = { kind: 'text'; counts: ChangeCounts } | { kind: 'binary' };
 
@@ -24,7 +30,7 @@ export async function readChangeStatistics(
   signal.throwIfAborted();
   let cache = statisticsCaches.get(read);
   if (!cache) { cache = new Map(); statisticsCaches.set(read, cache); }
-  const key = JSON.stringify([sessionId, file.key, file.changes.map(({ recordId, index }) => [recordId, index])]);
+  const key = JSON.stringify([sessionId, file.key, changeStatisticsRevision(file)]);
   const cached = cache.get(key);
   if (cached) { cache.delete(key); cache.set(key, cached); return cached; }
   let result: FileChangeStatistics;
@@ -42,9 +48,9 @@ export async function readChangeStatistics(
 }
 
 // Session projections are immutable. Build all round memberships once per projection.
-const roundChangesCache = new WeakMap<SessionProjection, Map<string, ActivityProjection[]>>();
+const roundChangesCache = new WeakMap<TranscriptContent, Map<string, ActivityProjection[]>>();
 
-export function roundChangeActivities(projection: SessionProjection | null, runId: string): ActivityProjection[] {
+export function roundChangeActivities(projection: TranscriptContent | null, runId: string): ActivityProjection[] {
   if (!projection) return [];
   let rounds = roundChangesCache.get(projection);
   if (!rounds) {
@@ -69,16 +75,26 @@ export function roundChangeActivities(projection: SessionProjection | null, runI
   return rounds.get(runId) ?? [];
 }
 
-export function changedFiles(activities: ActivityProjection[]): ChangedFile[] {
+export type FileChangeActivity = Pick<ActivityProjection, 'activityId'> & { tool?: Pick<NonNullable<ActivityProjection['tool']>, 'recordId' | 'fileChanges'> };
+
+export function changedFiles(activities: FileChangeActivity[]): ChangedFile[] {
   const files = new Map<string, ChangedFile>();
+  // Most paths change once. Allocate a membership set only when a path recurs.
+  const seen = new Map<string, Set<string>>();
   for (const activity of activities) {
     const recordId = activity.tool?.recordId;
     if (!recordId) continue;
     for (const [index, change] of (activity.tool?.fileChanges ?? []).entries()) {
       const key = JSON.stringify([change.workspaceId, change.path]);
-      const file = files.get(key) ?? { key, path: change.path, changes: [] };
-      if (!file.changes.some((entry) => entry.recordId === recordId && entry.index === index)) file.changes.push({ change, recordId, index });
-      files.set(key, file);
+      const file = files.get(key);
+      if (!file) { files.set(key, { key, path: change.path, changes: [{ change, recordId, index }] }); continue; }
+      let pairs = seen.get(key);
+      if (!pairs) {
+        const first = file.changes[0]!;
+        pairs = new Set([JSON.stringify([first.recordId, first.index])]); seen.set(key, pairs);
+      }
+      const pair = JSON.stringify([recordId, index]);
+      if (!pairs.has(pair)) { pairs.add(pair); file.changes.push({ change, recordId, index }); }
     }
   }
   return [...files.values()];

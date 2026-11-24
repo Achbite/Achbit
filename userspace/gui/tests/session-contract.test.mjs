@@ -1,3 +1,4 @@
+import { installPageFixture, transcriptFixture, journalReading } from './gui-projection-contract.mjs';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
 import { readConversation as readJournalPage } from '../../session-core/dist/local-agent/conversationRead.js';
 import assert from 'node:assert/strict';
@@ -1762,10 +1763,11 @@ test('independent views own navigation, errors and pending commands separately',
 
 async function journalPageResponse(journal, sessionId, init) {
   assert.equal(init.method, 'POST');
-  return Response.json({ ok: true, data: await readJournalPage(journal, { ...JSON.parse(init.body), sessionId }) });
+  const q=JSON.parse(init.body);
+  return Response.json({ ok:true, data:['transcript','overview'].includes(q.view)?await journalReading(journal,sessionId,q):await readJournalPage(journal,{...q,sessionId}) });
 }
 
-test('opening a conversation shows committed excerpts before the timeline and clears them on navigation or failure', async (t) => {
+test('opening shows the canonical committed messages and clears the page on navigation or failure', async (t) => {
   const sessionId = 'session:opening-history';
   const journal = new InMemoryCommandJournal();
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -1779,52 +1781,24 @@ test('opening a conversation shows committed excerpts before the timeline and cl
   const projection = await waitForProjection(actor, value => value.run?.status === 'completed');
   const store = await loadGuiModelStore(t);
   store.setState({ catalog: { projects: [], sessions: [{ id: sessionId }] } });
-  let release, invalid = false, earlier = false, otherSession = false;
-  installGuiFetch(t, async (url, init) => {
-    if (url.pathname.endsWith('/read')) {
-      if (invalid) return Response.json({ ok: true, data: { sessionId, revision: 0, view: 'messages', items: [] } });
-      return journalPageResponse(journal, sessionId, init);
-    }
+  let response = projection;
+  let reads = 0;
+  installGuiFetch(t, async url => {
     assert.ok(url.pathname.endsWith('/projection'));
-    if (otherSession) return Response.json({ ok: true, data: { ...projection, sessionId: 'session:another' } });
-    if (earlier) {
-      earlier = false;
-      return Response.json({ ok: true, data: { ...projection, revision: projection.revision - 1 } });
-    }
-    await new Promise(resolve => { release = resolve; });
-    return Response.json({ ok: true, data: projection });
+    reads++;
+    return Response.json({ok:true,data:response});
   });
-  const opening = store.getState().activateSession(sessionId);
-  await waitUntil(() => release !== undefined);
-  const state = store.getState();
-  assert.deepEqual(state.openingHistory.messages.map(({role, content}) => [role, content]), [
-    ['user', 'A saved question.'], ['assistant', reply],
-  ]);
-  assert.equal(state.openingHistory.revision, projection.revision);
-  assert.equal(state.projection, null);
-  store.getState().startNewSession();
-  release();
-  await opening;
-  assert.equal(store.getState().openingHistory, null);
-  assert.equal(store.getState().sessionId, null);
-  invalid = true;
-  await store.getState().activateSession(sessionId);
-  assert.match(store.getState().error, /conversation_message_page_invalid/);
-  assert.equal(store.getState().openingHistory, null);
-  invalid = false;
-  otherSession = true;
-  await store.getState().activateSession(sessionId);
-  assert.match(store.getState().error, /session_projection_identity_mismatch/);
-  assert.equal(store.getState().projection, null);
-  otherSession = false;
-  earlier = true;
-  release = undefined;
-  const reopened = store.getState().activateSession(sessionId);
-  await waitUntil(() => release !== undefined);
-  release();
-  await reopened;
-  assert.deepEqual(store.getState().projection.messages, projection.messages);
-  assert.equal(store.getState().openingHistory, null);
+  for (const [data, error] of [[projection, null], [{...projection,messages:null}, /conversation_projection_invalid/],
+    [{...projection,sessionId:'another'}, /session_projection_identity_mismatch/], [projection, null]]) {
+    response = data;
+    store.getState().observeHistory('closed');
+    await store.getState().activateSession(sessionId);
+    if (error) { assert.match(store.getState().error,error); assert.equal(store.getState().projection,null); }
+    else assert.deepEqual(store.getState().projection.messages,projection.messages);
+    store.getState().startNewSession();
+    assert.equal(store.getState().projection,null);assert.equal(store.getState().sessionId,null);
+  }
+  assert.equal(reads,4);
 });
 
 test('cached navigation displays immediately and another session read cannot block it', async (t) => {
@@ -1850,10 +1824,9 @@ test('cached navigation displays immediately and another session read cannot blo
     if (url.pathname === '/api/conversation/statuses') return Response.json({ ok: true, data: Object.values(projections).map((p) => ({ sessionId: p.sessionId, revision: p.revision, run: p.run })) });
     const id = decodeURIComponent(url.pathname.split('/')[4]);
     assert.ok(projections[id]);
-    if (url.pathname.endsWith('/read')) return journalPageResponse(journal, id, init);
-    requests += 1;
-    if (id === slowId) { readSignal = init.signal; await slow; }
-    return Response.json({ ok: true, data: projections[id] });
+    assert.ok(url.pathname.endsWith('/projection'));
+    requests++; if(id===slowId){readSignal=init.signal;await slow;}
+    return Response.json({ok:true,data:projections[id]});
   });
   await store.getState().activateSession('session:one');
   const cached = store.getState().projection;
@@ -1909,12 +1882,13 @@ test('navigation refreshes the catalog for an externally created session and pre
   await store.getState().activateSession(sessionId);
   assert.equal(store.getState().projection.sessionId, sessionId);
   assert.equal(store.getState().loading, false);
-  assert.deepEqual(paths.map(path => path.split('/').at(-1)), ['catalog', 'read', 'projection']);
+  assert.equal(paths[0],'/api/conversation/catalog');assert.ok(paths.some(p=>p.endsWith('/projection')));assert.ok(!paths.some(p=>p.endsWith('/read')));
   failCatalog = true;
   await store.getState().activateSession('session:unavailable');
   assert.match(store.getState().error, /catalog read interrupted/);
   assert.equal(store.getState().sessionId, sessionId);
-  assert.deepEqual(store.getState().projection, projection);
+  assert.deepEqual(store.getState().projection.messages, projection.messages);
+  assert.equal(store.getState().projection.revision, projection.revision);
 });
 
 test('continuous conversation keeps every message anchor while mounting nearby content', async (t) => {
@@ -1937,8 +1911,8 @@ test('continuous conversation keeps every message anchor while mounting nearby c
   const previousSelf = globalThis.self;
   globalThis.self = {};
   t.after(() => { if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf; });
-  const [{ ConversationTranscript }, { ConversationLayoutCache }] = await loadGuiModules(t, [
-    '/src/components/local-agent/ConversationTranscript.tsx', '/src/components/local-agent/conversationVirtualizer.ts',
+  const [{ ConversationTranscript }, { ConversationLayoutCache }, { ConversationSessionScope }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ConversationTranscript.tsx', '/src/components/local-agent/conversationVirtualizer.ts', '/src/components/local-agent/ConversationSessionScope.tsx',
   ]);
   const props = {
     layoutCache: new ConversationLayoutCache(),
@@ -1955,16 +1929,16 @@ test('continuous conversation keeps every message anchor while mounting nearby c
   assert.deepEqual(anchors, rows.map((_, index) => `stream:${index}`), 'all earlier anchors remain in the continuous scroll surface in original order');
   assert.equal(transcript.includes('查看较早的内容'), false);
   assert.equal(transcript.includes('查看较新的内容'), false);
-  assert.ok((transcript.match(/data-virtual-rendered="false"/g) ?? []).length > 0, 'offscreen rows retain placeholders instead of mounting all content');
+  assert.equal((transcript.match(/data-virtual-rendered="true"/g) ?? []).length, rows.length, 'every committed message occupies its true position');
   assert.ok((transcript.match(/data-virtual-rendered="true"/g) ?? []).length > 0, 'the recent tail is mounted immediately');
-  const withChanges = renderToStaticMarkup(createElement(ConversationTranscript, { ...props,
+  const withChanges = renderToStaticMarkup(createElement(ConversationSessionScope.Provider, {value: props.projection.sessionId}, createElement(ConversationTranscript, { ...props,
     displaySettledRunIds: new Set(['run:long']), projection: { ...props.projection,
       fileChangeRounds: [{ runId: 'run:long', recordIds: ['record:old'] }],
       activities: [{ tool: { recordId: 'record:old', fileChanges: [{ workspaceId: 'workspace:session', path: 'old-history.txt',
         kind: 'create', before: { exists: false }, after: { exists: true, sizeBytes: 5 } }] } }],
-    } }));
-  assert.match(withChanges, /data-conversation-anchor="run:long:file-changes"[^>]*data-virtual-rendered="false"/);
-  assert.equal(withChanges.includes('old-history.txt'), false, 'historical file reads mount through the same virtual surface');
+    } })));
+  assert.match(withChanges, /data-conversation-anchor="run:long:file-changes"[^>]*data-virtual-rendered="true"/);
+  assert.ok(withChanges.includes('old-history.txt'), 'the public file name is available before change details are read');
   const withMembers = renderToStaticMarkup(createElement(ConversationTranscript, { ...props,
     displaySettledRunIds: new Set(['run:long']), projection: { ...props.projection,
       agentTasks: [{ taskId: 'task:old', agentSessionId: 'session:child', displayName: 'History member', parentRunId: 'run:long', status: 'completed' }],
@@ -2854,7 +2828,9 @@ test('polling and command reconciliation read draft snapshots in order at the sa
       assert.equal(init.signal, undefined, 'view navigation does not own command cancellation');
       commands += 1;
       if (commands === 2) await commandHeld;
-      return Response.json({ ok: true, data: { schemaVersion: 'achbit.command-reply.v3', sessionId, commandId: 'command:setting', status: 'accepted', revision: base.revision } });
+      const command = JSON.parse(init.body);
+      assert.equal(command.sessionId, sessionId);
+      return Response.json({ ok: true, data: { schemaVersion: 'achbit.command-reply.v3', sessionId, commandId: command.commandId, status: 'accepted', revision: base.revision } });
     }
     assert.ok(url.pathname.endsWith('/projection'));
     reads += 1;
@@ -3534,6 +3510,7 @@ test('GUI ordinary input queues during a decision without answering it or changi
   assert.equal(commands[0].runId, waiting.run.runId);
   assert.equal(commands[0].profileId, undefined);
   assert.equal(commands[0].reasoningEffortOverride, undefined);
+  await waitUntil(() => store.getState().projection.queuedInputs.some(input => input.status === 'queued'));
   const queued = store.getState().projection;
   assert.deepEqual(queued.pendingInteraction, waiting.pendingInteraction);
   assert.equal(queued.run.runId, waiting.run.runId);
@@ -5094,7 +5071,7 @@ test('queued tools and permission review never claim that execution has started'
 });
 
 test('failure details count retries within each model request and retain source links', async (t) => {
-  const [{ groupProviderAttempts, RunFailureDetails }, { SourceReferences }] = await loadGuiModules(t, [
+  const [{ groupProviderAttempts, RunFailureDetails, RunFailureDiagnostics }, { SourceReferences }] = await loadGuiModules(t, [
     '/src/components/local-agent/RunFailureDetails.tsx', '/src/components/local-agent/SourceReferences.tsx',
   ]);
   const attempts = Array.from({ length: 6 }, (_, index) => ({ providerRequestId: `request:${index}`, providerAttemptId: `attempt:${index}`,
@@ -5106,13 +5083,17 @@ test('failure details count retries within each model request and retain source 
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const error = { code: 'provider_failed', message: 'Original upstream message' };
-  const html = renderToStaticMarkup(createElement(RunFailureDetails, { language: 'zh-CN', onError() {}, projection: {
+  const projection = {
     sessionId: 'session:failure', run: { runId: 'run:test', status: 'failed' }, terminalError: error, providerAttempts: attempts,
     failureSnapshot: { revision: 1, phase: 'provider', error, providerRequestId: 'request:5', providerAttemptIds: attempts.map(a => a.providerAttemptId), toolRecordIds: [], pendingCallIds: [] },
-  } }));
-  assert.match(html, /6 个模型请求，发送 6 次/);
-  assert.match(html, /权限审查/);
-  assert.doesNotMatch(html, /重试 6 次/);
+  };
+  const html = renderToStaticMarkup(createElement(RunFailureDetails, { language: 'zh-CN', onError() {}, projection }));
+  assert.match(html, /Original upstream message/);
+  assert.doesNotMatch(html, /local-agent__continuity-details/);
+  const details = renderToStaticMarkup(createElement(RunFailureDiagnostics, { language: 'zh-CN', projection }));
+  assert.match(details, /6 个模型请求，发送 6 次/);
+  assert.match(details, /权限审查/);
+  assert.doesNotMatch(details, /重试 6 次/);
   for (const language of ['zh-CN', 'en-US']) {
     const cancelled = renderToStaticMarkup(createElement(RunFailureDetails, { language, onError() {}, projection: {
       sessionId: 'session:cancelled', run: { runId: 'run:cancelled', status: 'cancelled' }, terminalError: null,
@@ -5356,7 +5337,7 @@ test('A/B/C/D keep independent model, effort and subagents; only an explicit edi
   await create(a, initial); await create(b, off);
   t.after(() => Promise.all([...actors.values()].map(actor => actor.dispose())));
   const ok = data => Response.json({ ok: true, data });
-  installGuiFetch(t, async (url, init) => {
+  installPageFixture(t,async id=>actors.get(id).snapshot(), async (url, init) => {
     const path = decodeURIComponent(url.pathname);
     if (init.method === 'POST' || init.method === 'PATCH') writes.push([path, JSON.parse(init.body)]);
     if (path === '/api/user-settings') {
@@ -5442,7 +5423,7 @@ test('A/B/C/D keep independent model, effort and subagents; only an explicit edi
   const assertView = (target, id, model, effort, settings) => {
     const state = target.getState();
     assert.equal(state.sessionId, id); assert.equal(state.selectedProfileId, model); assert.equal(state.reasoningEffortOverride, effort);
-    assert.deepEqual(state.projection.subagentSettings, settings);
+    assert.deepEqual((state.projection ?? state.currentRun).subagentSettings, settings);
   };
   const n = writes.length;
   await store.getState().activateSession(a); await store.getState().refresh();
@@ -5467,17 +5448,17 @@ test('A/B/C/D keep independent model, effort and subagents; only an explicit edi
   assert.equal(await store.getState().selectModel('profile:deepseek', 'high'), true);
   const changed = { ...on, enabled: false, profileId: 'profile:chosen', reasoningEffort: 'low', allowFullConfiguration: true };
   failure = 'before'; await assert.rejects(store.getState().setSubagentSettings(changed), /fixture_session_write_failed/);
-  assert.deepEqual(store.getState().projection.subagentSettings, on); assert.deepEqual(saved, on);
+  assert.deepEqual((store.getState().projection ?? store.getState().currentRun).subagentSettings, on); assert.deepEqual(saved, on);
   failure = 'afterCommit'; const partial = { ...on, maxConcurrent: 5 };
   await assert.rejects(store.getState().setSubagentSettings(partial), /conversation_defaults_save_failed:Session saved; fixture defaults storage failed/);
-  assert.deepEqual(store.getState().projection.subagentSettings, partial, 'a failed default write cannot erase an acknowledged Session edit');
+  assert.deepEqual((store.getState().projection ?? store.getState().currentRun).subagentSettings, partial, 'a failed default write cannot erase an acknowledged Session edit');
   assert.deepEqual(saved, on, 'the failed new-chat default was neither inferred nor retried');
   assert.match(store.getState().error, /fixture defaults storage failed/);
   assert.equal(await store.getState().selectModel('profile:deepseek', 'max'), false);
   assertView(store, b, 'profile:deepseek', 'max', partial);
   assert.equal(profiles.find(item => item.id === 'profile:deepseek').reasoningEffort, 'high', 'failed defaults leave previous model preference intact');
   failure = 'read'; await assert.rejects(store.getState().setSubagentSettings(changed), /fixture_readback_failed/);
-  assert.deepEqual(store.getState().projection.subagentSettings, changed, 'an acknowledged Session edit survives a readback failure');
+  assert.deepEqual((store.getState().projection ?? store.getState().currentRun).subagentSettings, changed, 'an acknowledged Session edit survives a readback failure');
   assert.deepEqual(saved, changed); assert.match(useSettingsStore.getState().errorMessage, /fixture_readback_failed/);
   failure = ''; await useSettingsStore.getState().loadUserSettings();
   const reopened = createLocalAgentStore(); await prime(reopened); const afterEdits = writes.length;

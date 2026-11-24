@@ -10,7 +10,7 @@ import { usePaneWidth } from '../../components/shared/usePaneWidth';
 import { PANE_GEOMETRY } from '../../components/shared/paneGeometry';
 import { InterfaceLoadBoundary } from '../../components/shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
-import { CloseButton, ModalDialog, PanelHeader, ResizeHandle } from '../../ui-components';
+import { Button, CloseButton, ModalDialog, PanelHeader, ResizeHandle } from '../../ui-components';
 import { captureFocusReturn, focusOpenedPanel, returnInteractionFocus, useInteractionFocus, type FocusReturn } from '../../components/shared/interactionFocus';
 import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
@@ -19,7 +19,8 @@ import type {
 } from '@achbit/protocol';
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
-import { useLocalAgentStore } from '../../state/localAgentStore';
+import { conversationOpening, useLocalAgentStore } from '../../state/localAgentStore';
+import { useShallow } from 'zustand/react/shallow';
 import AchbitSidebar from './AchbitSidebar';
 import { ModelSettingsNavigation, type ModelSettingsTarget } from '../../components/settings-center/modelSettingsNavigation';
 import { useSettingsEscape } from '../../components/settings-center/useSettingsEscape';
@@ -80,6 +81,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     : 'comfortable';
   const showContextRail = effectiveSettings['gui.showContextRail'] !== false;
   const projection = useLocalAgentStore((state) => state.projection);
+  const currentRun = useLocalAgentStore(state => state.projection);
   const activeSessionId = useLocalAgentStore((state) => state.sessionId);
   const draftProjectId = useLocalAgentStore((state) => state.draftProjectId);
   const catalog = useLocalAgentStore((state) => state.catalog);
@@ -89,16 +91,16 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
   const sessionStatuses = useLocalAgentStore((state) => state.sessionStatuses);
   const statusError = useLocalAgentStore((state) => state.statusError);
   const sidebarStatuses = useMemo(() => {
-    if (!projection || (sessionStatuses[projection.sessionId]?.revision ?? -1) > projection.revision) {
+    if (!currentRun || (sessionStatuses[currentRun.sessionId]?.revision ?? -1) > currentRun.revision) {
       return sessionStatuses;
     }
     return {
       ...sessionStatuses,
-      [projection.sessionId]: {
-        sessionId: projection.sessionId, revision: projection.revision, run: projection.run,
+      [currentRun.sessionId]: {
+        sessionId: currentRun.sessionId, revision: currentRun.revision, run: currentRun.run,
       },
     };
-  }, [projection, sessionStatuses]);
+  }, [currentRun, sessionStatuses]);
   const completionNotification = useCompletionNotifications(catalog.sessions, language);
   const loading = useLocalAgentStore((state) => state.loading);
   const submitting = useLocalAgentStore((state) => state.submitting);
@@ -189,7 +191,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [settingsOpen]);
   const [sessionHeader, setSessionHeader] = useState<HTMLDivElement | null>(null);
-  const readRunMarkers = useReadRunMarkers(projection, !loading && !settingsOpen);
+  const readRunMarkers = useReadRunMarkers(currentRun, !loading && !settingsOpen);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<string[]>([]);
   const [projectCreateMenu, setProjectCreateMenu] = useState<{ x: number; y: number } | null>(null);
   const [projectMenu, setProjectMenu] = useState<PositionedMenu<ConversationProject> | null>(null);
@@ -204,6 +206,11 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
     loading: boolean;
     error: string | null;
   } | null>(null);
+  const opening = useLocalAgentStore(useShallow(conversationOpening));
+  const preparing = opening.phase !== 'ready';
+  const openingStatus = activeSessionId && !settingsOpen
+    ? <div className="achbit-gui-conversation-opening" role="status">{t(language, 'agent.chat.opening')}</div>
+    : null;
   const selectionBusy = submitting || catalogBusy || !!navigationPending;
   const runtimeReady = useLocalAgentStore(state => state.runtimeReady);
   const busy = !runtimeReady || loading || selectionBusy;
@@ -452,19 +459,23 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
         className={`achbit-gui-shell${showContextRail ? '' : ' achbit-gui-shell--no-context'}`}
         data-navigation-density={navigationDensity}
       >
-        <div className="achbit-gui-main-surfaces" inert={settingsOpen} aria-hidden={settingsOpen || undefined}>
-          <InterfaceLoadBoundary><Suspense fallback={<main className="achbit-gui-session-main" aria-busy="true" />}>
-          <AchbitConversationShell headerTarget={sessionHeader} onReaderLayoutChange={setReaderLayout} readerNavigation={{
-            request: readerRequest, onChange: setReaderLocation,
-            onTabClosed: (sessionId, tabId) => setHistory(current => forgetClosedBrowser(current, sessionId, tabId)),
-          }} />
-          </Suspense></InterfaceLoadBoundary>
-          {showContextRail && <InterfaceLoadBoundary><Suspense fallback={null}>
-            <AchbitTaskPanel language={language} projection={projection} />
-          </Suspense></InterfaceLoadBoundary>}
-        </div>
-        <UsageWidget readerLayout={readerLayout} hidden={settingsOpen} />
-        <ComputerTargetPreview readerLayout={readerLayout} language={language} hidden={settingsOpen} />
+        <InterfaceLoadBoundary>{opening.phase === 'error' ? (
+          !settingsOpen && <div className="achbit-gui-conversation-opening" role="alert">
+            {opening.message}
+            <Button size="compact" onClick={() => activeSessionId && void activateSession(activeSessionId)}>{t(language, 'achbitGui.statusAction.retry')}</Button>
+          </div>
+        ) : <Suspense fallback={openingStatus}>
+          {preparing && openingStatus}
+          <div className="achbit-gui-main-surfaces" inert={settingsOpen || preparing} aria-hidden={settingsOpen || preparing || undefined}>
+            <AchbitConversationShell headerTarget={sessionHeader} onReaderLayoutChange={setReaderLayout} readerNavigation={{
+              request: readerRequest, onChange: setReaderLocation,
+              onTabClosed: (sessionId, tabId) => setHistory(current => forgetClosedBrowser(current, sessionId, tabId)),
+            }} />
+            {showContextRail && <AchbitTaskPanel language={language} projection={projection} />}
+          </div>
+        </Suspense>}</InterfaceLoadBoundary>
+        <UsageWidget readerLayout={readerLayout} hidden={settingsOpen || preparing} />
+        <ComputerTargetPreview readerLayout={readerLayout} language={language} hidden={settingsOpen || preparing} />
       </div></>,
       }} />
 

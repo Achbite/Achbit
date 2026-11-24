@@ -1,10 +1,12 @@
+import { whenPreviewVisible } from './visibleImageReads';
+import { useLocalAgentStore } from '../../state/localAgentStore';
 import { ContentImageSave } from './ContentImageSave';
 import { elementImage, readContentImage } from './contentImage';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { useConversationHost } from './ConversationHost';
 import type { CodeSpan } from './codeLanguage';
-import { memo, useContext, useEffect, useRef, useState } from 'react';
+import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useConversationSessionId } from './ConversationSessionScope';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
@@ -51,39 +53,46 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
 export function ImageContent({ source, alt, width, height }: { source: string; alt: string; width?: number; height?: number }) {
   const uiLanguage = useUiLanguage();
   const { loadImage } = useConversationHost();
+  const slot = useRef<HTMLSpanElement>(null);
+  // Archived tool images are owned by the execution record store.
+  const available = useLocalAgentStore(state => !source.startsWith('artifact://') || state.runtimeReady);
   const sessionId = useConversationSessionId();
-  const [result, setResult] = useState<{ sessionId: string | null; source: string; url?: string; error?: string; decodeFailed?: boolean } | null>(null);
-  const current = result?.source === source && result.sessionId === sessionId ? result : null;
+  // Each request owns its result, even when A → B → A reuses the same source spelling.
+  const request = useMemo(() => ({ sessionId, source, loadImage }), [sessionId, source, loadImage]);
+  const [result, setResult] = useState<{ request: typeof request; url?: string; error?: string; decodeFailed?: boolean } | null>(null);
+  const current = result?.request === request ? result : null;
   const [decoded, setDecoded] = useState<typeof current>(null);
   const size = width && height && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? { width, height } : undefined;
   useEffect(() => {
+    if (!slot.current || !available) return;
     const controller = new AbortController();
     let release: (() => void) | undefined;
-    void loadImage(sessionId, source, controller.signal).then((image) => {
+    const unobserve = whenPreviewVisible(slot.current, () => request.loadImage(request.sessionId, request.source, controller.signal).then((image) => {
       if (controller.signal.aborted) { image.release?.(); return; }
       release = image.release;
-      setResult({ sessionId, source, url: image.url });
-    }).catch((error: unknown) => { if (!controller.signal.aborted) setResult({ sessionId, source, error: String(error) }); });
-    return () => { controller.abort(); release?.(); };
-  }, [loadImage, sessionId, source]);
+      setResult({ request, url: image.url });
+    }).catch((error: unknown) => { if (!controller.signal.aborted) setResult({ request, error: String(error) }); }));
+    return () => { unobserve(); controller.abort(); release?.(); };
+  }, [request, available]);
   // Resolving the Host URL, decoding and failure all occupy the same slot. Never size
   // it from a late naturalWidth/Height: that would move the text the reader already sees.
   const url = current?.url;
   const outcome = current?.error || current?.decodeFailed ? 'error' : current && decoded === current ? 'ready' : 'loading';
-  return <span className="conversation-image-review" data-reading-image={outcome} style={size ? {
+  return <span ref={slot} className="conversation-image-review" data-reading-image={outcome} style={size ? {
     width: `min(100%, ${Math.min(size.width, 640, 320 * size.width / size.height)}px)`, aspectRatio: `${size.width} / ${size.height}`,
   } : undefined}>
-    {url ? <>
-      <ImageReview key={url} source={url} alt={alt} intrinsicSize={size} onThumbnailReady={image => {
-        // The dialog contains a second image; only the thumbnail actually visible in this
-        // slot completes the conversation's first frame. Never reuse an older URL's result.
+    {url && <>
+      <ImageReview key={url} source={url} alt={alt} intrinsicSize={size} thumbnailPending={outcome !== 'ready'} onThumbnailReady={image => {
+        // A completed decode belongs to this visible thumbnail and source.
         const ready = () => { if (image.isConnected && image.naturalWidth > 0) setDecoded(current); };
         if (typeof image.decode === 'function') void image.decode().then(ready, () => {
-          if (image.isConnected) setResult(previous => previous === current ? { sessionId, source, decodeFailed: true } : previous);
+          if (image.isConnected) setResult(previous => previous === current ? { request, decodeFailed: true } : previous);
         }); else ready();
       }} onError={() => setResult(previous =>
-        previous === current ? { sessionId, source, decodeFailed: true } : previous)} />
+        previous === current ? { request, decodeFailed: true } : previous)} />
       <ContentImageSave disabled={outcome !== 'ready'} createImage={signal => readContentImage(url, alt || 'image', signal)} />
-    </> : <span role="status">{current ? `${alt} · ${current.decodeFailed ? t(uiLanguage, 'content.image.decodeError') : current.error}` : t(uiLanguage, 'content.image.loading')}</span>}
+    </>}
+    {outcome !== 'ready' && <span role="status">{outcome === 'loading' ? t(uiLanguage, 'content.image.loading')
+      : `${alt} · ${current?.decodeFailed ? t(uiLanguage, 'content.image.decodeError') : current?.error}`}</span>}
   </span>;
 }

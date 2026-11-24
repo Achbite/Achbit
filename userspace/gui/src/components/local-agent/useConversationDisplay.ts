@@ -1,9 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
-import type { SessionProjection } from '@achbit/protocol';
+import type { DisplayFacts } from './conversationDisplay';
 import { conversationDisplay } from './conversationDisplay';
 
 /** Presentation acknowledgement only; Session still owns every run and message fact. */
-export function useConversationDisplay(projection: SessionProjection | null) {
+export function useConversationDisplay(projection: DisplayFacts | null) {
   const [, revise] = useState(0);
   const state = useRef({ sessionId: projection?.sessionId, liveRuns: new Set<string>(), displayed: new Map<string, string>() });
   if (state.current.sessionId !== projection?.sessionId) state.current = { sessionId: projection?.sessionId, liveRuns: new Set(), displayed: new Map() };

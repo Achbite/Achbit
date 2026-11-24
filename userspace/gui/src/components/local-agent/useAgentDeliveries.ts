@@ -1,44 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
-import { watchConversationEvents } from '../../services/conversationEvents';
 import type { ArtifactProjection, SessionProjection } from '@achbit/protocol';
-import { getLocalAgentProjection } from '../../services/localAgentApi';
+import { readTranscriptOverview } from '../../services/localAgentApi';
 import { useLocalAgentStore } from '../../state/localAgentStore';
-import { conversationDisplay } from './conversationDisplay';
-
-// Retain only the derived list, not child projections, subscriptions or DOM.
-// Weak keys follow the six complete root views in this window. An event, gap
-// or replacement Host invalidates results even at an unchanged root revision.
-const recent = new WeakMap<SessionProjection, { observation: object; artifacts: ArtifactProjection[]; members: Set<string> }>();
-const observation = () => useLocalAgentStore.getState().historyObservation();
 
 export async function childDeliveries(root: SessionProjection, roots: readonly string[], signal: AbortSignal,
-  read = getLocalAgentProjection, currentObservation = observation, activeMembers?: Set<string>): Promise<ArtifactProjection[]> {
+  read = readTranscriptOverview, activeMembers?: Set<string>, refresh?: () => void): Promise<ArtifactProjection[]> {
   signal.throwIfAborted();
-  const stamp = currentObservation(), held = recent.get(root);
-  if (held && stamp === held.observation) {
-    if (activeMembers) for (const id of held.members) activeMembers.add(id);
-    return held.artifacts;
-  }
-  const visited = new Set([root.sessionId]), artifacts: ArtifactProjection[] = [];
-  const visit = async (id: string) => {
+  const index = useLocalAgentStore.getState().childOutputs;
+  const held = index.get(root, activeMembers);
+  if (held) return held;
+  // A grandchild can publish during the first read, before its identity is known to the rail.
+  const changes = new Set<string | null>();
+  const stop = index.subscribe(id => { changes.add(id); });
+  try {
+    const summary = await read(root.sessionId, signal);
     signal.throwIfAborted();
-    if (visited.has(id)) return;
-    visited.add(id);
-    activeMembers?.add(id);
-    const child = await read(id, signal);
-    signal.throwIfAborted();
-    artifacts.push(...conversationDisplay(child, new Set(), new Map()).artifacts);
-    const started = new Set(child.agentTasks?.filter(task => task.childRunId).map(task => task.agentSessionId));
-    for (const member of child.agentChildren ?? []) if (started.has(member.agentSessionId)) await visit(member.agentSessionId);
-  };
-  // The rail must not saturate transport with every descendant's full timeline.
-  for (const id of roots) await visit(id);
-  signal.throwIfAborted();
-  if (stamp && currentObservation() === stamp && visited.size <= 256 && artifacts.length <= 256
-    && !root.assistantDraft && (!root.run || root.run.status === 'completed') && !root.agentTasks?.some(t => t.status === 'running')) {
-    recent.set(root, { observation: stamp, artifacts, members: visited });
-  }
-  return artifacts;
+    const artifacts = summary.childDeliverables;
+    const visited = new Set([...roots, ...summary.memberIds]);
+    visited.delete(root.sessionId);
+    const missedChange = [...visited].some(id => changes.has(id) && !activeMembers?.has(id));
+    if (activeMembers) for (const id of visited) activeMembers.add(id);
+    index.save(root, visited, artifacts, changes);
+    if (missedChange) refresh?.();
+    return artifacts;
+  } finally { stop(); }
 }
 
 export function useAgentDeliveries(projection: SessionProjection | null) {
@@ -49,16 +34,13 @@ export function useAgentDeliveries(projection: SessionProjection | null) {
   const members = useRef(new Set<string>());
   const [revision, changed] = useState(0);
   const hasChildren = !!projection?.agentChildren?.length;
-  // Keep the active output rail current even when only a descendant changed. This
-  // subscribes to the same Host stream as the workbench, not another connection.
+  const index = useLocalAgentStore(state => state.childOutputs);
   useEffect(() => {
     if (!sessionId || !hasChildren) return;
-    const controller = new AbortController();
-    void watchConversationEvents(controller.signal, event => {
-      if (event.type !== 'ready' && members.current.has(event.sessionId)) changed(n => n + 1);
-    }).catch(() => { if (!controller.signal.aborted) changed(n => n + 1); }); // The workbench owns connection errors.
-    return () => controller.abort();
-  }, [sessionId, hasChildren]);
+    return index.subscribe(id => {
+      if (id === null ? index.connected : members.current.has(id)) changed(n => n + 1);
+    });
+  }, [index, sessionId, hasChildren]);
   const settledParent = projection?.run?.status === 'completed' ? projection : null;
   const [result, setResult] = useState<{ sessionId?: string; artifacts: ArtifactProjection[]; error?: string }>({ artifacts: [] });
   useEffect(() => {
@@ -67,14 +49,14 @@ export function useAgentDeliveries(projection: SessionProjection | null) {
       .filter(([, runId]) => runId).map(([id]) => id);
     if (!projection || !roots.length) { setResult({ sessionId, artifacts: [] }); return; }
     members.current = new Set(roots);
-    void childDeliveries(projection, roots, controller.signal, getLocalAgentProjection, observation, members.current).then(artifacts => {
+    void childDeliveries(projection, roots, controller.signal, readTranscriptOverview, members.current, () => changed(n => n + 1)).then(artifacts => {
       if (!controller.signal.aborted) setResult({ sessionId, artifacts });
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setResult({ sessionId, artifacts: [], error: error instanceof Error ? error.message : String(error) });
     });
     return () => controller.abort();
   }, [sessionId, signature, settledParent, revision]);
-  const held = projection && recent.get(projection);
-  if (held && held.observation === observation()) return { sessionId, artifacts: held.artifacts, error: undefined };
+  const held = projection && index.get(projection);
+  if (held) return { sessionId, artifacts: held, error: undefined };
   return result.sessionId === sessionId ? result : { artifacts: [] };
 }

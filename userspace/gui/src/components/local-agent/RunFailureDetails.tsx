@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { LocalAgentError, ProviderActivityProjection, ProviderAttemptFact, SessionProjection } from '@achbit/protocol';
+import type { LocalAgentError, ProviderActivityProjection, ProviderAttemptFact, TranscriptRun, SessionProjection } from '@achbit/protocol';
 import { providerNeedsContinuation, runFailureKind } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -45,7 +45,7 @@ function failureLabel(error: LocalAgentError | undefined, language: UiLanguage) 
   return labels[runFailureKind(error)][language === 'zh-CN' ? 0 : 1];
 }
 
-export function providerRetryAttempt(projection: SessionProjection, activity?: ProviderActivityProjection) {
+export function providerRetryAttempt(projection: TranscriptRun, activity?: ProviderActivityProjection) {
   const attempt = projection.providerAttempts?.at(-1);
   if (projection.run?.status !== 'running' || !attempt || attempt.runId !== projection.run.runId) return null;
   if (attempt.phase === 'retryWaiting') return attempt.attempt + 1;
@@ -54,7 +54,7 @@ export function providerRetryAttempt(projection: SessionProjection, activity?: P
 }
 
 export function ProviderRetryStatus({ projection, language, activity }: {
-  projection: SessionProjection; language: UiLanguage; activity?: ProviderActivityProjection;
+  projection: TranscriptRun; language: UiLanguage; activity?: ProviderActivityProjection;
 }) {
   const attempt = providerRetryAttempt(projection, activity);
   if (attempt === null) return null;
@@ -89,7 +89,7 @@ function providerPurposeLabel(purpose: ProviderAttemptFact['purpose'], language:
 }
 
 export function StoppedRunStatus({ projection, language, onError }: {
-  projection: SessionProjection; language: UiLanguage; onError(message: string | null): void;
+  projection: TranscriptRun; language: UiLanguage; onError(message: string | null): void;
 }) {
   const busy = useLocalAgentStore(state => state.submitting);
   if (projection.run?.status !== 'cancelled' || projection.terminalError || projection.failureSnapshot?.error) return null;
@@ -105,12 +105,12 @@ export function StoppedRunStatus({ projection, language, onError }: {
 }
 
 export function RunFailureDetails({ projection, language, onError }: {
-  projection: SessionProjection; language: UiLanguage; onError: (message: string | null) => void;
+  projection: TranscriptRun; language: UiLanguage; onError: (message: string | null) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const run = projection.run;
-  const snapshot = run && ['failed', 'cancelled', 'indeterminate', 'releaseFailed'].includes(run.status) ? projection.failureSnapshot : undefined;
+  const snapshot = terminalSnapshot(projection);
   const error = projection.terminalError ?? snapshot?.error;
   if (run?.status === 'cancelled' && !error) return null;
   const scheduled = run?.continuation;
@@ -133,10 +133,9 @@ export function RunFailureDetails({ projection, language, onError }: {
     : run.status === 'indeterminate' ? (zh ? '结果待确认' : 'Outcome needs verification')
     : run.status === 'cancelled' ? (zh ? '已停止' : 'Stopped')
     : failureLabel(error, language);
-  const requests = groupProviderAttempts((projection.providerAttempts ?? [])
-    .filter(attempt => snapshot?.providerAttemptIds.includes(attempt.providerAttemptId)));
   const providerContinuation = run.status === 'failed' && providerNeedsContinuation(error)
-    && !snapshot?.pendingCallIds.length && requests.some(request => request.purpose !== 'approvalReview' && request.providerRequestId === snapshot?.providerRequestId);
+    && !snapshot?.pendingCallIds.length && projection.providerAttempts?.some(attempt => attempt.purpose !== 'approvalReview'
+      && attempt.providerRequestId === snapshot?.providerRequestId && snapshot?.providerAttemptIds.includes(attempt.providerAttemptId));
   const deadline = error?.diagnostics?.providerError?.retryAt;
   const scheduledLabel = providerContinuation && deadline && deadline > Date.now()
     ? (zh ? `到 ${new Date(deadline).toLocaleTimeString(language)} 继续` : `Continue at ${new Date(deadline).toLocaleTimeString(language)}`) : null;
@@ -169,8 +168,26 @@ export function RunFailureDetails({ projection, language, onError }: {
       {switching && <Button size="compact" disabled={busy} onClick={() => void useLocalAgentStore.getState().cancelRun().catch(cause => onError(String(cause)))}>{zh ? '停止' : 'Stop'}</Button>}
       {(error || snapshot) && <Button size="compact" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{zh ? '详情' : 'Details'}</Button>}
     </div>
-    <div hidden={!expanded} className="local-agent__continuity-details">
-    {error && <><p>{error.message}</p><ErrorDetails error={error} language={language} /></>}
+    {error && <p className="local-agent__failure-reason" data-expanded={expanded || undefined}>{error.message}</p>}
+    {expanded && <div className="local-agent__continuity-details">
+      <RunFailureDiagnostics projection={projection} language={language} />
+    {canContinue && <Button size="compact" disabled={busy} onClick={() => void continueTask(true)}>{zh ? '新会话接手' : 'Continue in a new session'}</Button>}
+    </div>}
+  </article>;
+}
+
+function terminalSnapshot(projection: TranscriptRun) {
+  const status = projection.run?.status;
+  return status && ['failed', 'cancelled', 'indeterminate', 'releaseFailed'].includes(status) ? projection.failureSnapshot : undefined;
+}
+
+export function RunFailureDiagnostics({ projection, language }: { projection: TranscriptRun; language: UiLanguage }) {
+  const snapshot = terminalSnapshot(projection);
+  const error = projection.terminalError ?? snapshot?.error;
+  const requests = groupProviderAttempts((projection.providerAttempts ?? []).filter(attempt => snapshot?.providerAttemptIds.includes(attempt.providerAttemptId)));
+  const zh = language === 'zh-CN';
+  return <>
+    {error && <ErrorDetails error={error} language={language} />}
     {snapshot && <details><DisclosureSummary>{zh ? '失败时的状态' : 'State at failure'}</DisclosureSummary>
       <p>{zh ? `会话版本 ${snapshot.revision} · ${snapshot.phase}` : `Session revision ${snapshot.revision} · ${snapshot.phase}`}</p>
       <p>{zh ? `${requests.length} 个模型请求，发送 ${snapshot.providerAttemptIds.length} 次；已记录工具结果 ${snapshot.toolRecordIds.length} 项，待确认调用 ${snapshot.pendingCallIds.length} 项。` : `${requests.length} model requests, ${snapshot.providerAttemptIds.length} sends; ${snapshot.toolRecordIds.length} tool records, ${snapshot.pendingCallIds.length} pending calls.`}</p>
@@ -180,7 +197,5 @@ export function RunFailureDetails({ projection, language, onError }: {
         {request.attempts.map(attempt => <details key={attempt.providerAttemptId}><DisclosureSummary>{zh ? `第 ${attempt.attempt} 次发送` : `Send ${attempt.attempt}`} · {attempt.phase}</DisclosureSummary><code>{attempt.providerAttemptId}</code>{attempt.error && <ErrorDetails error={attempt.error} language={language} />}</details>)}
       </details>)}
     </details>}
-    {canContinue && <Button size="compact" disabled={busy} onClick={() => void continueTask(true)}>{zh ? '新会话接手' : 'Continue in a new session'}</Button>}
-    </div>
-  </article>;
+  </>;
 }

@@ -7,8 +7,8 @@ import type { UiEventInput } from './uiEvents';
  * and profile/locale refreshes are not new handoffs.
  */
 export function runHandoffNotice(
-  previous: SessionProjection | undefined,
-  projection: SessionProjection,
+  previous: Pick<SessionProjection, 'sessionId' | 'revision' | 'contextHandoff'> | undefined,
+  projection: Pick<SessionProjection, 'sessionId' | 'revision' | 'run' | 'contextHandoff'>,
   profileName: string | undefined,
   language: UiLanguage,
 ): UiEventInput | null {

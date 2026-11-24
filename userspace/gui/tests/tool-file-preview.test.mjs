@@ -22,7 +22,7 @@ test('file links show basenames while titles and Reader navigation retain exact 
     function Probe() { tree = Component(props); return tree; }
     const html = renderToStaticMarkup(createElement(ConversationSessionScope.Provider, { value: sessionId },
       createElement(ConversationVirtualRow, { rowKey: 'files', eager: true,
-        virtualizer: { layout: () => ({ state: new Map([['tool-group:expanded', expanded]]) }) },
+        virtualizer: { layout: () => ({ state: new Map([['tool-group:expanded', expanded], ...(Component===FileChanges && expanded ? [['file-changes:expanded',true]] : [])]) }) },
         children: () => createElement(Probe),
       })));
     return { html, tree };
@@ -42,8 +42,10 @@ test('file links show basenames while titles and Reader navigation retain exact 
     const panel = findReactElement(list, node => node.props.className === 'conversation-change-list');
     assert.equal(heading.props['aria-expanded'], !compact);
     assert.equal(panel.props.hidden, compact, 'visibility and aria-expanded share state, not retained CSS focus');
+    if (compact) assert.doesNotMatch(capture(FileChanges, { activities, compact }).html, /class="conversation-change-file"/, 'closed compact panel mounts no file links');
+    const displayed = compact ? capture(FileChanges, { activities, compact }, true).tree : list;
     paths.forEach((path, index) => {
-      const link = findReactElement(list, node => node.type === 'button' && node.props.title === path);
+      const link = findReactElement(displayed, node => node.type === 'button' && node.props.title === path);
       assert.equal(Children.toArray(link.props.children)[0].props.children, names[index]);
       link.props.onClick();
       const request = requests.at(-1);

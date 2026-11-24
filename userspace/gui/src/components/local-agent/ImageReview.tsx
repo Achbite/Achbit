@@ -8,20 +8,38 @@ import { bindViewerZoom, captureZoomAnchor, centeredZoom, restoreZoomAnchor, typ
 import './viewerDialog.css';
 import './imageReview.css';
 
-/** Reuse the loaded image; fitting and zooming are local presentation state. */
-export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, onThumbnailReady, intrinsicSize, triggerRef, hideTrigger, createImage }: {
+type ImageReviewProps = {
   createImage?(signal: AbortSignal): Promise<ContentImage>;
   triggerIdentity?: Readonly<Record<`data-ui-${string}`, string>>;
   source?: string; alt: string; children?: ReactNode; className?: string; imageClassName?: string;
   title?: string; onError?(): void; onThumbnailReady?(image: HTMLImageElement): void;
   intrinsicSize?: { width: number; height: number };
-  triggerRef?: Ref<HTMLButtonElement>; hideTrigger?: boolean;
-}) {
+  triggerRef?: Ref<HTMLButtonElement>; hideTrigger?: boolean; thumbnailPending?: boolean;
+};
+
+/** Keep the thumbnail and its native dialog paired. Mount the full viewer only while open. */
+export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, onThumbnailReady, intrinsicSize, triggerRef, hideTrigger, thumbnailPending = false, createImage }: ImageReviewProps) {
+  const language = useUiLanguage();
+  const [open, setOpen] = useState(false);
+  const frameless = !className && typeof navigator !== 'undefined' && /Win/.test(navigator.platform);
+  return <>
+    <button {...triggerIdentity} ref={triggerRef} hidden={hideTrigger} type="button" className={className || 'conversation-image-review__open'} disabled={!source || thumbnailPending}
+      data-frameless={frameless || undefined}
+      aria-label={`${t(language, 'content.image.expand')}${alt ? ` · ${alt}` : ''}`} title={title}
+      onClick={() => setOpen(true)}>
+      {children ?? <img className={imageClassName} src={source} alt={alt} width={intrinsicSize?.width} height={intrinsicSize?.height} loading="lazy" decoding="async" onLoad={onThumbnailReady ? event => onThumbnailReady(event.currentTarget) : undefined} onError={onError} />}
+    </button>
+    <ImageReviewDialog open={open && !!source} source={source} alt={alt} intrinsicSize={intrinsicSize}
+      onError={onError} createImage={createImage} onClose={() => setOpen(false)} />
+  </>;
+}
+
+export function ImageReviewDialog({ open, source, alt, intrinsicSize, createImage, onError, onClose }:
+  Pick<ImageReviewProps, 'source' | 'alt' | 'intrinsicSize' | 'createImage' | 'onError'> & { open: boolean; onClose(): void }) {
   const language = useUiLanguage();
   const dialog = useRef<HTMLDialogElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const fullImage = useRef<HTMLImageElement>(null);
-  const [open, setOpen] = useState(false);
   const [imageSize, setImageSize] = useState<{ source: string; width: number; height: number } | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState<number | null>(null);
@@ -36,6 +54,7 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
   useLayoutEffect(() => {
     if (!open) return;
     const container = viewport.current!;
+    showContentDialog(dialog.current!, container);
     const measure = () => setViewportSize({ width: container.clientWidth, height: container.clientHeight });
     measure();
     const observer = new ResizeObserver(measure);
@@ -43,8 +62,8 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
     return () => observer.disconnect();
   }, [open]);
   useLayoutEffect(() => {
-    if (scale !== null && open && fullImage.current) restoreZoomAnchor(viewport.current!, fullImage.current, anchor.current);
-  }, [open, scale, viewportSize.width, viewportSize.height, size, source]);
+    if (scale !== null && fullImage.current) restoreZoomAnchor(viewport.current!, fullImage.current, anchor.current);
+  }, [scale, viewportSize.width, viewportSize.height, size, source]);
   const changeZoom = (factor: number, origin?: ZoomPoint) => {
     if (fit === null || !fullImage.current) return;
     anchor.current = captureZoomAnchor(viewport.current!, fullImage.current, origin);
@@ -56,21 +75,9 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
     if (ready) return bindViewerZoom(viewport.current!, 'direct', gestureZoom);
   }, [ready, source]);
   const resetFit = () => { anchor.current = centeredZoom; setZoom(null); };
-  const show = () => {
-    if (dialog.current) showContentDialog(dialog.current, viewport.current);
-    resetFit();
-    setOpen(true);
-  };
-  const frameless = !className && typeof navigator !== 'undefined' && /Win/.test(navigator.platform);
-  return <>
-    <button {...triggerIdentity} ref={triggerRef} hidden={hideTrigger} type="button" className={className || 'conversation-image-review__open'} disabled={!source}
-      data-frameless={frameless || undefined}
-      aria-label={`${t(language, 'content.image.expand')}${alt ? ` · ${alt}` : ''}`} title={title}
-      onClick={show}>
-      {children ?? <img className={imageClassName} src={source} alt={alt} width={intrinsicSize?.width} height={intrinsicSize?.height} loading="lazy" onLoad={onThumbnailReady ? event => onThumbnailReady(event.currentTarget) : undefined} onError={onError} />}
-    </button>
+  return (
     <dialog ref={dialog} className="conversation-viewer-dialog conversation-image-review__dialog" aria-label={alt || t(language, 'content.image.expand')}
-      onClose={() => { setOpen(false); drag.current = null; }}
+      onClose={() => { drag.current = null; resetFit(); onClose(); }}
       onCancel={event => event.stopPropagation()}
       onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}
       onKeyDown={event => {
@@ -79,9 +86,9 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
         else if (event.key === '-') { event.preventDefault(); changeZoom(1 / 1.25); }
         else if (event.key === '0') { event.preventDefault(); resetFit(); }
       }}>
-      <div className="conversation-image-review__toolbar">
+      {open && source && <><div className="conversation-image-review__toolbar">
         <span className="conversation-image-review__title" title={alt}>{alt}</span>
-        <ContentImageSave disabled={!source} createImage={createImage ?? (signal => readContentImage(source!, alt || 'image', signal))} />
+        <ContentImageSave createImage={createImage ?? (signal => readContentImage(source, alt || 'image', signal))} />
         <div className="conversation-image-review__zoom" role="group" aria-label={t(language, 'content.image.zoom')}>
           <button type="button" aria-label={t(language, 'content.image.zoomOut')} title={t(language, 'content.image.zoomOut')}
             disabled={scale === null || scale <= minScale} onClick={() => changeZoom(1 / 1.25)}>−</button>
@@ -106,10 +113,10 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
           if (start) event.currentTarget.scrollTo(start.left + start.x - event.clientX, start.top + start.y - event.clientY);
         }}
         onLostPointerCapture={() => { drag.current = null; }}>
-        <div className="conversation-image-review__canvas">{source && <img ref={fullImage} src={source} alt={alt} onError={onError} draggable={false}
+        <div className="conversation-image-review__canvas"><img ref={fullImage} src={source} alt={alt} onError={onError} draggable={false}
           onLoad={event => setImageSize({ source, width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
-          style={size && scale !== null ? { width: size.width * scale, height: size.height * scale } : undefined} />}</div>
-      </div>
+          style={size && scale !== null ? { width: size.width * scale, height: size.height * scale } : undefined} /></div>
+      </div></>}
     </dialog>
-  </>;
+  );
 }

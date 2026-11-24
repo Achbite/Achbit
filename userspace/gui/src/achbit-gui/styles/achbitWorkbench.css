@@ -121,7 +121,15 @@
   background: transparent;
 }
 
-.achbit-gui-workbench--settings .achbit-gui-main-surfaces > * { visibility: hidden; }
+.achbit-gui-main-surfaces[aria-hidden="true"] > * { visibility: hidden; }
+.achbit-gui-conversation-opening {
+  grid-area: 1 / 1 / 2 / -1;
+  place-self: center;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  color: var(--ac-muted);
+}
 
 @media (max-width: 1120px) {
   .achbit-gui-workbench { --ac-header-context-width: auto; }

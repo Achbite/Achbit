@@ -44,7 +44,7 @@ for (const turns of [32,512,1024]) test(`opening ${turns} turns reads full immed
   await store.getState().refresh();const anchor=turns===512?{key:rowKey(p.timeline[turns]),offset:-23}:undefined;
   const first=store.getState().activateSession(p.sessionId,anchor);await started.wait;
   const same=store.getState().activateSession(p.sessionId);await tick();
-  assert.deepEqual(seen,['projection']);assert.equal(store.getState().projection,null);assert.equal(store.getState().openingReadingWindow,null);
+  assert.deepEqual(seen,['projection']);assert.equal(store.getState().projection,null);
   held.release();await Promise.all([first,same]); assert.deepEqual(store.getState().projection,p);assert.deepEqual(seen,['projection']);
 });
 
@@ -114,5 +114,5 @@ test('a rapid cold A/B/A joins only the correct in-flight full and never publish
   });
   await store.getState().refresh();const first=store.getState().activateSession(a.sessionId);await sa.wait;
   const other=store.getState().activateSession(b.sessionId);await sb.wait;const back=store.getState().activateSession(a.sessionId);
-  hb.release();ha.release();await Promise.all([first,other,back]);assert.deepEqual(seen,[a.sessionId,b.sessionId]);assert.deepEqual(store.getState().projection,a);assert.equal(store.getState().error,null);
+  hb.release();ha.release();await Promise.all([first,other,back]);assert.deepEqual(seen,[a.sessionId,b.sessionId,a.sessionId]);assert.deepEqual(store.getState().projection,a);assert.equal(store.getState().error,null);
 });

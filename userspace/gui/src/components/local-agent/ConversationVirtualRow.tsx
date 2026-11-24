@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationVirtualizer } from './conversationVirtualizer';
 
 const RowState = createContext<Map<string, unknown> | null>(null);
@@ -19,8 +19,10 @@ export function useConversationRowState<T>(key: string, initial: T): [T, React.D
   return [value, update];
 }
 
-export function ConversationVirtualRow({ rowKey, virtualizer, hidden = false, eager = false, live = false, children }: {
+export function ConversationVirtualRow({ rowKey, sequence, virtualizer, virtualize = true, hidden = false, eager = false, live = false, children }: {
   rowKey: string;
+  sequence?: number;
+  virtualize?: boolean;
   virtualizer: ConversationVirtualizer;
   hidden?: boolean;
   eager?: boolean;
@@ -29,12 +31,15 @@ export function ConversationVirtualRow({ rowKey, virtualizer, hidden = false, ea
 }) {
   const node = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(eager);
-  const layout = virtualizer.layout(rowKey);
-  const rendered = !hidden && (visible || live);
+  // A permanently rendered row keeps its own state even after its cache entry ages out.
+  // Virtual rows still read their latest measured height when they reappear.
+  const mountedLayout = useMemo(() => virtualize ? null : virtualizer.layout(rowKey), [virtualize, virtualizer, rowKey]);
+  const layout = mountedLayout ?? virtualizer.layout(rowKey);
+  const rendered = !hidden && (!virtualize || visible || live);
   const retain = useCallback(() => virtualizer.retainPreview(rowKey), [virtualizer, rowKey]);
-  useLayoutEffect(() => virtualizer.register(rowKey, node.current!, setVisible), [virtualizer, rowKey, hidden]);
-  useLayoutEffect(() => { virtualizer.measure(node.current!); }, [virtualizer, rowKey, rendered]);
-  return <div ref={node} className="conversation-virtual-row" data-conversation-anchor={rowKey}
+  useLayoutEffect(() => virtualize && !hidden ? virtualizer.register(rowKey, node.current!, setVisible) : undefined, [virtualize, virtualizer, rowKey, hidden]);
+  useLayoutEffect(() => { if (virtualize && !hidden) virtualizer.measure(node.current!); }, [virtualize, hidden, virtualizer, rowKey, rendered]);
+  return <div ref={node} className="conversation-virtual-row" data-conversation-anchor={rowKey} data-transcript-sequence={sequence}
     data-virtual-rendered={rendered} hidden={hidden}
     style={!hidden && !rendered ? { height: layout.height ?? 120 } : undefined}>
     {rendered && <RowState.Provider value={layout.state}><RetainPreview.Provider value={retain}>{children()}</RetainPreview.Provider></RowState.Provider>}

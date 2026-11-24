@@ -51,3 +51,57 @@ test('nested output retains follow while scrolling internally and releases it at
   viewport.preserveReadingPosition(); flush();
   assert.equal(body.scrollTop, 1400, 'only reaching the conversation tail resumes automatic following');
 });
+
+test('a short page keeps the displayed jump position through layout, and a new jump uses the requested offset', async t => {
+  const { useConversationViewport } = await loadGuiModule(t, '/src/components/local-agent/useConversationViewport.ts');
+  let viewport;
+  const saved = [];
+  function Probe() {
+    viewport = useConversationViewport({ sessionId: 'turn', loading: false, projection: { sessionId: 'turn' },
+      presentationLayoutKey: '', assistantDraftLayoutKey: '', timelineExtentKey: '',
+      rememberAnchor: (_id, anchor, sequence) => saved.push([anchor.offset, sequence]) });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  const body = { scrollTop: 0, scrollHeight: 900, clientHeight: 700, getBoundingClientRect: () => ({ top: 0 }) };
+  const node = { dataset: { conversationAnchor: 'message', transcriptSequence: '41' }, closest: () => node, getClientRects: () => [{}],
+    getBoundingClientRect: () => ({ top: 248 - body.scrollTop, bottom: 350 - body.scrollTop }) };
+  body.querySelectorAll = () => [node];
+  viewport.bodyRef.current = body;
+  viewport.scrollToAnchor('message');
+  assert.equal(node.getBoundingClientRect().top, 48);
+  assert.deepEqual(saved, [[48, 41]]);
+  body.scrollHeight = 1100;
+  viewport.preserveReadingPosition();
+  assert.equal(node.getBoundingClientRect().top, 48);
+  assert.deepEqual(saved, [[48, 41]]);
+  viewport.scrollToAnchor('message');
+  assert.equal(node.getBoundingClientRect().top, 12);
+  assert.deepEqual(saved, [[48, 41], [12, 41]]);
+});
+
+test('a native scrollbar drag releases a placed row and continues through local history', async t => {
+  const { useConversationViewport } = await loadGuiModule(t, '/src/components/local-agent/useConversationViewport.ts');
+  let viewport;
+  function Probe() {
+    viewport = useConversationViewport({ sessionId: 'drag', loading: false, projection: { sessionId: 'drag' },
+      presentationLayoutKey: '', assistantDraftLayoutKey: '', timelineExtentKey: '' });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  const body = { scrollTop: 0, scrollHeight: 1500, clientHeight: 500, clientWidth: 600, offsetWidth: 600,
+    getBoundingClientRect: () => ({ top: 0, left: 0 }) };
+  const node = { dataset: { conversationAnchor: 'addressed' }, closest: () => node, getClientRects: () => [{}],
+    getBoundingClientRect: () => ({ top: 420 - body.scrollTop, bottom: 480 - body.scrollTop }) };
+  body.querySelectorAll = () => [node];
+  viewport.bodyRef.current = body;
+  viewport.scrollToAnchor('addressed');
+  viewport.bodyHandlers.onPointerDown({ target: body, currentTarget: body, pointerType: 'mouse', button: 0 });
+  assert.equal(body.scrollTop, 408);
+  body.scrollTop = 1000;
+  viewport.bodyHandlers.onScroll({ target: body, currentTarget: body });
+  assert.equal(body.scrollTop, 1000, 'native drag reaches the true end');
+  body.scrollTop = 75;
+  viewport.bodyHandlers.onScroll({ target: body, currentTarget: body });
+  assert.equal(body.scrollTop, 75, 'earlier local history remains freely scrollable after addressing a row');
+});

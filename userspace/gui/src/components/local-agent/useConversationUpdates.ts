@@ -19,7 +19,8 @@ export function startConversationUpdates(refresh: () => Promise<void>, hostReady
   if (!hostReady) return () => {};
   const controller = new AbortController();
   void watch(null, controller.signal, refresh, (signal, receive) => watchConversationEvents(signal, event => {
-    observe?.(event.type === 'ready' ? 'ready' : 'change');
+    if (event.type === 'ready') observe?.('ready');
+    else observe?.('change', event.sessionId);
     receive(event);
   })).catch(error => {
     if (!controller.signal.aborted) { observe?.('closed'); onError(error instanceof Error ? error.message : String(error)); }

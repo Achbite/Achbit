@@ -235,10 +235,10 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       .catch(reason => { if (!ended) setError(String(reason)); });
     return () => { ended = true; unlisten?.(); };
   }, []);
-  const openWorkspaceResource = async (workspaceId: string, logicalPath: string, position?: SourcePosition) => {
+  const openWorkspaceResource = useCallback(async (workspaceId: string, logicalPath: string, position?: SourcePosition) => {
     if (!sessionId) return;
     await openBoundResource(host, sessionId, workspaceId, logicalPath, position, () => currentSession.current === sessionId, openTarget);
-  };
+  }, [host, sessionId, openTarget]);
   const removeTab = (id: string, selectRemaining = false) => {
     openLifetime.current = {};
     navigation?.onTabClosed(sessionId, id);

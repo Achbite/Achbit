@@ -88,35 +88,38 @@ test('the navigation reveals its current tick without moving the transcript or k
   const entries = Array.from({ length: 40 }, (_, i) => ({ key: `row:${i}`, rowIndex: i, label: `Message ${i}` }));
   const body = { scrollTop: 777 };
   const effects = [];
-  let tree;
+  let tree, selectedIndex = 39;
   function Probe() {
     const internals = React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
     const original = internals.H;
-    internals.H = { ...original, useLayoutEffect: effect => { effects.push(effect); } };
+    let state = 0;
+    internals.H = { ...original, useState: value => original.useState(state++ === 0 ? entries[selectedIndex]?.key : value),
+      useLayoutEffect: effect => { effects.push(effect); } };
     try {
       tree = ConversationNavigation({ sessionId: 'session:navigation', entries,
         viewport: { bodyRef: { current: body } }, onNavigate() {}, language: 'zh-CN' });
       return tree;
     } finally { internals.H = original; }
   }
-  renderToStaticMarkup(createElement(Probe));
-  const ticks = findReactElement(tree, node => node.props.className === 'conversation-navigation__ticks');
-  assert.ok(ticks.props.ref, 'the overflowing rail must keep its current tick visible');
-  let offset = 39 * 14, selected = true, writes = 0, scrollTop = 0;
-  const marker = {
-    getBoundingClientRect: () => ({ top: 100 + offset - scrollTop, bottom: 114 + offset - scrollTop }),
+  let writes = 0, scrollTop = 0;
+  const rail = {
+    clientHeight: 280,
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) { scrollTop = value; writes++; },
     focus() { assert.fail('revealing a position must not move keyboard focus'); },
     scrollIntoView() { assert.fail('do not scroll ancestor containers'); },
   };
-  const rail = {
-    clientHeight: 280, clientTop: 0,
-    get scrollTop() { return scrollTop; },
-    set scrollTop(value) { scrollTop = value; writes++; },
-    getBoundingClientRect: () => ({ top: 100 }),
-    querySelector(selector) { assert.equal(selector, '[aria-current="location"]'); return selected ? marker : null; },
-  };
-  ticks.props.ref.current = rail;
-  const cleanups = effects.map(effect => effect());
+  const cleanups = [];
+  function commit(index) {
+    cleanups.splice(0).forEach(cleanup => cleanup?.());
+    assert.ok(observers.every(observer => observer.disconnected), 'old subscriptions are released');
+    selectedIndex = index;
+    renderToStaticMarkup(createElement(Probe));
+    const ticks = findReactElement(tree, node => node.props.className === 'conversation-navigation__ticks');
+    ticks.props.ref.current = rail;
+    cleanups.push(...effects.splice(0).map(effect => effect()));
+  }
+  commit(39);
   t.after(() => cleanups.forEach(cleanup => cleanup?.()));
   assert.equal(scrollTop, 280, 'the last of 40 ticks is revealed at the lower edge');
   assert.equal(observers.length, 1);
@@ -127,21 +130,21 @@ test('the navigation reveals its current tick without moving the transcript or k
   rail.clientHeight = 140;
   resize();
   assert.equal(scrollTop, 420, 'a shorter viewport still shows the current tick');
-  offset = 2 * 14;
-  // A new active message runs the same production layout effect after commit.
-  cleanups.forEach(cleanup => cleanup?.());
-  assert.ok(observers.every(observer => observer.disconnected), 'old subscriptions are released');
-  cleanups.splice(0, cleanups.length, ...effects.map(effect => effect()));
-  assert.equal(scrollTop, 28, 'returning to an earlier message reveals its tick at the upper edge');
-  const currentResize = () => observers.at(-1).callback();
-  offset = 5 * 14;
+  commit(2);
+  assert.equal(scrollTop, 0, 'the first two messages stay visible above the third');
+  commit(9);
+  assert.equal(scrollTop, 63, 'a historical tick already at the lower edge reveals its later neighbors');
+  commit(5);
+  assert.equal(scrollTop, 7, 'a historical tick at the upper edge reveals its earlier neighbors');
+  commit(33);
+  assert.equal(scrollTop, 399, 'a distant historical tick shows context on both sides');
   const before = writes;
-  currentResize();
+  commit(31);
+  observers.at(-1).callback();
   assert.equal(writes, before, 'a visible middle tick keeps the rail position');
-  selected = false;
-  currentResize();
-  selected = true; rail.clientHeight = 0; offset = 39 * 14;
-  currentResize();
+  commit(undefined);
+  rail.clientHeight = 0;
+  commit(39);
   assert.equal(writes, before, 'missing ticks and hidden rails do not scroll');
   assert.equal(body.scrollTop, 777, 'only the navigation rail owns this scroll');
 });
@@ -189,7 +192,7 @@ test('a sparse rail preserves manual scrolling when the same tail is measured or
   commit(entries.at(-1).key, entries.map(e => ({ ...e })));
   assert.equal(rail.scrollTop, 3411, 'canonical entry objects do not reset the rail either');
   commit(entries[30].key, entries);
-  assert.equal(rail.scrollTop, 30 * 14, 'a genuinely new transcript location still reveals its tick');
+  assert.equal(rail.scrollTop, 247, 'a new transcript location shows the current tick and its neighbors');
 
   const tree = commit(entries[30].key, entries);
   const visible = findReactElement(tree, e => e.type === 'button' && e.props['data-navigation-index'] === 500);
@@ -199,7 +202,7 @@ test('a sparse rail preserves manual scrolling when the same tail is measured or
   commit(entries[500].key, entries);
   assert.equal(rail.scrollTop, 681, 'confirming a rail click must not undo browsing for the next click');
   commit(entries[30].key, entries);
-  assert.equal(rail.scrollTop, 30 * 14, 'a later independent location change still follows the transcript');
+  assert.equal(rail.scrollTop, 247, 'a later independent location change still follows the transcript');
 });
 
 test('short layouts and virtualized latest rows use the catalog end; hidden viewports do not', async t => {

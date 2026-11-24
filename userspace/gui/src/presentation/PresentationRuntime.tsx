@@ -1,7 +1,6 @@
 import React, { useCallback, useMemo } from 'react';
 import { projectCommittedText } from './projectCommittedText';
-import type { SessionProjection } from '@achbit/protocol';
-import type { OpeningReadingWindow } from '../state/recentSessionViews';
+import type { SessionProjection, TranscriptContent } from '@achbit/protocol';
 import { MarkdownContent } from '../components/local-agent/BufferedMarkdown';
 import { UiPluginSlotView, useDisplayTheme, useUiPlugins } from '../ui-plugins/UiPlugins';
 
@@ -12,9 +11,9 @@ export interface PresentedCommittedContent {
 
 // The store already owns the recent snapshots. Keep text indices only as long as
 // their exact snapshot is reachable; rendered/plugin elements remain local to the mount.
-const committedBySnapshot = new WeakMap<SessionProjection, ReturnType<typeof projectCommittedText>>();
+const committedBySnapshot = new WeakMap<TranscriptContent, ReturnType<typeof projectCommittedText>>();
 const emptyBlocks: ReturnType<typeof projectCommittedText> = new Map();
-function committedBlocks(projection: SessionProjection | null) {
+function committedBlocks(projection: TranscriptContent | null) {
   if (!projection) return emptyBlocks;
   let blocks = committedBySnapshot.get(projection);
   if (!blocks) {
@@ -24,14 +23,14 @@ function committedBlocks(projection: SessionProjection | null) {
   return blocks;
 }
 
-export function usePresentedCommittedContent(projection: SessionProjection | null, locale: string, reading?: OpeningReadingWindow | null): PresentedCommittedContent {
+export function usePresentedCommittedContent(projection: SessionProjection | null, locale: string, page?: TranscriptContent): PresentedCommittedContent {
   const theme = useDisplayTheme();
   const { entries } = useUiPlugins();
   // For a continuously displayed live run the committed prefix is journal-owned:
   // draft/tool deltas at the same revision must not rebuild it on every update.
   const live = projection?.assistantDraft || ['running', 'waiting', 'releasing'].includes(projection?.run?.status ?? '');
-  const blocks = useMemo(() => !projection && reading ? projectCommittedText({ messages: reading.rows.map(row => row.message), narratives: [] })
-    : committedBlocks(projection), [projection?.sessionId, projection?.revision, live ? null : projection, reading]);
+  const blocks = useMemo(() => committedBlocks(projection ?? page ?? null),
+    [page, projection?.sessionId, projection?.revision, live ? null : projection]);
   const rendered = useMemo(() => new Map<string, React.ReactNode>(), [blocks, locale, theme, entries]);
   const content = useCallback((blockId: string) => {
     if (!rendered.has(blockId)) {
@@ -48,5 +47,6 @@ export function usePresentedCommittedContent(projection: SessionProjection | nul
     return rendered.get(blockId);
   }, [blocks, rendered, locale, theme, entries]);
   const rendererKey = useMemo(() => JSON.stringify(entries.map(entry => [entry.path, entry.generation, entry.status])), [entries]);
-  return { layoutKey: `${projection?.sessionId ?? reading?.sessionId ?? 'empty'}:${projection?.revision ?? reading?.revision ?? 0}:${locale}:${theme}:${rendererKey}`, content };
+  const layoutKey = `${projection?.sessionId ?? page?.sessionId ?? 'empty'}:${projection?.revision ?? page?.revision ?? 0}:${locale}:${theme}:${rendererKey}`;
+  return useMemo(() => ({ layoutKey, content }), [layoutKey, content]);
 }

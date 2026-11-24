@@ -53,7 +53,8 @@ window.fetch = async (input, init) => {
   }
   throw new Error(`No fixture route: ${path}`);
 };
-useLocalAgentStore.setState({ catalogStatus: 'ready', catalog: { projects: [], sessions }, runtimeReady: true });
+useLocalAgentStore.setState({ catalogStatus: 'ready', catalog: { projects: [], sessions }, runtimeReady: true,
+  profileRead: { phase: 'ready' } });
 useAppStatusStore.getState().setApiStatus('connected'); installPaletteDefaults();
 function Fixture() {
   const [released, setReleased] = useState(false), [, update] = useState(0);

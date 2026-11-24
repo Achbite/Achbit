@@ -1,3 +1,4 @@
+import { reader, history } from './complete-reading-fixture.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
@@ -12,123 +13,179 @@ async function screen(t) {
   t.after(() => { for (const [i, key] of ['self', 'sessionStorage'].entries()) {
     if (previous[i] === undefined) delete globalThis[key]; else globalThis[key] = previous[i];
   } });
-  const [{ default: Panel }, { ConversationTranscript }, { ConversationDisplayProvider }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
-    '/src/components/local-agent/LocalAgentPanel.tsx', '/src/components/local-agent/ConversationTranscript.tsx',
+  const [{ default: Panel }, { ConversationBodies }, { ConversationDisplayProvider }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
+    '/src/components/local-agent/LocalAgentPanel.tsx', '/src/components/local-agent/ConversationBodies.tsx',
     '/src/components/local-agent/ConversationDisplayProvider.tsx', '/src/state/localAgentStore.ts']);
   return { store, render() {
     Object.assign(store.getInitialState(), store.getState());
-    let transcript, body;
     function Probe() {
-      const root = Panel({});
-      transcript = findReactElement(root, n => n.type === ConversationTranscript);
-      body = findReactElement(root, n => n.props.className === 'local-agent__body');
-      return null;
+      return findReactElement(Panel({}), n => n.type === ConversationBodies);
     }
-    renderToStaticMarkup(createElement(ConversationDisplayProvider, null, createElement(Probe)));
-    return { body: body.props, html: renderToStaticMarkup(transcript) };
+    const html = renderToStaticMarkup(createElement(ConversationDisplayProvider, null, createElement(Probe)));
+    assert.match(html, /class="local-agent__body"/);
+    return { html };
   } };
 }
 
-const page = (id, revision) => ({ sessionId: id, revision, view: 'messages', nextBefore: null,
-  items: [ { type: 'message.committed', messageId: 'm:q', role: 'user', content: 'Which folder?', truncated: false },
-    { type: 'message.committed', messageId: 'm:a', role: 'assistant', content: '**Folder A**', truncated: false },
-    { type: 'message.committed', messageId: 'm:partial', role: 'assistant', content: 'unconfirmed tail', truncated: true } ] });
 const ok = data => Response.json({ ok: true, data });
 const snapshot = (id, revision = 7) => ({ ...projectSession(emptySessionState(id)), revision });
 function held() { let release; const promise = new Promise(done => { release = done; }); return { promise, release }; }
 
-test('committed messages are readable without granting timeline actions while the full read is held', async t => {
-  const { store, render } = await screen(t), id = 'session:cold';
-  const full = held(), shown = held(); t.after(full.release);
-  installGuiFetch(t, async url => {
-    if (url.pathname.endsWith('/read')) return ok(page(id, 7));
-    assert.ok(url.pathname.endsWith('/projection')); await full.promise; return ok(snapshot(id));
-  });
-  store.setState({ catalog: { projects: [], sessions: [{ id, title: 'Cold history' }] } });
-  const stop = store.subscribe(s => { if (s.openingHistory) shown.release(); }); t.after(stop);
-  const open = store.getState().activateSession(id); await shown.promise;
-  assert.equal(store.getState().projection, null);
-  const { html } = render();
-  assert.match(html, /Which folder\?/); assert.match(html, /<strong>Folder A<\/strong>/);
-  assert.doesNotMatch(html, /unconfirmed tail|data-ui-action="message\.|<iframe|empty--welcome/);
-  full.release(); await open;
-  assert.equal(store.getState().projection.sessionId, id);
-  assert.doesNotMatch(render().html, /Which folder\?/);
+test('one complete read renders committed formatted text and supplies its controls',async t=>{
+  const {store,render}=await screen(t),p=history('session:formal',1);
+  p.messages[1].content='**Folder A**';const requests=[]; installGuiFetch(t,async url=>{ requests.push(url.pathname.split('/').at(-1)); return ok(p); });
+  store.setState({catalog:{projects:[],sessions:[{id:p.sessionId,createdAt:'date',title:'History'}]}});
+  await store.getState().activateSession(p.sessionId);const {html}=render();assert.match(html,/<strong>Folder A<\/strong>/);assert.deepEqual(store.getState().projection.messages,p.messages);
+  assert.deepEqual(requests,['projection']);
 });
-
-test('a decoded target does not make the entire reading surface inert while rows prepare', async t => {
-  const { store, render } = await screen(t), id = 'session:target';
-  store.setState({ sessionId: id, catalog: { projects: [], sessions: [{ id, title: 'Target' }] }, projection: snapshot(id) });
-  assert.notEqual(render().body.inert, true, 'formatting is owned by the row, not by the whole transcript');
+test('a known conversation leaves the reading surface interactive during independent layout preparation',async t=>{
+  const {store,render}=await screen(t),p=history('session:target');
+  store.setState({sessionId:p.sessionId,projection:p,loading:false});
+  const {html}=render();assert.match(html,/assistant 5/);assert.doesNotMatch(html,/inert=""|opening-preview/);
 });
-
-test('known revision: only a mounted opening reader requests messages, once; a held preview cannot delay the target or leak into another view', async t => {
-  const store = await loadGuiModelStore(t), a = 'session:a', b = 'session:b';
-  const projection = held(), preview = held(); t.after(() => { projection.release(); preview.release(); });
-  const requests = []; let previewSignal;
-  store.setState({ catalog: { projects: [], sessions: [a,b].map(id => ({ id })) },
-    sessionStatuses: Object.fromEntries([a,b].map(id => [id, { sessionId: id, revision: 7, run: null }])) });
-  installGuiFetch(t, async (url, init) => {
-    const id = decodeURIComponent(url.pathname.split('/').at(-2)); requests.push([id, url.pathname.split('/').at(-1)]);
-    if (url.pathname.endsWith('/read')) { previewSignal = init.signal; await preview.promise; return ok(page(id, 7)); }
-    if (id === a) await projection.promise;
-    return ok(snapshot(id));
-  });
-  const activation = store.getState().activateSession(a);
-  const p = store.getState().readOpeningMessages(a), same = store.getState().readOpeningMessages(a);
-  projection.release(); await activation;
-  assert.equal(store.getState().projection.sessionId, a); assert.equal(previewSignal.aborted, true);
-  await store.getState().activateSession(b);
-  preview.release(); await Promise.allSettled([p, same]);
-  assert.equal(store.getState().sessionId, b); assert.equal(store.getState().openingHistory, null);
-  assert.deepEqual(requests.filter(([,route]) => route === 'read'), [[a, 'read']]);
+test('two concurrent opens of the same identity share one complete read',async t=>{
+  const p=history('a'),held=Promise.withResolvers(),f=await reader(t,[p],()=>held.promise);
+  const a=f.open('a'),b=f.open('a');assert.equal(f.reads().length,1);held.resolve(p);await Promise.all([a,b]);assert.equal(f.store.getState().projection.sessionId,'a');
 });
-
-test('A → B → A with uninterrupted observation reuses the exact settled snapshot without any navigation requests; a gap or change invalidates that shortcut', async t => {
-  const store = await loadGuiModelStore(t), a = 'session:a', b = 'session:b'; let revision = 7;
-  const reads = [];
-  const status = () => [a,b].map(id => ({ sessionId: id, revision: id === a ? revision : 7, run: null }));
-  store.setState({ catalog: { projects: [], sessions: [a,b].map(id => ({ id })) },
-    sessionStatuses: Object.fromEntries(status().map(s => [s.sessionId, s])) });
-  installGuiFetch(t, async url => {
-    if (url.pathname.endsWith('/statuses')) { reads.push('statuses'); return ok(status()); }
-    const id = decodeURIComponent(url.pathname.split('/').at(-2)); reads.push(id);
-    assert.ok(url.pathname.endsWith('/projection')); return ok(snapshot(id, id === a ? revision : 7));
-  });
-  const { observeHistory, activateSession } = store.getState();
-  observeHistory('ready'); await activateSession(a); const original = store.getState().projection;
-  await activateSession(b);
-  const back = activateSession(a);
-  assert.equal(store.getState().projection, original, 'selection and text change together'); await back;
-  assert.deepEqual(reads, [a,b]);
-  await activateSession(b); revision++; observeHistory('change'); await activateSession(a);
-  assert.equal(store.getState().projection.revision, 8); assert.deepEqual(reads.slice(2), ['statuses', a]);
-  observeHistory('closed'); await activateSession(b); assert.equal(reads.at(-1), 'statuses');
+test('continuous observation reuses a settled snapshot and disconnection invalidates it',async t=>{
+  const p=history('a'),q=history('b'),f=await reader(t,[p,q]);await f.open('a');await f.open('b');await f.open('a');
+  assert.equal(f.reads().length,2);await f.open('b');f.store.getState().observeHistory('closed');await f.open('a');assert.equal(f.reads().length,3);
 });
-
-test('an independently confirmed status releases an unknown-revision open while the messages page is pending', async t => {
-  const store = await loadGuiModelStore(t), id = 'session:boundary';
-  const pageStarted = held(), slow = held(); t.after(slow.release);
-  installGuiFetch(t, async url => {
-    if (url.pathname.endsWith('/read')) { pageStarted.release(); await slow.promise; return ok(page(id, 7)); }
-    return ok(snapshot(id));
-  });
-  store.setState({ catalog: { projects: [], sessions: [{ id }] } });
-  const opening = store.getState().activateSession(id); await pageStarted.promise;
-  store.setState({ sessionStatuses: { [id]: { sessionId: id, revision: 7, run: null } } });
-  await opening; assert.equal(store.getState().projection.revision, 7);
-  slow.release(); assert.equal(store.getState().openingHistory, null);
+test('visited reading surfaces share the snapshot LRU and drop invalidated histories', async t => {
+  const histories = Array.from({ length: 7 }, (_, index) => history(`session:recent-${index}`, 1));
+  const fixture = await reader(t, histories);
+  const ids = () => fixture.store.getState().retainedProjections().map(view => view.sessionId);
+  const [first, second] = histories;
+  for (const item of histories.slice(0, 6)) await fixture.open(item.sessionId);
+  await fixture.open(first.sessionId);
+  await fixture.open(histories[6].sessionId);
+  assert.equal(ids().length, 6);
+  assert.ok(ids().includes(first.sessionId));
+  assert.ok(!ids().includes(second.sessionId));
+  fixture.store.getState().observeHistory('change', first.sessionId);
+  assert.ok(!ids().includes(first.sessionId));
+  fixture.store.getState().observeHistory('closed');
+  assert.deepEqual(ids(), []);
 });
-
+test('the catalog selection can read before an independent statuses request settles',async t=>{
+  const p=history('a'),hold=Promise.withResolvers(),f=await reader(t,[p],undefined,async url=>{assert.ok(url.pathname.endsWith('/statuses'));await hold.promise;return ok([])});
+  const refreshing=f.store.getState().refresh();await f.open('a');assert.deepEqual(f.store.getState().projection.messages,p.messages);
+  hold.resolve();await refreshing;
+});
 test('child output rail reuses only completed results under the identical retained parent and uninterrupted observation', async t => {
-  const [{ childDeliveries }] = await loadGuiModules(t, ['/src/components/local-agent/useAgentDeliveries.ts']);
+  const [{ childDeliveries }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
+    '/src/components/local-agent/useAgentDeliveries.ts', '/src/state/localAgentStore.ts',
+  ]);
+  store.getState().observeHistory('ready');
   const root = snapshot('session:root'), siblings = ['session:c','session:d'];
-  let stamp = {}, fail = false; const reads = [];
-  const read = async id => { reads.push(id); if (fail && id === siblings[1]) throw Error('child_read_failed');
-    return { ...snapshot(id), deliverables: [{ artifactId: id, presentationRunId: 'r' }] }; };
-  const open = () => childDeliveries(root, siblings, new AbortController().signal, read, () => stamp);
+  let fail = false; const reads = [];
+  const read = async id => { reads.push(id); if (fail) throw Error('child_read_failed');
+    return { memberIds: [root.sessionId, ...siblings], childDeliverables: siblings.map(child => ({ artifactId: child, presentationRunId: 'r' })) }; };
+  const members = new Set();
+  const open = () => childDeliveries(root, siblings, new AbortController().signal, read, members);
   const first = await open(); assert.deepEqual(first.map(x => x.artifactId), siblings);
-  assert.equal(await open(), first); assert.deepEqual(reads, siblings);
-  stamp = {}; fail = true; await assert.rejects(open, /child_read_failed/);
-  fail = false; assert.notEqual(await open(), first); assert.deepEqual(reads, [...siblings, ...siblings, ...siblings]);
+  assert.deepEqual([...members], siblings, 'only changes from descendants refresh their outputs');
+  assert.equal(await open(), first); assert.deepEqual(reads, [root.sessionId]);
+  store.getState().observeHistory('change', siblings[0]); fail = true; await assert.rejects(open, /child_read_failed/);
+  fail = false; assert.notEqual(await open(), first); assert.deepEqual(reads, [root.sessionId, root.sessionId, root.sessionId]);
 });
+
+
+test('unrelated session updates keep real child outputs warm while parent, descendants and Host gaps invalidate them', async t => {
+  const [{ childDeliveries }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
+    '/src/components/local-agent/useAgentDeliveries.ts', '/src/state/localAgentStore.ts',
+  ]);
+  const root = snapshot('session:parent');
+  const child = 'session:child', grandchild = 'session:grandchild';
+  let reads = 0;
+  const read = async () => ({ memberIds: [child, grandchild], childDeliverables: [{ artifactId: 'output-' + ++reads }] });
+  const open = (reader = read) => childDeliveries(root, [child], new AbortController().signal, reader);
+  const observe = store.getState().observeHistory;
+  observe('ready');
+  const first = await open();
+  observe('change', 'session:unrelated');
+  assert.equal(await open(), first, 'unrelated work must not discard completed outputs');
+  observe('change', grandchild);
+  const second = await open();
+  assert.notEqual(second, first);
+  observe('change', root.sessionId);
+  const third = await open();
+  assert.notEqual(third, second);
+  observe('closed');
+  await open();
+  observe('ready');
+  const held = Promise.withResolvers();
+  const inFlight = open(() => held.promise);
+  observe('change', grandchild);
+  held.resolve({ memberIds: [child, grandchild], childDeliverables: [{ artifactId: 'old' }] });
+  await inFlight;
+  assert.notEqual((await open())[0].artifactId, 'old', 'a change to a newly discovered descendant invalidates the pending result');
+  assert.equal(reads, 5);
+
+  observe('change', child);
+  const pending = Promise.withResolvers();
+  const pendingRead = open(() => pending.promise);
+  observe('change', 'session:unrelated');
+  const current = [{ artifactId: 'current' }];
+  pending.resolve({ memberIds: [child, grandchild], childDeliverables: current });
+  assert.equal(await pendingRead, current);
+  assert.equal(await open(), current, 'unrelated work during the initial read does not force another read');
+
+  observe('change', child);
+  const disconnected = Promise.withResolvers();
+  const beforeGap = open(() => disconnected.promise);
+  observe('closed');
+  observe('ready');
+  disconnected.resolve({ memberIds: [child, grandchild], childDeliverables: current });
+  await beforeGap;
+  assert.notEqual(await open(), current, 'a snapshot spanning an event-stream gap cannot be reused');
+});
+
+test('returning to a parent keeps its output in the six most recently used conversation results', async t => {
+  const [{ childDeliveries }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
+    '/src/components/local-agent/useAgentDeliveries.ts', '/src/state/localAgentStore.ts',
+  ]);
+  store.getState().observeHistory('ready');
+  const parents = Array.from({ length: 7 }, (_, i) => snapshot('session:parent-' + i));
+  const reads = [];
+  const open = parent => childDeliveries(parent, ['session:child'], new AbortController().signal, async id => {
+    reads.push(id);
+    return { memberIds: ['session:child'], childDeliverables: [{ artifactId: id }] };
+  });
+  const first = await open(parents[0]);
+  const second = await open(parents[1]);
+  for (const parent of parents.slice(2, 6)) await open(parent);
+  assert.equal(await open(parents[0]), first);
+  await open(parents[6]);
+  assert.equal(await open(parents[0]), first);
+  assert.notEqual(await open(parents[1]), second);
+  assert.deepEqual(reads, [...parents.map(parent => parent.sessionId), parents[1].sessionId]);
+});
+
+for (const reconnectBeforeReply of [false, true]) {
+  test('a late complete read across an observation gap is revalidated on return (reconnected=' + reconnectBeforeReply + ')', async t => {
+    const a = history('a', 1), current = history('a', 2), b = history('b', 1);
+    const first = Promise.withResolvers(), fresh = Promise.withResolvers();
+    let count = 0;
+    const f = await reader(t, [current, b], id => id === 'b' ? b : ++count === 1 ? first.promise : fresh.promise);
+    const pending = f.open('a');
+    f.store.getState().observeHistory('closed');
+    if (reconnectBeforeReply) f.store.getState().observeHistory('ready');
+    first.resolve(a);
+    await pending;
+    await f.open('b');
+    const returning = f.open('a');
+    assert.equal(f.store.getState().projection?.revision, a.revision, 'the last visible document can be shown while reading');
+    fresh.resolve(current);
+    await returning;
+    assert.equal(f.store.getState().projection.revision, current.revision);
+    assert.equal(count, 2);
+    if (!reconnectBeforeReply) f.store.getState().observeHistory('ready');
+    await f.open('b');
+    await f.open('a');
+    const verifiedAt = count;
+    await f.open('b');
+    await f.open('a');
+    assert.equal(count, verifiedAt, 'the verified result stays warm under continuous observation');
+  });
+}

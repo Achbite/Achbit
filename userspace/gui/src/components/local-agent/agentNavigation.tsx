@@ -12,7 +12,7 @@ export function requestAgentConversation(parentSessionId: string, sessionId: str
 export function requestAgentOverview(parentSessionId: string): void {
   requestReader(parentSessionId, { kind: 'agent', parentSessionId });
 }
-const AgentNavigation = createContext({ selected: null as AgentSelection | null,
+export const AgentNavigation = createContext({ selected: null as AgentSelection | null,
   activeAgent: null as AgentReaderTarget | null, closeAgent: () => {},
   tasks: [] as readonly AgentTaskProjection[], pendingDecisions: [] as NonNullable<SessionProjection['pendingAgentDecisions']>,
   open: (_selection: AgentSelection | null) => {} });

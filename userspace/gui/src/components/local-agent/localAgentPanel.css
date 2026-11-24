@@ -155,10 +155,14 @@
   height: 100%;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior-y: none;
+}
+
+.local-agent__body[data-following-tail] {
   overflow-anchor: none;
 }
 
-/* Accessory rows float over the transcript; its fade ends at the input itself. */
+/* Extend through empty accessory space; stop before a notice, change list or input. */
 .local-agent:not(.local-agent--empty):not(.local-agent--expanded) .local-agent__body {
   height: calc(100% + var(--conversation-composer-overlap, 0px));
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
@@ -580,8 +584,22 @@
   align-items: center;
 }
 
-/* Bound the image, not a fixed tile: screenshots and portraits keep their own shape. */
-.local-agent__message-attachments > .local-agent__message-image,
+/* The attachment occupies its place in the message before its bytes are available. */
+.local-agent__message-image-slot {
+  display: grid;
+  width: var(--attachment-thumbnail-width);
+  max-width: 100%;
+  flex: none;
+  height: var(--attachment-thumbnail-height);
+  place-items: center;
+  min-width: 0;
+}
+.local-agent__message-image-slot:not(:has(img)) {
+  border-radius: var(--ac-radius-control);
+  background: var(--ac-surface-subtle);
+}
+.local-agent__message-attachments[data-dense-images] .local-agent__message-image-slot { width: 64px; height: 64px; }
+.local-agent__message-image-slot > .local-agent__message-image,
 .local-agent__image-attachment > .conversation-image-review__open {
   display: grid;
   place-items: center;
@@ -603,6 +621,15 @@
   max-width: min(100%, var(--attachment-thumbnail-width));
   max-height: var(--attachment-thumbnail-height);
   border-radius: inherit;
+}
+.local-agent__message-attachments[data-dense-images] .local-agent__message-image {
+  width: 64px;
+  height: 64px;
+}
+.local-agent__message-attachments[data-dense-images] .local-agent__message-image > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .local-agent__message-image:focus-visible > img,
 .local-agent__image-attachment > .conversation-image-review__open:focus-visible > img { opacity: .75; }
@@ -942,6 +969,17 @@
 .local-agent__continuity-line > svg { flex: none; }
 .local-agent__continuity-line > span { min-width: 0; overflow-wrap: anywhere; }
 .local-agent__continuity-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+/* A short failed turn ends beside its controls. Longer transcripts keep their normal block flow. */
+.local-agent__body[data-following-tail]:has(> .local-agent__transcript > .local-agent__terminal-error) {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.local-agent__body[data-following-tail] > .local-agent__transcript:has(> .local-agent__terminal-error) {
+  align-content: safe end;
+  padding-bottom: 16px;
+}
+.local-agent__failure-reason { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.local-agent__failure-reason:not([data-expanded]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .local-agent__continuity-details { margin-top: 8px; max-width: 100%; overflow-wrap: anywhere; }
 .local-agent__continuity-details > p { margin: 4px 0; white-space: pre-wrap; }
 .local-agent__continuity-details summary { cursor: pointer; }
@@ -2197,6 +2235,7 @@
 .local-agent__failed-draft pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }
 .local-agent__failed-draft small { display: block; color: var(--ac-muted); margin-top: 5px; }
 .local-agent__queued-input { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; box-sizing: border-box; padding: 6px 12px; color: var(--ac-muted); }
+.local-agent__submission > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-agent__queued-input > strong { flex: none; white-space: nowrap; font-size: var(--ac-font-caption); }
 .local-agent__queued-preview { flex: 1; min-width: 0; justify-content: flex-start; }
 .local-agent__queued-preview > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-width: 0; max-height: 3em; line-height: 1.5; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
@@ -2560,3 +2599,8 @@
 .local-agent__reading-note { color: var(--ac-muted); font-size: var(--ac-font-caption); margin: 0 0 1em; }
 .local-agent__opening-messages { overflow-wrap: anywhere; }
 .local-agent__opening-messages :is(pre, table) { max-width: 100%; overflow-x: auto; }
+/* Measured space for content whose authority is still being restored. Its status
+   belongs beside the real anchor, not over its text, and never accepts input. */
+.conversation-pending-neighbor { display: flex; flex-direction: column; align-items: center; overflow: clip; pointer-events: none; color: var(--ac-muted); font-size: var(--ac-font-label); }
+.conversation-pending-neighbor[data-pending-neighbor='before'] { justify-content: flex-end; }
+.conversation-pending-neighbor > span { padding-block: 2px; }

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { whenPreviewVisible } from './visibleImageReads';
+import { useEffect, useRef, useState } from 'react';
 import type { FilesystemReference } from '@achbit/protocol';
 import { Button, DisclosureSummary, UiIcon } from '../../ui-components';
 import { t, type UiLanguage } from '../../i18n';
@@ -43,11 +44,12 @@ function AttachmentPreview({ sessionId, reference, references, language, label, 
   const [failure, setFailure] = useConversationRowState<{ key: string; reason: string } | null>(`attachment:${reference.referenceId}:failure`, null);
   const error = failure?.key === key ? failure.reason : undefined;
   const [result, setResult] = useState<{ key: string; image: AttachmentImage } | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (error !== undefined) return;
+    if (error !== undefined || !trigger.current) return;
     const controller = new AbortController();
     let release: (() => void) | undefined;
-    void loadMessageAttachmentImage(sessionId, reference, references, host, controller.signal).then(image => {
+    const unobserve = whenPreviewVisible(trigger.current, () => loadMessageAttachmentImage(sessionId, reference, references, host, controller.signal).then(image => {
       if (controller.signal.aborted) { if (image.kind === 'image') image.release?.(); return; }
       if (image.kind === 'image') release = image.release;
       setResult({ key, image });
@@ -55,8 +57,8 @@ function AttachmentPreview({ sessionId, reference, references, language, label, 
       if (!controller.signal.aborted) {
         setResult(null); setFailure({ key, reason: reason instanceof Error ? reason.message : String(reason) });
       }
-    });
-    return () => { controller.abort(); release?.(); };
+    }));
+    return () => { unobserve(); controller.abort(); release?.(); };
     // Streaming and unrelated projection updates must not restart resource reads.
   }, [host, key, error, setFailure]);
   const current = result?.key === key ? result : null;
@@ -72,11 +74,12 @@ function AttachmentPreview({ sessionId, reference, references, language, label, 
   </details>;
   const url = current?.image.kind === 'image' ? current.image.url : undefined;
   const decodeError = () => { setResult(null); setFailure({ key, reason: t(language, 'content.image.decodeError') }); };
-  return <ImageReview triggerIdentity={identity} source={url} alt={label ?? reference.displayName}
+  const preview = <ImageReview triggerRef={trigger} triggerIdentity={identity} source={url} alt={label ?? reference.displayName}
     className={className} title={label ?? reference.displayName} onError={decodeError}>
-    {note ?? (url ? <img src={url} alt={reference.displayName} loading="lazy" onError={decodeError} />
+    {note ?? (url ? <img src={url} alt={reference.displayName} loading="lazy" decoding="async" onError={decodeError} />
       : <UiIcon name="artifact" size={14} />)}
   </ImageReview>;
+  return note ? preview : <div className="local-agent__message-image-slot">{preview}</div>;
 }
 
 export function MessageAttachments({ sessionId, references, language, onOpen, onError, identity }: {
@@ -84,7 +87,8 @@ export function MessageAttachments({ sessionId, references, language, onOpen, on
   onOpen(workspaceId: string, logicalPath: string): Promise<void>; onError(error: string): void;
 }) {
   const annotations = references.filter(isAnnotation);
-  return <div className="local-agent__message-attachments">
+  const dense = references.filter(ref => ref.kind === 'file' && ref.mediaType.startsWith('image/')).length > 4;
+  return <div className="local-agent__message-attachments" data-dense-images={dense || undefined}>
     {references.map(reference => {
       const open = () => { void onOpen(reference.workspaceId, reference.logicalPath).catch(error => onError(String(error))); };
       const annotation = isAnnotation(reference);

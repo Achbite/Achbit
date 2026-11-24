@@ -123,11 +123,6 @@ export async function watchConversationCatalog(signal: AbortSignal, changed: () 
 }
 
 export async function getConversationStatuses(signal?: AbortSignal): Promise<ConversationSessionStatus[]> {
-  return (await readConversationStatusReceipt(signal)).items;
-}
-
-/** Capability belongs to this Host HTTP response, not the JSON fields of an individual Session. */
-export async function readConversationStatusReceipt(signal?: AbortSignal) {
   const response = await conversationFetch(`${API_BASE}/conversation/statuses`, { signal });
   const value = await envelopeData<unknown>(response);
   if (!Array.isArray(value) || !value.every((item) => (
@@ -142,7 +137,7 @@ export async function readConversationStatusReceipt(signal?: AbortSignal) {
         || ['approval', 'userInput', 'plan'].includes(String(item.run.waitingReason)))
     ))
   ))) throw new Error('conversation_statuses_invalid');
-  return { items: value as ConversationSessionStatus[], readingWindow: response.headers.get('x-achbit-reading-window') === '1' };
+  return value as ConversationSessionStatus[];
 }
 
 export async function getPluginCatalog(
@@ -307,7 +302,9 @@ export async function submitLocalAgentCommand(
       signal,
     },
   );
-  return decodeCommandReply(reply);
+  const decoded = decodeCommandReply(reply);
+  if (decoded.commandId !== command.commandId || decoded.sessionId !== command.sessionId) throw new Error('conversation_command_reply_identity_mismatch');
+  return decoded;
 }
 
 export async function getLocalAgentProjection(
@@ -625,9 +622,9 @@ function isQueuedInput(value: unknown): boolean {
 function timelineReferencesAreValid(
   timeline: Array<Record<string, unknown>>,
   messages: ProjectionMessage[],
-  narratives: Array<Record<string, unknown>>,
+  narratives: Array<{ narrativeId?: unknown; providerRequestId?: unknown }>,
   plans: Array<{ planId: string; revision: number }>,
-  activities: Array<Record<string, unknown>>,
+  activities: Array<{ activityId?: unknown; kind?: unknown }>,
 ): boolean {
   const messagesById = new Map(messages.map(message => [message.messageId, message]));
   const narrativesById = new Map(narratives.map(narrative => [narrative.narrativeId, narrative]));
@@ -1543,6 +1540,14 @@ function isProviderHostedActivity(value: unknown): boolean {
     && (value.action === undefined || isRecord(value.action));
 }
 
+function isFileChange(change: unknown): boolean {
+  return isRecord(change)
+    && isIdentifier(change.workspaceId) && isNonEmptyText(change.path)
+    && ['create', 'modify', 'delete'].includes(String(change.kind))
+    && [change.before, change.after].every((side) => isRecord(side) && typeof side.exists === 'boolean'
+      && (!side.exists || typeof side.contentRef === 'string' || typeof side.error === 'string'));
+}
+
 function isToolActivity(value: unknown, activityStatus: string): boolean {
   return isExactRecord(value, ['operation', 'resources'], ['shell', 'shellIntents', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
     && (value.error === undefined || isLocalAgentError(value.error))
@@ -1554,11 +1559,7 @@ function isToolActivity(value: unknown, activityStatus: string): boolean {
     && (value.recordId === undefined || isIdentifier(value.recordId))
     && isNonEmptyText(value.operation)
     && isArrayOf(value.resources, isActivityResource)
-    && (value.fileChanges === undefined || isArrayOf(value.fileChanges, (change) => isRecord(change)
-      && isIdentifier(change.workspaceId) && isNonEmptyText(change.path)
-      && ['create', 'modify', 'delete'].includes(String(change.kind))
-      && [change.before, change.after].every((side) => isRecord(side) && typeof side.exists === 'boolean'
-        && (!side.exists || typeof side.contentRef === 'string' || typeof side.error === 'string'))))
+    && (value.fileChanges === undefined || isArrayOf(value.fileChanges, isFileChange))
     && (value.process === undefined || isProcessActivity(value.process))
     && (value.computer === undefined || isComputerActivity(value.computer))
     && (value.process !== undefined ? value.shell === undefined : (value.operation === 'bash' || value.operation === 'powershell')
@@ -1700,6 +1701,47 @@ export async function readConversation(sessionId: string, query: Omit<import('@a
   return page;
 }
 
+export async function readTranscriptOverview(id: string, signal: AbortSignal) {
+  const result = await readConversation(id, { view: 'overview' }, signal);
+  const o = result.overview;
+  if (!o || o.sessionId !== id || o.revision !== result.revision || !isPositiveNaturalNumber(o.revision)
+    || !isNullable(o.todoList, isTodoList) || !isArrayOf(o.deliverables, isDeliverable) || !isArrayOf(o.childDeliverables, isDeliverable)
+    || !isArrayOf(o.memberIds, isIdentifier) || !isTokenUsage(o.totalTokenUsage)
+    || o.measurement !== null && (!isContextUsage(o.measurement.usage) || !isPositiveNaturalNumber(o.measurement.receipt?.sequence)
+      || !contextPartitionsAreValid(o.measurement.receipt.partitions))) throw new Error('conversation_overview_invalid');
+  return o;
+}
+
+export async function readTranscriptPage(sessionId: string, around: number | undefined, signal: AbortSignal) {
+  const response = await readConversation(sessionId, { view: 'transcript', ...(around === undefined ? {} : { around }) }, signal);
+  const page = response.transcript;
+  if (!page || page.sessionId !== sessionId || page.revision !== response.revision || !isPositiveNaturalNumber(page.start)
+    || !isPositiveNaturalNumber(page.end) || page.start > page.end || page.end > page.revision
+    || !(page.previous === null || isPositiveNaturalNumber(page.previous) && page.previous < page.start)
+    || !(page.next === null || isPositiveNaturalNumber(page.next) && page.next === page.end + 1)
+    || !isArrayOf(page.navigation, n => isRecord(n) && isIdentifier(n.key) && isPositiveNaturalNumber(n.sequence) && typeof n.label === 'string'))
+    throw new Error('conversation_transcript_range_invalid');
+  const c = page.content;
+  if (!c || c.sessionId !== sessionId || c.revision !== page.revision || !isArrayOf(c.timeline,isTimelineItem)
+    || !isArrayOf(c.messages,isProjectionMessage) || !isArrayOf(c.narratives,isNarrative) || !isArrayOf(c.activities,isActivity)
+    || !isArrayOf(c.interactions,isInteraction) || !isArrayOf(c.plans,isPlanProjection) || !isArrayOf(c.artifacts,isArtifact)
+    || !isWorkspaceBindings(c.workspaceBindings) || c.runTimings !== undefined && !isArrayOf(c.runTimings,isRunTiming)
+    || c.fileChangeRounds !== undefined && !isArrayOf(c.fileChangeRounds,r => isRecord(r) && isIdentifier(r.runId) && isArrayOf(r.recordIds,isIdentifier)))
+    throw new Error('conversation_transcript_content_invalid');
+  if (!isArrayOf(page.fileChangeDetails, d => isRecord(d) && isIdentifier(d.runId) && isIdentifier(d.activityId)
+    && isRecord(d.tool) && isIdentifier(d.tool.recordId) && isArrayOf(d.tool.fileChanges, isFileChange)))
+    throw new Error('conversation_transcript_content_invalid');
+  if (!timelineReferencesAreValid(c.timeline, c.messages, c.narratives, c.plans, c.activities)) throw new Error('conversation_transcript_content_invalid');
+  const live = page.current;
+  if (!live && page.next === null) throw new Error('conversation_transcript_run_invalid');
+  if (live && (live.sessionId !== sessionId || live.revision !== page.revision || !isNullable(live.run,isRun)
+    || !isNullable(live.modelSettings,isModelSettings) || !isNullable(live.terminalError,isLocalAgentError)
+    || !isNullable(live.pendingPlan,isPendingPlan) || !isNullable(live.pendingApproval,isApproval)
+    || !isNullable(live.pendingInteraction,isInteraction) || !isNullable(live.assistantDraft,isAssistantDraft)
+    || !isArrayOf(live.queuedInputs,isQueuedInput))) throw new Error('conversation_transcript_run_invalid');
+  return page;
+}
+
 // Exact UTF-8 size of this plain JSON value, stopping at the negotiated bound. Do not
 // stringify/clone an oversized body (including nested attachments) just to reject it.
 function fitsReadingWindow(value: unknown): boolean {
@@ -1818,29 +1860,6 @@ export async function readMeasuredWindowHistory(projection: SessionProjection, r
     before = cursor;
   }
   return null;
-}
-
-export interface OpeningHistoryPage {
-  sessionId: string;
-  revision: number;
-  messages: { id: string; role: 'user' | 'assistant'; content: string; truncated: boolean }[];
-}
-
-/** Show committed conversation text while the full timeline and its actions are loading. */
-export async function readOpeningHistory(sessionId: string, signal: AbortSignal): Promise<OpeningHistoryPage> {
-  const page = await readConversation(sessionId, { view: 'messages', limit: 4 }, signal);
-  if (!isPositiveNaturalNumber(page.revision) || !Array.isArray(page.items)) {
-    throw new Error('conversation_message_page_invalid');
-  }
-  const messages: OpeningHistoryPage['messages'] = [];
-  for (const item of page.items) {
-    if (item.type !== 'message.committed' || (item.role !== 'user' && item.role !== 'assistant')) continue;
-    if (!isIdentifier(item.messageId) || typeof item.content !== 'string' || typeof item.truncated !== 'boolean') {
-      throw new Error('conversation_message_page_invalid');
-    }
-    messages.push({ id: item.messageId, role: item.role, content: item.content, truncated: item.truncated });
-  }
-  return { sessionId, revision: page.revision, messages };
 }
 
 export async function readFileChange(sessionId: string, recordId: string, index: number, signal?: AbortSignal) {

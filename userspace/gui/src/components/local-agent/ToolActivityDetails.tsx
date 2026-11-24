@@ -65,8 +65,12 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
   const runningShell = !expanded && tools.some(a => isRunningShell(a) && !foregroundShells.some(f => f.activityId === a.activityId && f.runId === a.runId));
   const blocks = hostedDraft?.blocks ?? [];
   const hasTools = tools.length > 0 || blocks.length > 0;
-  const summary = [toolGroupSummary(tools, language, blocks), ...(batchConflicts ?? []).map(({ sources, peers }) =>
-    t(language, 'agent.tool.batchConflict.summary', { sources, peers }))].join(' · ');
+  const conflictLabels = (batchConflicts ?? []).map(({ sources, peers }) =>
+    t(language, 'agent.tool.batchConflict.summary', { sources, peers }));
+  // A pure rejected batch never ran its advertised actions. Merged rows can also
+  // contain real work from other requests; preserve its own status in the heading.
+  const actions = conflictLabels.length ? tools.filter(activity => !batchConflictRole(activity)) : tools;
+  const summary = [...(actions.length || blocks.length ? [toolGroupSummary(actions, language, blocks)] : []), ...conflictLabels].join(' · ');
   const regionData = (values: ActivityProjection[]) => !activities.length && hostedDraft
     ? { kind: 'providerHosted' as const, blocks, expanded }
     : { kind: 'activities' as const, activities: values, ...(blocks.length ? { blocks } : {}), expanded };
@@ -333,7 +337,8 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
               <p><code>{activity.inputRejection.code}</code>: {activity.inputRejection.message}</p>
               {activity.inputRejection.issues.map((issue, index) => (
                 <div key={`${issue.path}:${issue.rule}:${index}`}>
-                  <code>{issue.path}</code><span>{issue.message}</span>
+                  <code>{issue.path} · {issue.rule}</code>
+                  {issue.message !== activity.inputRejection!.message && <span>{issue.message}</span>}
                   {issue.expected !== undefined && <code>{JSON.stringify(issue.expected)}</code>}
                 </div>
               ))}
@@ -454,6 +459,7 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
   const operation = activity.tool?.operation ?? activity.label;
   const target = activity.tool?.resources[0]?.label;
   const command = activity.tool?.shell?.command;
+  if (batchConflictRole(activity)) return operation;
   if (activity.notExecuted) return `${operation} · ${notExecutedStatus(activity, language)}`;
   if (activity.status === 'requested' || activity.status === 'waiting') {
     return t(language, `agent.tool.summary.${activity.status}One`, { operation: command ?? operation });
@@ -501,7 +507,6 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
 }
 
 function batchRejectionStatus(activity: ActivityProjection, language: UiLanguage): string | undefined {
-  if (activity.inputRejection?.code !== 'session_control_turn_conflict') return;
   const role = batchConflictRole(activity);
   if (role) return t(language, `agent.tool.batchConflict.${role}`);
 }

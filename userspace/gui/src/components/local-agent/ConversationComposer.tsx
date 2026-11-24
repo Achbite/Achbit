@@ -57,6 +57,11 @@ export function ConversationComposer({
       ? observeConversationComposerBoundary(shell, conversationBodyRef?.current?.parentElement ?? null, showingShellWait, childInline)
       : undefined;
   }, [conversationBodyRef, showingShellWait, childInline]);
+  const submission = useLocalAgentStore(state => {
+    const receipt = state.messageSubmission;
+    return receipt && receipt.sessionId === state.sessionId && (receipt.revision === undefined
+      || (state.projection?.revision ?? 0) < receipt.revision) ? receipt : null;
+  });
   const connections = useLocalAgentStore(state => state.connections);
   const { concurrentDecisionKey, showApproval } = composerDecisionView(composer, composer.selectedTextDecision);
   const { setSelectedTextDecision } = composer;
@@ -200,6 +205,7 @@ export function ConversationComposer({
   useLayoutEffect(() => setReaderAttachmentsOpen(false), [readerInputCollapsed, composer.conversationKey, hasDraftAttachments]);
   useDismissibleLayer({ open: readerAttachmentsOpen, roots: [attachmentRail, attachmentSummary], trigger: attachmentSummary,
     onDismiss: () => setReaderAttachmentsOpen(false) });
+  const current = projection;
   const currentRequest = projection?.contextCompositions.filter((item)=>item.runId===projection.run?.runId).at(-1);
   const readyPlugins = new Set(currentRequest?.tools.filter((tool)=>tool.availability==='callable').map((tool)=>tool.pluginUri));
 
@@ -259,7 +265,7 @@ export function ConversationComposer({
           {language === 'zh-CN' ? '撤销恢复' : 'Undo recovery'}
         </Button>
       </div>}
-      <HostRebind run={projection?.run ?? null} />
+      <HostRebind run={current?.run ?? null} />
       {composer.failedDrafts.map((failed, index) => <details className="local-agent__failed-draft" key={index}>
         <DisclosureSummary>{language === 'zh-CN' ? '未发送草稿已保留' : 'Unsent draft saved'}</DisclosureSummary>
         <pre>{[failed.draft, ...failed.pastedTexts.map((item) => item.text)].filter(Boolean).join('\n\n')}</pre>
@@ -291,10 +297,14 @@ export function ConversationComposer({
           }}
         />}
       </div>
-      {projection?.queuedInputs.filter(input => input.status === 'queued').map(input => <QueuedInputPreview
-        key={input.commandId} sessionId={projection.sessionId} input={input} language={language} />)}
-      {showChildDecisions && Boolean(projection?.pendingAgentDecisions?.length) && <AgentPlanReview
-        key={composer.conversationKey} decisions={projection!.pendingAgentDecisions!} language={language} refresh={refresh}
+      {submission && <div className="local-agent__queued-input local-agent__submission" role="status" data-submission-phase={submission.phase}>
+        <strong>{t(language, submission.phase === 'sending' ? 'agent.composer.sending' : 'agent.composer.accepted')}</strong>
+        <span>{submission.text}</span>
+      </div>}
+      {current?.queuedInputs.filter(input => input.status === 'queued').map(input => <QueuedInputPreview
+        key={input.commandId} sessionId={current!.sessionId} input={input} language={language} />)}
+      {showChildDecisions && Boolean(current?.pendingAgentDecisions?.length) && <AgentPlanReview
+        key={composer.conversationKey} decisions={current!.pendingAgentDecisions!} language={language} refresh={refresh}
         preferParent={Boolean(pendingPlan || pendingInteraction || pendingApproval || composer.editingMessage || !draftEmpty
           || submitting || showingShellWait || pluginPickerOpen || attachmentMenuOpen || composer.attachmentDialogOpen || composer.permissionMenuOpen
           || (typeof document !== 'undefined' && textareaRef.current && document.activeElement === textareaRef.current))}

@@ -1,4 +1,4 @@
-import { CONTROL_TURN_ISSUE, type ActivityProjection, type AssistantDraftBlockProjection, type SessionProjection } from '@achbit/protocol';
+import { CONTROL_TURN_ISSUE, type ActivityProjection, type AssistantDraftBlockProjection, type SessionProjection, type TranscriptContent } from '@achbit/protocol';
 
 export interface BatchConflictSummary { providerRequestId: string; sources: number; peers: number }
 
@@ -74,8 +74,8 @@ export function assistantDraftItems(
   return items;
 }
 
-const projectionItemCache = new WeakMap<SessionProjection, ProjectionItem[]>();
-export function projectionItems(projection: SessionProjection | null): ProjectionItem[] {
+const projectionItemCache = new WeakMap<TranscriptContent, ProjectionItem[]>();
+export function projectionItems(projection: TranscriptContent | null): ProjectionItem[] {
   if (!projection) return [];
   const cached = projectionItemCache.get(projection);
   if (cached) return cached;

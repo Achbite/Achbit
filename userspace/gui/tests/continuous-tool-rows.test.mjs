@@ -153,6 +153,44 @@ test('folded conflict counts follow Provider requests across split and merged ro
   assert.match(html,/随批未执行/u); assert.match(html,/original error service/u); assert.match(html,/command failed/u);
 });
 
+test('a rejected batch names what did not run and shows each root reason once without dropping field evidence', async t => {
+  const [{ ToolActivityGroup }, { ConversationVirtualRow }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ToolActivityDetails.tsx', '/src/components/local-agent/ConversationVirtualRow.tsx']);
+  const operations = ['agent','agent','computer.control','computer.control','browser.page','bash'];
+  const calls = operations.map((operation, i) => {
+    const rule = i < 2 ? 'control_turn_source' : 'control_turn_peer';
+    const message = `Original batch reason ${i}: agent(action=send) [source-A], agent(action=send) [source-B].`;
+    return { ...local, activityId: `rejected:${i}`, label: operation, status: 'rejected',
+      inputRejection: { code: 'session_control_turn_conflict', message, issues: [{ path: '$', rule, message }] } };
+  });
+  const error = calls[0].inputRejection;
+  error.issues.push({ path: '$.input', rule: 'field_constraint', message: error.message, expected: 'a receiver' });
+  const layout = { state: new Map() };
+  const render = (language, activities = calls) => renderToStaticMarkup(createElement(ConversationVirtualRow,
+    { rowKey:'conflict', eager:true, virtualizer:{layout:()=>layout}, children:()=>createElement(ToolActivityGroup,
+      { activities, batchConflicts:[{providerRequestId:'request',sources:2,peers:4}], language,onExpand(){},onOpenWorkspaceResource(){} }) }));
+  for (const language of ['zh-CN','en-US']) {
+    layout.state.clear();
+    const closed = render(language);
+    assert.match(closed, language === 'zh-CN' ? /<strong>批次未执行：2 项触发冲突，4 项随批未执行<\/strong>/u : /<strong>Batch not executed: 2 triggered the conflict, 4 held back<\/strong>/u);
+    assert.doesNotMatch(closed, /Original batch reason|source-A/);
+    layout.state.set('tool-group:expanded', true);
+    for (const call of calls) layout.state.set(`tool:${call.activityId}:expanded`, true);
+    const details = render(language);
+    assert.doesNotMatch(details, /agent 未完成|bash 未完成|did not complete|didn't complete/i);
+    assert.match(details, /<strong>agent<\/strong>/);
+    assert.match(details, /\$\.input/); assert.match(details, /a receiver/);
+    assert.equal(details.split(calls[1].inputRejection.message).length - 1, 1, 'a repeated root marker is not a second error');
+    assert.match(details, /session_control_turn_conflict/);
+    assert.match(details, /source-A/);
+    layout.state.set('tool:failed-command:expanded', true);
+    const mixed = render(language, [...calls, { ...local, activityId:'failed-command', label:'bash', status:'failed', tool:{ operation:'bash', resources:[], error:{code:'actual_exit',message:'Real failed command'} }}]);
+    assert.match(mixed, language === 'zh-CN' ? /<strong>运行命令 · 批次未执行：2 项触发冲突，4 项随批未执行<\/strong>/u
+      : /<strong>Commands · Batch not executed: 2 triggered the conflict, 4 held back<\/strong>/u);
+    assert.match(mixed, /actual_exit/); assert.match(mixed, /Real failed command/);
+  }
+});
+
 test('the shared disclosure keeps an opened search and the real command error when the search settles', async t => {
   const [{projectionItems,assistantDraftItems,conversationRounds,hostedEntryKey},{ToolActivityGroup},{ConversationVirtualRow}] = await loadGuiModules(t,[
     '/src/components/local-agent/conversationItems.ts','/src/components/local-agent/ToolActivityDetails.tsx','/src/components/local-agent/ConversationVirtualRow.tsx']);

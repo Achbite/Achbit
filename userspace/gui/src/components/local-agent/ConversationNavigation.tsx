@@ -9,7 +9,7 @@ import { activeConversationAnchor } from './conversationNavigationPosition';
 export function ConversationNavigation({ sessionId, entries, viewport, onNavigate, language }: {
   sessionId: string;
   entries: ConversationNavigationEntry[];
-  viewport: ConversationViewport;
+  viewport: ConversationViewport['reading'];
   onNavigate(entry: ConversationNavigationEntry): void;
   language: UiLanguage;
 }) {
@@ -18,12 +18,13 @@ export function ConversationNavigation({ sessionId, entries, viewport, onNavigat
   const selectedTick = useRef<{ key: string; index: number } | null>(null);
   const [active, setActive] = useState<string>();
   const [preview, setPreview] = useState<ConversationNavigationEntry | null>(null);
+  const [pointerInRail, setPointerInRail] = useState(false);
   const indices = useMemo(() => new Map(entries.map((entry, i) => [entry.key, i])), [entries]);
   const paged = entries.length > 64;
   // A tail restore can identify the same tick twice: first by follow mode, then by
   // measuring the transcript. Only a different destination may take back the rail.
-  const markerIndex = paged ? (active ? indices.get(active) : undefined)
-    ?? (viewport.followingLatest ? entries.length - 1 : undefined) : undefined;
+  const markerIndex = (active ? indices.get(active) : undefined)
+    ?? (paged && viewport.followingLatest ? entries.length - 1 : undefined);
   const markerKey = markerIndex === undefined ? active : entries[markerIndex]?.key;
   const hasRail = entries.length >= 2;
   const tick = 14; // The rail's 14 CSS-pixel controls are independent of transcript row heights.
@@ -77,21 +78,18 @@ export function ConversationNavigation({ sessionId, entries, viewport, onNavigat
     const ticks = ticksRef.current;
     if (!ticks) return;
     const reveal = () => {
-      if (paged && ticks.clientHeight > 0) {
-        if (markerIndex !== undefined) {
-          const y = markerIndex*tick, target = Math.max(y + tick - ticks.clientHeight, Math.min(y, ticks.scrollTop));
-          if (Math.abs(ticks.scrollTop - target) > .5) ticks.scrollTop = target;
-          setStart(windowAt(ticks.scrollTop));
-        }
-        return;
+      const height = ticks.clientHeight;
+      if (pointerInRail || markerIndex === undefined || height <= 0) return;
+      const top = ticks.scrollTop;
+      const center = (markerIndex + 0.5) * tick;
+      const inset = Math.min(2 * tick, height / 2);
+      // Keep neighboring messages visible at a clipped edge. Only the real ends
+      // of the conversation belong against the first or last visible tick.
+      if (center < top + inset || center > top + height - inset) {
+        const target = Math.max(0, Math.min(center - height / 2, entries.length * tick - height));
+        if (Math.abs(target - top) > 0.5) ticks.scrollTop = target;
       }
-      const marker = ticks.querySelector<HTMLElement>('[aria-current="location"]');
-      if (!marker || ticks.clientHeight <= 0) return;
-      const top = ticks.getBoundingClientRect().top + ticks.clientTop;
-      const rect = marker.getBoundingClientRect();
-      const delta = rect.top < top ? rect.top - top : Math.max(0, rect.bottom - top - ticks.clientHeight);
-      // Scroll only this rail, never the transcript or another scroll ancestor.
-      if (delta) ticks.scrollTop += delta;
+      if (paged) setStart(windowAt(ticks.scrollTop));
     };
     const selected = selectedTick.current;
     selectedTick.current = null;
@@ -108,10 +106,11 @@ export function ConversationNavigation({ sessionId, entries, viewport, onNavigat
     });
     resize.observe(ticks);
     return () => resize.disconnect();
-  }, [markerKey, markerIndex, hasRail, paged]);
+  }, [markerKey, markerIndex, entries.length, hasRail, paged, pointerInRail]);
   if (!hasRail) return null;
   const zh = language === 'zh-CN';
-  return <nav className="conversation-navigation" aria-label={zh ? '对话导航' : 'Conversation navigation'}>
+  return <nav className="conversation-navigation" aria-label={zh ? '对话导航' : 'Conversation navigation'}
+    onPointerEnter={() => setPointerInRail(true)} onPointerLeave={() => setPointerInRail(false)}>
     <div ref={ticksRef} className="conversation-navigation__ticks"
       onScroll={paged ? e => setStart(windowAt(e.currentTarget.scrollTop)) : undefined}
       onKeyDown={paged ? event => {

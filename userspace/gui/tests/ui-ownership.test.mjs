@@ -417,7 +417,8 @@ test('transcript scopes rich text by canonical row and opens repeated attachment
   const opened = [];
   let tree;
   function Probe() {
-    tree = ConversationTranscript({ layoutCache: new ConversationLayoutCache(), language: 'en-US', loading: false,
+    // Inspect the rendered row callbacks inside the memoized component.
+    tree = ConversationTranscript.type({ layoutCache: new ConversationLayoutCache(), language: 'en-US', loading: false,
       displaySettledRunIds: new Set(), onDisplayed() {}, projection: { sessionId: 'session:source', run: null, plans: [], activities: [], fileChangeRounds: [], artifacts: [], queuedInputs: [] },
       hasConversationContent: true, conversationItems: [{ type: 'message', sequence: 1, value: message }], draftItems: [],
       presentation: { content: () => createElement(MarkdownContent, null, source) },

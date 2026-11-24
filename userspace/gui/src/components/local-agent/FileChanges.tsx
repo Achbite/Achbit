@@ -1,3 +1,4 @@
+import { whenPreviewVisible } from './visibleImageReads';
 import { DisclosureSummary } from '../../ui-components';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
@@ -5,7 +6,6 @@ import { requestReader } from './readerState';
 import { resourceFilename } from './resourceLinks';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ActivityProjection } from '@achbit/protocol';
 import { useConversationHost, useConversationTheme } from './ConversationHost';
 import { useConversationSessionId } from './ConversationSessionScope';
 import { useConversationRowState } from './ConversationVirtualRow';
@@ -15,11 +15,11 @@ import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { focusOpenedPanel, useInteractionFocus } from '../shared/interactionFocus';
 import { isBinaryFileChange } from '../../services/localAgentApi';
 
-import { changedFiles, displayedChangedFiles, readRoundChange, readChangeStatistics, previewChangedLines, type FileChangeStatistics, type ChangeCounts, type ChangedFile } from './fileChangeSummary';
+import { changedFiles, changeStatisticsRevision, displayedChangedFiles, readRoundChange, readChangeStatistics, previewChangedLines, type FileChangeActivity, type FileChangeStatistics, type ChangeCounts, type ChangedFile } from './fileChangeSummary';
 import type { ChangePreview } from './fileChangeLineCounts';
 export { roundChangeActivities } from './fileChangeSummary';
 
-export function FileChanges({ activities, compact = false, inlineDiff = false }: { activities: ActivityProjection[]; compact?: boolean; inlineDiff?: boolean }) {
+export function FileChanges({ activities, compact = false, inlineDiff = false }: { activities: FileChangeActivity[]; compact?: boolean; inlineDiff?: boolean }) {
   const language = useUiLanguage();
   const { readChange } = useConversationHost();
   const sessionId = useConversationSessionId();
@@ -34,6 +34,10 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
   }, [sessionId, compact, setShowAll, setExpanded]);
   const all = useMemo(() => changedFiles(activities), [activities]);
   const rootRef = useRef<HTMLElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (rootRef.current && !visible) return whenPreviewVisible(rootRef.current, async () => setVisible(true));
+  }, [visible]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const interaction = useInteractionFocus();
@@ -42,39 +46,51 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
   const open = expanded || (transient && hovered);
   useViewportBounds(listRef, transient && open && all.length > 0);
   useDismissibleLayer({ open: transient && open && all.length > 0, roots: [rootRef], trigger: triggerRef,
-    onDismiss: () => { setExpanded(false); setHovered(false); } });
+    onDismiss: () => { setExpanded(false); setHovered(false); setShowAll(false); } });
   useEffect(() => {
-    if (transient && expanded && listRef.current) {
+    if (transient && expanded && listRef.current && !listRef.current.contains(document.activeElement)) {
       focusOpenedPanel(listRef.current, listRef.current.querySelector<HTMLButtonElement>('button'), interaction);
     }
   }, [transient, expanded, interaction]);
-  const signature = JSON.stringify([sessionId, all.map((file) => [file.key, file.changes.map((entry) => [entry.recordId, entry.index])])]);
-  const [statistics, setStatistics] = useState<{ signature: string; files: Map<string, FileChangeStatistics>; errors: Map<string, string> }>({ signature: '', files: new Map(), errors: new Map() });
-  const displayed = displayedChangedFiles(all, compact, expanded, showAll);
-  const displayedSignature = JSON.stringify(displayed.map(file => file.key));
+  const revisions = useMemo(() => new Map(all.map(file => [file.key, changeStatisticsRevision(file)])), [all]);
+  const signature = useMemo(() => JSON.stringify([...revisions]), [revisions]);
+  type Statistics = { sessionId: string; read: typeof readChange; signature: string; revisions: Map<string, string>;
+    files: Map<string, FileChangeStatistics>; errors: Map<string, string> };
+  const [statistics, setStatistics] = useState<Statistics | null>(null);
+  const displayed = useMemo(() => displayedChangedFiles(all, open, showAll), [all, open, showAll]);
+  const displayedSignature = useMemo(() => JSON.stringify(displayed.map(file => file.key)), [displayed]);
+  const current = statistics?.sessionId === sessionId && statistics.read === readChange && statistics.signature === signature ? statistics : null;
   useEffect(() => {
-    if (inlineDiff || !sessionId || !displayed.length) return;
+    if (!visible || inlineDiff || !sessionId || !displayed.length) return;
     const controller = new AbortController();
-    const files = new Map<string, FileChangeStatistics>(statistics.signature === signature ? statistics.files : []);
-    const errors = new Map<string, string>(statistics.signature === signature ? statistics.errors : []);
-    setStatistics({ signature, files, errors });
+    const files = new Map<string, FileChangeStatistics>(), errors = new Map(current?.errors);
+    if (statistics?.sessionId === sessionId && statistics.read === readChange) {
+      for (const [key, value] of statistics.files) {
+        if (revisions.get(key) === statistics.revisions.get(key)) files.set(key, value);
+      }
+    }
+    let frame: number | null = null;
+    const publish = () => setStatistics({ sessionId, read: readChange, signature, revisions, files: new Map(files), errors: new Map(errors) });
+    if (!current) publish();
     void (async () => {
       for (const file of displayed) {
         if (files.has(file.key)) continue;
         try {
           files.set(file.key, await readChangeStatistics(readChange, sessionId, file, controller.signal));
-          errors.delete(file.path);
+          errors.delete(file.key);
         } catch (error) {
           if (controller.signal.aborted) return;
-          errors.set(file.path, error instanceof Error ? error.message : String(error));
+          errors.set(file.key, error instanceof Error ? error.message : String(error));
         }
         if (controller.signal.aborted) return;
-        setStatistics({ signature, files: new Map(files), errors: new Map(errors) });
+        // Concurrently completed cached stats must not copy/render the growing list once per file.
+        if (frame === null) frame = requestAnimationFrame(() => { frame = null; publish(); });
       }
+      if (!controller.signal.aborted && frame !== null) { cancelAnimationFrame(frame); frame = null; publish(); }
     })();
-    return () => controller.abort();
-  }, [sessionId, signature, displayedSignature, readChange, inlineDiff]);
-  const counts = statistics.signature === signature ? statistics.files : new Map<string, FileChangeStatistics>();
+    return () => { controller.abort(); if (frame !== null) cancelAnimationFrame(frame); };
+  }, [visible, sessionId, signature, displayedSignature, readChange, inlineDiff]);
+  const counts = current?.files ?? new Map<string, FileChangeStatistics>();
   const binaryCount = [...counts.values()].filter((value) => value.kind === 'binary').length;
   const total = counts.size === all.length && counts.size > binaryCount ? [...counts.values()].reduce((total, value) => value.kind === 'text' ? ({ added: total.added + value.counts.added, removed: total.removed + value.counts.removed }) : total, { added: 0, removed: 0 }) : null;
   if (!all.length || !sessionId) return null;
@@ -91,17 +107,21 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
   });
   return <section ref={rootRef} className={`conversation-changes${compact ? ' conversation-changes--compact' : ''}${open ? ' is-expanded' : ''}`}
     onPointerEnter={event => { if (transient && event.pointerType !== 'touch') setHovered(true); }}
-    onPointerLeave={() => { if (!interaction?.keyboard || !rootRef.current?.contains(document.activeElement)) setHovered(false); }}>
+    onPointerLeave={() => {
+      if (!interaction?.keyboard || !rootRef.current?.contains(document.activeElement)) {
+        setHovered(false); if (compact && !expanded) setShowAll(false);
+      }
+    }}>
     <button {...identity.action('toggle', 'click')} ref={triggerRef} type="button" className="conversation-changes-heading" aria-expanded={open}
-      onClick={() => { setHovered(false); setExpanded(value => !value); }}>
+      onClick={() => { setHovered(false); if (compact && expanded) setShowAll(false); setExpanded(value => !value); }}>
       <AchbitShellIcon name="compose" /><span><strong>{t(language, 'changes.files', { count: all.length })}</strong>{!compact && <small>{t(language, 'changes.round')}</small>}</span>
       {total && <DiffCounts counts={total} />}
       {binaryCount > 0 && <small className="conversation-change-binary-count">{t(language, 'changes.binaryCount', { count: binaryCount })}</small>}
       <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
     </button>
     {(compact || expanded) && <div ref={listRef} className="conversation-change-list" hidden={!open} tabIndex={compact ? -1 : undefined} data-native-overlay={compact && open || undefined}>{entries}
-      {!compact && all.length > 3 && <button {...identity.action('more', 'click')} className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
-      {statistics.signature === signature && statistics.errors.size > 0 && <details className="conversation-change-error"><DisclosureSummary>{t(language, 'changes.unavailable', { count: statistics.errors.size })}</DisclosureSummary>{[...statistics.errors].map(([path, message]) => <p key={path}><strong>{path}</strong><br />{message}</p>)}</details>}
+      {open && all.length > 3 && <button {...identity.action('more', 'click')} className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => { if (compact) setExpanded(true); setShowAll(value => !value); }}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
+      {open && current && current.errors.size > 0 && <details className="conversation-change-error"><DisclosureSummary>{t(language, 'changes.unavailable', { count: current.errors.size })}</DisclosureSummary>{all.filter(file => current.errors.has(file.key)).map(file => <p key={file.key}><strong>{file.path}</strong><br />{current.errors.get(file.key)}</p>)}</details>}
     </div>}
   </section>;
 }
