@@ -93,10 +93,11 @@ function firstPage(text: string): string {
 
 // Only the file Reader offers a provisional, searchable source view. In a
 // conversation even the first paragraph can depend on definitions at EOF.
-function SearchableDocumentPreview({ text, decisionProse }: { text: string; decisionProse: boolean }) {
-  const first = useMemo(() => firstPage(text), [text]);
-  const preview = useMemo(() => new StreamingMarkdownParser().update(decisionProse ? formatDecisionProse(first) : first, true), [first, decisionProse]);
-  return <><MarkdownBlocks blocks={preview} provisional /><pre className="conversation-markdown__pending-source">{text.slice(first.length)}</pre></>;
+function DocumentMarkdownBlocks({ text, decisionProse, blocks }: { text: string; decisionProse: boolean; blocks?: MarkdownBlock[] }) {
+  const first = useMemo(() => blocks ? '' : firstPage(text), [blocks, text]);
+  const visible = useMemo(() => blocks ?? new StreamingMarkdownParser().update(decisionProse ? formatDecisionProse(first) : first, true), [blocks, first, decisionProse]);
+  // Keep completed prefix blocks mounted so an action started during parsing can finish.
+  return <><MarkdownBlocks blocks={visible} provisional={!blocks} />{!blocks && <pre className="conversation-markdown__pending-source">{text.slice(first.length)}</pre>}</>;
 }
 
 export const MarkdownContent = memo(function MarkdownContent({ children: text, streaming = false, decisionProse = false, active = true, documentPreview = false }: MarkdownContentProps) {
@@ -145,7 +146,8 @@ export const MarkdownContent = memo(function MarkdownContent({ children: text, s
   }, [deferred, text, decisionProse, active, blocks, current?.error, displayed, documentPreview]);
   const pending = deferred && !blocks && !current?.error;
   return <div className="conversation-markdown" ref={surface} aria-busy={deferred ? pending : undefined} data-conversation-pending={pending && !displayed && !documentPreview || undefined}>
-    {displayed ? <MarkdownBlocks blocks={displayed} /> : documentPreview ? <SearchableDocumentPreview text={text} decisionProse={decisionProse} /> : pending && <MarkdownStatus />}
+    {documentPreview ? <DocumentMarkdownBlocks text={text} decisionProse={decisionProse} blocks={displayed} />
+      : displayed ? <MarkdownBlocks blocks={displayed} /> : pending && <MarkdownStatus />}
     {current?.error && <p role="alert">{current.error}</p>}
   </div>;
 });

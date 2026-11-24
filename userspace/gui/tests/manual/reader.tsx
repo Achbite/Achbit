@@ -14,6 +14,12 @@ const reads = new Map<string, number>(), watches = new Map<string, () => void>()
 let serial = 0, aborted = 0;
 const host = useConversationHost();
 host.resources = { ...host.resources,
+  async resolveResourceReference(_session, resource) {
+    if (!('workspaceId' in resource) || resource.workspaceId !== 'workspace:fixture' || !['large.cpp', 'small.txt'].includes(resource.logicalPath)) {
+      throw new Error('Unknown fixture resource');
+    }
+    return { kind: 'file', path: '/fixture/' + resource.logicalPath };
+  },
   async watchResources(_session, resources, signal, changed) {
     const key = resources[0].logicalPath;
     const notify = () => changed([0]);

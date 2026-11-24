@@ -53,7 +53,16 @@ function Fixture() {
       </RichContentScope.Provider>
     </main></>;
 }
-createRoot(document.getElementById('root')!).render(<Fixture />);
+function BoundaryFixture() {
+  const source = ['Before $\\mathrm{' + 'Q'.repeat(460) + '}$ **END**.', '',
+    '| 1 | 2 | 3 | 4 | 5 | 6 |', '|---|---|---|---|---|---|', '| ' + 'Z'.repeat(1024) + ' | B | C | D | E | LAST |'].join('\n');
+  return <main id="rich-boundary" className="local-agent" style={{width:360, height:'88vh'}}><header/>
+    <div className="local-agent__viewport"><div className="local-agent__body"><div className="local-agent__transcript">
+      <article className="local-agent__message local-agent__message--assistant"><MarkdownContent>{source}</MarkdownContent></article>
+    </div></div></div><footer><button type="button">Neighbour</button></footer>
+  </main>;
+}
+createRoot(document.getElementById('root')!).render(new URLSearchParams(location.search).has('boundaries') ? <BoundaryFixture /> : <Fixture />);
 
 async function until<T>(read: () => T | null | undefined | false): Promise<T> {
   const current = read(); if (current) return current;
@@ -67,6 +76,14 @@ async function until<T>(read: () => T | null | undefined | false): Promise<T> {
   });
 }
 async function save(selector: string) {
+  if (selector === '#preview') {
+    const more = await until(() => document.querySelector<HTMLButtonElement>('#preview button[aria-expanded]'));
+    if (more.getAttribute('aria-expanded') !== 'true') {
+      more.scrollIntoView({ block: 'center' });
+      more.click();
+      await until(() => more.getAttribute('aria-expanded') === 'true');
+    }
+  }
   const button = await until(() => document.querySelector<HTMLButtonElement>(selector + ' button[aria-label="保存为图片"]:not(:disabled)'));
   const before = saved.length;
   button.scrollIntoView({ block: 'center' });

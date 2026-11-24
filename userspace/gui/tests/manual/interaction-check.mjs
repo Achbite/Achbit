@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { checkReaderFileMenu, checkReaderSplit } from './reader-split-check.mjs';
 import { checkComposerPluginMentions } from './composer-plugin-mentions-check.mjs';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
+import { checkRichFormatBoundaries } from './rich-format-boundary-check.mjs';
 import { checkAttachmentThumbnails } from './attachment-thumbnails-check.mjs';
 import { checkPluginMarketplace } from './plugin-marketplace-check.mjs';
 const preview = resolve(process.env.UI_FIXTURE_ROOT ?? fileURLToPath(new URL('../../../../.task-artifacts/manual-preview', import.meta.url)));
@@ -197,6 +198,7 @@ try {
   await record('plugin-disclosure', plugin, plugin.control==='DisclosureSummary' && plugin.open && plugin.arrows===1);
   await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, key, type, selectFixture, record });
   await checkPreviewLayout({ navigate, evaluate, cmd, until, frame, click, key, record });
+  await checkRichFormatBoundaries({ navigate, evaluate, cmd, until, frame, record });
   assert.ok(results.every(result => result.pass), 'see the retained browser result for failed invariants');
   await call('Browser.close');
 } finally {
