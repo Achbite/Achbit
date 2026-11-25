@@ -23,6 +23,7 @@ import { CONVERSATION_COMMAND_VERSION, connectedModelReasoningEfforts, decodeAge
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
+import { retiredDraftSkillNotice } from '../pluginLocalization';
 import { runHandoffNotice } from './handoffNotice';
 import { selectPendingApproval, type ApprovalIdentity } from '../components/local-agent/composerDecisions';
 import { reportedWindowRounds, sessionView, type CachedSessionView, type ContextWindowReading } from './contextWindowReading';
@@ -1111,6 +1112,11 @@ async function submitNewRun(
   const submissionGeneration = beginSubmission(set);
   try {
     if (filesystemPaths.length + pastedTexts.length + pastedImages.length + (retained.filesystemReferences?.length ?? 0) > 8) throw new Error('message_filesystem_reference_limit');
+    if (pluginSelections.length || retained.guidanceReferences?.length) {
+      const notice = retiredDraftSkillNotice(get().pluginCatalog, pluginSelections, retained.guidanceReferences,
+        normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']));
+      if (notice) throw new Error(notice);
+    }
     const messageProfileId = get().selectedProfileId;
     const profile = get().profiles.find(item => item.id === messageProfileId);
     const reasoningEffortOverride = get().reasoningEffortOverride

@@ -66,4 +66,32 @@ export async function checkComposerPluginMentions({ navigate, evaluate, cmd, fra
   assert.deepEqual(sends, [{ text: expectedText, pluginSelections: [{ selectionId: picked.chips[0].id, uri: 'plugin://chrome-devtools@builtin', label: 'Chrome' }] }],
     'the composer sends the original catalog URI exactly once, not a URI derived from the display label');
   await record('composer-plugin-dedup-send', { repeated, sends }, true);
+
+  const legacy = { draft: '保留说明', pastedTexts: [], pastedImages: [], filesystemPaths: [],
+    pluginSelections: [{ selectionId: 'draft:retired', uri: 'plugin://achbit-product@builtin', label: '旧操作指南' }],
+    guidanceReferences: [{ referenceId: 'ref:retired', uri: 'plugin://achbit-iteration@builtin', label: '旧迭代指导',
+      toolName: 'skill.read', name: 'achbit-iteration' }], selectionStart: 4, selectionEnd: 4, focused: false };
+  const setup = await cmd('Page.addScriptToEvaluateOnNewDocument', {
+    source: `sessionStorage.setItem('achbit:composer:new:independent', ${JSON.stringify(JSON.stringify(legacy))})`,
+  });
+  try { await navigate('composer', { pluginMentions: '1' }); }
+  finally { await cmd('Page.removeScriptToEvaluateOnNewDocument', { identifier: setup.identifier }); }
+  const submit = '[data-ui-action="composer.controls.submit"]';
+  const legacyState = () => evaluate(`({
+    blocked: document.querySelector('${submit}').disabled,
+    notice: document.querySelector('.local-agent__profile-notice')?.textContent ?? '',
+    draft: document.querySelector('${input}').value,
+    sends: JSON.parse(document.querySelector('#mention-sends').textContent).length
+  })`);
+  const initial = await legacyState();
+  assert.ok(initial.blocked && initial.notice.includes('operations.md'));
+  await click('[data-attachment-id="draft:retired"] button');
+  const restored = await legacyState();
+  assert.ok(restored.blocked && restored.notice.includes('本机维护 Skill'));
+  await click('[data-attachment-id="ref:retired"] button');
+  const removed = await legacyState();
+  assert.deepEqual(removed, { blocked: false, notice: '', draft: legacy.draft, sends: 0 });
+  await click(input); await key('End'); await insert(' @chr'); await key('Enter');
+  assert.deepEqual((await read()).chips.map(chip => chip.label), ['@Chrome']);
+  await record('composer-retired-skill-replacement', { initial, restored, removed }, true);
 }

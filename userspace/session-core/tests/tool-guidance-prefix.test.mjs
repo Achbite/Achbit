@@ -27,7 +27,7 @@ test('Skill reads, activation and subsequent Loops retain core tool definitions 
     const journal = new InMemoryCommandJournal();
     await createSession(journal, sessionId, [workspaceBinding]);
     const frontend = 'plugin://frontend@local';
-    const operations = 'plugin://achbit-iteration@builtin';
+    const localSkill = 'plugin://review@skill-mount';
     const preparation = fakeRunPreparation({ tools, apiSurface, contextWindowTokens: 100000 });
     const runPreparation = { ...preparation.port, async prepare(request) {
       const prepared = await preparation.port.prepare(request);
@@ -35,7 +35,7 @@ test('Skill reads, activation and subsequent Loops retain core tool definitions 
       Object.assign(runtime.environment, { productDocsPath: '/fixture/docs',
         hostDataDirectory: '/fixture/state', runtimeExecutables: { kernel: '/fixture/kernel', cli: '/fixture/cli' } });
       for (const plugin of runtime.selectedPlugins.plugins) {
-        plugin.skillEntryPath = plugin.uri === frontend ? '/fixture/frontend/SKILL.md' : '/fixture/iteration/SKILL.md';
+        plugin.skillEntryPath = plugin.uri === frontend ? '/fixture/frontend/SKILL.md' : '/fixture/review/SKILL.md';
       }
       return prepared;
     } };
@@ -52,8 +52,8 @@ test('Skill reads, activation and subsequent Loops retain core tool definitions 
       }
       requests.push(structuredClone(request));
       if (step === 0 || step === 3 || step === 1) {
-        const name = step === 1 ? 'plugin_activate' : 'skill_read';
-        const input = step === 1 ? { pluginUris: [frontend] } : { name: 'achbit-iteration' };
+        const name = step === 1 ? 'plugin_activate' : step === 0 ? 'fs_read' : 'skill_read';
+        const input = step === 1 ? { pluginUris: [frontend] } : step === 0 ? { path: '/fixture/docs/operations.md' } : { name: 'achbit-documents' };
         yield apiSurface === 'responses'
           ? providerEvent(request.requestId, 'output.item.completed', { outputIndex: 0, item: {
             type: 'function_call', call_id: `native:${step}`, name, arguments: JSON.stringify(input), status: 'completed',
@@ -67,37 +67,41 @@ test('Skill reads, activation and subsequent Loops retain core tool definitions 
     const actor = new SessionActor(sessionId, journal, {
       provider, runPreparation, toolGuidance,
       kernel: emptyKernel({ async execute(request) {
+        if (request.toolName === 'fs.read') return completedExecutionReply(request, { content: '# Product operations' });
         assert.equal(request.toolName, 'skill.read');
-        return completedExecutionReply(request, { content: '# Iteration\nFollow the actual entry point.' });
+        return completedExecutionReply(request, { content: '# Documents\nUse the supplied templates.' });
       } }),
       async dispose() {},
     }, { nextId: idFactory(`skill-prefix-${apiSurface}`) });
     t.after(() => actor.dispose());
 
-    await actor.submit(messageCommand(sessionId, 'command:first', 'Read the iteration Skill and activate the frontend Skill.'));
+    await actor.submit(messageCommand(sessionId, 'command:first', 'Read the installed product operations guide and activate the frontend Skill.'));
     await waitForProjection(actor, state => state.run?.status === 'completed');
-    await actor.submit(messageCommand(sessionId, 'command:second', 'Read the iteration Skill again, then answer.'));
+    await actor.submit(messageCommand(sessionId, 'command:second', 'Read the document Skill, then answer.'));
     await waitForProjection(actor, state => state.run?.status === 'completed' && requests.length === 5);
     await actor.submit({ ...messageCommand(sessionId, 'command:third', 'Use the selected Skills.'), pluginSelections: [
       { uri: frontend, label: 'Frontend', selectionId: 'selection:frontend' },
-      { uri: operations, label: 'Iteration', selectionId: 'selection:iteration' },
+      { uri: localSkill, label: 'Review', selectionId: 'selection:review' },
     ] });
     await waitForProjection(actor, state => state.run?.status === 'completed' && requests.length === 6);
 
-    for (const index of [1, 4]) {
-      const result = requests[index].messages.at(-1);
-      assert.equal(result.role, 'tool');
-      assert.match(result.content, /^# Iteration\nFollow the actual entry point\.\n\nAchbit product resources:/);
-      assert.ok(result.content.includes('/fixture/cli'));
-    }
+    const guide = requests[1].messages.at(-1);
+    assert.equal(guide.role, 'tool');
+    assert.match(guide.content, /Achbit product resources:/);
+    assert.ok(guide.content.includes('/fixture/cli'));
+    const document = requests[4].messages.at(-1);
+    assert.equal(document.role, 'tool');
+    assert.match(document.content, /# Documents/);
+    assert.ok(!document.content.includes('/fixture/cli'));
     const activated = JSON.parse(requests[2].messages.at(-1).content);
     assert.deepEqual(activated.skillEntries, [{ uri: frontend, path: '/fixture/frontend/SKILL.md' }]);
     const selected = requests[5].messages.at(-1);
     assert.equal(selected.role, 'user');
     assert.ok(selected.content.startsWith('Use the selected Skills.'));
-    for (const path of ['/fixture/frontend/SKILL.md', '/fixture/iteration/SKILL.md', '/fixture/cli']) {
+    for (const path of ['/fixture/frontend/SKILL.md', '/fixture/review/SKILL.md']) {
       assert.ok(selected.content.includes(path));
     }
+    assert.ok(!selected.content.includes('/fixture/cli'));
     const events = await readEvents(journal, sessionId);
     assert.equal(events.filter(event => event.type === 'run.started').length, 3);
     const latest = events.findLast(event => event.type === 'context.composed');

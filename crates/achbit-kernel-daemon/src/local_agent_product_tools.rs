@@ -232,96 +232,36 @@ impl ProductSkill {
     }
 }
 
-const SKILLS: &[ProductSkill] = &[
-    ProductSkill {
-        id: "achbit-session",
-        entry: include_str!("../../../skills/achbit-session/SKILL.md"),
-        references: &[(
-            "references/session-query.md",
-            include_str!("../../../skills/achbit-session/references/session-query.md"),
-        )],
-    },
-    ProductSkill {
-        id: "achbit-product",
-        entry: include_str!("../../../skills/achbit-product/SKILL.md"),
-        references: &[
-            (
-                "references/operations.md",
-                include_str!("../../../skills/achbit-product/references/operations.md"),
-            ),
-            (
-                "references/windows-environment.md",
-                include_str!("../../../skills/achbit-product/references/windows-environment.md"),
-            ),
-        ],
-    },
-    ProductSkill {
-        id: "achbit-iteration",
-        entry: include_str!("../../../skills/achbit-iteration/SKILL.md"),
-        references: &[
-            (
-                "references/implementation-map.md",
-                include_str!("../../../skills/achbit-iteration/references/implementation-map.md"),
-            ),
-            (
-                "references/update-modes.md",
-                include_str!("../../../skills/achbit-iteration/references/update-modes.md"),
-            ),
-            (
-                "references/plugin-development.md",
-                include_str!("../../../skills/achbit-iteration/references/plugin-development.md"),
-            ),
-        ],
-    },
-    ProductSkill {
-        id: "achbit-release-audit",
-        entry: include_str!("../../../skills/achbit-release-audit/SKILL.md"),
-        references: &[
-            (
-                "references/simplification.md",
-                include_str!("../../../skills/achbit-release-audit/references/simplification.md"),
-            ),
-            (
-                "references/product-docs.md",
-                include_str!("../../../skills/achbit-release-audit/references/product-docs.md"),
-            ),
-        ],
-    },
-    ProductSkill {
-        id: "achbit-documents",
-        entry: include_str!("../../../skills/achbit-documents/SKILL.md"),
-        references: &[
-            (
-                "references/design.md",
-                include_str!("../../../skills/achbit-documents/references/design.md"),
-            ),
-            (
-                "references/inline-diagrams.md",
-                include_str!("../../../skills/achbit-documents/references/inline-diagrams.md"),
-            ),
-            (
-                "references/formats.md",
-                include_str!("../../../skills/achbit-documents/references/formats.md"),
-            ),
-            (
-                "references/interactive-previews.md",
-                include_str!("../../../skills/achbit-documents/references/interactive-previews.md"),
-            ),
-            (
-                "assets/document.html",
-                include_str!("../../../skills/achbit-documents/assets/document.html"),
-            ),
-            (
-                "assets/document.typ",
-                include_str!("../../../skills/achbit-documents/assets/document.typ"),
-            ),
-            (
-                "THIRD_PARTY_NOTICES.md",
-                include_str!("../../../skills/achbit-documents/THIRD_PARTY_NOTICES.md"),
-            ),
-        ],
-    },
-];
+const SKILLS: &[ProductSkill] = &[ProductSkill {
+    id: "achbit-documents",
+    entry: include_str!("../../../skills/achbit-documents/SKILL.md"),
+    references: &[
+        (
+            "references/design.md",
+            include_str!("../../../skills/achbit-documents/references/design.md"),
+        ),
+        (
+            "references/inline-diagrams.md",
+            include_str!("../../../skills/achbit-documents/references/inline-diagrams.md"),
+        ),
+        (
+            "references/formats.md",
+            include_str!("../../../skills/achbit-documents/references/formats.md"),
+        ),
+        (
+            "assets/document.html",
+            include_str!("../../../skills/achbit-documents/assets/document.html"),
+        ),
+        (
+            "assets/document.typ",
+            include_str!("../../../skills/achbit-documents/assets/document.typ"),
+        ),
+        (
+            "THIRD_PARTY_NOTICES.md",
+            include_str!("../../../skills/achbit-documents/THIRD_PARTY_NOTICES.md"),
+        ),
+    ],
+}];
 
 pub(crate) fn bundled_skill_settings() -> Vec<Value> {
     SKILLS
@@ -355,7 +295,17 @@ fn read_skill(input: Value) -> Result<Value, SessionServiceError> {
     let skill = SKILLS
         .iter()
         .find(|skill| skill.id == query.name)
-        .ok_or_else(|| SessionServiceError::new("skill_not_found", &query.name))?;
+        .ok_or_else(|| {
+            let location = match query.name.as_str() {
+                "achbit-product" => "See operations.md in Product guides.",
+                "achbit-session" => "See session-query.md in Product guides.",
+                "achbit-iteration" | "achbit-release-audit" => {
+                    "This maintenance guide is available through locally installed Skills."
+                }
+                _ => return SessionServiceError::new("skill_not_found", &query.name),
+            };
+            SessionServiceError::new("skill_not_found", format!("{}: {location}", query.name))
+        })?;
     let path = query.path.as_deref().unwrap_or("SKILL.md");
     let content = if path == "SKILL.md" {
         skill.entry
@@ -577,18 +527,17 @@ mod tests {
             .call("skill.read", json!({"name":"execution-environments.md"}))
             .is_err());
         let skill = tools
-            .call("skill.read", json!({"name":"achbit-product"}))
+            .call("skill.read", json!({"name":"achbit-documents"}))
             .unwrap();
         assert!(skill["content"]
             .as_str()
             .unwrap()
-            .starts_with("---\nname: achbit-product"));
+            .starts_with("---\nname: achbit-documents"));
         for path in [
             "SKILL.md",
             "references/design.md",
             "references/inline-diagrams.md",
             "references/formats.md",
-            "references/interactive-previews.md",
             "assets/document.html",
             "assets/document.typ",
         ] {
@@ -604,56 +553,42 @@ mod tests {
     }
 
     #[test]
-    fn development_skills_are_discoverable_read_only_references() {
+    fn release_catalog_keeps_general_skills_and_retires_old_guidance() {
         let tools = test_product_tools();
         let definitions = ProductTools::definitions();
         let (_, _, schema) = definitions
             .iter()
             .find(|(name, _, _)| *name == "skill.read")
             .unwrap();
-        let names = schema["properties"]["name"]["enum"].as_array().unwrap();
+        assert_eq!(
+            schema["properties"]["name"]["enum"],
+            json!(["achbit-documents"])
+        );
         let catalog = crate::local_agent_plugins::plugin_catalog_projection(&json!({})).unwrap();
-        for (name, references) in [
-            (
-                "achbit-iteration",
-                [
-                    "references/implementation-map.md",
-                    "references/update-modes.md",
-                ],
-            ),
-            (
-                "achbit-release-audit",
-                ["references/simplification.md", "references/product-docs.md"],
-            ),
+        let plugins = catalog["plugins"].as_array().unwrap();
+        for (id, location) in [
+            ("achbit-product", "operations.md"),
+            ("achbit-session", "session-query.md"),
+            ("achbit-iteration", "locally installed"),
+            ("achbit-release-audit", "locally installed"),
         ] {
-            assert!(names.contains(&json!(name)));
-            let uri = format!("plugin://{name}@builtin");
-            let entry = catalog["plugins"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|plugin| plugin["uri"] == uri)
-                .unwrap();
-            assert_eq!(entry["source"], "builtin");
+            let uri = format!("plugin://{id}@builtin");
+            assert!(!plugins.iter().any(|p| p["uri"] == uri));
+            let error = tools.call("skill.read", json!({"name":id})).unwrap_err();
+            assert_eq!(error.code, "skill_not_found");
+            assert!(error.message.contains(location));
+        }
+        for id in ["achbit-frontend-design", "achbit-documents"] {
+            let uri = format!("plugin://{id}@builtin");
+            let entry = plugins.iter().find(|p| p["uri"] == uri).unwrap();
             assert_eq!(entry["contributionKind"], "skill");
-            assert_eq!(entry["category"], "reference");
-            assert_eq!(entry["discovery"], "searchOnly");
+            assert_eq!(entry["source"], "builtin");
             assert_eq!(entry["enabled"], true);
-            assert_eq!(entry["available"], true);
-            assert_eq!(
-                entry["reference"],
-                json!({"toolName":"skill.read", "name":name})
-            );
-            let skill = tools.call("skill.read", json!({"name":name})).unwrap();
-            assert_eq!(skill["name"], name);
-            assert_eq!(skill["path"], "SKILL.md");
-            assert!(!skill["content"].as_str().unwrap().is_empty());
-            for path in references {
-                let resource = tools
-                    .call("skill.read", json!({"name":name, "path":path}))
-                    .unwrap();
-                assert_eq!(resource["path"], path);
-                assert!(!resource["content"].as_str().unwrap().is_empty());
+            if id == "achbit-documents" {
+                assert_eq!(
+                    entry["reference"],
+                    json!({"toolName":"skill.read", "name":id})
+                );
             }
         }
         assert!(tools.computer_use_instance.is_none());

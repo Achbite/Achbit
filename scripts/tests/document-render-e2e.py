@@ -73,7 +73,7 @@ class Handler(fixture.MockProviderHandler):
                 output_uri = found("document-output", "plugin://documents@builtin")
             elif state.calls == 4:
                 require(isinstance(results["skill"], str), "Built-in document Skill failed")
-                require("document.render" in results["skill"], "Skill content missing")
+                require("assets/document.typ" in results["skill"] and "document.render" not in results["skill"], "Expected reusable document creation guidance")
             elif state.calls == 5:
                 for name in ["html", "pdf", "markdown"]:
                     require(bool(results[name]["artifacts"]), f"Document export failed: {results[name]}")

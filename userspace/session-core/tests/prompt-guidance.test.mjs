@@ -247,7 +247,7 @@ test('the selected product component locates product and plugin guides from the 
   }
 });
 
-test('product Shell paths require an installed slice and an actual product operations selection', () => {
+test('product Shell paths require a successful read of the installed operations guide and respect Host access', () => {
   const registry = new SessionConfigurationRegistry(undefined, achbitProductComponents);
   assert.deepEqual(registry.productToolGuidance({tools:{plugins:false}}), []);
   const [contribute] = registry.productToolGuidance({productComponents:['achbit.product-operations']});
@@ -256,14 +256,15 @@ test('product Shell paths require an installed slice and an actual product opera
   Object.assign(runtime.environment, {productDocsPath:'/product/docs',hostDataDirectory:'/host/data',
     commandPaths:{git:'/tools/git'},runtimeExecutables:{kernel:'/kernel',cli:'/host/cli'}});
   const input = {runtime,runId:'run:shell',tools:[shell],events:[]};
-  const read = (name,extra={}) => ({runId:input.runId,callId:'call:product',type:'tool.completed',payload:{record:{
-    toolName:'skill.read',preparedEffect:{origin:'coreBuiltin'},outcome:'completed',input:{name},...extra}}});
+  const read = (path,extra={}) => ({runId:input.runId,callId:'call:product',type:'tool.completed',payload:{record:{
+    toolName:'fs.read',preparedEffect:{origin:'coreBuiltin'},outcome:'completed',input:{path},...extra}}});
+  const guide = '/product/docs/operations.md';
   assert.deepEqual(contribute(input), []);
-  for (const event of [read('achbit-documents'),read('achbit-product',{outcome:'failed'}),
-    read('achbit-product',{preparedEffect:{origin:'extension'}}),{...read('achbit-product'),runId:'older'}]) {
+  for (const event of [read('/fixture/operations.md'),read(guide,{outcome:'failed'}),read(guide,{toolName:'skill.read'}),
+    read(guide,{preparedEffect:{origin:'extension'}}),{...read(guide),runId:'older'}]) {
     assert.deepEqual(contribute({...input,events:[event]}), []);
   }
-  const observed = {...input,events:[read('achbit-product')]};
+  const observed = {...input,events:[read(guide)]};
   const [fact] = contribute(observed);
   assert.equal(fact.toolName,'bash');
   assert.equal(fact.contributionId,'tool-result:call:product');
@@ -282,19 +283,13 @@ test('product Shell paths require an installed slice and an actual product opera
     assert.match(restricted.text, /Host execution is disabled.*CLI is unavailable/);
     assert.deepEqual(environment,before);
   }
-  const selected={...runtime,selectedPlugins:{catalogRevision:'r',plugins:[{uri:'plugin://achbit-iteration@builtin'}]}};
-  const started = snapshot => ({type:'run.started',runId:input.runId,
-    payload:{inputMessageId:'input',runtimeSnapshot:snapshot}});
-  const selectedMessage = {type:'message.committed',payload:{role:'user',messageId:'input'}};
-  const messageFact = {...fact,contributionId:'message:input'};
-  assert.deepEqual(contribute({...input,runtime:selected,events:[selectedMessage,started(selected)]}),[messageFact]);
-  const activation = {type:'session.plugins.activated',runId:input.runId,callId:'call:activate',
-    payload:{pluginUris:['plugin://achbit-product@builtin']}};
-  assert.deepEqual(contribute({...input,events:[activation]}),[{...fact,contributionId:'plugin-activation:call:activate'}]);
-  const tag = {type:'message.committed',payload:{role:'user',messageId:'input',guidanceReferences:[
-    {toolName:'skill.read',name:'achbit-product'}]}};
-  assert.deepEqual(contribute({...input,events:[tag,started(runtime)]}),[messageFact]);
-  assert.deepEqual(contribute({...input,events:[tag,{...started(runtime),runId:'past'}]}),[]);
+  const windows = {...runtime,environment:{...runtime.environment,os:'windows',productDocsPath:'C:\\App\\docs\\product'}};
+  assert.equal(contribute({...input,runtime:windows,events:[read('C:/App/docs/product/operations.md')]}).length,1);
+  const old = {type:'message.committed',runId:input.runId,payload:{role:'user',messageId:'input',
+    guidanceReferences:[{toolName:'skill.read',name:'achbit-product'}]}};
+  const activation = {type:'session.plugins.activated',runId:input.runId,callId:'call:old',
+    payload:{pluginUris:['plugin://achbit-iteration@builtin']}};
+  assert.deepEqual(contribute({...input,events:[old,activation]}),[]);
 });
 
 test('agent operation discovery respects delegation and coordinator boundaries', () => {

@@ -1,22 +1,8 @@
-# Review built-in capabilities and develop plugins
-
-## Identify the entrypoint
-
-Start with the current task’s tool declarations. Use `skill.read` for a named bundled reference; for a discoverable plugin, use the user’s selection or `plugin.search` followed by `plugin.activate`. A tool may already be callable without an `@` entry. Activation does not approve the underlying operation. The Host CLI’s `plugins list` shows managed registrations, not everything shipped with the product.
-
-| User's target | Existing capability and evidence to check |
-| --- | --- |
-| An Achbit browser page or a native window | Select **Computer Use**. In the originating GUI, inspect the Reader page by `previewId`. For a native window, check helper `status` and OS permissions, then observe the actual window. Verify the intended change on that target; if input was dispatched but observation failed, observe again rather than repeating the input. |
-| An existing Chrome tab | Select **Chrome** on macOS or Windows. The running Chrome must allow remote debugging and approve the connection. List pages, choose the returned `pageId`, then inspect that tab. After an action, check its result text and the resulting page state; MCP startup alone proves neither connection nor success. If Chrome declines, do not switch to desktop input. The run owns its MCP connection, not Chrome. |
-| A long command | Start the ordinary Shell command once. A returned `jobId` identifies that same execution. If the next step depends on its result, use `process` with `action: wait` and that ID. Check the terminal result, exit code or error. Cancel that job, not the whole run, if only the command should stop. |
-| A Docker environment or a persistent local service | With Docker available, use **Containers** to inspect the target before `exec`; approval applies to that container. Use `create` for a run-owned test container. A created container is not a successful build: check the command’s exit status and output inside it. For a service that must outlive the run, use a Host-managed `achbit-service.json` registration instead: check `plugins status`, then the intended service operation if functionality is at issue. |
-| Conversation evidence | For a named history, use `session.read` with the user's exact ID and an offered view. For the current conversation's context or reasoning, the user selects **Session Diagnostics**; its tool takes no target ID. To establish what an earlier call did, follow the tool record, not just a plan, approval or summary. |
-
-For a missing reference, trace typed input → picker candidate → selected URI → the submitted `guidanceReferences` or `pluginSelections`. A visible label alone is not a submitted selection. Verify tool execution separately only when it is the reported problem. See `computer-use.md`, `managed-processes.md`, `execution-environments.md` and `operations.md` under `productDocsPath` for the relevant runtime checks.
+# Developing and updating installed plugins
 
 ## Develop an importable plugin
 
-Use `achbitCli` and `hostDataDirectory` from the `Achbit product resources` attached to the selection message or successful activation/Skill read result. Submit CLI commands through Host Shell with `requestHostPermission` and a specific reason, including read-only `plugins capabilities`, `plugins inspect` and `plugins status`; the active permission policy handles authorization. The CLI is unavailable when Host execution is disabled. `instance` identifies the target; `--host-data-dir` selects an already running instance and fails if it is unavailable. Keep the normal and Debug instances distinct.
+Use `achbitCli` and `hostDataDirectory` from the `Achbit product resources` returned after the built-in file reader reads the installed product operations guide. Submit CLI commands through Host Shell with `requestHostPermission` and a specific reason, including read-only `plugins capabilities`, `plugins inspect` and `plugins status`; the active permission policy handles authorization. The CLI is unavailable when Host execution is disabled. `instance` identifies the target; `--host-data-dir` selects an already running instance and fails if it is unavailable. Keep the normal and Debug instances distinct.
 
 1. Run `plugins capabilities` for the small directory. Read only the needed `plugins guide plugins` or `plugins guide ui`, and `plugins template cli|service|ui|guidance`. These resources come from the running package; no source checkout is required.
 2. Author the returned template files in the task workspace. Customize its ID, contract and implementation. UI TypeScript needs compilation into a standalone browser module. Include dependencies/resources in the distributable, preserving the manifest's files contract.

@@ -2,7 +2,7 @@ import type { SessionProjection } from '@achbit/protocol';
 import { composerContentKey, readResubmittedInputs, rememberResubmittedInputs, restoreUnappliedInputs } from './composerRecovery';
 import type { QueuedInputProjection } from '@achbit/protocol';
 import { formatBrowserAnnotation, type BrowserAnnotation } from './browserReview';
-import { localizePlugin } from '../../pluginLocalization';
+import { localizePlugin, retiredDraftSkillNotice } from '../../pluginLocalization';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
 import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
@@ -778,10 +778,12 @@ export function useAgentComposer(
   };
   const draftCommand = !textDecision && !editingMessage && !pendingApproval ? parseComposerCommand(draft) : null;
   const guiCommand = draftCommand && !draftCommand.argument && composerCommands.find(command => command.id === draftCommand.name);
+  const retiredSkillNotice = guiCommand || textDecision || editingMessage || pendingApproval ? null
+    : retiredDraftSkillNotice(pluginCatalog, pluginSelections, recoveredContent.guidanceReferences, language);
   const canSend = !runtimeReady || (sessionId !== null && !projection) || readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
     ? Boolean(draft.trim()) && (Boolean(pendingPlan) || !pendingInteraction || pendingInteraction.allowFreeform)
     : Boolean(draft.trim() || pastedTexts.length || pastedImages.length || pendingFilesystemPaths.length || recoveredContent.filesystemReferences.length || editingMessage?.message.filesystemReferences.length)
-      && !modelSettingsBusy && !catalogBusy
+      && !retiredSkillNotice && !modelSettingsBusy && !catalogBusy
       && Boolean(canCancel || (modelSelectionConfirmed && profiles.some((profile) => profile.id === selectedProfileId && profile.enabled))));
   const showStopAction = canCancel && !pendingPlan && (Boolean(pendingInteraction)
     || (!draft.trim() && !pastedTexts.length && !pastedImages.length && !pendingFilesystemPaths.length && !recoveredContent.filesystemReferences.length));
@@ -921,6 +923,7 @@ export function useAgentComposer(
     submitDraft,
     selectMessageAttachments,
     canSend,
+    retiredSkillNotice,
     showStopAction,
     failedDrafts: failedDrafts[composerStateKey] ?? [],
     canRestoreFailedDraft,

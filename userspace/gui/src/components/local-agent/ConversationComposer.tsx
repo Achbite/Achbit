@@ -256,6 +256,7 @@ export function ConversationComposer({
           }
         }}>
       {error && <DismissibleError language={language} onDismiss={composer.clearError}>{error}</DismissibleError>}
+      {composer.retiredSkillNotice && <p className="local-agent__profile-notice" role="status">{composer.retiredSkillNotice}</p>}
       {attachmentError && <DismissibleError language={language} onDismiss={composer.clearAttachmentError}>{attachmentError}</DismissibleError>}
       {uiActionError && <DismissibleError language={language} onDismiss={onDismissUiActionError}>{uiActionError.includes('\n')
         ? <details><DisclosureSummary>{uiActionError.split('\n')[0]}</DisclosureSummary><pre>{uiActionError.slice(uiActionError.indexOf('\n') + 1)}</pre></details>
