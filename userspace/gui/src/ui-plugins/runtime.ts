@@ -1,3 +1,4 @@
+import { isSettingsContributionSlot } from './slots';
 import type {
   UiPluginContext,
   UiPluginFile,
@@ -168,7 +169,7 @@ export class UiPluginRuntime {
             other.path !== file.path &&
             other.enabled &&
             other.manifest?.slots.some((slot) => file.manifest?.slots.includes(slot)
-              && !['settings.models.overview', 'settings.connection.detail', 'settings.usage.panel'].includes(slot)
+              && !isSettingsContributionSlot(slot)
               && (slot !== 'tool.result' || other.manifest?.toolId === file.manifest?.toolId)),
         );
         const error = duplicate

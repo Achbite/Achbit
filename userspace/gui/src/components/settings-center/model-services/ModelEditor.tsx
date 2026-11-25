@@ -8,7 +8,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { LlmProviderProfile, ProviderAdapterDescriptor } from '@achbit/protocol';
 import { patchLlmProfiles, probeLlmProfile } from '../../../services/apiClient';
 import { reconcileSettingFields } from '../settingDraft';
-import { useModelLanguage, data, message, Hint } from './shared';
+import { useModelLanguage, requireServiceData, serviceErrorMessage } from './modelServiceSettings';
+import { ModelSettingsHelp } from './ModelSettingsHelp';
 
 const editableFields = ['name', 'model', 'contextWindowTokens', 'maxOutputTokens', 'temperature'] as const;
 
@@ -62,11 +63,11 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
     if (pending.current) return false;
     pending.current = true; setBusy(true); onBusyChange?.(true); setFeedback(''); setFailed(false);
     try { await action(); return true; }
-    catch (error) { setFailed(true); setFeedback(message(error)); return false; }
+    catch (error) { setFailed(true); setFeedback(serviceErrorMessage(error)); return false; }
     finally { pending.current = false; setBusy(false); onBusyChange?.(false); }
   };
   const persist = async (next: LlmProviderProfile, keys: readonly (keyof LlmProviderProfile)[]) => {
-    const result = data(await patchLlmProfiles({ profile: next }));
+    const result = requireServiceData(await patchLlmProfiles({ profile: next }));
     const saved = result.profiles.find(item => item.id === profile.id);
     if (!saved) throw new Error('Saved model is missing from the response.');
     const previous = baseline.current;
@@ -156,9 +157,9 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
           {adapter.id === 'custom' && <label>{text('协议行为', 'Protocol behavior')}<NativeSelect value={selected.providerFlavor} onChange={event => void choose({ providerFlavor: event.target.value as LlmProviderProfile['providerFlavor'] })}>{['openai','deepseek','zhipu','moonshot'].map(value => <option key={value}>{value}</option>)}</NativeSelect></label>}
         </div></details>
         <div className="model-actions"><label className="model-check"><ToggleSwitch checked={selected.enabled} onChange={event => void choose({ enabled: event.target.checked })} />{text('启用', 'Enabled')}</label>
-          <Button variant="secondary" disabled={!!onRemove} onClick={() => void perform(async () => { const result = data(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</Button><Hint>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</Hint>
-          {!onRemove && profile.id !== defaultId && <Button variant="secondary" disabled={!confirmed.enabled} onClick={() => void perform(async () => { data(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为新对话默认', 'Set as new chat default')}</Button>}
-          <Button className="model-danger" onClick={() => onRemove ? onRemove() : void perform(async () => { data(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</Button>
+          <Button variant="secondary" disabled={!!onRemove} onClick={() => void perform(async () => { const result = requireServiceData(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</Button><ModelSettingsHelp>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</ModelSettingsHelp>
+          {!onRemove && profile.id !== defaultId && <Button variant="secondary" disabled={!confirmed.enabled} onClick={() => void perform(async () => { requireServiceData(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为新对话默认', 'Set as new chat default')}</Button>}
+          <Button className="model-danger" onClick={() => onRemove ? onRemove() : void perform(async () => { requireServiceData(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</Button>
           <Button className="model-primary model-push" type={onRemove || dirty ? 'submit' : 'button'} disabled={busy || !onRemove && !dirty}
             onClick={event => {
               event.preventDefault();

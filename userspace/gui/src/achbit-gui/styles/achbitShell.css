@@ -805,7 +805,7 @@
 .achbit-gui-project-create-menu,
 .achbit-gui-session-context-menu {
   position: fixed;
-  z-index: 180;
+  z-index: var(--ac-window-layer-navigation-menu);
   width: 218px;
   box-sizing: border-box;
   max-width: calc(100vw - 16px);
@@ -889,7 +889,6 @@
 .achbit-gui-text-dialog-backdrop {
   position: fixed;
   inset: 36px 0 0;
-  z-index: 190;
   display: grid;
   place-items: center;
   padding: 24px;

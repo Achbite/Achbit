@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { boundedPaneWidth, resizedPaneWidth } from './paneGeometry';
+import { boundedPaneWidth, resizedPaneWidth } from '../components/shared/paneGeometry';
 import './resizeHandle.css';
 
 interface ResizeHandleProps {

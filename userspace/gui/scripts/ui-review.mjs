@@ -9,7 +9,6 @@ import ts from 'typescript';
 const gui = fileURLToPath(new URL('..', import.meta.url));
 const src = resolve(gui, 'src');
 const extensions = /\.(?:[cm]?[jt]sx?|css|html)$/i;
-const privateControls = new Set(['ModalDialog', 'ToggleSwitch', 'NativeSelect', 'ResizeHandle']);
 const native = new Map(Object.entries({
   button: 'Button / IconButton', summary: 'DisclosureSummary', select: 'NativeSelect',
   dialog: 'ModalDialog', svg: 'UiIcon', input: '原生字段或 ToggleSwitch',
@@ -19,8 +18,7 @@ export function catalogViolation(file, specifier) {
   if (relative(src, file).split('\\').join('/').startsWith('ui-components/')) return;
   const target = specifier.startsWith('/src/') ? join(src, specifier.slice(5)) : resolve(dirname(file), specifier);
   const key = relative(src, target).split('\\').join('/').replace(/\.[cm]?[jt]sx?$/, '');
-  if (key === 'icons/registry' || (key.startsWith('ui-components/') && key !== 'ui-components/index') ||
-      key.startsWith('components/shared/') && privateControls.has(key.slice('components/shared/'.length))) {
+  if (key === 'icons/registry' || (key.startsWith('ui-components/') && key !== 'ui-components/index')) {
     return '请通过 ui-components 公共入口导入 ' + specifier;
   }
 }

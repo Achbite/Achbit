@@ -3,7 +3,6 @@ import { UsageWidget } from '../../ui-plugins/UsageWidget';
 import { ComputerTargetPreview } from './ComputerTargetPreview';
 import type { ConversationReaderLayout } from '../../components/local-agent/LocalAgentPanel';
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import ProjectEnvironmentSettings from '../../components/settings-center/sections/ProjectEnvironmentSettings';
 import { restoredInterfaceView, useInterfaceReloadView } from '../../services/interfaceReload';
 import AchbitNavigationBox from './AchbitNavigationBox';
 import { usePaneWidth } from '../../components/shared/usePaneWidth';
@@ -54,6 +53,10 @@ const AchbitTaskPanel = lazy(
 
 const SettingsCenter = lazy(
   () => loadInterfaceModule(() => import('../../components/settings-center/SettingsCenter')),
+);
+
+const ProjectEnvironmentSettings = lazy(
+  () => loadInterfaceModule(() => import('../../components/settings-center/sections/ProjectEnvironmentSettings')),
 );
 
 type PositionedMenu<T> = { value: T; x: number; y: number };
@@ -763,7 +766,11 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
                 <AchbitShellIcon name="plus" size={18} />{t(language, 'achbitGui.project.addFolder')}
               </button>
             </div>
-            <ProjectEnvironmentSettings key={workspaceManager.project.id} projectId={workspaceManager.project.id} chinese={language === 'zh-CN'} />
+            <InterfaceLoadBoundary>
+              <Suspense fallback={<p role="status">{t(language, 'workspaceDialog.loading')}</p>}>
+                <ProjectEnvironmentSettings key={workspaceManager.project.id} projectId={workspaceManager.project.id} chinese={language === 'zh-CN'} />
+              </Suspense>
+            </InterfaceLoadBoundary>
             {workspaceManager.error && (
               <p className="achbit-gui-text-dialog__error" role="alert">{workspaceManager.error}</p>
             )}
@@ -778,7 +785,7 @@ const AchbitWorkbenchLayout: React.FC<AchbitWorkbenchLayoutProps> = ({
       )}
 
       {settingsOpen && (
-        <section ref={settingsPanel} tabIndex={-1} className="achbit-local-agent-overlay" aria-label={t(language, 'settings.title')}>
+        <section ref={settingsPanel} tabIndex={-1} className="achbit-gui-settings-panel" data-native-overlay aria-label={t(language, 'settings.title')}>
           <div className="achbit-local-agent-settings" onMouseDown={(event) => event.stopPropagation()}>
             <InterfaceLoadBoundary><Suspense fallback={null}>
               <SettingsCenter

@@ -8,7 +8,7 @@ import { installPaletteDefaults } from '../theme/palette';
 import { installInterfaceUpdateMonitor } from '../services/interfaceUpdates';
 import { InterfaceUpdateNotice } from '../components/shared/InterfaceUpdateNotice';
 import React from 'react';
-import '../theme/controls.css';
+import '../theme/nativeControls.css';
 import ReactDOM from 'react-dom/client';
 import AchbitGuiApp from './AchbitGuiApp';
 import { installNativeContextMenuGuard } from '../utils/nativeContextMenuGuard';

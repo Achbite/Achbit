@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ComponentProps } from 'react';
-import { finishPointerFocus } from './interactionFocus';
+import { finishPointerFocus } from '../components/shared/interactionFocus';
 
 /** Keep the native picker, but end pointer selection instead of leaving editing focus behind. */
 export default function NativeSelect({ onChange, onPointerDown, onKeyDown, onClick, onBlur, ...props }: ComponentProps<'select'>) {

@@ -29,7 +29,7 @@ test('usage charts keep compact axes and expose exact cache hit, miss and output
 });
 
 test('only paired input can be a cache miss; unknown input retains its share of the stack', async t => {
-  const [{ usageTokenBreakdown }] = await loadGuiModules(t, [`${feature}/shared.tsx`]);
+  const [{ usageTokenBreakdown }] = await loadGuiModules(t, [`${feature}/usageFormatting.ts`]);
   const mixed = { reportedCalls: 3, cacheReportedCalls: 2, inputTokens: 1_000, cacheReadTokens: 75, cacheReportedInputTokens: 150, outputTokens: 10 };
   assert.deepEqual(usageTokenBreakdown(mixed), { hit: 75, miss: 75, unknown: 850, output: 10 });
   const unpaired = { ...mixed, cacheReportedInputTokens: undefined };
@@ -39,7 +39,7 @@ test('only paired input can be a cache miss; unknown input retains its share of 
 });
 
 test('model usage keeps small counts exact and promotes rounded totals across decimal units', async t => {
-  const [{ formatUsageTokens }] = await loadGuiModules(t, [`${feature}/shared.tsx`]);
+  const [{ formatUsageTokens }] = await loadGuiModules(t, [`${feature}/usageFormatting.ts`]);
   for (const [value, expected] of [[0, '0'], [999, '999'], [1_000, '1K'], [999_999, '1M'], [44_000_000, '44M'],
     [133_396_235, '133.4M'], [3_186_159, '3.19M'], [999_999_999, '1B'], [2_500_000_000, '2.5B']]) {
     assert.equal(formatUsageTokens(value), expected, `tokens: ${value}`);

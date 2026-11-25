@@ -1,3 +1,5 @@
+@import './windowLayers.css';
+
 /* Shared components use the same semantic names in the editor and desktop shells. */
 :root {
   --ac-background: var(--bg-app);
@@ -32,7 +34,7 @@
 .ui-palette-error {
   position: fixed;
   inset: auto 16px 16px;
-  z-index: 10000;
+  z-index: var(--ac-window-layer-appearance-error);
   display: flex;
   gap: 16px;
   padding: 12px;

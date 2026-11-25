@@ -5250,15 +5250,15 @@ test('the context indicator renders shared Agent usage on each fresh mount', asy
 });
 
 test('usage costs follow the saved display currency while unpriced usage stays unknown', async (t) => {
-  const [{ Cost }, { useSettingsStore }] = await loadGuiModules(t, [
-    '/src/components/settings-center/model-services/shared.tsx', '/src/state/settingsStore.ts',
+  const [{ UsageCost }, { useSettingsStore }] = await loadGuiModules(t, [
+    '/src/components/settings-center/model-services/UsageCost.tsx', '/src/state/settingsStore.ts',
   ]);
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const previous = { ...useSettingsStore.getInitialState() };
   t.after(() => { Object.assign(useSettingsStore.getInitialState(), previous); useSettingsStore.setState(previous, true); });
   const totals = { calls: 1, pricedCalls: 1, estimatedCost: 2 };
-  const render = () => renderToStaticMarkup(createElement(Cost, { totals }));
+  const render = () => renderToStaticMarkup(createElement(UsageCost, { totals }));
   const setCurrency = currency => {
     const effectiveSettings = { ...previous.effectiveSettings, 'workbench.language': 'en-US', 'gui.usageWidget.currency': currency };
     Object.assign(useSettingsStore.getInitialState(), { effectiveSettings });
@@ -5267,7 +5267,7 @@ test('usage costs follow the saved display currency while unpriced usage stays u
   setCurrency('USD'); assert.ok(render().includes('$2.00'));
   setCurrency('CNY'); assert.ok(render().includes('14.00'));
   assert.equal(totals.estimatedCost, 2, 'currency selection cannot rewrite recorded USD cost');
-  const unknown = renderToStaticMarkup(createElement(Cost, { totals: { calls: 1, pricedCalls: 0, estimatedCost: null } }));
+  const unknown = renderToStaticMarkup(createElement(UsageCost, { totals: { calls: 1, pricedCalls: 0, estimatedCost: null } }));
   assert.ok(unknown.includes('—')); assert.equal(unknown.includes('0.00'), false);
 });
 

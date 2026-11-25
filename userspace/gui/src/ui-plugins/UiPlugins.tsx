@@ -12,6 +12,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import { createPortal } from 'react-dom';
+import type { UiSettingsContributionSlot } from './slots';
 import { withBuiltinRegions } from './builtins';
 import { useSettingsStore } from '../state/settingsStore';
 import { createPluginScope, errorText, UiPluginRuntime, type UiPluginEntry } from './runtime';
@@ -370,7 +371,7 @@ export function useDisplayTheme(): string {
 
 /** Settings contributions compose in installation order instead of replacing built-in controls. */
 export function UiSettingsContributions({ slot, input, onConnectionChanged }: {
-  slot: Extract<UiPluginSlot, `settings.${string}`>;
+  slot: UiSettingsContributionSlot;
   input: Extract<UiPluginInput, { kind: `settings.${string}` }>;
   onConnectionChanged?(): Promise<void>;
 }) {

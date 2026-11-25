@@ -1,23 +1,21 @@
-/** Existing replaceable regions. The type and built-in registration list derive from this catalog.
- * New public slots still require an explicit plugin-contract decision; primitives use ui-components.
- */
-export const UI_REGION_SLOTS = Object.freeze({
-  'workbench.layout': 'Workbench composition',
-  navigation: 'Projects and conversations',
-  'conversation.header': 'Conversation heading and Reader controls',
-  'activity.row': 'Activity disclosure',
-  'activity.summary': 'Activity summary',
-  'activity.detail': 'Activity details',
-  'composer.layout': 'Composer layout',
-  'composer.model': 'Model selection',
-  'composer.attachments': 'Composer attachments',
-  'composer.actions': 'Composer actions',
-  'task.panel': 'Task progress',
-  'artifact.panel': 'Delivered resources',
-  'reader.layout': 'Reader layout',
-  'reader.toolbar': 'Reader toolbar',
-  'reader.tree': 'Resource tree',
-  'settings.navigation': 'Settings navigation',
-} as const);
-export type UiRegionSlot = keyof typeof UI_REGION_SLOTS;
-export const regionSlots: readonly UiRegionSlot[] = Object.freeze(Object.keys(UI_REGION_SLOTS) as UiRegionSlot[]);
+import slots from '../../../../config/ui/plugin-slots.json';
+
+/** The Host validates the same ordered public IDs when installing display plugins. */
+export type UiPluginSlot = keyof typeof slots;
+type SlotsWith<Role extends string> = {
+  [Id in UiPluginSlot]: Role extends keyof (typeof slots)[Id] ? Id : never
+}[UiPluginSlot];
+export type UiRegionSlot = SlotsWith<'region'>;
+export type UiSettingsContributionSlot = SlotsWith<'settingsContribution'>;
+
+const slotIds = Object.keys(slots) as UiPluginSlot[];
+export const regionSlots: readonly UiRegionSlot[] = Object.freeze(
+  slotIds.filter((id): id is UiRegionSlot => 'region' in slots[id]),
+);
+export const UI_REGION_SLOTS = Object.freeze(Object.fromEntries(
+  regionSlots.map(id => [id, slots[id].region]),
+)) as Readonly<Record<UiRegionSlot, string>>;
+
+export function isSettingsContributionSlot(id: UiPluginSlot): id is UiSettingsContributionSlot {
+  return Object.hasOwn(slots, id) && 'settingsContribution' in slots[id];
+}

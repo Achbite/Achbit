@@ -486,7 +486,7 @@
 .plugin-manager__manual form:not(.plugin-connection) {display:flex;gap:8px;padding:10px 0;}
 .plugin-manager__manual input,.plugin-connection input,.plugin-connection textarea {min-width:0;flex:1;border:1px solid var(--ac-border);padding:6px 8px;border-radius:6px;background:var(--ac-surface-raised);color:inherit;font:inherit;}
 .plugin-connection textarea {resize:vertical;min-height:72px;}
-.plugin-import-overlay {position:fixed;inset:36px 0 0;z-index:120;display:grid;place-items:center;padding:24px;background:color-mix(in srgb, var(--ac-shadow-color) 26.67%, transparent);}
+.plugin-import-overlay {position:fixed;inset:36px 0 0;display:grid;place-items:center;padding:24px;background:color-mix(in srgb, var(--ac-shadow-color) 26.67%, transparent);}
 .plugin-import {width:min(440px,100%);padding:24px;background:var(--ac-surface-raised);border:1px solid var(--ac-border);border-radius:12px;box-shadow:0 18px 60px color-mix(in srgb, var(--ac-shadow-color) 20.00%, transparent);}
 .plugin-import h3 {font-size:calc(16px * var(--ac-ui-font-scale, 1));margin:0 0 20px;}
 .plugin-import p {font-size:calc(13px * var(--ac-ui-font-scale, 1));line-height:1.6;}

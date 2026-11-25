@@ -297,7 +297,7 @@ For focused configuration debugging, `context-management.test.mjs` exercises bar
 
 Built-in GUI controls are registered in `userspace/gui/src/ui-components/index.ts`. Feature code imports from that catalog, first reusing existing controls and variants, then composing specialized controls, and only then registering new primitives. Registration retains the original React component identity. Geometry and interaction states belong to shared styles; business callbacks, localized copy and `useUiOwner` identities remain with their existing owners. See the [component guide](../userspace/gui/src/ui-components/README.md).
 
-`userspace/gui/src/ui-plugins/slots.ts` is the declaration source for existing replaceable regions; the region type and built-in registrations derive from it. It does not replace the display-plugin runtime or expand its public contract. A shared primitive is not a new plugin slot.
+[`config/ui/plugin-slots.json`](../config/ui/plugin-slots.json) defines the public display slots and their roles. Host manifest checks and development discovery use this catalog. The GUI derives slot types, built-in region fallback and settings contribution rules from it. See the [frontend layers and component naming guide](../userspace/gui/src/ui-components/README.md#framework-layers-and-entry-points) for the source owners and registration paths.
 
 ### UI ownership declarations
 

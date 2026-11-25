@@ -34,29 +34,64 @@ Review each new or changed operation, including changes within existing files an
 
 `DisclosureSummary` renders a native `summary` with the shared decorative chevron for ordinary content disclosures. Its parent `details` retains open state and native keyboard/toggle behavior; refs, events, localized children and owner/action attributes pass through. Use `chevronPosition="leading"` when a compact settings label leads with the arrow. The default places it after the label. Feature styles retain placement and surrounding layout. Menus, tree navigation and already specialized disclosure controls keep their existing interaction policies.
 
-## Regions and ownership
+## Framework layers and entry points
 
-These are complementary mechanisms, not interchangeable registrations:
+Start with the owner of the change. Source paths in this table are relative to `userspace/gui/src`.
 
-- `UI_COMPONENTS`: shared implementation and composition catalog.
-- `UI_REGION_SLOTS` in `ui-plugins/slots.ts`: existing replaceable regions. Both `UiRegionSlot` and the built-in renderer list derive from it. Their external plugin inputs, actions and replacement behavior stay unchanged.
-- `useUiOwner`: instance/part/action identity and diagnostics. Business owners keep their existing declarations; primitives preserve the attributes rather than minting another business owner.
-
-A new public region still needs an explicit plugin-interface decision. Do not add a slot for every button or introduce a second plugin runtime to achieve ordinary reuse.
-
-## Design ownership map
-
-| Concern | Canonical owner | Consumption and lifetime |
+| Layer | Where to work | Registration or contract |
 | --- | --- | --- |
-| Shared controls and icons | `UI_COMPONENTS`, `icons/registry.tsx` | Import through this directory. `controls.css` owns primitive appearance; aliases preserve function identity. |
-| Semantic colors and named themes | `config/ui/palette.json`, `theme/palette.ts`, `theme/themeLibrary.ts` | `main.tsx` installs defaults once; `PaletteOverrides` reads the shared settings store. Theme selection derives from applied colors. |
-| Fonts and content sizes | `theme/typography.ts`, `GuiTypography.tsx`, `theme/builtinFonts.css` | GUI typography applies and cleans up root variables. Feature headings may adjust emphasis while body and inline content inherit the reading size. |
-| Geometry and feature layout | `achbitDesignTokens.css` plus the owning feature stylesheet | Shared controls use semantic geometry tokens. Reader tabs, tree guides, content canvas and composer placement stay with `documentPreview.css` / `localAgentPanel.css`; derived tree colors use palette variables. |
-| Replaceable business regions | `ui-plugins/slots.ts`, `UiRegion`, `UiPluginRuntime` | Region types and built-ins derive from one list. Manifest-declared registration is validated; view/module scopes remove styles and effects on replacement or unmount. Other content/settings slots remain in `UiPluginSlot`. |
-| Text and rich content | `config/i18n`, `BufferedMarkdown` / `streamingMarkdown` | Owners provide localized labels. Conversation and Reader share Markdown, emphasis, links and math rendering. |
-| Diagnostic identity | `useUiOwner`, `ui-ownership-sources.mjs` | Source locations derive from owner/region declarations. Actions annotate the actual control; the mounted instance unregisters on cleanup. |
+| Theme and assets | [theme](../theme), [icons/registry.tsx](../icons/registry.tsx), [design tokens](../achbit-gui/styles/achbitDesignTokens.css) | `config/ui/palette.json` owns published color keys. Typography and palette settings own applied variables. `theme/nativeControls.css` styles native controls and scrollbars. Shared React control chrome is in [controls.css](controls.css). |
+| Shared UI components | [index.ts](index.ts) and the implementation beside it | Ten current components in six families (action, input, disclosure, layout, dialog, icon). Use the exported name and family. `base` records composition. Glyph definitions live in the icon catalog. |
+| Cross-feature interactions | [components/shared](../components/shared), [useDismissibleLayer](../components/shared/useDismissibleLayer.ts) | Focus modality, dismissal, resizing geometry and auto-dismiss are shared behaviors. Feature controls supply trigger, roots, timeouts, text and callbacks. |
+| Workbench and containers | [AchbitWorkbenchLayout](../achbit-gui/layout/AchbitWorkbenchLayout.tsx), [workbench styles](../achbit-gui/styles/achbitWorkbench.css), [transcript viewport](../components/local-agent/useConversationViewport.ts) | The workbench owns the grid, sidebar, settings pane and layout regions. The feature viewport owns scrolling, restoration and bounds. Reader width and overflow belong to its pane. |
+| Feature presentations | [conversation and Reader](../components/local-agent), [settings and model services](../components/settings-center), [folder selection](../components/workspace-open-dialog), [window controls](../components/window-controls) | Keep views, their local components, styles and hooks with the feature. Shared text rendering enters through [presentation](../presentation). |
+| View state and services | [state](../state), [services](../services) | Stores own drafts, selections, cached reading state and transient notices. Services own requests, subscriptions and Host adapters. Session owns committed conversation facts. |
+| Display extensions | [slot catalog](../../../../config/ui/plugin-slots.json), [React region mount](../ui-plugins/UiRegion.tsx), [runtime](../ui-plugins/runtime.ts) | The catalog drives Host admission and discovery, GUI types, built-in regions and settings contribution selection. Installation and rendering use the same public IDs. |
+| Diagnostics | [useUiOwner](../ui-ownership/useUiOwner.ts), [Debug collector](../debug/registry.ts) | A mounted owner declares stable action/part identities. It supplies observations from the actual instance and unregisters on disposal. |
 
-A feature-owned native tab, tree row, input or progress graphic does not become a public primitive merely because it renders UI. Reuse the existing catalog for ordinary shared chrome, retain feature semantics at their owner, and add a reusable entry only when a distinct reusable control is needed. Static component exports and replaceable region registration serve different purposes; neither requires a second mounted-state registry.
+### Component and surface names
+
+| Responsibility | Naming and example |
+| --- | --- |
+| Reusable control | PascalCase by interaction, e.g. `IconButton`, `NativeSelect`. Keep its implementation, styles, catalog entry and typed exports together. |
+| Feature presentation | Name the subject and the interaction, e.g. [ModelSettingsHelp](../components/settings-center/model-services/ModelSettingsHelp.tsx) or [UsageCost](../components/settings-center/model-services/UsageCost.tsx). Standard control props carry focus, refs, accessible names and business callbacks. |
+| Layout, pane, dialog and menu | `Layout` arranges regions. A pane or panel owns a bounded area. `Dialog` carries modal focus. `Menu` offers actions. For example `.achbit-gui-settings-panel` occupies a workbench grid cell and uses the existing native-overlay marker. `ModelPickerDialog` uses a native dialog inside settings. |
+| Hooks and utilities | `use…` for a React lifecycle, e.g. `useSettingsHelp`. Describe the value or effect of pure helpers, e.g. [usageFormatting](../components/settings-center/model-services/usageFormatting.ts). Keep imported names explicit at a call site such as `requireServiceData(response)`. |
+| Public and diagnostic identities | Slot IDs name extension points (`composer.model`, legacy `navigation`). Owner, action and DOM part IDs identify a mounted interaction. Preserve existing manifest, settings and Debug IDs when reorganizing implementation files. |
+
+### Slot roles
+
+Each key in the [shared catalog](../../../../config/ui/plugin-slots.json) is an existing public ID. Its single role defines how it participates. `region` gives a built-in replaceable region. `view` selects a display renderer. `settingsContribution` composes installed sections in order. `toolResult` selects per tool ID. `theme` applies scoped styles. The Host exposes the same ID order through development discovery. [slots.ts](../ui-plugins/slots.ts) derives the frontend types and region list. `useUiOwner` exposes diagnostics for actual mounts. New public extension points follow the [display plugin contract](../../../../docs/product/ui-plugins.md).
+
+### Drawing order
+
+[Workbench styles](../achbit-gui/styles/achbitWorkbench.css) define the ordering of the grid surface, titlebar, navigation and feedback inside the workbench. [Window layers](../theme/windowLayers.css) order body-level update notices, navigation and path menus, permission menus and appearance errors. Their names describe the presenting surface. Sticky table cells, card decorations and relative positions inside a component keep local stacking values. Native dialogs and manual popovers use the browser top layer and their actual opening order. A platform child WebView has a separate drawing surface. Declare an intersecting obstructing element with the existing `data-native-overlay` marker when it should cover that view. [Native view bounds](../components/local-agent/nativeBrowserLayout.ts).
+
+## Containers and feedback
+
+Identify the element that determines available width, the node that scrolls and the surface that owns focus. For a resizable pane, derive layout from its own bounds. Keep horizontally overflowing code or tables inside their content region. Recheck the same control with the sidebar, Reader or settings dialog open.
+
+| Interaction | Owner and observable result |
+| --- | --- |
+| Enter or revisit a conversation | The transcript viewport owns the body anchor, offset and distance to the tail. The navigation rail owns the visible range of ticks. Check both after a jump and after switching away and back. |
+| Submit a message | Composer owns input and immediate feedback. Correlate the command receipt, Session commit, projection and matching message in view through their existing identities. Handle a reply after a switch in the originating session. |
+| Show help inside settings | Short descriptions use the shared settings help surface. A pointer can cross to the text. Escape closes the innermost active layer. The containing dialog owns modal focus and its eventual return. Interactive help uses a surface with focusable content. |
+| Report a result or condition | Use the affected control for local feedback, the session's existing event area for transient session notices and the workbench banner for a persistent application condition. A decision that blocks progress belongs to its existing decision owner. Each owner handles dismissal, replacement and cleanup. |
+
+### Choosing a feedback surface
+
+Choose by the affected object, whether the condition persists, and whether the user must respond. The examples below identify current production owners. A window-wide toast queue, announcement inbox or cross-launch read receipt would require its own product contract.
+
+| Surface and trigger | Layer and container | Dismissal, focus and accessibility | Current implementation |
+| --- | --- | --- | --- |
+| Tooltip. The user hovers over or focuses a control with a short description. | Anchor the description to its control inside the active panel or dialog. Settings uses a manual popover in the browser top layer. | Associate the control via `aria-describedby` and the text via `role="tooltip"`. Allow pointer travel to the text. Escape closes the hint while the outer dialog remains open. Put interactive content in a popover. | [SettingsHelp](../components/settings-center/SettingsHelp.tsx), [model settings trigger](../components/settings-center/model-services/ModelSettingsHelp.tsx) |
+| Popover, listbox or menu. The user opens choices or commands for a specific object. | Keep the anchor, popup and any portalled roots in the same dismissal boundary. The theme listbox uses a manual popover. The sidebar menu is portalled to the document body. | Match the keyboard interaction to the role. The sidebar menu supports arrows, Home and End. The theme picker tracks the selected option. Outside pointer, focus leaving, selection and Escape follow the active surface. A keyboard dismissal returns focus as appropriate. | [ThemePicker](../components/settings-center/ThemePicker.tsx), [SidebarMenu](../achbit-gui/layout/SidebarMenu.tsx), [dismissal hook](../components/shared/useDismissibleLayer.ts) |
+| Auto-disappearing toast or session notice. An operation emits a recoverable informational, success or warning result. | The current delivery surface is a stack in the originating conversation transcript. The store deduplicates by session and business key. Use the initiating control for feedback that belongs only to that control. | The session stack announces politely with `role="status"`, keeps focus in place and exposes a named close button. It defaults to eight seconds and three visible items per scope. Required actions or persistent errors stay with an actionable owner. | [UiEvents](../state/uiEvents.ts), [UiEventStack](../components/local-agent/UiEventStack.tsx), [local expiry](../components/shared/useAutoDismiss.ts) |
+| Persistent banner or announcement. A condition remains relevant across the workbench. | The current interface-update banner occupies the named window update-notice layer. Its service owns availability and errors. A new publication channel would also need an audience and an acknowledgement policy. | The update notice remains while the service reports the condition. It provides a status region, keyboard-accessible reload action and expandable error detail. Any subsequent reload confirmation has its own decision and focus boundary. | [InterfaceUpdateNotice](../components/shared/InterfaceUpdateNotice.tsx), [update state](../services/interfaceUpdates.ts), [reload confirmation](../components/shared/InterfaceReloadDialog.tsx) |
+| Blocking modal. The user must act before the operation can proceed, such as deciding whether to restart with unsaved work. | Open `ModalDialog` in the window that owns the decision. The native dialog establishes its modal top layer. The feature owns pending state, consequences and confirm/cancel callbacks. | Give the dialog an accessible name, choose its initial focus, contain Tab, respect busy dismissal and restore focus on close. An inner tooltip handles the first Escape. Keep both the decision and its error available for as long as they matter. | [ModalDialog](ModalDialog.tsx), [product update decision](../components/shared/ProductUpdateNotice.tsx) |
+| Native desktop reminder. A newly completed run settles while the user is away. | The feature consumes new Host settlement events and the desktop shell selects delivery according to foreground state. The background reminder has its own native window. In the foreground the user's setting controls completion sound. | The background reminder opens without taking focus. Its labelled open and dismiss actions target the originating session or hide the reminder. A generation-checked timer hides the current reminder after eight seconds. Keep the conversation result reachable after expiry. | [completion event consumer](../achbit-gui/layout/useCompletionNotifications.ts), [native reminder](../../../../shells/achbit-gui/src-tauri/src/notifications.rs) |
+
+Check keyboard and pointer input through the visible control. For cross-process diagnosis use the existing [Debug observation commands](../../../../docs/product/debug-control.md). An event without a DOM input has a programmatic source. When reporting that text was visible, combine the matching DOM geometry with an observation of the foreground window.
 
 ## Shared interaction policy
 

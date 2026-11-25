@@ -7,7 +7,7 @@ import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { t } from '../../../i18n';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
 import { useConversationSubagents } from '../../shared/useConversationSubagents';
-import { message, useModelLanguage } from './shared';
+import { serviceErrorMessage, useModelLanguage } from './modelServiceSettings';
 import { useSettingsHelp } from '../SettingsHelp';
 
 const numericSettings = ['maxConcurrent', 'maxCallsPerRun', 'maxMembersPerSession'] as const;
@@ -50,7 +50,7 @@ export default function SubagentSettings({ profiles, connections }: {
     }
     setError('');
     try { await subagents.save(patches); return true; }
-    catch (failure) { setError(message(failure)); return false; }
+    catch (failure) { setError(serviceErrorMessage(failure)); return false; }
   };
   return <details className="model-editor model-divider">
     <DisclosureSummary aria-describedby={help.helpId} {...help.helpEvents}>

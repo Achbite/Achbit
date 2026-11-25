@@ -1,7 +1,7 @@
 import React, { useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import './modalDialog.css';
-import { captureFocusReturn, focusOpenedPanel, returnInteractionFocus, useInteractionFocus } from './interactionFocus';
+import { captureFocusReturn, focusOpenedPanel, returnInteractionFocus, useInteractionFocus } from '../components/shared/interactionFocus';
 
 /** The native top layer owns focus containment, nested dialogs and background inertness. */
 export default function ModalDialog({ children, onClose, busy = false, className = '', ...label }: {
