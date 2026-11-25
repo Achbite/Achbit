@@ -30,7 +30,7 @@ test('the sidebar clears a read cancellation without hiding unread or active run
 });
 
 test('child Plan reviews advance independently and a revised scope can prompt again', async t => {
-  const [{ nextAgentPlanReview, matchesAgentPlanReview, AgentPlanReview }] = await loadGuiModules(t,
+  const [{ nextReview, planAndApprovalReviews, matchesAgentPlanReview, AgentPlanReview }] = await loadGuiModules(t,
     ['/src/components/local-agent/AgentPlanReview.tsx']);
   const first = { agentSessionId: 'session:writer', displayName: 'Writer', runId: 'run:writer',
     plan: { planId: 'plan:report', revision: 1 }, interactionIds: [] };
@@ -38,7 +38,7 @@ test('child Plan reviews advance independently and a revised scope can prompt ag
   const question = { agentSessionId: 'session:question', runId: 'run:question', interactionIds: ['question:1'] };
   const decisions = [question, first, second];
   const original = structuredClone(decisions), dismissed = new Set();
-  const review = nextAgentPlanReview(decisions, dismissed);
+  const review = nextReview(planAndApprovalReviews(decisions), dismissed);
   assert.equal(review.decision, first);
   let mounted;
   function Probe() {
@@ -48,12 +48,12 @@ test('child Plan reviews advance independently and a revised scope can prompt ag
   renderToStaticMarkup(createElement(Probe));
   assert.equal(mountedRoute(mounted).props.decision, first, 'the parent entry mounts the pending review without opening child history');
   dismissed.add(review.key);
-  assert.equal(nextAgentPlanReview(decisions, dismissed).decision, second);
-  dismissed.add(nextAgentPlanReview(decisions, dismissed).key);
-  assert.equal(nextAgentPlanReview(decisions, dismissed), null, 'polling the same revisions does not reopen deferred reviews');
+  assert.equal(nextReview(planAndApprovalReviews(decisions), dismissed).decision, second);
+  dismissed.add(nextReview(planAndApprovalReviews(decisions), dismissed).key);
+  assert.equal(nextReview(planAndApprovalReviews(decisions), dismissed), null, 'polling the same revisions does not reopen deferred reviews');
   const revised = { ...first, plan: { ...first.plan, revision: 2 } };
-  assert.equal(nextAgentPlanReview([revised, second], dismissed).decision, revised);
-  assert.equal(nextAgentPlanReview([], dismissed), null, 'resolved or cancelled child routes leave no review');
+  assert.equal(nextReview(planAndApprovalReviews([revised, second]), dismissed).decision, revised);
+  assert.equal(nextReview(planAndApprovalReviews([]), dismissed), null, 'resolved or cancelled child routes leave no review');
   assert.deepEqual(decisions, original, 'deferring a dialog does not resolve or rewrite a Plan');
   const child = { sessionId: first.agentSessionId, pendingPlan: { ...first.plan, runId: first.runId } };
   assert.equal(matchesAgentPlanReview(first, child), true);
@@ -89,11 +89,11 @@ test('the shared child review sends each user decision to the original child Pla
 });
 
 test('the parent conversation offers a child permission directly and defers only that item', async t => {
-  const [{ AgentPlanReview, nextAgentPlanReview }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
+  const [{ AgentPlanReview, nextReview, planAndApprovalReviews }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
   const decision = { agentSessionId: 'session:worker', displayName: 'Worker', runId: 'run:worker', interactionIds: [],
     approval: { callId: 'call:read', approvalId: 'approval:read' } };
   const later = new Set();
-  const approval = nextAgentPlanReview([decision], later);
+  const approval = nextReview(planAndApprovalReviews([decision]), later);
   assert.ok(approval, 'an approval-only route immediately has a main-conversation entry');
   let mounted;
   function Probe() { mounted = AgentPlanReview({ decisions: [decision], language: 'en-US', refresh: async () => {} }); return null; }
@@ -103,16 +103,16 @@ test('the parent conversation offers a child permission directly and defers only
   assert.equal(active.key, approval.key);
   later.add(approval.key);
   const both = { ...decision, plan: { planId: 'plan:worker', revision: 1 } };
-  const plan = nextAgentPlanReview([both], later);
+  const plan = nextReview(planAndApprovalReviews([both]), later);
   assert.ok(plan, 'deferring permission leaves the same child Plan available');
-  assert.equal(plan.key, nextAgentPlanReview([{ ...both, approval: undefined }], new Set()).key);
-  assert.equal(nextAgentPlanReview([both], new Set([plan.key])).key, approval.key, 'deferring the Plan leaves the approval');
+  assert.equal(plan.key, nextReview(planAndApprovalReviews([{ ...both, approval: undefined }]), new Set()).key);
+  assert.equal(nextReview(planAndApprovalReviews([both]), new Set([plan.key])).key, approval.key, 'deferring the Plan leaves the approval');
   later.add(plan.key);
-  assert.equal(nextAgentPlanReview([both], later), null);
+  assert.equal(nextReview(planAndApprovalReviews([both]), later), null);
   for (const updated of [{ ...decision, agentSessionId: 'session:other' }, { ...decision, runId: 'run:next' },
     { ...decision, approval: { ...decision.approval, callId: 'call:next' } },
     { ...decision, approval: { ...decision.approval, approvalId: 'approval:new' } }]) {
-    assert.ok(nextAgentPlanReview([updated], later), 'a different identity has not been deferred');
+    assert.ok(nextReview(planAndApprovalReviews([updated]), later), 'a different identity has not been deferred');
   }
 });
 
@@ -302,7 +302,7 @@ function childInteractionFixture() {
 }
 
 test('parent-routed child interaction: pure requests mount and deferring one preserves its siblings', async t => {
-  const [{ AgentPlanReview, nextAgentReview }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
+  const [{ AgentPlanReview, nextReview, agentReviews }] = await loadGuiModules(t, ['/src/components/local-agent/AgentPlanReview.tsx']);
   const { decision, question, confirmation } = childInteractionFixture();
   const mount = decisions => viewOf(() => AgentPlanReview({ decisions, language: 'en-US', refresh: async () => {} }));
   assert.equal(mount([]), null, 'messages without a user decision route have no review');
@@ -313,14 +313,14 @@ test('parent-routed child interaction: pure requests mount and deferring one pre
   const approval = call => ({ ...decision, approval: { callId: `call:${call}`, approvalId: `approval:${call}` } });
   const firstApproval = approval('one'), secondApproval = approval('two');
   const routes = [decision, firstApproval, secondApproval], later = new Set(), before = structuredClone(routes);
-  const take = () => { const item = nextAgentReview(routes, later); assert.ok(item); later.add(item.key); return item; };
+  const take = () => { const item = nextReview(agentReviews(routes), later); assert.ok(item); later.add(item.key); return item; };
   assert.equal(take().decision, firstApproval, 'a question cannot displace an existing Plan or permission review');
   assert.equal(take().decision, secondApproval, 'two routes for one child are not collapsed');
   assert.equal(take().key, entry.key);
   assert.equal(take().interactionId, confirmation.interactionId);
-  assert.equal(nextAgentReview(routes, later), null, 'duplicates and republished identities stay deferred');
+  assert.equal(nextReview(agentReviews(routes), later), null, 'duplicates and republished identities stay deferred');
   for (const changed of [{ ...decision, agentSessionId: 'session:sibling' }, { ...decision, runId: 'run:next' },
-    { ...decision, interactionIds: ['question:new'] }]) assert.ok(nextAgentReview([changed], later));
+    { ...decision, interactionIds: ['question:new'] }]) assert.ok(nextReview(agentReviews([changed]), later));
   assert.deepEqual(routes, before, 'deferral does not rewrite Session facts');
 });
 

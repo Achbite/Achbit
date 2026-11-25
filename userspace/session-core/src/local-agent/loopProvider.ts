@@ -465,12 +465,12 @@ async function consumeProviderOutput(
   const conflictSources = exclusiveCalls.length > 0 ? exclusiveCalls : incompatibleAgentCalls;
   const todoCalls = controlBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE);
   const conflict = conflictSources.length > 0 && inputBlocks.length > 1
-    ? { calls: conflictSources, reason: exclusiveCalls.length ? '独占控制必须单独提交' : '此 agent 操作不能与普通工具同批，请将两者分开提交' }
+    ? { calls: conflictSources, reason: exclusiveCalls.length ? 'Submit an exclusive control on its own' : 'Submit this agent operation and ordinary tools in separate batches' }
     : todoCalls.length > 1
-      ? { calls: todoCalls, reason: '每个 Provider turn 最多包含一个 todo.update，请合并步骤更新' }
+      ? { calls: todoCalls, reason: 'Merge progress updates into one todo.update per provider turn' }
       : undefined;
   if (conflict) {
-    const sources = conflict.calls.map(block => `${block.name}${block.kind === 'toolCall' && typeof block.input.action === 'string' ? `(action=${block.input.action})` : ''} [${block.providerCallId}]`).join('、');
+    const sources = conflict.calls.map(block => `${block.name}${block.kind === 'toolCall' && typeof block.input.action === 'string' ? `(action=${block.input.action})` : ''} [${block.providerCallId}]`).join(', ');
     for (const blocks of [decodedOutputBlocks, aggregateBlocks]) {
       for (const [index, block] of blocks.entries()) {
         if (block.kind !== 'toolCall' && block.kind !== 'toolCallRejected') continue;
@@ -485,7 +485,7 @@ async function consumeProviderOutput(
             error = { code: cause.code, message: cause.message, issues: cause.issues };
           }
         }
-        const message = `${conflict.reason}；冲突来源：${sources}。${source ? '该调用触发冲突' : '本调用随批次拒绝'}，本批次未执行。`;
+        const message = `${conflict.reason}. Conflict source: ${sources}. ${source ? 'This call caused the conflict' : 'This call was rejected with the batch'}. No calls in this batch were executed.`;
         const role = { path: '$', rule: source ? CONTROL_TURN_ISSUE.source : CONTROL_TURN_ISSUE.peer, message };
         // An independently invalid sibling was not rejected *because of* this conflict.
         blocks[index] = { outputIndex: block.outputIndex, item: block.item, kind: 'toolCallRejected',

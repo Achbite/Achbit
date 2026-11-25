@@ -56,7 +56,7 @@ export async function runAgentLoop(
       outcome: 'indeterminate',
       error: {
         code: 'provider_turn_outcome_unknown',
-        message: `Provider request ${interrupted.providerRequestId} 已组成上下文但没有持久化完成事实。`,
+        message: `Provider request ${interrupted.providerRequestId} has a composed context and no recorded completion.`,
       },
     };
     await commit([
@@ -110,7 +110,7 @@ export async function runAgentLoop(
             outcome: 'indeterminate',
             error: {
               code: 'tool_effect_outcome_unknown',
-              message: `进程恢复时 Kernel 没有工具调用 ${unresolved.callId} 的确定记录。`,
+              message: `During recovery the Kernel had no conclusive execution record for tool call ${unresolved.callId}.`,
             },
           },
         });
@@ -118,7 +118,7 @@ export async function runAgentLoop(
           outcome: 'indeterminate',
           error: {
             code: 'tool_effect_outcome_unknown',
-            message: `进程恢复时 Kernel 没有工具调用 ${unresolved.callId} 的确定记录。`,
+            message: `During recovery the Kernel had no conclusive execution record for tool call ${unresolved.callId}.`,
           },
         });
       }
@@ -166,7 +166,7 @@ export async function runAgentLoop(
           const failedRead = snapshot.events.findLast(event => event.type === 'tool.completed' && event.runId === runId
             && event.payload.record.toolName === 'session.read');
           if (failedRead?.type === 'tool.completed') throw new LoopFailure('model_handoff_read_failed',
-            'error' in failedRead.payload.record ? (failedRead.payload.record.error?.message ?? '未获得完整的历史读取结果，接手未完成。') : '未获得完整的历史读取结果，接手未完成。');
+            'error' in failedRead.payload.record ? (failedRead.payload.record.error?.message ?? 'Model handoff could not finish because the history read was incomplete.') : 'Model handoff could not finish because the history read was incomplete.');
         }
         throwIfAborted(signal);
         if (runtime.kernelCatalogSnapshotRef !== lastRetainedCatalog) {
@@ -283,8 +283,8 @@ export async function runAgentLoop(
         outcome: 'indeterminate',
         error: {
           code: 'provider_turn_outcome_unknown',
-          message: userCancelled ? '已收到取消请求，本次生成未完成；Provider 最终完成结果未知。'
-            : `Provider request ${unknownTurn.providerRequestId} 的完成结果不可判定；原始错误 ${cause.code}：${cause.message}`,
+          message: userCancelled ? 'Cancellation was requested before generation finished. The final provider outcome is unknown.'
+            : `Provider request ${unknownTurn.providerRequestId} has an unknown outcome. Original error: ${cause.code}: ${cause.message}`,
           diagnostics: { source: 'session', phase: 'provider', category: userCancelled ? 'cancelled' : 'unknown', retryable: false,
             causes: [{ message: `${cause.code}: ${cause.message}` }],
             ...(cause.diagnostics?.secondary ? { secondary: cause.diagnostics.secondary } : {}),

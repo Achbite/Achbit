@@ -21,7 +21,7 @@ import { useId, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef,
 import { revealActiveReaderTab } from './readerTabVisibility';
 import { useConversationHost } from './ConversationHost';
 import type { SourcePosition } from './resourceLinks';
-import { t, type UiLanguage } from '../../i18n';
+import { localizedError, t, type UiLanguage } from '../../i18n';
 import {
   readConversationArtifact,
   type ConversationResourceReadResult,
@@ -440,7 +440,7 @@ export function ResourcePreview({
         {tabsTarget ? createPortal(tabs, tabsTarget) : tabs}
         {preview.error && (
           <p role="alert" className="local-agent__resource-error">
-            {preview.error}
+            {localizedError(language, preview.error)}
           </p>
         )}
         <div className="reader-workspace" ref={workspace}><UiRegion slot="reader.layout" data={readerData} actions={readerActions}>
@@ -837,7 +837,7 @@ function ReaderDocument({
           <p>{t(language, 'agent.resource.reading')}</p>
         ) : state.status === 'error' ? (
           <p role="alert" className="local-agent__resource-error">
-            {state.error}
+            {localizedError(language, state.error)}
           </p>
         ) : state.status === 'source' ? (
           <InterfaceLoadBoundary><Suspense fallback={<p>{t(language, 'agent.resource.reading')}</p>}>

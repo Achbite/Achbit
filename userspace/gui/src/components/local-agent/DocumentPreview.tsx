@@ -1,7 +1,7 @@
 import { InterfaceLoadBoundary } from '../shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { UiLanguage } from '../../i18n';
+import { localizedError, type UiLanguage } from '../../i18n';
 import { fileLinkLocation, type SourcePosition } from './resourceLinks';
 import { MarkdownContent } from './BufferedMarkdown';
 import { readDocumentText, type DocumentFormat } from './documentResources';
@@ -101,7 +101,7 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
         </a>
       </div>
     </div>
-    {error ? <p role="alert" className="local-agent__resource-error">{error}</p>
+    {error ? <p role="alert" className="local-agent__resource-error" title={error}>{localizedError(language, error)}</p>
       : showSource ? (content === null ? loading : <SourceFileView content={content} filename={filename} viewKey={`${readingKey ?? filename}:source`} wrap />)
         : format === 'image' ? <ImageReview source={download || undefined} alt={filename} imageClassName="document-preview__image"
               onError={() => setError(chinese ? '无法解码图片：' + filename : 'Could not decode the image: ' + filename)} /> : <UiPluginSlotView slot={`document.${format}`} input={{ kind: 'document', blob, format, filename, locale: language, theme }}>

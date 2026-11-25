@@ -2,7 +2,7 @@ import { ConversationBodyLinkScope, useConversationBodyLinks } from './useConver
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { CONVERSATION_COMMAND_VERSION, type AgentChildProjection, type AgentTaskProjection,
   type PlanResponse, type SessionProjection, type ShellAuthorizationScope, type UserSettings } from '@achbit/protocol';
-import { t, type UiLanguage } from '../../i18n';
+import { localizedError, t, type UiLanguage } from '../../i18n';
 import { MarkdownContent, MarkdownInline } from './BufferedMarkdown';
 import { ComposerDecisionPanels, ComposerQuestionPrompt } from './ComposerDecisionPanels';
 import { submitReplyOnEnter } from './replyKeyboard';
@@ -93,7 +93,7 @@ function AgentChildView({ sessionId, tasks, instance, displayName, language, exp
           <ArtifactLinks location="agent" artifacts={projection.artifacts} onOpen={(workspaceId, path) => requestWorkspacePreview(sessionId, workspaceId, path)} />
           <div ref={decision}><ChildDecisions key={`${projection.pendingPlan?.planId ?? ''}:${projection.pendingPlan?.revision ?? ''}`}
             child={child} projection={projection} language={language} /></div>
-          {projection.terminalError && <p role="alert" className="agent-tasks__error">{projection.terminalError.message}</p>}
+          {projection.terminalError && <p role="alert" className="agent-tasks__error" title={projection.terminalError.message}>{localizedError(language, projection.terminalError.message, projection.terminalError.code)}</p>}
         </>}
       </div>
     </section>

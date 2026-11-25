@@ -1,6 +1,6 @@
 import { whenPreviewVisible } from './visibleImageReads';
 import { DisclosureSummary } from '../../ui-components';
-import { t } from '../../i18n';
+import { localizedError, t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
 import { requestReader } from './readerState';
 import { resourceFilename } from './resourceLinks';
@@ -121,7 +121,7 @@ export function FileChanges({ activities, compact = false, inlineDiff = false }:
     </button>
     {(compact || expanded) && <div ref={listRef} className="conversation-change-list" hidden={!open} tabIndex={compact ? -1 : undefined} data-native-overlay={compact && open || undefined}>{entries}
       {open && all.length > 3 && <button {...identity.action('more', 'click')} className="conversation-change-more" type="button" aria-expanded={showAll} onClick={() => { if (compact) setExpanded(true); setShowAll(value => !value); }}><span>{showAll ? t(language, 'changes.collapse') : t(language, 'changes.more', { count: all.length - 3 })}</span><AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" /></button>}
-      {open && current && current.errors.size > 0 && <details className="conversation-change-error"><DisclosureSummary>{t(language, 'changes.unavailable', { count: current.errors.size })}</DisclosureSummary>{all.filter(file => current.errors.has(file.key)).map(file => <p key={file.key}><strong>{file.path}</strong><br />{current.errors.get(file.key)}</p>)}</details>}
+      {open && current && current.errors.size > 0 && <details className="conversation-change-error"><DisclosureSummary>{t(language, 'changes.unavailable', { count: current.errors.size })}</DisclosureSummary>{all.filter(file => current.errors.has(file.key)).map(file => <p key={file.key}><strong>{file.path}</strong><br />{localizedError(language, current.errors.get(file.key)!)}</p>)}</details>}
     </div>}
   </section>;
 }
@@ -149,7 +149,7 @@ function InlineFileChange({ sessionId, groupId, file }: { sessionId: string; gro
       latest.after.exists ? { kind: 'workspace', workspaceId: latest.workspaceId, logicalPath: file.path } : { kind: 'diff', file })}>
       <span>{resourceFilename(file.path)}</span>{state.preview && <DiffCounts counts={state.preview.counts} />}
     </button>
-    {state.error ? <p className="conversation-inline-notice" role="alert">{state.error}</p>
+    {state.error ? <p className="conversation-inline-notice" role="alert" title={state.error}>{localizedError(language, state.error)}</p>
       : state.binary ? <p className="conversation-inline-notice">{t(language, 'changes.binaryDescription')}</p>
       : !state.preview ? <p className="conversation-inline-notice" role="status">{t(language, 'changes.loading')}</p>
       : <>

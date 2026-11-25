@@ -13,7 +13,7 @@ type ReviewRoute = ChildReviewTarget & { key: string };
 type ReviewState = 'later' | 'resolved';
 
 /** Preserve the published order of Plans and approvals, even for multiple routes to the same child. */
-function* planAndApprovalReviews(decisions: readonly PendingAgentDecision[]): Generator<ReviewRoute> {
+export function* planAndApprovalReviews(decisions: readonly PendingAgentDecision[]): Generator<ReviewRoute> {
   for (const decision of decisions) {
     const owner = [decision.agentSessionId, decision.runId];
     if (decision.plan) {
@@ -27,7 +27,7 @@ function* planAndApprovalReviews(decisions: readonly PendingAgentDecision[]): Ge
   }
 }
 
-function* agentReviews(decisions: readonly PendingAgentDecision[]): Generator<ReviewRoute> {
+export function* agentReviews(decisions: readonly PendingAgentDecision[]): Generator<ReviewRoute> {
   yield* planAndApprovalReviews(decisions);
   for (const decision of decisions) {
     for (const interactionId of decision.interactionIds) {
@@ -37,17 +37,9 @@ function* agentReviews(decisions: readonly PendingAgentDecision[]): Generator<Re
   }
 }
 
-function nextReview(routes: Iterable<ReviewRoute>, dismissed: Pick<ReadonlySet<string>, 'has'>) {
+export function nextReview(routes: Iterable<ReviewRoute>, dismissed: Pick<ReadonlySet<string>, 'has'>) {
   for (const route of routes) if (!dismissed.has(route.key)) return route;
   return null;
-}
-
-export function nextAgentPlanReview(decisions: readonly PendingAgentDecision[], dismissed: ReadonlySet<string>) {
-  return nextReview(planAndApprovalReviews(decisions), dismissed);
-}
-
-export function nextAgentReview(decisions: readonly PendingAgentDecision[], dismissed: Pick<ReadonlySet<string>, 'has'>) {
-  return nextReview(agentReviews(decisions), dismissed);
 }
 
 export function matchesAgentPlanReview(decision: PendingAgentDecision, projection: SessionProjection): boolean {

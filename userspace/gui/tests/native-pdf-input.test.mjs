@@ -126,3 +126,14 @@ for (const failed of [false, true]) test(`GUI PDF input needs no PDF tool and pr
   await assert.rejects(store.getState().sendMessage('Read it with an unsupported profile.', attachment), /plugin_selection_unavailable:application\/pdf/);
   assert.equal(commands.length, 1, 'profiles without native support retain the existing plugin gate');
 });
+
+test('document errors use the selected language and retain unrecognized provider details', async t => {
+  const { localizedError } = await loadGuiModule(t, '/src/i18n.ts');
+  const wrapped = 'Error: conversation_document_read_failed:document_invalid_pdf';
+  assert.match(localizedError('en-US', wrapped), /not a PDF/);
+  assert.match(localizedError('zh-CN', wrapped), /不是 PDF/);
+  assert.match(localizedError('en-US', 'file_encoding_unsupported: note.txt'), /supported text.*note\.txt/);
+  const raw = 'Original provider message 错误 184';
+  assert.equal(localizedError('zh-CN', raw, 'unknown_provider_error'), raw);
+  assert.match(localizedError('en-US', raw, 'provider_turn_outcome_unknown'), /outcome is unknown/);
+});

@@ -4,7 +4,7 @@ import type { ChangeCounts } from './fileChangeSummary';
 /** Runs in the statistics Worker, so the time budget covers computation, not timer waits. */
 export function calculateChangedLines(before: string | null, after: string | null): ChangeCounts {
   const changes = diffLines(before ?? '', after ?? '', { timeout: 1_000 });
-  if (!changes) throw new Error('修改行数计算超时');
+  if (!changes) throw new Error('change_counts_timeout');
   return changes.reduce((counts, change) => ({
     added: counts.added + (change.added ? change.count : 0),
     removed: counts.removed + (change.removed ? change.count : 0),
@@ -103,7 +103,7 @@ export interface ChangePreview {
 /** Inline activity shows nearby changes; the Reader owns the full comparison. */
 export function calculateChangePreview(before: string | null, after: string | null): ChangePreview {
   const patch = structuredPatch('', '', before ?? '', after ?? '', undefined, undefined, { context: 2, timeout: 1_000 });
-  if (!patch) throw new Error('修改片段计算超时');
+  if (!patch) throw new Error('change_preview_timeout');
   const counts = { added: 0, removed: 0 };
   const hunks: ChangePreview['hunks'] = [];
   let remainingLines = 80, remainingCharacters = 16_000, truncated = false;

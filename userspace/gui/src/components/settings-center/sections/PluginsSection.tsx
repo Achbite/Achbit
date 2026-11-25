@@ -4,7 +4,7 @@ import { manageLocalPlugin } from '../../../services/pluginManagement';
 import { watchServicePlugins, type ServicePluginStatus } from '../../../services/servicePlugins';
 import { openExternalUrl } from '../../../services/runtimeAdapter';
 import { Button, DisclosureSummary, ModalDialog, ToggleSwitch } from '../../../ui-components';
-import { localizePlugin } from '../../../pluginLocalization';
+import { localizePlugin, uiPluginText } from '../../../pluginLocalization';
 import { useUiLanguage } from '../../../useUiLanguage';
 import { useSettingsSearchEntries } from '../settingsSearch';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
@@ -179,9 +179,9 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
       info = metadata[path];
     items.push({
       id: 'ui:' + path,
-      name: entry?.manifest?.name ?? info?.name ?? filename(path),
+      name: uiPluginText(language, entry?.manifest ?? info, 'name') ?? filename(path),
       description:
-        entry?.manifest?.description ?? info?.description ?? t(language, 'settings.plugins.description'),
+        uiPluginText(language, entry?.manifest, 'description') ?? uiPluginText(language, info, 'description') ?? t(language, 'settings.plugins.description'),
       enabled: source.enabled === true,
       key: 'workbench.uiPlugins',
       sourceId: path,
@@ -578,8 +578,8 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
         <ModalDialog className="plugin-import-overlay" busy={busy} onClose={() => { setCandidate(null); setUpdating(null); }} aria-label={updating ? (chinese ? '更新插件' : 'Update plugin') : (chinese ? '安装插件' : 'Install plugin')}>
           <section className="plugin-import">
             <h3>{updating ? (chinese ? '更新插件' : 'Update plugin') : (chinese ? '安装插件' : 'Install plugin')}</h3>
-            <strong>{candidate.name}</strong>
-            <p>{candidate.description}</p>
+            <strong>{uiPluginText(language, candidate, 'name')}</strong>
+            <p>{uiPluginText(language, candidate, 'description')}</p>
             <p>{chinese ? (updating ? '保留当前启用状态、登录和插件数据。' : '安装到当前 Achbit 并启用。') : (updating ? 'Keep the enabled state, sign-in and plugin data.' : 'Install into this Achbit and enable.')}</p>
             <details className="settings-disclosure">
               <DisclosureSummary>{t(language, 'settings.plugins.location')}</DisclosureSummary>
