@@ -44,7 +44,7 @@
       "id":{"$ref":"#/$defs/TeamKey"},"preset":{"type":"string","minLength":1},"maxCalls":{"type":"integer","minimum":1,"maximum":9007199254740991},"recipe":{"$ref":"#/$defs/AgentRecipe"},"helpers":{"$ref":"#/$defs/AgentHelpers"}}}},
     "AgentFileScope": {"type":"object","additionalProperties":false,"required":["workspaceId","read","write"],"properties":{
       "workspaceId":{"$ref":"#/$defs/Id"},"read":{"$ref":"#/$defs/ScopePaths"},"write":{"$ref":"#/$defs/ScopePaths"}}},
-    "ScopePaths": {"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":1024}},
+    "ScopePaths": {"description":"Paths are relative and limited to 1024 UTF-8 bytes each. Control characters are excluded.","type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":1024}},
     "AgentOperation": {
       "oneOf": [
         {
