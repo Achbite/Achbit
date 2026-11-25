@@ -1,9 +1,9 @@
-# ---- 依赖 ----
+# Dependencies
 node_modules/
 */node_modules/
 **/node_modules/
 
-# ---- 构建产物 ----
+# Build outputs
 **/dist/
 **/dist-*/
 **/build/
@@ -18,16 +18,16 @@ target/
 .achbit/build-baselines/
 .achbit-recovery.*/
 
-# ---- Python 字节码缓存 ----
+# Python bytecode
 __pycache__/
 *.py[cod]
 
-# ---- 本地可执行打包产物 ----
-# bin/ 用于输出统一分发目录；二进制产物不入库
+# Local distribution packages
+# bin/ holds generated distribution directories and binaries.
 bin/*
 !bin/.gitkeep
 
-# ---- 日志 ----
+# Logs
 .logs/
 *.log
 npm-debug.log*
@@ -35,13 +35,13 @@ yarn-debug.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# ---- 环境与密钥 ----
+# Environment and credentials
 .env
 .env.*
 !.env.example
 .achbit-worktree.mk
 
-# ---- IDE / 系统 ----
+# Editor and system files
 .DS_Store
 Thumbs.db
 .vscode/
@@ -49,7 +49,7 @@ Thumbs.db
 *.swp
 *.swo
 
-# ---- 工程临时文件 ----
+# Project temporary files
 _check_output.txt
 _agent_tmp_*
 *.tsbuildinfo
@@ -64,8 +64,8 @@ _agent_tmp_*
 # Root Rust kernel workspace is library-only during the skeleton stage.
 /Cargo.lock
 
-# ---- 默认工作区运行产物 ----
-# workspace/ 目录本身保留，但内部用户数据不入库；如需用户工作区不入库，取消下一行注释
+# Default workspace runtime data
+# Uncomment the following rule to exclude user data within workspace/.
 # workspace/**
-# 但保留 .gitkeep
+# Retain the workspace placeholder.
 !workspace/.gitkeep

@@ -1,5 +1,4 @@
 export * from './api.js';
-export * from './events.js';
 export * from './workspace.js';
 export * from './userSettings.js';
 export * from './llm.js';

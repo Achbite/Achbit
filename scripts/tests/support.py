@@ -489,7 +489,8 @@ class MockProviderHandler(http.server.BaseHTTPRequestHandler):
         text = content if isinstance(content, str) else "".join(part.get("text", "") for part in content)
         if not text.startswith("Name this conversation from the user's first message."):
             return False
-        require(len(messages) == 2 and messages[0]["role"] == "system"
+        expected_role = "developer" if self.path.endswith("/responses") else "system"
+        require(len(messages) == 2 and messages[0]["role"] == expected_role
                 and messages[1]["role"] == "user" and not body.get("tools") and body.get("stream") is True,
                 "Invalid auxiliary title request")
         require(self.path.endswith(("/chat/completions", "/responses")), "Unexpected title endpoint")

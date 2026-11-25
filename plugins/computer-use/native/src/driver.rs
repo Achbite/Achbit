@@ -1121,7 +1121,6 @@ pub fn execute(
         if action == "status" {
             let mut output = status()?;
             output["sharing"] = crate::sharing::status(binding)?;
-            output["capabilities"]["nativeWindowSharing"] = json!(true);
             return Ok(output);
         }
         if action == "releaseRun" {
