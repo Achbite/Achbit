@@ -89,7 +89,8 @@ def load_input(path):
     if data['mode'] == 'release':
         keys(data.get('release'), ('title', 'notes', 'platforms', 'prerelease'), 'release')
         release = data['release']
-        text(release.get('title'), 'release.title')
+        if 'title' in release:  # Older manifests supplied a display title.
+            text(release['title'], 'release.title')
         text(release.get('notes'), 'release.notes')
         platforms = release.get('platforms')
         require(isinstance(platforms, list) and platforms and
@@ -411,7 +412,7 @@ class Workflow:
 
     def verify_release(self, view, artifacts, draft):
         desired = self.data['release']
-        require(view['tagName'] == self.receipt['version'] and view['name'] == desired['title'] and
+        require(view['tagName'] == self.receipt['version'] and view['name'] == self.receipt['version'] and
                 view['body'] == desired['notes'], 'Stored Release text/tag differs from input')
         require(view['isDraft'] == draft and view['isPrerelease'] == desired.get('prerelease', False),
                 'Unexpected Release publication state')
@@ -447,7 +448,7 @@ class Workflow:
             notes = self.output / 'RELEASE.md'
             notes.write_text(self.data['release']['notes'], encoding='utf-8')
             command = ['release', 'create', version, '--verify-tag', '--draft', '--title',
-                       self.data['release']['title'], '--notes-file', str(notes)]
+                       version, '--notes-file', str(notes)]
             if self.data['release'].get('prerelease', False):
                 command.append('--prerelease')
             self.gh(*command)

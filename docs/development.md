@@ -37,7 +37,7 @@ Replace `<next-version>` with the intended semantic version, without a `v` prefi
 
 Build and package producers read the canonical version. `package-updates.py manifest` also defaults to it; an explicit `--version` remains available when preparing a feed for an isolated Debug build or an existing release. `ACHBIT_BUILD_VERSION` applies only to isolated Debug builds and leaves source metadata unchanged.
 
-A version edit changes source metadata; Git operations, builds and publication remain separate authorized actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
+A version edit changes source metadata; Git operations, builds and publication remain separate authorized actions. Existing tags and published releases retain their historical identity. The Git tag and GitHub Release title both use the exact project version, such as `0.7.90`. The publisher derives both from the version and checks both after upload and publication. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
 
 ### Daily source saves and pushes
 
@@ -96,7 +96,6 @@ This fragment is merged into the same input object; replace placeholders with th
 ```json
 {
   "release": {
-    "title": "Release <version>",
     "notes": "<solved problems and user-visible changes>",
     "platforms": ["macos", "windows", "linux"],
     "prerelease": false
