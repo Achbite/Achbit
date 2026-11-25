@@ -1,4 +1,4 @@
-import React, { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, memo, startTransition, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Fragment, jsx, jsxs } from 'react/jsx-runtime';
 import { toJsxRuntime } from 'hast-util-to-jsx-runtime';
 import { CodeContent, ImageContent } from './RichContent';
@@ -7,6 +7,7 @@ import { MermaidContent } from './MermaidContent';
 import { MarkdownTable } from './MarkdownTable';
 import { formatDecisionProse, cachedMarkdown, completeMarkdown, StreamingMarkdownParser, type MarkdownBlock } from './streamingMarkdown';
 import { StreamingTextBuffer } from './streamingText';
+import { scopeFootnotes } from './markdownFootnotes';
 import { parseMarkdownDocument } from './markdownParseQueue';
 import type { Element, ElementContent, Root, RootContent } from 'hast';
 import './richContent.css';
@@ -19,6 +20,13 @@ import { InlineInteractivePreview } from './InteractivePreview';
 import { RichContentScope } from './RichContentIdentity';
 import { t } from '../../i18n';
 import { useUiLanguage } from '../../useUiLanguage';
+
+const FootnoteScope = createContext<string | undefined>(undefined);
+
+function useFootnoteScope(text: string) {
+  const id = useId();
+  return text.includes('[^') ? `achbit-md-${id}-` : undefined;
+}
 
 const MarkdownBlockScope = createContext<{ key: string; start: number | undefined; streaming: boolean; copyPending: boolean } | null>(null);
 
@@ -66,9 +74,11 @@ function ScopedMarkdownLink({ href, children, node: _node, ...attributes }: Reac
 }
 
 const RenderedBlock = memo(function RenderedBlock({ block, provisional }: { block: MarkdownBlock; provisional: boolean }) {
+  const scope = useContext(FootnoteScope);
+  const tree = useMemo(() => readableResourceLinks(scopeFootnotes(block.tree, scope)), [block.tree, scope]);
   return <MarkdownBlockScope.Provider value={{ key: block.key, start: block.tree.children[0]?.position?.start.offset,
     streaming: block.streaming, copyPending: provisional && block.streaming }}>
-    {toJsxRuntime(readableResourceLinks(block.tree), { Fragment, jsx, jsxs, components: COMPONENTS, passNode: true })}
+    {toJsxRuntime(tree, { Fragment, jsx, jsxs, components: COMPONENTS, passNode: true })}
   </MarkdownBlockScope.Provider>;
 });
 
@@ -101,6 +111,7 @@ function DocumentMarkdownBlocks({ text, decisionProse, blocks }: { text: string;
 }
 
 export const MarkdownContent = memo(function MarkdownContent({ children: text, streaming = false, decisionProse = false, active = true, documentPreview = false }: MarkdownContentProps) {
+  const scope = useFootnoteScope(text);
   const surface = useRef<HTMLDivElement>(null);
   const parser = useRef<StreamingMarkdownParser | null>(null);
   const lastLive = useRef<{ text: string; decisionProse: boolean; blocks: MarkdownBlock[] } | null>(null);
@@ -145,19 +156,20 @@ export const MarkdownContent = memo(function MarkdownContent({ children: text, s
     return () => controller.abort();
   }, [deferred, text, decisionProse, active, blocks, current?.error, displayed, documentPreview]);
   const pending = deferred && !blocks && !current?.error;
-  return <div className="conversation-markdown" ref={surface} aria-busy={deferred ? pending : undefined} data-conversation-pending={pending && !displayed && !documentPreview || undefined}>
+  return <FootnoteScope.Provider value={scope}><div className="conversation-markdown" ref={surface} aria-busy={deferred ? pending : undefined} data-conversation-pending={pending && !displayed && !documentPreview || undefined}>
     {documentPreview ? <DocumentMarkdownBlocks text={text} decisionProse={decisionProse} blocks={displayed} />
       : displayed ? <MarkdownBlocks blocks={displayed} /> : pending && <MarkdownStatus />}
     {current?.error && <p role="alert">{current.error}</p>}
-  </div>;
+  </div></FootnoteScope.Provider>;
 });
 
 // An opening page carries text, not resource or action authority. Use the same
 // parsed blocks without mounting link handlers, plugins, viewers or image requests.
 export const ReadingMarkdown = memo(function ReadingMarkdown({ text }: { text: string }) {
+  const scope = useFootnoteScope(text);
   const blocks = useMemo(() => new StreamingMarkdownParser().update(text, false), [text]);
   return <div className="conversation-markdown">{blocks.map(block => <Fragment key={block.key}>
-    {toJsxRuntime(block.tree, { Fragment, jsx, jsxs, components: {
+    {toJsxRuntime(scopeFootnotes(block.tree, scope), { Fragment, jsx, jsxs, components: {
       a: ({ children }) => <span>{children}</span>, img: ({ alt }) => <span>{alt}</span>,
       input: ({ checked }) => <span>{checked ? '☑' : '☐'}</span>,
     } })}</Fragment>)}</div>;
@@ -171,11 +183,19 @@ export const MarkdownInline = memo(function MarkdownInline({ children }: { child
       if (node.type === 'text') return [node];
       if (node.type !== 'element') return [];
       if (node.data?.formulaSource !== undefined) return [{ type: 'text', value: node.data.formulaSource }];
+      if (node.tagName === 'img') return [{ type: 'text', value: String(node.properties.alt ?? '') }];
       const descendants = node.children.flatMap(inline);
       return ['strong', 'em', 'del', 'code', 'br'].includes(node.tagName)
         ? [{ ...node, children: descendants }] : descendants;
     };
-    return { type: 'root', children: blocks.flatMap((block) => block.tree.children.flatMap(inline)) } as Root;
+    const content: ElementContent[] = [];
+    for (const block of blocks) {
+      const parts = block.tree.children.flatMap(inline);
+      if (!parts.length) continue;
+      if (content.length) content.push({ type: 'text', value: ' ' });
+      content.push(...parts);
+    }
+    return { type: 'root', children: content } as Root;
   }, [children]);
   return <span className="conversation-markdown-inline">{toJsxRuntime(tree, { Fragment, jsx, jsxs })}</span>;
 });
