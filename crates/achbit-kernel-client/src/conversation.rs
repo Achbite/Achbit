@@ -2466,6 +2466,7 @@ pub struct ShellCommandIntent {
 #[serde(rename_all = "camelCase")]
 pub struct ProcessActivityProjection {
     pub job_id: String,
+    pub blocking: Option<bool>,
     pub command: String,
     pub output: ToolOutputProjection,
     pub result: Option<ProcessActivityResult>,

@@ -28,6 +28,8 @@ Use concrete evidence. Network failure, proxy configuration, missing credentials
 
 Within existing task authorization, cancel the job, repair the environment or restart the shell command as needed. `{"action":"cancel","jobId":"<returned jobId>"}` targets that execution. Recheck partial effects before repeating a mutation. Ask only for genuinely missing information or a material choice; routine recovery needs no additional confirmation.
 
+In the conversation, a running Shell has a small indicator beside its collapsed tool-group chevron. If the run is actually waiting on that command, its status appears above the message input instead. Open **Show output** there to inspect the command and captured output without scrolling back. When several commands are awaited, select the one to inspect or stop. On resumption, still-running commands return to their original groups; terminal commands have no running indicator.
+
 Use **Stop command** for one execution; use the task’s **Stop** to cancel the run. For a container command, a stopped Docker client is not proof that the command inside the container stopped. Read the terminal job result. If cleanup failed, the result retains the error and the output already captured; do not treat it as a confirmed stop or rerun the command blindly. Cancelling an `exec` never authorizes stopping the whole existing container.
 
 A temporary container created by the run is a separate resource: the create job can finish while the container is still running. Run cleanup owns its removal. After a Host restart, neither a completed create job nor the old Host’s exit proves removal. The same check applies to direct `container create` and to `process.start` wrapping it; missing evidence leaves release unconfirmed.

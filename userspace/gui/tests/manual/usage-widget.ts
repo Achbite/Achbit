@@ -5,7 +5,7 @@ import { UsageWidgetSettings } from '../../src/ui-plugins/UsageWidgetSettings';
 import { normalizeUiLanguage } from '../../src/i18n';
 import { usageWidgetLabels } from '../../src/ui-plugins/usageWidgetLabels';
 import { usageCostDisplay } from '../../src/ui-plugins/usageCost';
-import { Cost } from '../../src/components/settings-center/model-services/shared';
+import { UsageCost } from '../../src/components/settings-center/model-services/UsageCost';
 import { useSettingsStore } from '../../src/state/settingsStore';
 import plugin from '../../src/ui-plugins/builtinUsage.mjs';
 import { installPaletteDefaults } from '../../src/theme/palette';
@@ -45,7 +45,7 @@ const unsubscribe = useSettingsStore.subscribe(state => {
     visibility: state.effectiveSettings['gui.usageWidget.enabled'] === false ? 'hidden' : 'summary' };
   view.update(input);
 });
-costRoot.render(React.createElement(Cost, { totals: totals as never }));
+costRoot.render(React.createElement(UsageCost, { totals: totals as never }));
 let input = { kind: 'usage.widget', connection: { id: 'connection:preview', name: 'OpenAI · Codex', billingMode: 'subscription', adapterId: 'openai-codex' },
   modelId: 'codex', visibility: 'summary', expanded: false, revision: 0, locale: 'zh-CN', theme: 'light', costDisplay: usageCostDisplay('USD'), labels: usageWidgetLabels('zh-CN') };
 let view: { update(next: typeof input): void; dispose(): void };

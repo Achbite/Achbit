@@ -3,7 +3,7 @@ use crate::conversation_api::{
 };
 use crate::prelude::*;
 use crate::ReadyState;
-use crate::{ApiResponse, AppState};
+use crate::{ApiResponse, HostState};
 use achbit_kernel_runtime::file_watch::FileWatch;
 use axum::response::{sse::Event, IntoResponse, Response, Sse};
 use serde::{Deserialize, Serialize};
@@ -48,7 +48,7 @@ pub(crate) struct ChangeReference {
 type ResourceError = Json<ApiResponse>;
 
 fn managed_descendant_workdir(
-    state: &AppState,
+    state: &HostState,
     session_id: &str,
     workspace: &crate::conversation_catalog::ConversationWorkspaceRecord,
 ) -> Result<bool, ResourceError> {
@@ -63,14 +63,13 @@ fn managed_descendant_workdir(
         return Ok(false);
     };
     state
-        .local_agent
-        .journal
+        .catalog_reader
         .is_descendant_session(session_id, owner)
         .map_err(|cause| ApiResponse::error(cause.code, cause.message))
 }
 
 pub(crate) async fn resource_projection(
-    state: &AppState,
+    state: &HostState,
     session_id: &str,
     record_ids: &[String],
 ) -> Result<Value, ResourceError> {
@@ -81,7 +80,10 @@ pub(crate) async fn resource_projection(
         ));
     }
     request_service(
-        state.session_service.clone(),
+        state
+            .conversation_reader()
+            .await
+            .map_err(session_service_error)?,
         "resourceSnapshot",
         json!({"sessionId":session_id,"recordIds":record_ids}),
     )
@@ -90,7 +92,7 @@ pub(crate) async fn resource_projection(
 }
 
 pub(crate) fn resolve_resource(
-    state: &AppState,
+    state: &HostState,
     session_id: &str,
     projection: &Value,
     resource: &ResourceReference,
@@ -281,7 +283,7 @@ pub(crate) async fn conversation_resource_roots(
 }
 
 fn resource_roots(
-    state: &AppState,
+    state: &HostState,
     projection: &Value,
 ) -> Result<Vec<ResourceEntry>, ResourceError> {
     let gui = state.gui.lock().expect("gui state lock");

@@ -2,6 +2,7 @@
 """Actual file/Shell effects through the CLI; deterministic Provider input only."""
 import http.server
 import importlib.util
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -258,6 +259,12 @@ def check_project_workspace_and_permission(daemon, server, root, workspace):
     state = state_for('project', 'result.txt')
     try:
         require(submit(active, 'command:project-start', type='message.submit', text='Use the project workspace.')['status'] == 'accepted', 'Task was not accepted')
+        with closing(fixture.sqlite_read_only(daemon.config_root / 'data/agent-runtime/session.sqlite3')) as database:
+            repeated = database.execute(
+                "SELECT count(*) FROM session_commands WHERE session_id=? AND json_extract(command_json, '$.type')='session.workspaces.set'",
+                (active,),
+            ).fetchone()[0]
+        require(repeated == 0, 'Sending a message resubmitted the unchanged project workspace bindings')
         require(state.workspace_started.wait(20), 'Initial request was not held')
         original_run = fixture.projection(daemon, active)['run']
         api(f'projects/{shared}', {'workspacePaths': [str(workspace), str(added)]}, 'PATCH')

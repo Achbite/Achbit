@@ -1,7 +1,10 @@
+// Bound raw input before Mermaid can replace an oversized graph with an exportable warning diagram.
+export const maxMermaidSourceLength = 50_000;
+
 /** Keep the SVG's own coordinate system for viewing and export. A responsive 100% width is not an intrinsic image size. */
 export async function renderMermaidImage(id: string, source: string, theme: string) {
   const { default: mermaid } = await import('mermaid');
-  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true,
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, maxTextSize: maxMermaidSourceLength,
     htmlLabels: false, theme: theme === 'dark' ? 'dark' : 'neutral',
     flowchart: { nodeSpacing: 42, rankSpacing: 33, padding: 13 } });
   const rendered = await mermaid.render(id, source);

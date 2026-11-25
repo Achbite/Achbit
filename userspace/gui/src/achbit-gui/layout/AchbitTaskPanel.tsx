@@ -4,6 +4,7 @@ import React from 'react';
 import { useDisplayedConversation } from '../../components/local-agent/ConversationDisplayProvider';
 import { ArtifactLinks } from '../../components/local-agent/ArtifactLinks';
 import { AgentOverview } from '../../components/local-agent/AgentOverview';
+import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useAgentDeliveries } from '../../components/local-agent/useAgentDeliveries';
 import { requestWorkspacePreview } from '../../components/local-agent/readerState';
 import type { ArtifactProjection, SessionProjection } from '@achbit/protocol';
@@ -20,16 +21,19 @@ const AchbitTaskPanel: React.FC<AchbitTaskPanelProps> = ({ language, projection 
   // Session publishes the latest version and ordering of explicit deliveries.
   const display = useDisplayedConversation();
   const [showAllArtifacts, setShowAllArtifacts] = React.useState(false);
-  React.useEffect(() => { setShowAllArtifacts(false); }, [projection?.sessionId]);
   const childDeliveries = useAgentDeliveries(projection);
+  const sessionId = useLocalAgentStore(s => s.sessionId);
+  React.useEffect(() => { setShowAllArtifacts(false); }, [sessionId]);
   const artifacts = [...new Map([...display.artifacts, ...childDeliveries.artifacts].map(artifact => [artifact.artifactId, artifact])).values()];
-  const todos = projection?.todoList?.items ?? [];
-  const todoRun = projection?.todoList && projection.tokenUsageHistory.find(run => run.runId === projection.todoList!.runId);
+  const waitingForChildren = !!projection?.agentTasks?.some(task => task.childRunId) && childDeliveries.sessionId !== sessionId;
+  const todoList = projection?.todoList;
+  const todos = todoList?.items ?? [];
+  const todoRun = projection?.tokenUsageHistory.find(run => run.runId === todoList?.runId);
   const remaining = todos.filter(todo => todo.status !== 'completed').length;
   const ended = Boolean(todoRun?.outcome);
   return (
     <aside className={`achbit-gui-context-panel${showAllArtifacts ? ' achbit-gui-context-panel--outputs' : ''}`}>
-      {!showAllArtifacts && <UiRegion slot="task.panel" data={{ kind: 'tasks', todoList: projection?.todoList ?? null, run: todoRun ?? null }}><section className="achbit-gui-task-list-card">
+      {!showAllArtifacts && <UiRegion slot="task.panel" data={{ kind: 'tasks', todoList: todoList ?? null, run: todoRun ?? null }}><section className="achbit-gui-task-list-card">
         <div className="achbit-gui-task-list-card__title">
           <span>{t(language, 'achbitGui.tasks.title')}</span>
         </div>
@@ -59,9 +63,9 @@ const AchbitTaskPanel: React.FC<AchbitTaskPanelProps> = ({ language, projection 
       </section></UiRegion>}
 
       <UiRegion slot="artifact.panel" data={{ kind: 'artifacts', artifacts, expanded: showAllArtifacts }} actions={{ setExpanded: setShowAllArtifacts }}>
-        <ConversationOutputs key={projection?.sessionId} artifacts={artifacts} language={language}
-          expanded={showAllArtifacts} onExpandedChange={setShowAllArtifacts}
-          onOpen={(workspaceId, path) => requestWorkspacePreview(projection!.sessionId, workspaceId, path)} />
+        <ConversationOutputs key={sessionId} artifacts={artifacts} language={language}
+          loading={waitingForChildren} expanded={showAllArtifacts} onExpandedChange={setShowAllArtifacts}
+          onOpen={(workspaceId, path) => requestWorkspacePreview(sessionId!, workspaceId, path)} />
       </UiRegion>
       {childDeliveries.error && <p role="alert" className="local-agent__resource-error">{childDeliveries.error}</p>}
       {!showAllArtifacts && projection && <AgentOverview projection={projection} language={language} />}
@@ -70,8 +74,8 @@ const AchbitTaskPanel: React.FC<AchbitTaskPanelProps> = ({ language, projection 
 };
 
 /** The full list replaces the contents of this rail, leaving the conversation width unchanged. */
-export function ConversationOutputs({ artifacts, language, expanded, onExpandedChange, onOpen }: {
-  artifacts: readonly ArtifactProjection[]; language: UiLanguage; expanded: boolean; onExpandedChange(value: boolean): void;
+export function ConversationOutputs({ artifacts, language, expanded, onExpandedChange, onOpen, loading = false }: {
+  loading?: boolean; artifacts: readonly ArtifactProjection[]; language: UiLanguage; expanded: boolean; onExpandedChange(value: boolean): void;
   onOpen(workspaceId: string, logicalPath: string): Promise<void>;
 }) {
   const navigation = React.useRef<HTMLButtonElement>(null);
@@ -97,7 +101,8 @@ export function ConversationOutputs({ artifacts, language, expanded, onExpandedC
       <span>{t(language, 'achbitGui.outputs.title')}</span>
       {expanded && <small>{artifacts.length}</small>}
     </div>
-    {artifacts.length === 0 ? <div className="achbit-gui-task-list-card__empty">{t(language, 'achbitGui.outputs.empty')}</div> : <>
+    {loading ? <div role="status" className="achbit-gui-task-list-card__empty">{language === 'zh-CN' ? '正在读取产出…' : 'Loading outputs…'}</div>
+      : artifacts.length === 0 ? <div className="achbit-gui-task-list-card__empty">{t(language, 'achbitGui.outputs.empty')}</div> : <>
       <div className="achbit-gui-output-list">
         <ArtifactLinks location="outputs" artifacts={expanded ? artifacts : artifacts.slice(0, 3)} onOpen={onOpen} />
       </div>

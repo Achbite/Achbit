@@ -148,6 +148,14 @@ pub(crate) fn build_app(state: HostState) -> Router {
             get(local_agent_events_read),
         )
         .route(
+            "/api/local-agent/journal/sessions/:session_id/overview",
+            get(local_agent_overview_facts),
+        )
+        .route(
+            "/api/local-agent/journal/sessions/:session_id/transcript",
+            get(local_agent_transcript_facts),
+        )
+        .route(
             "/api/local-agent/journal/sessions/:session_id/message-history",
             get(local_agent_message_history),
         )
@@ -286,11 +294,23 @@ pub(crate) fn build_app(state: HostState) -> Router {
         )
         .route(
             "/api/conversation/sessions/:session_id/projection",
-            get(conversation_projection_get),
+            get(|state, path, headers| async move {
+                (
+                    [
+                        (axum::http::header::VARY, "Accept"),
+                        (axum::http::header::CACHE_CONTROL, "no-store"),
+                    ],
+                    conversation_projection_get(state, path, headers).await,
+                )
+            }),
         )
         .route(
             "/api/conversation/sessions/:session_id/context-compositions/:provider_request_id",
             get(conversation_context_composition_get),
+        )
+        .route(
+            "/api/conversation/sessions/:session_id/shell-output/read",
+            post(conversation_shell_output_read),
         )
         .route(
             "/api/conversation/sessions/:session_id/changes/read",

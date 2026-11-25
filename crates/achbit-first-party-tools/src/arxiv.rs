@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 mod full_text;
 mod source;
 const API_ROOT: &str = "https://export.arxiv.org/api/query";
+const MAX_START: u64 = 10_000;
 
 pub(crate) fn call(name: &str, input: &Value, context: Option<&Value>) -> ToolResult<Value> {
     match name {
@@ -51,7 +52,7 @@ fn search(input: &Value, context: Option<&Value>) -> ToolResult<Value> {
             ))
         }
     };
-    let start = optional_u64(object, "start", 0, 0, 10_000)?;
+    let start = optional_u64(object, "start", 0, 0, MAX_START)?;
     let limit = optional_u64(object, "limit", 10, 1, 30)?;
     let sort_by = optional_string(object, "sortBy")?.unwrap_or_else(|| "relevance".to_string());
     if !matches!(
@@ -83,15 +84,18 @@ fn search(input: &Value, context: Option<&Value>) -> ToolResult<Value> {
         .append_pair("sortBy", &sort_by)
         .append_pair("sortOrder", &sort_order);
     let response = source::atom_get(url, 512 * 1024, context)?;
-    let feed = parse_feed(response_text(&response)?)?;
-    let has_more = !feed.entries.is_empty()
-        && start.saturating_add(feed.entries.len() as u64) < feed.total_results;
-    let next_start = start.saturating_add(feed.entries.len() as u64);
+    search_page(&response, &query, start)
+}
+
+fn search_page(response: &crate::HttpResponse, query: &str, start: u64) -> ToolResult<Value> {
+    let feed = parse_feed(response_text(response)?)?;
+    let next = start + feed.entries.len() as u64;
+    let has_more = next > start && next <= MAX_START && next < feed.total_results;
     Ok(json!({
         "backendId": "arxiv",
         "query": query,
         "start": start,
-        "nextStart": has_more.then_some(next_start),
+        "nextStart": has_more.then_some(next),
         "totalCount": feed.total_results,
         "results": feed.entries,
         "retrievedAtMs": now_millis()?,
@@ -259,6 +263,37 @@ mod tests {
         assert_eq!(feed.entries[0]["arxivId"], "2601.00001v2");
         assert_eq!(feed.entries[0]["title"], "A paper title");
         assert_eq!(feed.entries[0]["authors"], json!(["Ada"]));
+    }
+
+    #[test]
+    fn search_page_exposes_only_reachable_next_starts_and_the_real_total() {
+        for (start, count, total, next) in [
+            (9_998, 2, 12_345, Some(10_000)),
+            (9_999, 2, 12_345, None),
+            (10_000, 1, 12_345, None),
+            (20, 2, 22, None),
+            (20, 0, 50, None),
+        ] {
+            let entries: String = (0..count)
+                .map(|i| format!("<entry><id>2401.{i:05}</id><title>Paper {i}</title></entry>"))
+                .collect();
+            let response = crate::HttpResponse {
+                body: format!("<feed><totalResults>{total}</totalResults>{entries}</feed>")
+                    .into_bytes(),
+                final_url: API_ROOT.into(),
+                headers: Default::default(),
+            };
+            let page = search_page(&response, "dynamics", start).unwrap();
+            assert_eq!(page["totalCount"], total);
+            assert_eq!(page["results"].as_array().unwrap().len(), count);
+            assert_eq!(
+                page["nextStart"],
+                json!(next),
+                "start={start}, count={count}"
+            );
+        }
+        let error = search(&json!({"query":"dynamics", "start":10_001}), None).unwrap_err();
+        assert_eq!(error.code, "tool_input_invalid");
     }
 
     #[test]

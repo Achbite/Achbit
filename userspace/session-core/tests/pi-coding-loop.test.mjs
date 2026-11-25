@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { posix } from 'node:path';
 import { SessionActor, loopSnapshot, projectSession } from '../dist/index.js';
 import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
 import { AgentLoopRegistry } from '../dist/local-agent/loopRegistry.js';
 import { corePromptInstructions } from '../dist/local-agent/coreInstructions.js';
+import { codingToolInstruction } from '../dist/local-agent/codingTools.js';
 import { productDocumentation } from '../dist/local-agent/productInstructions.js';
 import { buildAgentProviderRequest } from '../dist/local-agent/contextComposer.js';
 import { readConversation } from '../dist/local-agent/conversationRead.js';
+import { toolResultContent } from '../dist/local-agent/modelToolResult.js';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
@@ -31,9 +35,10 @@ function coding(runtime) {
   return runtime;
 }
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-async function setup(t, name, provider, kernel = emptyKernel(), codingContext = true) {
+async function setup(t, name, provider, kernel = emptyKernel(), codingContext = true,
+  { bindings = [workspaceBinding], input = 'Inspect and update the files.' } = {}) {
   const journal = new InMemoryCommandJournal(), sessionId = `session:pi-${name}`;
-  await createSession(journal, sessionId, [workspaceBinding]);
+  await createSession(journal, sessionId, bindings);
   const preparation = fakeRunPreparation({ tools, permissions, contextWindowTokens: 32000 });
   const capabilities = await new SessionConfigurationRegistry().create({ context: { id: 'coding' }, controls: { id: 'none' }, compaction: { id: 'none' } });
   const requests = [];
@@ -42,7 +47,10 @@ async function setup(t, name, provider, kernel = emptyKernel(), codingContext = 
     runPreparation: { ...preparation.port, async prepare(input) {
       const result = await preparation.port.prepare(input);
       coding(result.runtimeSnapshot);
-      if (!codingContext) delete result.runtimeSnapshot.codingTools;
+      if (!codingContext) {
+        delete result.runtimeSnapshot.codingTools;
+        result.runtimeSnapshot.providerToolAliases = createProviderToolAliases(tools.map(tool => tool.name));
+      }
       return result;
     } }, kernel, provider: { async *stream(request, signal) {
       assertRuntimeContract('ProviderRequest', request);
@@ -50,11 +58,29 @@ async function setup(t, name, provider, kernel = emptyKernel(), codingContext = 
       yield* provider(request, requests.length, signal);
     } }, async dispose() {} });
   t.after(() => actor.dispose());
-  await actor.submit(messageCommand(sessionId, `command:${name}`, 'Inspect and update the files.'));
+  await actor.submit(messageCommand(sessionId, `command:${name}`, input));
   return { actor, journal, sessionId, requests, preparation };
 }
 const terminal = projection => ['completed', 'failed', 'cancelled'].includes(projection.run?.status);
 const answer = request => providerEvent(request.requestId, 'assistant.message', { messageId: `answer:${request.requestId}`, content: 'Done.' });
+
+test('a control name absent from this request has no batch authority over a valid file read', async t => {
+  const effects = [];
+  const { actor, requests } = await setup(t, 'absent-control', async function* (request, turn) {
+    if (turn === 1) {
+      assert.ok(!request.tools.some(tool => tool.name === 'session'));
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'unbound', name: 'session', input: { action: 'wait' } });
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'bound', name: 'read', input: { path: 'notes.txt' } });
+    } else yield answer(request);
+    yield providerEvent(request.requestId, 'completed', {});
+  }, emptyKernel({ async execute(request) { effects.push(request.input.path); return completedExecutionReply(request, { content: 'readable' }); } }));
+  const projection = await waitForProjection(actor, terminal);
+  assert.equal(projection.run.status, 'completed');
+  assert.deepEqual(effects, ['notes.txt']);
+  const replies = requests[1].messages.filter(message => message.role === 'tool');
+  assert.match(replies.find(item => item.providerCallId === 'unbound').content, /not available/u);
+  assert.equal(replies.find(item => item.providerCallId === 'bound').content, 'readable');
+});
 
 test('coding prompt uses PI section order and actual declarations without product or environment leakage', async () => {
   const runtime = coding(runtimeSnapshot('run:pi-prompt', { tools, permissions, contextWindowTokens: 32000 }));
@@ -74,7 +100,9 @@ test('coding prompt uses PI section order and actual declarations without produc
   assert.deepEqual([...text.matchAll(/^<(tools|rules|docs|project_context|skills|cwd)>/gmu)].map(match => match[1]),
     ['tools', 'rules', 'docs', 'project_context', 'cwd']);
   assert.equal(sections.at(-1).content, '<cwd>\n/project\n</cwd>');
-  assert.match(text, /<rules>[\s\S]*Use read to examine files instead of cat or sed/u);
+  assert.match(text, /- read: Read file or directory contents/u);
+  assert.match(text, /- bash: .*reading multiple files/u);
+  assert.doesNotMatch(text, /instead of (?:cat|sed)|prefer (?:the )?(?:read|shell) tool/iu);
   assert.doesNotMatch(sections.map(message => message.content).join('\n'), /PI_\*|inside pi|Full product|Full environment|outputs table|plan_publish/u);
   assert.match(request.tools[0].description, /50 KiB.*offset\/limit/u);
   assert.equal(request.tools[0].inputSchema.properties.limit.maximum, 5000, 'declared Kernel limits are not widened');
@@ -108,7 +136,95 @@ for (const mode of ['coding', 'full']) test(`file path guidance and original Not
   const instructions = requests[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
   const directRead = instructions.indexOf('Read paths observed');
   assert.ok(directRead >= 0 && instructions.indexOf('For unknown paths') > directRead);
-  for (const guidance of [/project-root references.*res:\/\/.*file-relative paths/iu, /symbol.*search/iu, /same.name/iu, /NotFound.*verified path/iu]) assert.match(instructions, guidance);
+  assert.doesNotMatch(instructions, /res:\/\//u, 'the generic system prefix does not preload an engine-specific example');
+  assert.match(replies[1].content, /res:\/\/scripts\/live\.cs/u, 'a project-root URI supplied by the file remains in the actual tool result');
+  for (const guidance of [/project-root references.*from the project root; file-relative paths from the referring file/iu, /symbol.*search/iu, /same.name/iu, /NotFound.*verified path/iu]) assert.match(instructions, guidance);
+});
+
+test('lookup routes use actual callable readers; a shell-only task still gets the same evidence rule', () => {
+  const candidates = [...tools, { ...tools.find(tool => tool.name === 'bash'), name: 'powershell', toolBindingRef: 'binding:powershell' }];
+  const aliases = new Map([['fs.read', 'inspect_items'], ['bash', 'run_commands'], ['powershell', 'query_ps'], ['fs.edit', 'edit_file']]);
+  const prompt = keys => codingToolInstruction(candidates.filter(tool => keys.includes(tool.name)), aliases)?.text ?? '';
+  for (const available of [['fs.read'], ['bash'], ['powershell'], ['fs.read', 'bash'], ['fs.read', 'powershell']]) {
+    const text = prompt(available);
+    assert.match(text, /directly/u);
+    assert.match(text, /next batch.*same workspace/u);
+    assert.match(text, /repository name/u);
+    const rules = text.slice(text.indexOf('<rules>'));
+    for (const name of ['fs.read', 'bash', 'powershell']) {
+      const alias = aliases.get(name);
+      assert.equal(text.includes(alias), available.includes(name));
+      assert.equal(rules.split(alias).length - 1, Number(available.includes(name)), `${alias} must occur once per callable route, not just in <tools>`);
+    }
+    assert.equal((text.match(/next batch/gu) ?? []).length, 1);
+  }
+  assert.doesNotMatch(prompt(['fs.edit']), /next batch|inspect_items|run_commands|query_ps/u);
+});
+
+for (const mode of ['coding', 'full']) test(`an exact reference, a directory listing and its dependent read preserve workspace provenance (${mode})`, async t => {
+  const root = { workspaceId: 'workspace:source', displayName: 'Example Repository' };
+  const index = 'manual/index.txt', directory = 'manual/parts', leaf = `${randomUUID()}.md`;
+  const trace = [], reader = mode === 'coding' ? 'read' : 'fs_read';
+  const { actor } = await setup(t, `lookup-${mode}`, async function* (request, turn) {
+    const calls = request.messages.flatMap(message => message.toolCalls ?? []);
+    // Successful aggregate call history retains the Provider's original JSON arguments.
+    const ref = calls.length ? JSON.parse(calls.at(-1).input) : undefined;
+    const result = id => request.messages.find(message => message.role === 'tool' && message.providerCallId === id)?.content;
+    let input;
+    if (turn === 1) {
+      // This supplied address can be read without a speculative search or a repository-name prefix.
+      input = { workspace: 'workspace2', path: index };
+    } else if (turn === 2) {
+      input = { workspace: ref.workspace, path: posix.join(posix.dirname(ref.path), result('lookup:1')) };
+    } else if (turn === 3) {
+      const listing = result('lookup:2');
+      const entry = mode === 'coding' ? listing.trim() : JSON.parse(listing).entries[0].name;
+      input = { workspace: ref.workspace, path: posix.join(ref.path, entry) };
+    } else {
+      assert.equal(result('lookup:3'), 'matched source');
+      yield answer(request);
+    }
+    if (input) yield providerEvent(request.requestId, 'tool.call', { callId: `lookup:${turn}`, name: reader, input });
+    yield providerEvent(request.requestId, 'completed', {});
+  }, emptyKernel({ async execute(request) {
+    const { workspaceId, path } = request.input;
+    trace.push([workspaceId, path]);
+    assert.equal(workspaceId, root.workspaceId);
+    const output = path === index ? { content: 'parts' } : path === directory ? { entries: [{ name: leaf, kind: 'file' }] }
+      : path === `${directory}/${leaf}` ? { content: 'matched source' } : assert.fail(`unobserved path: ${path}`);
+    return completedExecutionReply(request, output);
+  } }), mode === 'coding', { bindings: [workspaceBinding, root], input: `In workspace2 read ${index}, then the entry in the directory it references.` });
+  const projection = await waitForProjection(actor, terminal);
+  assert.equal(projection.run.status, 'completed', JSON.stringify(projection.terminalError));
+  assert.deepEqual(trace, [index, directory, `${directory}/${leaf}`].map(path => [root.workspaceId, path]));
+});
+
+test('file NotFound projects only the original addressable relative lookup, in both coding and full results', () => {
+  const handles = new Map([['id:first', 'primary'], ['id:source', 'workspace2']]);
+  const name = 'same-name/record.md';
+  const render = ({ path = name, id = 'id:source', target = path, stage = 'metadata', ioKind = 'NotFound', code = 'fs_read_metadata_failed' }, coding) => {
+    const error = { code, message: `Cannot inspect ${path}` }, output = { stage, details: { path, ioKind, osCode: ioKind === 'NotFound' ? 2 : 13 } };
+    const record = { toolName: 'fs.read', input: { workspaceId: id, path }, outcome: 'failed', error, output,
+      preparedEffect: { origin: 'coreBuiltin', operation: 'fs.read', workspaceId: id, logicalTargets: [target] } };
+    const before = structuredClone(record);
+    const body = JSON.parse(toolResultContent(record, undefined, handles, coding));
+    assert.deepEqual(record, before, 'a presentation is not an edit to the Kernel record');
+    assert.deepEqual(body.error, error);
+    assert.deepEqual(body.result.details, output.details);
+    assert.equal(body.result.stage, stage);
+    return { body, output };
+  };
+  for (const coding of [true, false]) {
+    const { body } = render({}, coding);
+    assert.equal(body.result.workspace, 'workspace2');
+    assert.match(body.result.recovery, /source reference or listing/);
+    assert.doesNotMatch(JSON.stringify(body), /id:source|primary/, 'no internal ID or guessed alternate workspace');
+    for (const example of [{ path: '/outside/item' }, { path: 'C:/outside/item' }, { id: 'id:not-exposed' },
+      { target: 'different/path' }, { ioKind: 'PermissionDenied' }, { code: 'tool_effect_denied' }, { stage: 'read' }]) {
+      const { body, output } = render(example, coding);
+      assert.deepEqual(body.result, output, 'do not offer root correction for inaccessible, absolute or unsupported evidence');
+    }
+  }
 });
 
 test('PI batch overlaps more than four reads and mutations, and a failed same-file predecessor does not skip its successor', async t => {

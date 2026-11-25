@@ -6,11 +6,51 @@ pub(crate) struct HostState {
     pub(crate) updates: Arc<crate::host_update::Updates>,
     pub(crate) host_connection: crate::host_connection::HostConnection,
     pub(crate) gui: Arc<Mutex<GuiState>>,
+    pub(crate) reader_service: tokio::sync::watch::Receiver<
+        Option<
+            Result<
+                crate::session_service::SessionServiceProcess,
+                crate::session_service::SessionServiceError,
+            >,
+        >,
+    >,
+    pub(crate) service_token: Arc<str>,
     pub(crate) catalog_reader: crate::local_agent_store::SessionCatalogReader,
     pub(crate) execution: crate::host_runtime::HostRuntime,
     pub(crate) host_services: HostServices,
     pub(crate) model_usage: Arc<crate::model_usage::UsageStore>,
     pub(crate) model_auth: Arc<crate::model_auth::AuthService>,
+}
+
+impl HostState {
+    pub(crate) async fn conversation_reader(
+        &self,
+    ) -> Result<
+        crate::session_service::SessionServiceProcess,
+        crate::session_service::SessionServiceError,
+    > {
+        self.execution.admit_read()?;
+        self.reading_service().await
+    }
+
+    pub(crate) async fn reading_service(
+        &self,
+    ) -> Result<
+        crate::session_service::SessionServiceProcess,
+        crate::session_service::SessionServiceError,
+    > {
+        let mut ready = self.reader_service.clone();
+        let service = ready.wait_for(Option::is_some).await.map_err(|_| {
+            crate::session_service::SessionServiceError::new(
+                "session_service_start_failed",
+                "Session startup ended",
+            )
+        })?;
+        service
+            .as_ref()
+            .expect("waited for Session service")
+            .clone()
+    }
 }
 
 #[derive(Clone)]

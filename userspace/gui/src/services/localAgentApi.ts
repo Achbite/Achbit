@@ -15,6 +15,8 @@ import type {
   ConversationCatalogManagement,
   ConversationCommand,
   ConversationSessionStatus,
+  ConversationReadingWindow,
+  ProjectionMessage,
   ContextCompositionMessageBlock,
   ContextCompositionProjection,
   ContextUsageProjection,
@@ -30,7 +32,8 @@ import {
   SESSION_PROJECTION_VERSION,
 } from '@achbit/protocol';
 import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
-import { isShellActivityResult } from './shellActivityCodec';
+import { isShellActivityResult, isShellResultSummary } from './shellActivityCodec';
+import { archivedMeasurements, deferredShells, HistoryDetail } from './desktopHistory';
 
 interface ApiEnvelope<T> {
   ok: boolean;
@@ -121,7 +124,8 @@ export async function watchConversationCatalog(signal: AbortSignal, changed: () 
 }
 
 export async function getConversationStatuses(signal?: AbortSignal): Promise<ConversationSessionStatus[]> {
-  const value = await request<unknown>(`${API_BASE}/conversation/statuses`, { signal });
+  const response = await conversationFetch(`${API_BASE}/conversation/statuses`, { signal });
+  const value = await envelopeData<unknown>(response);
   if (!Array.isArray(value) || !value.every((item) => (
     isExactRecord(item, ['sessionId', 'revision', 'run'])
     && isIdentifier(item.sessionId)
@@ -299,7 +303,9 @@ export async function submitLocalAgentCommand(
       signal,
     },
   );
-  return decodeCommandReply(reply);
+  const decoded = decodeCommandReply(reply);
+  if (decoded.commandId !== command.commandId || decoded.sessionId !== command.sessionId) throw new Error('conversation_command_reply_identity_mismatch');
+  return decoded;
 }
 
 export async function getLocalAgentProjection(
@@ -311,6 +317,60 @@ export async function getLocalAgentProjection(
     { signal },
   );
   return decodeProjection(projection, sessionId);
+}
+
+/** Negotiated history is used only by the desktop transcript. Public callers retain complete activities. */
+export async function getDesktopSessionProjection(sessionId: string, signal?: AbortSignal): Promise<SessionProjection> {
+  const base = `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}`;
+  const value = await request<unknown>(`${base}/projection`, { signal,
+    headers: { Accept: 'application/vnd.achbit.desktop-history.v1+json' } });
+  if (!isRecord(value) || value.kind !== 'desktop.history.v1') return decodeProjection(value, sessionId);
+  const raw = value.projection;
+  if (!isRecord(raw) || raw.sessionId !== sessionId || !isNaturalNumber(raw.revision)
+    || !Array.isArray(raw.activities) || !Array.isArray(value.deferredShells)) throw new Error('desktop_history_invalid');
+  const activities = new Map(raw.activities.filter(isRecord).map(a => [a.activityId, a]));
+  const fullProjection = new HistoryDetail(async (signal: AbortSignal) => {
+    const full = await getLocalAgentProjection(sessionId, signal);
+    return new Map(full.activities.map(activity => [activity.activityId, activity]));
+  });
+  for (const ref of value.deferredShells) {
+    if (!isRecord(ref) || !isIdentifier(ref.activityId) || !isPositiveNaturalNumber(ref.sequence) || ref.sequence > raw.revision
+      || !isShellResultSummary(ref.summary)) throw new Error('desktop_shell_reference_invalid');
+    const a = activities.get(ref.activityId);
+    if (!a || a.kind !== 'tool' || a.status !== 'completed' || !isNaturalNumber(a.sequence) || ref.sequence < a.sequence
+      || !isIdentifier(a.callId) || !isIdentifier(a.runId) || !isRecord(a.tool) || !isIdentifier(a.tool.recordId)
+      || !isRecord(a.tool.shell) || 'result' in a.tool.shell || deferredShells.has(a.tool.shell)
+      || ref.summary.environment.executionScope !== a.tool.shell.executionScope
+      || ref.summary.environment.terminal !== a.tool.shell.terminal) throw new Error('desktop_shell_reference_invalid');
+    const identity = { sequence: ref.sequence, runId: a.runId, callId: a.callId, recordId: a.tool.recordId };
+    let output: HistoryDetail<{ stdout: string; stderr: string }> | undefined;
+    deferredShells.set(a.tool.shell, { summary: ref.summary, fullProjection,
+      get output() {
+        return output ??= new HistoryDetail(signal => readDesktopShellOutput(base, sessionId, identity, signal));
+      },
+    });
+  }
+  const projection = decodeProjection(raw, sessionId);
+  const m = value.measurement;
+  if (m !== null && (!isRecord(m) || !isRecord(m.usage) || !isContextUsage(m.usage)
+    || !isNaturalNumber(m.usage.sequence) || m.usage.sequence > projection.revision
+    || !isRecord(m.receipt) || !isPositiveNaturalNumber(m.receipt.sequence) || m.receipt.sequence >= m.usage.sequence
+    || !Array.isArray(m.receipt.partitions) || !contextPartitionsAreValid(m.receipt.partitions)
+    || m.receipt.partitions.some(p => p.tokenSource !== 'sessionEstimated')
+    || m.receipt.partitions.reduce((sum, p) => sum + p.estimatedInputTokens, 0) !== m.usage.inputTokens)) {
+    throw new Error('context_history_usage_mismatch');
+  }
+  archivedMeasurements.set(projection, m as import('@achbit/protocol').TranscriptOverview['measurement']);
+  return projection;
+}
+
+async function readDesktopShellOutput(base: string, sessionId: string,
+  identity: { sequence: number; runId: string; callId: string; recordId: string }, signal: AbortSignal) {
+  const data = await request<unknown>(`${base}/shell-output/read`, { method: 'POST', body: JSON.stringify(identity), signal });
+  if (!isRecord(data) || data.sessionId !== sessionId || data.sequence !== identity.sequence
+    || data.runId !== identity.runId || data.callId !== identity.callId || data.recordId !== identity.recordId
+    || typeof data.stdout !== 'string' || typeof data.stderr !== 'string') throw new Error('shell_output_response_invalid');
+  return { stdout: data.stdout, stderr: data.stderr };
 }
 
 export async function resolveConversationResource(sessionId: string, workspaceId: string, logicalPath: string): Promise<{path: string; kind: 'file' | 'directory'}> {
@@ -364,8 +424,8 @@ export function isBinaryFileChange(error: unknown): boolean {
     && error.code === 'file_change_binary_content';
 }
 
-export async function request<T>(url: string, init: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+function conversationFetch(url: string, init: RequestInit) {
+  return fetch(url, {
     ...init,
     headers: {
       ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -373,6 +433,13 @@ export async function request<T>(url: string, init: RequestInit): Promise<T> {
       ...init.headers,
     },
   });
+}
+
+export async function request<T>(url: string, init: RequestInit): Promise<T> {
+  return envelopeData<T>(await conversationFetch(url, init));
+}
+
+async function envelopeData<T>(response: Response): Promise<T> {
   let envelope: ApiEnvelope<T>;
   try {
     envelope = await response.json() as ApiEnvelope<T>;
@@ -479,7 +546,7 @@ function decodeProjection(value: unknown, expectedSessionId?: string): SessionPr
   const pendingPlan = value.pendingPlan as {planId: string; revision: number} | null;
   const timeline = value.timeline as Array<Record<string, unknown>>;
   const projectionRevision = value.revision as number;
-  const messages = value.messages as Array<Record<string, unknown>>;
+  const messages = value.messages;
   const narratives = value.narratives as Array<Record<string, unknown>>;
   const activities = value.activities as Array<Record<string, unknown>>;
   const planKeys = plans.map((plan) => planReferenceKey(plan));
@@ -609,10 +676,10 @@ function isQueuedInput(value: unknown): boolean {
 
 function timelineReferencesAreValid(
   timeline: Array<Record<string, unknown>>,
-  messages: Array<Record<string, unknown>>,
-  narratives: Array<Record<string, unknown>>,
+  messages: ProjectionMessage[],
+  narratives: Array<{ narrativeId?: unknown; providerRequestId?: unknown }>,
   plans: Array<{ planId: string; revision: number }>,
-  activities: Array<Record<string, unknown>>,
+  activities: Array<{ activityId?: unknown; kind?: unknown }>,
 ): boolean {
   const messagesById = new Map(messages.map(message => [message.messageId, message]));
   const narrativesById = new Map(narratives.map(narrative => [narrative.narrativeId, narrative]));
@@ -790,7 +857,7 @@ function isSessionDisplay(value: unknown): boolean {
     && typeof value.creationTitle === 'string';
 }
 
-function isProjectionMessage(value: unknown): boolean {
+function isProjectionMessage(value: unknown): value is ProjectionMessage {
   if (!isExactRecord(value, [
     'messageId', 'role', 'content', 'filesystemReferences',
     'pluginSelections', 'feedback', 'sequence', 'createdAt',
@@ -1528,6 +1595,14 @@ function isProviderHostedActivity(value: unknown): boolean {
     && (value.action === undefined || isRecord(value.action));
 }
 
+function isFileChange(change: unknown): boolean {
+  return isRecord(change)
+    && isIdentifier(change.workspaceId) && isNonEmptyText(change.path)
+    && ['create', 'modify', 'delete'].includes(String(change.kind))
+    && [change.before, change.after].every((side) => isRecord(side) && typeof side.exists === 'boolean'
+      && (!side.exists || typeof side.contentRef === 'string' || typeof side.error === 'string'));
+}
+
 function isToolActivity(value: unknown, activityStatus: string): boolean {
   return isExactRecord(value, ['operation', 'resources'], ['shell', 'shellIntents', 'process', 'fileChanges', 'computer', 'recordId', 'error', 'projectionError'])
     && (value.error === undefined || isLocalAgentError(value.error))
@@ -1539,11 +1614,7 @@ function isToolActivity(value: unknown, activityStatus: string): boolean {
     && (value.recordId === undefined || isIdentifier(value.recordId))
     && isNonEmptyText(value.operation)
     && isArrayOf(value.resources, isActivityResource)
-    && (value.fileChanges === undefined || isArrayOf(value.fileChanges, (change) => isRecord(change)
-      && isIdentifier(change.workspaceId) && isNonEmptyText(change.path)
-      && ['create', 'modify', 'delete'].includes(String(change.kind))
-      && [change.before, change.after].every((side) => isRecord(side) && typeof side.exists === 'boolean'
-        && (!side.exists || typeof side.contentRef === 'string' || typeof side.error === 'string'))))
+    && (value.fileChanges === undefined || isArrayOf(value.fileChanges, isFileChange))
     && (value.process === undefined || isProcessActivity(value.process))
     && (value.computer === undefined || isComputerActivity(value.computer))
     && (value.process !== undefined ? value.shell === undefined : (value.operation === 'bash' || value.operation === 'powershell')
@@ -1569,7 +1640,7 @@ function isComputerActivity(value: unknown): boolean {
 function isShellActivity(value: unknown, activityStatus: string): boolean {
   const resultValid = isRecord(value) && value.result !== undefined
     ? isShellActivityResult(value.result)
-    : false;
+    : isRecord(value) && deferredShells.has(value);
   const resultMatchesShell = !isRecord(value) || value.result === undefined || (
     isRecord(value.result)
     && isRecord(value.result.environment)
@@ -1685,6 +1756,124 @@ export async function readConversation(sessionId: string, query: Omit<import('@a
   return page;
 }
 
+export async function readTranscriptOverview(id: string, signal: AbortSignal) {
+  const result = await readConversation(id, { view: 'overview' }, signal);
+  const o = result.overview;
+  if (!o || o.sessionId !== id || o.revision !== result.revision || !isPositiveNaturalNumber(o.revision)
+    || !isNullable(o.todoList, isTodoList) || !isArrayOf(o.deliverables, isDeliverable) || !isArrayOf(o.childDeliverables, isDeliverable)
+    || !isArrayOf(o.memberIds, isIdentifier) || !isTokenUsage(o.totalTokenUsage)
+    || o.measurement !== null && (!isContextUsage(o.measurement.usage) || !isPositiveNaturalNumber(o.measurement.receipt?.sequence)
+      || !contextPartitionsAreValid(o.measurement.receipt.partitions))) throw new Error('conversation_overview_invalid');
+  return o;
+}
+
+export async function readTranscriptPage(sessionId: string, around: number | undefined, signal: AbortSignal) {
+  const response = await readConversation(sessionId, { view: 'transcript', ...(around === undefined ? {} : { around }) }, signal);
+  const page = response.transcript;
+  if (!page || page.sessionId !== sessionId || page.revision !== response.revision || !isPositiveNaturalNumber(page.start)
+    || !isPositiveNaturalNumber(page.end) || page.start > page.end || page.end > page.revision
+    || !(page.previous === null || isPositiveNaturalNumber(page.previous) && page.previous < page.start)
+    || !(page.next === null || isPositiveNaturalNumber(page.next) && page.next === page.end + 1)
+    || !isArrayOf(page.navigation, n => isRecord(n) && isIdentifier(n.key) && isPositiveNaturalNumber(n.sequence) && typeof n.label === 'string'))
+    throw new Error('conversation_transcript_range_invalid');
+  const c = page.content;
+  if (!c || c.sessionId !== sessionId || c.revision !== page.revision || !isArrayOf(c.timeline,isTimelineItem)
+    || !isArrayOf(c.messages,isProjectionMessage) || !isArrayOf(c.narratives,isNarrative) || !isArrayOf(c.activities,isActivity)
+    || !isArrayOf(c.interactions,isInteraction) || !isArrayOf(c.plans,isPlanProjection) || !isArrayOf(c.artifacts,isArtifact)
+    || !isWorkspaceBindings(c.workspaceBindings) || c.runTimings !== undefined && !isArrayOf(c.runTimings,isRunTiming)
+    || c.fileChangeRounds !== undefined && !isArrayOf(c.fileChangeRounds,r => isRecord(r) && isIdentifier(r.runId) && isArrayOf(r.recordIds,isIdentifier)))
+    throw new Error('conversation_transcript_content_invalid');
+  if (!isArrayOf(page.fileChangeDetails, d => isRecord(d) && isIdentifier(d.runId) && isIdentifier(d.activityId)
+    && isRecord(d.tool) && isIdentifier(d.tool.recordId) && isArrayOf(d.tool.fileChanges, isFileChange)))
+    throw new Error('conversation_transcript_content_invalid');
+  if (!timelineReferencesAreValid(c.timeline, c.messages, c.narratives, c.plans, c.activities)) throw new Error('conversation_transcript_content_invalid');
+  const live = page.current;
+  if (!live && page.next === null) throw new Error('conversation_transcript_run_invalid');
+  if (live && (live.sessionId !== sessionId || live.revision !== page.revision || !isNullable(live.run,isRun)
+    || !isNullable(live.modelSettings,isModelSettings) || !isNullable(live.terminalError,isLocalAgentError)
+    || !isNullable(live.pendingPlan,isPendingPlan) || !isNullable(live.pendingApproval,isApproval)
+    || !isNullable(live.pendingInteraction,isInteraction) || !isNullable(live.assistantDraft,isAssistantDraft)
+    || !isArrayOf(live.queuedInputs,isQueuedInput))) throw new Error('conversation_transcript_run_invalid');
+  return page;
+}
+
+// Exact UTF-8 size of this plain JSON value, stopping at the negotiated bound. Do not
+// stringify/clone an oversized body (including nested attachments) just to reject it.
+function fitsReadingWindow(value: unknown): boolean {
+  let left = 256 * 1024;
+  const text = (s: string) => {
+    left -= s.length + 2;
+    for (let i = 0; left >= 0 && i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c < 32) left -= c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 1 : 5;
+      else if (c === 34 || c === 92 || c >= 128 && c < 2048) left--;
+      else if (c >= 0xd800 && c <= 0xdfff) {
+        const next = s.charCodeAt(i+1);
+        if (c < 0xdc00 && next >= 0xdc00 && next <= 0xdfff) { left -= 2; i++; } else left -= 5;
+      } else if (c >= 2048) left -= 2;
+    }
+  };
+  const visit = (x: unknown) => {
+    if (typeof x === 'string') return text(x);
+    if (!x || typeof x !== 'object') { left -= String(x).length; return; }
+    left -= 2; let first = true;
+    for (const key in x) {
+      if (left < 0) break;
+      if (!first) left--; first = false;
+      if (!Array.isArray(x)) { text(key); left--; }
+      visit((x as Record<string, unknown>)[key]);
+    }
+  };
+  visit(value); return left >= 0;
+}
+
+/** A new wire view, not the old journal excerpt. Decode every canonical message using the
+ * same validator as /projection. Only the explicit discriminator denotes a normal fallback. */
+export async function readRevisionWindow(sessionId: string, throughSequence: number, signal: AbortSignal,
+  anchorKey?: string, limit = 12): Promise<ConversationReadingWindow> {
+  if (!isPositiveNaturalNumber(throughSequence) || !Number.isInteger(limit) || limit < 1 || limit > 24
+    || (anchorKey !== undefined && !isStreamId(anchorKey))) throw new Error('conversation_read_window_query_invalid');
+  const data = await request<unknown>(`${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/read`, {
+    method: 'POST', body: JSON.stringify({ view: 'readingWindow', throughSequence, ...(anchorKey !== undefined ? { anchorKey } : {}), limit }), signal,
+  });
+  signal.throwIfAborted();
+  if (!isExactRecord(data, ['sessionId', 'revision', 'view', 'items', 'nextBefore', 'readingWindow'])
+    || !Array.isArray(data.items) || data.items.length || data.nextBefore !== null) throw new Error('conversation_read_window_invalid');
+  if (data.sessionId !== sessionId || data.view !== 'readingWindow') throw new Error('conversation_read_identity_mismatch');
+  if (data.revision !== throughSequence) throw new Error('conversation_read_window_revision_mismatch');
+  const w = data.readingWindow;
+  if (isExactRecord(w, ['kind']) && w.kind === 'requiresProjection') return { kind: 'requiresProjection' };
+  if (!isExactRecord(w, ['kind', 'anchorKey', 'rows', 'navigation', 'startIndex', 'totalRows']) || w.kind !== 'ready'
+    || !isStreamId(w.anchorKey) || !isNaturalNumber(w.startIndex) || !isPositiveNaturalNumber(w.totalRows)
+    || !Array.isArray(w.rows) || !w.rows.length || w.rows.length > limit || w.totalRows > throughSequence || w.startIndex > w.totalRows - w.rows.length
+    || !isExactRecord(w.navigation, ['keys', 'labels']) || !isArrayOf(w.navigation.keys, isStreamId)
+    || !isArrayOf(w.navigation.labels, (x): x is string => typeof x === 'string') || w.navigation.keys.length !== w.navigation.labels.length
+    || w.navigation.keys.length > Math.min(4096, w.totalRows) || new Set(w.navigation.keys).size !== w.navigation.keys.length) throw new Error('conversation_read_window_invalid');
+  const keys = new Set<string>(), timelines = new Set<string>(), messages = new Set<string>();
+  const rows: Extract<ConversationReadingWindow, { kind: 'ready' }>['rows'] = [];
+  for (const r of w.rows) {
+    if (!isExactRecord(r, ['key', 'timelineId', 'sequence', 'message'], ['streamId']) || !isStreamId(r.key) || !isIdentifier(r.timelineId)
+      || !isPositiveNaturalNumber(r.sequence) || r.sequence > throughSequence || !isProjectionMessage(r.message)
+      || r.message.sequence !== r.sequence || (r.message.role !== 'user' && r.message.role !== 'assistant') || r.message.replyToInteraction
+      || (r.message.role === 'assistant' ? !isStreamId(r.streamId) || r.key !== r.streamId : r.streamId !== undefined || r.key !== r.message.messageId)
+      || keys.has(r.key) || timelines.has(r.timelineId) || messages.has(r.message.messageId)) throw new Error('conversation_read_window_invalid');
+    keys.add(r.key); timelines.add(r.timelineId); messages.add(r.message.messageId);
+    rows.push({ key: r.key, timelineId: r.timelineId, sequence: r.sequence, ...(typeof r.streamId === 'string' ? { streamId: r.streamId } : {}), message: r.message });
+  }
+  if (!keys.has(w.anchorKey) || (anchorKey === undefined ? w.startIndex + rows.length !== w.totalRows || w.anchorKey !== rows.at(-1)!.key : w.anchorKey !== anchorKey)) throw new Error('conversation_read_window_anchor_mismatch');
+  if (!fitsReadingWindow(data)) throw new Error('conversation_read_window_invalid');
+  const nav = new Map(w.navigation.keys.map((key, i) => [key, i])); let previous = -1;
+  for (const row of rows) {
+    const index = nav.get(row.key);
+    if (row.message.role === 'user') {
+      if (index === undefined || index <= previous) throw new Error('conversation_read_window_invalid');
+      previous = index;
+    } else if (index !== undefined) throw new Error('conversation_read_window_invalid');
+  }
+  return { kind: 'ready', anchorKey: w.anchorKey, startIndex: w.startIndex, totalRows: w.totalRows, rows,
+    navigation: { keys: w.navigation.keys, labels: w.navigation.labels } };
+}
+
 /** Read the last individually measured request, not the potentially multi-step last response total. */
 export async function readMeasuredWindowHistory(projection: SessionProjection, rounds: SessionProjection['tokenUsageHistory'],
   afterSequence: number, signal: AbortSignal) {
@@ -1726,29 +1915,6 @@ export async function readMeasuredWindowHistory(projection: SessionProjection, r
     before = cursor;
   }
   return null;
-}
-
-export interface OpeningHistoryPage {
-  sessionId: string;
-  revision: number;
-  messages: { id: string; role: 'user' | 'assistant'; content: string; truncated: boolean }[];
-}
-
-/** Show committed conversation text while the full timeline and its actions are loading. */
-export async function readOpeningHistory(sessionId: string, signal: AbortSignal): Promise<OpeningHistoryPage> {
-  const page = await readConversation(sessionId, { view: 'messages', limit: 4 }, signal);
-  if (!isPositiveNaturalNumber(page.revision) || !Array.isArray(page.items)) {
-    throw new Error('conversation_message_page_invalid');
-  }
-  const messages: OpeningHistoryPage['messages'] = [];
-  for (const item of page.items) {
-    if (item.type !== 'message.committed' || (item.role !== 'user' && item.role !== 'assistant')) continue;
-    if (!isIdentifier(item.messageId) || typeof item.content !== 'string' || typeof item.truncated !== 'boolean') {
-      throw new Error('conversation_message_page_invalid');
-    }
-    messages.push({ id: item.messageId, role: item.role, content: item.content, truncated: item.truncated });
-  }
-  return { sessionId, revision: page.revision, messages };
 }
 
 export async function readFileChange(sessionId: string, recordId: string, index: number, signal?: AbortSignal) {

@@ -162,6 +162,7 @@ class SharedResourcesTests(unittest.TestCase):
             write(root, 'skills/achbit-documents/licenses/typst.txt', b'Native renderer license')
             write(root, 'skills/achbit-documents/THIRD_PARTY_NOTICES.md', b'Native renderer notices')
             write(root, 'skills/achbit-frontend-design/SKILL.md', b'Frontend guidance')
+            write(root, 'skills/achbit-frontend-design/references/private.md', b'Local iteration only')
             write(root, 'dependencies.json', b'[]')
             public = {
                 'distribution.md': b'Installation',

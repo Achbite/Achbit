@@ -58,8 +58,10 @@ export function snapshotForProductUpdate(): Record<string, string> {
   return storage;
 }
 
-export async function installProductUpdateMonitor(): Promise<() => void> {
-  if (!window.__TAURI__?.event || !window.__TAURI__?.core?.invoke) return () => {};
+export function installProductUpdateMonitor(): () => void {
+  const nativeEvents = window.__TAURI__?.event;
+  if (!nativeEvents || !window.__TAURI__?.core?.invoke) return () => {};
+  const cleanups: Array<() => void> = [];
   let lastInput = Date.now();
   let composing = false;
   let disposed = false;
@@ -73,14 +75,13 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
   for (const event of events) window.addEventListener(event, activity, true);
   window.addEventListener('compositionstart', compositionStart, true);
   window.addEventListener('compositionend', compositionEnd, true);
-  let statusEvents = 0;
-  const stopStatus = await window.__TAURI__.event.listen<ProductUpdateStatus>('achbit:product-update', event => {
-    statusEvents++;
-    publish(event.payload);
-    if (!['preparing', 'installing'].includes(event.payload.phase)) thaw();
-  });
-  const stopResume = await window.__TAURI__.event.listen('achbit:update-resume', thaw);
-  const stopPrepare = await window.__TAURI__.event.listen<{ nonce: number; manual: boolean; busy: boolean }>('achbit:update-prepare', event => {
+  let statusVersion = 0;
+  const reportError = (error: unknown) => {
+    if (disposed) return;
+    statusVersion++;
+    publish({ ...state, phase: 'error', error: String(error) });
+  };
+  const prepare = (event: { payload: { nonce: number; manual: boolean; busy: boolean } }) => {
     void (async () => {
       if (disposed || confirmation !== null) {
         await invoke('achbit_update_prepare_response', { nonce: event.payload.nonce, storage: null });
@@ -112,15 +113,11 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
       }
       await invoke('achbit_update_prepare_response', { nonce: event.payload.nonce, storage });
     })().catch(error => {
-      thaw();
-      publish({ ...state, phase: 'error', error: String(error) });
+      if (!disposed) thaw();
+      reportError(error);
       void invoke('achbit_update_prepare_response', { nonce: event.payload.nonce, storage: null }).catch(console.error);
     });
-  });
-  const beforeStatusRead = statusEvents;
-  const initialStatus = await invoke<ProductUpdateStatus>('achbit_update_status');
-  // An event arriving during the IPC read is newer than its initial snapshot.
-  if (statusEvents === beforeStatusRead) publish(initialStatus);
+  };
   let configured: boolean | undefined;
   let configuration = Promise.resolve();
   const configure = () => {
@@ -128,16 +125,48 @@ export async function installProductUpdateMonitor(): Promise<() => void> {
     const enabled = settings.storePath !== null && settings.effectiveSettings['gui.autoUpdate'] === true;
     if (enabled === configured) return;
     configured = enabled;
-    configuration = configuration.then(() => invoke<void>('achbit_update_configure', { enabled })).catch(error => {
-      publish({ ...state, phase: 'error', error: String(error) });
-    });
+    configuration = configuration.then(() => {
+      if (!disposed) return invoke<void>('achbit_update_configure', { enabled });
+    }).catch(reportError);
   };
-  const stopSettings = useSettingsStore.subscribe(configure);
-  configure();
-  return () => {
-    disposed = true; respondProductUpdate(false); thaw(); stopStatus(); stopResume(); stopPrepare(); stopSettings();
+  const release = async (stop: () => void) => {
+    try { await stop(); } catch (error) { console.error('[Achbit update monitor cleanup]', error); }
+  };
+  const own = async (registration: Promise<() => void>) => {
+    const stop = await registration;
+    if (disposed) void release(stop); else cleanups.push(stop);
+  };
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true; respondProductUpdate(false); thaw();
+    cleanups.forEach(release);
     for (const event of events) window.removeEventListener(event, activity, true);
     window.removeEventListener('compositionstart', compositionStart, true);
     window.removeEventListener('compositionend', compositionEnd, true);
   };
+  const start = async () => {
+    // Be able to thaw and answer preparation before offering or enabling installation.
+    await own(nativeEvents.listen('achbit:update-resume', () => { if (!disposed) thaw(); }));
+    if (disposed) return;
+    await own(nativeEvents.listen('achbit:update-prepare', prepare));
+    if (disposed) return;
+    await own(nativeEvents.listen<ProductUpdateStatus>('achbit:product-update', ({ payload }) => {
+      if (disposed) return;
+      statusVersion++;
+      publish(payload);
+      if (!['preparing', 'installing'].includes(payload.phase)) thaw();
+    }));
+    if (disposed) return;
+    const beforeRead = statusVersion;
+    void invoke<ProductUpdateStatus>('achbit_update_status').then(initial => {
+      if (!disposed && statusVersion === beforeRead) publish(initial);
+    }).catch(reportError);
+    cleanups.push(useSettingsStore.subscribe(configure));
+    configure();
+  };
+  void start().catch(error => {
+    reportError(error);
+    dispose(); // release any subscriptions acquired before registration failed
+  });
+  return dispose;
 }

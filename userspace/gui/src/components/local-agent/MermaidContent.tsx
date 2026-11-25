@@ -10,7 +10,7 @@ import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { useConversationHost } from './ConversationHost';
 import { ImageReview } from './ImageReview';
-import { renderMermaidImage } from './mermaidImage';
+import { maxMermaidSourceLength, renderMermaidImage } from './mermaidImage';
 import { CodeContent } from './RichContent';
 import { RichContentScope } from './RichContentIdentity';
 import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
@@ -22,6 +22,7 @@ type DiagramResult = { source: string; theme: string } & ({ image: DiagramImage 
 export function MermaidContent({ source }: { source: string }) {
   const language = useUiLanguage();
   const theme = useDisplayTheme();
+  const tooLarge = source.length > maxMermaidSourceLength;
   const host = useConversationHost();
   const interaction = useInteractionFocus();
   const id = 'diagram-' + useId().replace(/[^a-zA-Z0-9]/g, '');
@@ -44,13 +45,14 @@ export function MermaidContent({ source }: { source: string }) {
     let current = true;
     let url: string | undefined;
     setActionError(''); setCopyFeedback(null); setMenu(false);
+    if (tooLarge) { setResult(null); return; }
     void renderMermaidImage(id, source, theme).then(rendered => {
       if (!current) return;
       url = URL.createObjectURL(new Blob([rendered.svg], { type: 'image/svg+xml;charset=utf-8' }));
       setResult({ source, theme, image: { ...rendered, url } });
     }).catch(reason => { if (current) setResult({ source, theme, error: String(reason) }); });
     return () => { current = false; if (url) URL.revokeObjectURL(url); };
-  }, [id, source, theme]);
+  }, [id, source, theme, tooLarge]);
   useEffect(() => {
     if (!menu) return;
     const panel = menuRef.current;
@@ -58,7 +60,7 @@ export function MermaidContent({ source }: { source: string }) {
   }, [menu, interaction]);
   useDismissibleLayer({ open: menu, roots: [popup], trigger: more, onDismiss: () => setMenu(false) });
   const current = result?.source === source && result.theme === theme ? result : null;
-  const image = current && 'image' in current ? current.image : null;
+  const image = !tooLarge && current && 'image' in current ? current.image : null;
   const preceding = figure.current?.previousElementSibling;
   const title = image?.title || (preceding?.matches('h1,h2,h3,h4,h5,h6') ? preceding.textContent : '') || t(language, 'content.diagram.title');
   const label = t(language, showSource ? 'content.diagram.view' : 'content.diagram.source');
@@ -103,10 +105,11 @@ export function MermaidContent({ source }: { source: string }) {
         onClick={() => trigger.current?.click()}><AchbitShellIcon name="expand" /></button>
     </div>
     {actionError && <small className="conversation-copy-error" role="alert">{actionError}</small>}
-    {current && 'error' in current && <span role="status">{t(language, 'content.diagram.error', { error: current.error })}</span>}
+    {tooLarge ? <span role="status">{t(language, 'content.diagram.tooLarge', { limit: maxMermaidSourceLength })}</span>
+      : current && 'error' in current && <span role="status">{t(language, 'content.diagram.error', { error: current.error })}</span>}
     <div id={id + '-content'}>
       {showSource && <CodeContent code={source} language="mermaid" />}
-      {!showSource && !current && <span role="status" data-conversation-pending>{t(language, 'content.diagram.loading')}</span>}
+      {!showSource && !tooLarge && !current && <span role="status" data-conversation-pending>{t(language, 'content.diagram.loading')}</span>}
       {image && <div className="conversation-diagram__viewport">
         <ImageReview source={image.url} alt={title} className="conversation-diagram__open" title={t(language, 'content.diagram.expand')}
           createImage={() => diagramImage(image!.svg, title, 'png', theme === 'dark' ? '#1e1f22' : '#fff')}

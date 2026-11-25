@@ -47,8 +47,11 @@ const COMPONENTS = {
   table: function ScopedMarkdownTable({ node, children }: { node?: Element; children?: React.ReactNode }) {
     return <MarkdownNodeScope node={node}><MarkdownTable>{children}</MarkdownTable></MarkdownNodeScope>;
   },
-  img: function MarkdownImage({ src, alt }: { src?: string; alt?: string }) { return <ImageContent source={src ?? ''} alt={alt ?? ''} />; },
+  img: function MarkdownImage({ src, alt, width, height }: React.ComponentPropsWithoutRef<'img'>) {
+    return <ImageContent source={src ?? ''} alt={alt ?? ''} width={Number(width)} height={Number(height)} />;
+  },
   span: function MarkdownSpan({ node, children, ...attributes }: React.ComponentPropsWithoutRef<'span'> & { node?: Element }) {
+    if (attributes.className === 'conversation-math__pending') return <MarkdownStatus math />;
     const span = <span {...attributes}>{children}</span>;
     return attributes.className?.split(' ').includes('katex-display')
       ? <MarkdownNodeScope node={node}><MathContent>{span}</MathContent></MarkdownNodeScope> : span;
@@ -75,10 +78,8 @@ function MarkdownBlocks({ blocks, provisional = false }: { blocks: MarkdownBlock
   return <>{blocks.map(block => <RenderedBlock key={block.key} block={block} provisional={provisional} />)}</>;
 }
 
-function ImmediateMarkdown({ children, streaming = false, decisionProse = false }: MarkdownContentProps) {
-  const parser = useRef(new StreamingMarkdownParser());
-  const blocks = useMemo(() => parser.current.update(decisionProse ? formatDecisionProse(children) : children, streaming), [children, streaming, decisionProse]);
-  return <div className="conversation-markdown"><MarkdownBlocks blocks={blocks} /></div>;
+function MarkdownStatus({ math = false }: { math?: boolean }) {
+  return <span role="status">{t(useUiLanguage(), math ? 'content.math.composing' : 'agent.chat.preparingText')}</span>;
 }
 
 // Bound synchronous work by both lines and characters, including unbroken paragraphs.
@@ -92,30 +93,48 @@ function firstPage(text: string): string {
 
 // Only the file Reader offers a provisional, searchable source view. In a
 // conversation even the first paragraph can depend on definitions at EOF.
-function SearchableDocumentPreview({ text, decisionProse }: { text: string; decisionProse: boolean }) {
-  const first = useMemo(() => firstPage(text), [text]);
-  const preview = useMemo(() => new StreamingMarkdownParser().update(decisionProse ? formatDecisionProse(first) : first, true), [first, decisionProse]);
-  return <><MarkdownBlocks blocks={preview} provisional /><pre className="conversation-markdown__pending-source">{text.slice(first.length)}</pre></>;
+function DocumentMarkdownBlocks({ text, decisionProse, blocks }: { text: string; decisionProse: boolean; blocks?: MarkdownBlock[] }) {
+  const first = useMemo(() => blocks ? '' : firstPage(text), [blocks, text]);
+  const visible = useMemo(() => blocks ?? new StreamingMarkdownParser().update(decisionProse ? formatDecisionProse(first) : first, true), [blocks, first, decisionProse]);
+  // Keep completed prefix blocks mounted so an action started during parsing can finish.
+  return <><MarkdownBlocks blocks={visible} provisional={!blocks} />{!blocks && <pre className="conversation-markdown__pending-source">{text.slice(first.length)}</pre>}</>;
 }
 
-function ProgressiveMarkdown({ children: text, decisionProse = false, active = true, documentPreview = false }: MarkdownContentProps) {
-  const language = useUiLanguage();
+export const MarkdownContent = memo(function MarkdownContent({ children: text, streaming = false, decisionProse = false, active = true, documentPreview = false }: MarkdownContentProps) {
   const surface = useRef<HTMLDivElement>(null);
-  const cached = useMemo(() => decisionProse ? undefined : cachedMarkdown(text), [text, decisionProse]);
+  const parser = useRef<StreamingMarkdownParser | null>(null);
+  const lastLive = useRef<{ text: string; decisionProse: boolean; blocks: MarkdownBlock[] } | null>(null);
+  const deferred = !streaming && text.length > 24_000;
+  const parsed = useMemo(() => {
+    if (deferred) { parser.current = null; return decisionProse ? undefined : cachedMarkdown(text); }
+    parser.current ??= new StreamingMarkdownParser();
+    return parser.current.update(decisionProse ? formatDecisionProse(text) : text, streaming);
+  }, [deferred, text, decisionProse, streaming]);
   const [result, setResult] = useState<{ text: string; decisionProse: boolean; blocks?: MarkdownBlock[]; error?: string } | null>(null);
-  const current = result?.text === text && result.decisionProse === decisionProse ? result : null;
-  const blocks = current?.blocks ?? cached;
+  const current = deferred && result?.text === text && result.decisionProse === decisionProse ? result : null;
+  const blocks = current?.blocks ?? parsed;
+  // Only retain what this mount actually committed, and only for that exact final text.
+  const prior = lastLive.current;
+  const displayed = blocks ?? (!documentPreview && prior?.text === text && prior.decisionProse === decisionProse ? prior.blocks : undefined);
+  useLayoutEffect(() => {
+    if (streaming && blocks) lastLive.current = { text, decisionProse, blocks };
+    else if (blocks || !displayed) lastLive.current = null;
+  }, [streaming, text, decisionProse, blocks, displayed]);
   useEffect(() => {
-    if (!active || blocks || current?.error) return;
+    if (!deferred || !active || blocks || current?.error) return;
     const controller = new AbortController();
     void parseMarkdownDocument(text, decisionProse, controller.signal).then(root => {
       if (controller.signal.aborted) return;
       const completed = completeMarkdown(root, decisionProse ? undefined : text);
       const publish = () => {
         const selection = document.getSelection();
-        if (surface.current && selection && !selection.isCollapsed && selection.containsNode(surface.current, true)) return;
+        const replacingReadableText = documentPreview || !!displayed;
+        if (replacingReadableText && surface.current && selection && !selection.isCollapsed && selection.containsNode(surface.current, true)) return;
         document.removeEventListener('selectionchange', publish);
-        startTransition(() => setResult({ text, decisionProse, blocks: completed }));
+        const show = () => setResult({ text, decisionProse, blocks: completed });
+        // The only content of a cold row is waiting for this result. Do not leave its
+        // first formal tree on a transition lane behind scroll and resize work.
+        if (replacingReadableText) startTransition(show); else show();
       };
       // A selection in the provisional view remains usable until the reader releases it.
       document.addEventListener('selectionchange', publish, { signal: controller.signal });
@@ -124,19 +143,24 @@ function ProgressiveMarkdown({ children: text, decisionProse = false, active = t
       if (!controller.signal.aborted) setResult({ text, decisionProse, error: reason instanceof Error ? reason.message : String(reason) });
     });
     return () => controller.abort();
-  }, [text, decisionProse, active, blocks, current?.error]);
-  const pending = !blocks && !current?.error;
-  return <div className="conversation-markdown" ref={surface} aria-busy={pending} data-conversation-pending={pending && !documentPreview || undefined}>
-    {blocks ? <MarkdownBlocks blocks={blocks} /> : documentPreview ? <SearchableDocumentPreview text={text} decisionProse={decisionProse} />
-      : pending && <span role="status">{t(language, 'agent.chat.preparingText')}</span>}
+  }, [deferred, text, decisionProse, active, blocks, current?.error, displayed, documentPreview]);
+  const pending = deferred && !blocks && !current?.error;
+  return <div className="conversation-markdown" ref={surface} aria-busy={deferred ? pending : undefined} data-conversation-pending={pending && !displayed && !documentPreview || undefined}>
+    {documentPreview ? <DocumentMarkdownBlocks text={text} decisionProse={decisionProse} blocks={displayed} />
+      : displayed ? <MarkdownBlocks blocks={displayed} /> : pending && <MarkdownStatus />}
     {current?.error && <p role="alert">{current.error}</p>}
   </div>;
-}
+});
 
-export const MarkdownContent = memo(function MarkdownContent(props: MarkdownContentProps) {
-  return !props.streaming && props.children.length > 24_000
-    ? <ProgressiveMarkdown {...props} />
-    : <ImmediateMarkdown {...props} />;
+// An opening page carries text, not resource or action authority. Use the same
+// parsed blocks without mounting link handlers, plugins, viewers or image requests.
+export const ReadingMarkdown = memo(function ReadingMarkdown({ text }: { text: string }) {
+  const blocks = useMemo(() => new StreamingMarkdownParser().update(text, false), [text]);
+  return <div className="conversation-markdown">{blocks.map(block => <Fragment key={block.key}>
+    {toJsxRuntime(block.tree, { Fragment, jsx, jsxs, components: {
+      a: ({ children }) => <span>{children}</span>, img: ({ alt }) => <span>{alt}</span>,
+      input: ({ checked }) => <span>{checked ? '☑' : '☐'}</span>,
+    } })}</Fragment>)}</div>;
 });
 
 /** Inline fields share the Markdown grammar, without nested links or block layout in buttons/headings. */
@@ -146,6 +170,7 @@ export const MarkdownInline = memo(function MarkdownInline({ children }: { child
     const inline = (node: RootContent): ElementContent[] => {
       if (node.type === 'text') return [node];
       if (node.type !== 'element') return [];
+      if (node.data?.formulaSource !== undefined) return [{ type: 'text', value: node.data.formulaSource }];
       const descendants = node.children.flatMap(inline);
       return ['strong', 'em', 'del', 'code', 'br'].includes(node.tagName)
         ? [{ ...node, children: descendants }] : descendants;
@@ -185,10 +210,10 @@ export const BufferedMarkdown = memo(function BufferedMarkdown({ text, streamIde
     if (!buffer.complete) frame = requestAnimationFrame(tick);
     return () => { if (frame !== null) cancelAnimationFrame(frame); };
   }, [playback, streamIdentity, text]);
-  const displayed = visible.identity === streamIdentity ? visible.text : text;
+  const displayed = visible.identity === streamIdentity && text.startsWith(visible.text) ? visible.text : text;
   const caughtUp = displayed === text;
   useLayoutEffect(() => {
     if (!streaming && caughtUp) onDisplayed?.(streamIdentity, displayed);
   }, [streaming, caughtUp, streamIdentity, displayed, onDisplayed]);
-  return <MarkdownContent streaming={streaming || !caughtUp}>{displayed}</MarkdownContent>;
+  return <MarkdownContent key={streamIdentity} streaming={streaming || !caughtUp}>{displayed}</MarkdownContent>;
 });

@@ -4,7 +4,8 @@ use crate::local_agent_kernel::{
 };
 use crate::local_agent_provider_runtime::{ProviderRuntimeRegistry, ProviderRuntimeSnapshot};
 use crate::local_agent_store::{
-    JournalEventPublication, LocalAgentJournal, LocalAgentStoreError, RunProviderRuntime,
+    JournalEventPublication, LocalAgentJournal, LocalAgentStoreError, ReadingFactsEncoder,
+    RunProviderRuntime, READING_FACTS_V1,
 };
 use crate::prelude::*;
 use crate::*;
@@ -43,6 +44,7 @@ impl LocalAgentRuntime {
         tool_record_store_path: &FsPath,
         workspace_resolver: Arc<dyn WorkspaceResolverPort>,
         settings: &Value,
+        token: Arc<str>,
     ) -> Result<Self, String> {
         let journal = LocalAgentJournal::open(session_store_path)
             .map_err(|error| format!("{}: {}", error.code, error.message))?;
@@ -50,7 +52,7 @@ impl LocalAgentRuntime {
             LocalAgentKernel::open(tool_record_store_path, journal.clone(), workspace_resolver)
                 .map_err(|error| format!("{}: {}", error.code, error.message))?;
         Ok(Self {
-            token: Arc::from(random_service_token()?),
+            token,
             journal,
             kernel,
             provider_runtimes: ProviderRuntimeRegistry::default(),
@@ -64,10 +66,6 @@ impl LocalAgentRuntime {
             session_store_path: Arc::new(session_store_path.to_path_buf()),
             tool_record_store_path: Arc::new(tool_record_store_path.to_path_buf()),
         })
-    }
-
-    pub(crate) fn service_token(&self) -> &str {
-        &self.token
     }
 
     pub(crate) fn shutdown_plugins(&self) -> Result<(), String> {
@@ -368,6 +366,15 @@ impl LocalAgentRuntime {
                 None => subagent_defaults(&crate::settings_api::default_user_settings())
                     .map_err(|error| RunPreparationError::new(error.code, error.message))?,
             }
+        };
+        // A top-level assistant uses its captured run settings, never a live plugin setting
+        // or an instruction implicitly delegated to a child Session.
+        let user_system_prompt = if agent_context.is_none() {
+            crate::settings_api::user_system_prompt(settings).map_err(|message| {
+                RunPreparationError::new("user_system_prompt_invalid", message)
+            })?
+        } else {
+            None
         };
         let mut environment_settings = settings.clone();
         if let Some(project_id) = gui
@@ -869,6 +876,9 @@ impl LocalAgentRuntime {
                 "thresholdTokens": settings.get("agent.contextManagement.thresholdTokens").and_then(Value::as_u64).unwrap_or(500_000),
             },
         });
+        if let Some(prompt) = user_system_prompt {
+            response["userSystemPrompt"] = json!(prompt);
+        }
         if let Some(instructions) = project_instructions {
             response["projectInstructions"] = instructions;
         }
@@ -1644,13 +1654,56 @@ pub(crate) async fn local_agent_events_read(
     if let Err(response) = require_session_service(&state, &headers) {
         return response.into_response();
     }
-    journal_read_response(
-        &headers,
-        state
-            .local_agent
-            .journal
-            .read_events_publication(&session_id, query.after.unwrap_or(0)),
-    )
+    let after = query.after.unwrap_or(0);
+    let publication = state
+        .local_agent
+        .journal
+        .read_events_publication(&session_id, after);
+    // Negotiate only on this already authenticated route and only for complete, from-zero reads.
+    if after == 0 && accepts(&headers, READING_FACTS_V1) {
+        return match publication {
+            Ok(events) => journal_stream_response(events, true),
+            Err(error) => store_error(error).into_response(),
+        };
+    }
+    journal_read_response(&headers, publication)
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct TranscriptQuery {
+    around: Option<i64>,
+    #[serde(rename = "knownTip")]
+    known_tip: Option<String>,
+}
+
+pub(crate) async fn local_agent_transcript_facts(
+    State(host): State<HostState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<TranscriptQuery>,
+) -> Response {
+    if let Err(response) = require_session_service(&host, &headers) {
+        return response.into_response();
+    }
+    match tokio::task::spawn_blocking(move || {
+        host.catalog_reader
+            .transcript_facts(&id, query.around, query.known_tip.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(None)) => axum::http::StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(Some(data))) => Json(ApiResponse {
+            ok: true,
+            data: Some(data),
+            error: None,
+            message: None,
+        })
+        .into_response(),
+        Ok(Err(error)) => store_error(error).into_response(),
+        Err(error) => {
+            ApiResponse::error("session_transcript_read_failed", error.to_string()).into_response()
+        }
+    }
 }
 
 pub(crate) async fn local_agent_message_history(
@@ -1667,23 +1720,23 @@ pub(crate) async fn local_agent_message_history(
     )
 }
 
+fn accepts(headers: &HeaderMap, media_type: &str) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|accept| {
+            accept
+                .split(',')
+                .any(|item| item.trim().eq_ignore_ascii_case(media_type))
+        })
+}
+
 fn journal_read_response(
     headers: &HeaderMap,
     publication: Result<JournalEventPublication, LocalAgentStoreError>,
 ) -> Response {
     match publication {
-        Ok(events)
-            if headers
-                .get(axum::http::header::ACCEPT)
-                .and_then(|h| h.to_str().ok())
-                .is_some_and(|accept| {
-                    accept
-                        .split(',')
-                        .any(|item| item.trim().eq_ignore_ascii_case("application/json-seq"))
-                }) =>
-        {
-            journal_sequence_response(events)
-        }
+        Ok(events) if accepts(headers, "application/json-seq") => journal_sequence_response(events),
         Ok(events) => Json(ApiResponse {
             ok: true,
             data: Some(events),
@@ -1696,13 +1749,22 @@ fn journal_read_response(
 }
 
 fn journal_sequence_response(publication: JournalEventPublication) -> Response {
+    journal_stream_response(publication, false)
+}
+
+fn journal_stream_response(publication: JournalEventPublication, reading_facts: bool) -> Response {
     // All rows and permissions have been read successfully and the SQLite
     // statement is closed before a slow client can apply backpressure.
     let stream = async_stream::stream! {
         let count = publication.value.len();
         let mut chunk = Vec::new();
+        let mut encoder = ReadingFactsEncoder::default();
         for event in publication.value {
-            if let Err(error) = append_json_record(&mut chunk, &event) {
+            let encoded = if reading_facts {
+                chunk.push(0x1e);
+                encoder.write(&mut chunk, event).map(|()| chunk.push(b'\n'))
+            } else { append_json_record(&mut chunk, &event) };
+            if let Err(error) = encoded {
                 yield Err(error);
                 return;
             }
@@ -1715,7 +1777,14 @@ fn journal_sequence_response(publication: JournalEventPublication) -> Response {
         yield append_json_record(&mut chunk, &receipt).map(|()| bytes::Bytes::from(chunk));
     };
     (
-        [(axum::http::header::CONTENT_TYPE, "application/json-seq")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            if reading_facts {
+                READING_FACTS_V1
+            } else {
+                "application/json-seq"
+            },
+        )],
         axum::body::Body::from_stream(stream),
     )
         .into_response()
@@ -1739,7 +1808,7 @@ pub(crate) struct ReadResourceJournalRequest {
 }
 
 pub(crate) async fn local_agent_resources_read(
-    ReadyState(state): ReadyState,
+    State(state): State<HostState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Json(body): Json<ReadResourceJournalRequest>,
@@ -1748,8 +1817,7 @@ pub(crate) async fn local_agent_resources_read(
         return response;
     }
     match state
-        .local_agent
-        .journal
+        .catalog_reader
         .read_resources(&session_id, &body.record_ids)
     {
         Ok(read) => ApiResponse::ok(read),
@@ -1797,16 +1865,45 @@ pub(crate) async fn local_agent_run_lifecycle_read(
 }
 
 pub(crate) async fn local_agent_agent_lifecycle_read(
-    ReadyState(state): ReadyState,
+    State(state): State<HostState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Json<ApiResponse> {
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.local_agent.journal.read_agent_lifecycle(&session_id) {
+    match state.catalog_reader.read_agent_lifecycle(&session_id) {
         Ok(read) => ApiResponse::ok(read),
         Err(error) => store_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct OverviewQuery {
+    measurement: Option<i64>,
+    #[serde(rename = "runInput")]
+    run_input: Option<i64>,
+}
+
+pub(crate) async fn local_agent_overview_facts(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<OverviewQuery>,
+) -> Json<ApiResponse> {
+    if let Err(response) = require_session_service(&state, &headers) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || {
+        state
+            .catalog_reader
+            .overview_facts(&id, query.measurement, query.run_input)
+    })
+    .await
+    {
+        Ok(Ok(read)) => ApiResponse::ok(read),
+        Ok(Err(error)) => store_error(error),
+        Err(error) => ApiResponse::error("session_overview_read_failed", error.to_string()),
     }
 }
 
@@ -2708,10 +2805,14 @@ fn validate_provider_search_binding(
     }
 }
 
-fn require_session_service(state: &AppState, headers: &HeaderMap) -> Result<(), Json<ApiResponse>> {
-    state
-        .local_agent
-        .authorize(headers)
+fn require_session_service(
+    state: &HostState,
+    headers: &HeaderMap,
+) -> Result<(), Json<ApiResponse>> {
+    headers
+        .get(SESSION_SERVICE_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == state.service_token.as_ref())
         .then_some(())
         .ok_or_else(|| {
             ApiResponse::error(
@@ -2746,7 +2847,7 @@ fn local_provider_error(request_id: &str, code: &str, message: &str) -> Response
         .into_response()
 }
 
-fn random_service_token() -> Result<String, String> {
+pub(crate) fn random_service_token() -> Result<String, String> {
     let mut entropy = [0u8; 32];
     getrandom::fill(&mut entropy).map_err(|error| error.to_string())?;
     let mut token = String::from("session-service-v2:");

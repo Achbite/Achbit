@@ -4,7 +4,11 @@ import { messageDisplayText } from './interactionPresentation';
 
 export interface ConversationNavigationEntry { key: string; rowIndex: number; label: string }
 
-export function conversationNavigation(rounds: ConversationRound[], interactions: InteractionProjection[] = []): ConversationNavigationEntry[] {
+const noInteractions: InteractionProjection[] = [];
+const navigationByRounds = new WeakMap<ConversationRound[], { interactions: InteractionProjection[]; entries: ConversationNavigationEntry[] }>();
+export function conversationNavigation(rounds: ConversationRound[], interactions: InteractionProjection[] = noInteractions): ConversationNavigationEntry[] {
+  const cached = navigationByRounds.get(rounds);
+  if (cached?.interactions === interactions) return cached.entries;
   const entries: ConversationNavigationEntry[] = [];
   let rowIndex = 0;
   for (const round of rounds) for (const row of round.rows) {
@@ -18,5 +22,6 @@ export function conversationNavigation(rounds: ConversationRound[], interactions
     }
     rowIndex += 1;
   }
+  navigationByRounds.set(rounds, { interactions, entries });
   return entries;
 }

@@ -51,8 +51,9 @@ async function fixture(withArtifacts = false) {
   return { journal, sessionId, runId, events, append, settle, records, index };
 }
 function expectedResources(events, sessionId, recordIds = []) {
-  const p = projectSession(recoverSession(sessionId, events));
-  return { sessionId, revision: p.revision, workspaceBindings: p.workspaceBindings,
+  const state = recoverSession(sessionId, events);
+  const p = projectSession(state);
+  return { sessionId, revision: p.revision, baseWorkspaceBindings: state.creationWorkspaceBindings, workspaceBindings: p.workspaceBindings,
     messages: p.messages.map(({filesystemReferences})=>({filesystemReferences})), shellAuthorizations: p.shellAuthorizations, artifacts: p.artifacts,
     activities: p.activities.filter(a=>a.tool?.recordId && recordIds.includes(a.tool.recordId)).map(a=>({tool:{recordId:a.tool.recordId,
       ...(a.tool.fileChanges?{fileChanges:a.tool.fileChanges}:{})}})) };

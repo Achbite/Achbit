@@ -75,6 +75,8 @@ export interface UsageTotals {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  /** Input tokens from calls that also reported a cache-read count, including zero hits. */
+  cacheReportedInputTokens: number;
   estimatedCost: number | null;
 }
 export interface UsageBucket extends UsageTotals {

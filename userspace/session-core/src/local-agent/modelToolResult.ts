@@ -2,6 +2,7 @@ import { isManagedProcessSnapshot, type JsonObject, type LocalAgentError, type M
 import { encodeWorkspaceIdentity } from './providerToolCodec.js';
 import { LoopFailure } from './loopFailure.js';
 import { codingToolText } from './codingTools.js';
+import { validLogicalPath } from './workspaceBindings.js';
 
 type Approval = Extract<SessionEvent, { type: 'approval.resolved' }>['payload'];
 type Handles = ReadonlyMap<string, string>;
@@ -65,6 +66,18 @@ export function managedJobFromRecord(record: ToolExecutionRecord): ManagedProces
   return isManagedProcessSnapshot(job) ? job : undefined;
 }
 
+function containerProcessFields(native: JsonObject): JsonObject {
+  // Exec returns the inspected target; create returns the new ID and its prepared engine.
+  const target = object(native.container) ? native.container : undefined;
+  const id = target ? target.id : native.containerId;
+  const engine = target ? target.engine : native.engine;
+  const identity = object(engine) ? Object.fromEntries(Object.entries(fields(engine, 'context', 'endpoint'))
+    .filter(([, value]) => typeof value === 'string' && value.trim())) : {};
+  return { ...(typeof id === 'string' && id.trim() ? { containerId: id } : {}),
+    ...(Object.keys(identity).length ? { engine: identity } : {}),
+    ...fields(native, 'projectPath', 'workPath', 'network') };
+}
+
 /** A status request or a wake delivers the same bounded command result as a foreground call. */
 export function processResult(job: ManagedProcessSnapshot, view: 'start' | 'requested' | 'notification'): JsonObject {
   const result: JsonObject = { jobId: job.jobId, status: job.status };
@@ -81,7 +94,7 @@ export function processResult(job: ManagedProcessSnapshot, view: 'start' | 'requ
   const commandResult = { ...native, stdout: tail ? out.stdout.slice(-2000) : out.stdout,
     stderr: tail ? out.stderr.slice(-2000) : out.stderr, truncated: clipped };
   return { ...result, ...shellOutput(commandResult, job.status === 'failed' || job.status === 'cancelled'),
-    ...(job.toolName === 'container' ? fields(native, 'containerId', 'projectPath', 'workPath', 'network') : {}),
+    ...(job.toolName === 'container' ? containerProcessFields(native) : {}),
     ...(job.error ? { error: errorDetails(job.error) } : {}) };
 }
 
@@ -140,7 +153,21 @@ function outputForModel(record: ToolExecutionRecord, out: unknown, handles: Hand
       if (typeof out.content === 'string') return out.truncated
         ? { content: out.content, ...fields(out, 'nextByte', 'nextStartLine') } : out.content;
       if (Array.isArray(out.artifacts)) return { artifacts: resourceList(out.artifacts) };
-      if (record.outcome !== 'completed') return fields(out, 'stage', 'details');
+      if (record.outcome !== 'completed') {
+        const failure = fields(out, 'stage', 'details');
+        // Only a relative metadata miss in a recorded, addressable binding is evidence
+        // about that workspace. An absolute target does not become relative to the selected root.
+        if (handles.size > 1 && record.outcome === 'failed' && record.error.code === 'fs_read_metadata_failed'
+          && out.stage === 'metadata' && object(out.details) && out.details.ioKind === 'NotFound') {
+          const path = out.details.path, id = record.preparedEffect.workspaceId;
+          const workspace = id && handles.get(id);
+          if (workspace && typeof path === 'string' && validLogicalPath(path) && path !== '.' && !/^[A-Za-z]:/u.test(path)
+            && record.preparedEffect.logicalTargets.includes(path)) {
+            return { ...failure, workspace, recovery: 'This relative path was not found in the indicated workspace. Check the workspace and path together against the source reference or listing; do not probe other roots without evidence.' };
+          }
+        }
+        return failure;
+      }
       throw new LoopFailure('file_read_result_invalid', 'File read returned neither text, directory entries nor a resource.');
     case 'fs.write': case 'fs.edit': case 'fs.delete': return fileResult(record, out);
     case 'bash': case 'powershell': return shellOutput(out, record.outcome !== 'completed');
@@ -151,12 +178,17 @@ function outputForModel(record: ToolExecutionRecord, out: unknown, handles: Hand
       return { ...fields(out, 'content', 'statusCode', 'details'), ...(out.finalUrl && out.finalUrl !== out.url ? { finalUrl: out.finalUrl } : {}),
         ...(out.truncated === true || out.sourceTruncated === true ? { truncated: true } : {}),
         ...fields(out, 'untrustedEvidence') };
-    case 'web.search':
+    case 'web.search': {
       if (out.provider === 'kimi-formula' && typeof out.providerContent === 'string') return out.providerContent;
-      return { ...(Array.isArray(out.results) ? { results: entries(out.results, 'title', 'url', 'snippet', 'summary', 'publishedAt', 'language', 'truncated') } : {}),
+      const query = out.query;
+      const rewritten = out.provider === 'brave-search' && object(query) && typeof query.original === 'string'
+        && typeof query.altered === 'string' && query.altered.trim() !== '' && query.altered !== query.original;
+      return { ...(rewritten ? { query: fields(query, 'original', 'altered') } : {}),
+        ...(Array.isArray(out.results) ? { results: entries(out.results, 'title', 'url', 'snippet', 'summary', 'publishedAt', 'language', 'truncated') } : {}),
         ...(out.truncated === true ? { truncated: true } : {}),
         ...(Array.isArray(out.resultIssues) && out.resultIssues.length ? { resultIssues: out.resultIssues } : {}),
         ...fields(out, 'details', 'untrustedEvidence') };
+    }
     case 'skill.read': return out.content ?? (record.outcome !== 'completed' ? fields(out, 'details') : undefined);
     case 'plugin.search':
       return { ...(Array.isArray(out.plugins) ? { plugins: entries(out.plugins, 'uri', 'displayName', 'shortDescription') } : {}),

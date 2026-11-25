@@ -1,7 +1,7 @@
 import type { SessionProjection } from '@achbit/protocol';
 
 /** Non-blocking questions stay in history until the Session requires user input. */
-export function foregroundInteractions(projection: SessionProjection | null) {
+export function foregroundInteractions(projection: Pick<SessionProjection, 'run' | 'interactions'> | null) {
   const run = projection?.run;
   if (!projection || !run || !['running', 'waiting'].includes(run.status)) return [];
   const awaitingAnswers = run.status === 'waiting' && run.waitingReason === 'userInput';
@@ -41,7 +41,7 @@ export function foregroundApproval(approval: SessionProjection['pendingApproval'
 export type ApprovalIdentity = Pick<NonNullable<SessionProjection['pendingApproval']>, 'runId' | 'callId' | 'approvalId'>;
 
 /** Keep the Session's order for presentation; a named action never falls back to another call. */
-export function selectPendingApproval(projection: SessionProjection | null, target?: ApprovalIdentity, humanOnly = true) {
+export function selectPendingApproval(projection: Pick<SessionProjection, 'run' | 'pendingApprovals' | 'pendingApproval'> | null, target?: ApprovalIdentity, humanOnly = true) {
   const run = projection?.run;
   if (!projection || !run || (run.status !== 'running' && run.status !== 'waiting')) return null;
   const pending = projection.pendingApprovals ?? (projection.pendingApproval ? [projection.pendingApproval] : []);

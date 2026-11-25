@@ -137,7 +137,8 @@ export function projectSessionResources(read: ResourceJournalRead, recordIds: re
         break;
     }
   }
-  return { sessionId: read.sessionId, revision: read.revision, workspaceBindings: workspace.workspaceBindings,
+  return { sessionId: read.sessionId, revision: read.revision, baseWorkspaceBindings: workspace.creationWorkspaceBindings,
+    workspaceBindings: workspace.workspaceBindings,
     messages, shellAuthorizations: grants, artifacts: [...artifacts.values()],
     activities: [...selected.values()].map(({ tool }) => ({ tool })) };
 }

@@ -3,7 +3,8 @@ import type { UserSettings, RunRuntimeSnapshot } from '@achbit/protocol';
 
 /** A selected entry is a location, not a file grant. Advertise it only with a callable reader. */
 export function mountedSkillEntries(plugins: RunRuntimeSnapshot['selectedPlugins']['plugins'], tools: RunRuntimeSnapshot['tools']) {
-  if (!plugins.length || !tools.some(tool => tool.name === 'fs.read' && tool.availability === 'callable')) return [];
+  if (!plugins.length || !tools.some(tool => tool.origin === 'coreBuiltin' && tool.availability === 'callable'
+    && (tool.name === 'fs.read' || tool.name === 'bash' || tool.name === 'powershell'))) return [];
   return plugins.flatMap(plugin => plugin.skillEntryPath ? [{ uri: plugin.uri, path: plugin.skillEntryPath }] : []);
 }
 

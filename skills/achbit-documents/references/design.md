@@ -1,6 +1,6 @@
 # Document design
 
-The layout approach draws on Kami's restrained color, consistent typography and content-sized templates. Apply those ideas through Achbit's self-contained HTML and Typst templates.
+The layout approach draws on Kami's restrained color, consistent typography and content-sized templates. Apply those ideas through the supplied self-contained HTML and Typst templates.
 
 ## Hierarchy and rhythm
 

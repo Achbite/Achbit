@@ -186,17 +186,30 @@ fn query_metrics(records: Vec<Value>, input: &Value) -> Result<Value, String> {
                 }
             }
         }
-        if input["kind"] != "ui" {
-            for (index, span) in record["components"]["records"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
-                let sample = json!({"owner":"gui","operationId":record["operationId"],"recordRef":record["recordRef"],"sourcePointer":format!("/components/records/{index}"),"surface":record["target"],"componentId":span["componentId"],"event":span["event"],"phase":if matches!(span["event"].as_str(),Some("plugin.mount"|"plugin.update")){"plugin-renderer"}else{"component-handler"},"status":span["outcome"],"occurredAtMs":span["occurredAtMs"],"clockDomain":span["clockDomain"],"durationMs":span["durationMs"],"association":"collection-receipt"});
-                if matches(&sample) {
-                    samples.push(sample);
-                }
+        for (index, span) in record["components"]["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let observation = span.get("observation");
+            if input["kind"] == "ui" && observation.is_none() {
+                continue;
+            }
+            let phase = if observation.is_some() {
+                "interaction-observation"
+            } else if matches!(span["event"].as_str(), Some("plugin.mount" | "plugin.update")) {
+                "plugin-renderer"
+            } else {
+                "component-handler"
+            };
+            let mut sample = json!({"owner":"gui","operationId":record["operationId"],"recordRef":record["recordRef"],"sourcePointer":format!("/components/records/{index}"),"surface":record["target"],"componentId":span["componentId"],"event":span["event"],"phase":phase,"status":span["outcome"],"occurredAtMs":span["occurredAtMs"],"clockDomain":span["clockDomain"],"durationMs":span["durationMs"],"association":"collection-receipt"});
+            if let Some(fields) = observation {
+                sample["observation"] = fields.clone();
+                sample["webviewTimeMs"] = span["startedAt"].clone();
+            }
+            if matches(&sample) {
+                samples.push(sample);
             }
         }
         if samples.len() > first {

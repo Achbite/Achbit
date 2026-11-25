@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpCommandJournal } from '../dist/local-agent/httpPorts.js';
+import { readSessionEvents } from '../dist/local-agent/conversationRead.js';
 
 const sid = 'session:transport';
 const event = { type:'message.committed', schemaVersion:'achbit.session-event.v5', sessionId:sid, sequence:2,
@@ -78,6 +79,36 @@ test('a malformed byte window cancels an unfinished response without publishing 
   const seen=[]; journal.subscribePermissions(sid,settings=>seen.push(settings));
   await assert.rejects(journal.read(sid)[Symbol.asyncIterator]().next(),/journal_sequence_invalid/);
   assert.equal(cancellations,1); assert.equal(body.locked,false); assert.deepEqual(seen,[]);
+});
+
+test('a cold projection read preserves each original receipt and only admits a complete journal', async () => {
+  const created = { ...event, sequence: 1, type: 'session.created', payload: {} };
+  const message = { messageIndex: 0, contributionId: 'same-id', contributionKind: 'journalMessages', label: '历史🦉', role: 'user',
+    blocks: [{ blockIndex: 0, kind: 'text' }], filesystemReferences: [{ itemId: 'file:1', label: 'a' }], extra: { future: [1, null] } };
+  const receipt = (sequence, messages) => ({ ...event, sequence, type: 'context.composed', payload: { providerRequestId: 'r'+sequence, messages } });
+  const second = structuredClone(message); second.extra.future[0] = { changed: true };
+  const rows = [created, receipt(2,[message, message]), receipt(3,[message, second]),
+    receipt(4,[{...message, blocks:[{blockIndex:0,kind:'reasoning'}]}, {...second, filesystemReferences:[]}])];
+  let wire = rows.map(frame).join('')+frame({ count: rows.length, permissions });
+  const journal = new HttpCommandJournal({apiBase:'http://fixture',serviceToken:'fixture',fetchImpl:async () => sequence(wire,73)});
+  const published=[]; journal.subscribePermissions(sid, value=>published.push(value));
+  const original = wire;
+  wire = rows.map(frame).join('')+frame({count:rows.length+1,permissions});
+  await assert.rejects(readSessionEvents(journal, sid, true),/journal_sequence_invalid/); assert.deepEqual(published,[]);
+  wire=original;
+  assert.deepEqual(await readSessionEvents(journal,sid,true),rows);
+  const ordinary = await readSessionEvents(journal,sid);
+  ordinary[1].payload.messages[0].blocks[0].kind='changed by caller';
+  assert.equal(ordinary[2].payload.messages[0].blocks[0].kind,'text','ordinary journal consumers own each decoded event');
+  for (const [bad, message] of [[{...rows[1],sessionId:'session:other'},'session_event_identity_mismatch'],
+    [{...rows[1],sequence:4},'session_event_sequence_gap']]) {
+    wire=frame(created)+frame(bad)+frame({count:2,permissions});
+    await assert.rejects(readSessionEvents(journal,sid,true),e=>e.message===message);
+  }
+  wire=frame({...event,sequence:1})+frame({count:1,permissions});
+  await assert.rejects(readSessionEvents(journal,sid,true),/session_creation_event_missing/);
+  wire=frame({count:0,permissions:{}});
+  await assert.rejects(readSessionEvents(journal,sid,true),/session_not_found/);
 });
 
 test('legacy JSON responses, missing version capability and original journal errors remain usable', async () => {

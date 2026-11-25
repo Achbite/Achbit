@@ -12,11 +12,14 @@ export function ReasoningDetails({ sessionId, requestId, live = false, summary }
   const language = useUiLanguage();
   const { readConversation } = useConversationHost();
   const [open, setOpen] = useConversationRowState(`reasoning:${requestId}:open`, false);
-  const [page, setPage] = useConversationRowState<JsonObject | null>(`reasoning:${requestId}:page`, null);
+  // The row cache owns disclosure/offset, not potentially large or freshly revoked
+  // Host content. A remounted reasoning view reads its authorized page again.
+  const [page, setPage] = useState<JsonObject | null>(null);
   const [offset, setOffset] = useConversationRowState(`reasoning:${requestId}:offset`, 0);
   const [error, setError] = useState('');
   useEffect(() => {
     if (!open) return;
+    setPage(null); setError('');
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {

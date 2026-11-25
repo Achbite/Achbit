@@ -4,7 +4,7 @@ import { Button, CloseButton, ModalDialog, PanelHeader, UiIcon } from '../../../
 import { useUiOwner } from '../../../ui-ownership/useUiOwner';
 import { patchLlmProfiles } from '../../../services/apiClient';
 import ModelEditor, { newModelDraft } from './ModelEditor';
-import { data, message, useModelLanguage } from './shared';
+import { requireServiceData, serviceErrorMessage, useModelLanguage } from './modelServiceSettings';
 import './modelPicker.css';
 
 export default function ModelPickerDialog({ connection, adapter, onClose, onSaved }: {
@@ -29,10 +29,10 @@ export default function ModelPickerDialog({ connection, adapter, onClose, onSave
     pending.current = true; setBusy(true); setError('');
     try {
       const profile = { ...preset, id: custom.id, connectionId: connection.id };
-      const saved = data(await patchLlmProfiles({ profile }));
+      const saved = requireServiceData(await patchLlmProfiles({ profile }));
       if (!saved.profiles.some(item => item.id === profile.id)) throw new Error(text('保存结果中没有此模型。', 'Saved model is missing from the response.'));
       await onSaved();
-    } catch (reason) { setError(message(reason)); }
+    } catch (reason) { setError(serviceErrorMessage(reason)); }
     finally { pending.current = false; setBusy(false); }
   };
   return <ModalDialog className="achbit-gui-text-dialog-backdrop model-picker-backdrop" aria-label={text('添加模型', 'Add model')} busy={busy} onClose={onClose}>

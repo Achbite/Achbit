@@ -2,8 +2,8 @@ import type { ConversationProject, ConversationSessionSummary, SessionProjection
 
 import type { UsageWidgetLabels } from './usageWidgetLabels';
 import type { UsageCostDisplay } from './usageCost';
-import type { UiRegionSlot } from './slots';
-export type { UiRegionSlot } from './slots';
+import type { UiPluginSlot, UiRegionSlot } from './slots';
+export type { UiPluginSlot, UiRegionSlot } from './slots';
 
 export interface UsageReadPort {
   query(query: UsageQuery, signal: AbortSignal): Promise<UsageReport>;
@@ -52,20 +52,6 @@ export interface UiViewActions {
   setUsageVisibility?(value: 'summary' | 'collapsed' | 'hidden'): void;
   openUsageSettings?(): void;
 }
-/** Views have typed inputs and scoped effects; they never receive execution or Session mutation ports. */
-export type UiPluginSlot =
-  | UiRegionSlot
-  | 'usage.widget'
-  | 'message.plain'
-  | 'message.markdown'
-  | 'document.html'
-  | 'document.markdown'
-  | 'document.pdf'
-  | 'theme'
-  | 'settings.models.overview'
-  | 'settings.connection.detail'
-  | 'settings.usage.panel'
-  | 'tool.result';
 export interface UiPluginManifest {
   id: string;
   name: string;

@@ -114,7 +114,9 @@ for (const phase of ['read', 'mutation']) for (const ending of ['completed', 'fa
     t.mock.timers.tick(600_000);
     await setImmediate();
     assert.equal(requests.length, 3, 'ten idle minutes never request a model status review');
-    assert.equal((await actor.snapshot()).run.status, 'running');
+    const waiting = await actor.snapshot();
+    assert.equal(waiting.run.status, 'running');
+    assert.deepEqual(waiting.activities.filter(a => a.tool?.process?.blocking).map(a => a.tool.process.jobId), ['job:build'], 'automatic collection is also a real dependency');
     feed.finish('job:build', ending);
     await until(async () => (await actor.snapshot()).run?.status === 'completed');
     const events = await readEvents(journal, sessionId);

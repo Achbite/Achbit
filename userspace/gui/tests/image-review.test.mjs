@@ -4,51 +4,38 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
-test('image review keeps its native dialog and image source with explicit zoom and fit controls', async t => {
+test('closed thumbnails mount no full image or modal controls; the open viewer uses the same source', async t => {
   const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
-  const calls = [];
-  let view;
-  function Probe() {
-    view = ImageReview({ source: 'blob:loaded-image', alt: 'Rendered chart' });
-    return view;
-  }
-  const html = renderToStaticMarkup(createElement(Probe));
-  const opener = findReactElement(view, node => node.type === 'button' && node.props['aria-label']?.includes('Rendered chart'));
-  const dialog = findReactElement(view, node => node.type === 'dialog' && node.props['aria-label'] === 'Rendered chart');
-  dialog.props.ref.current = { showModal: () => calls.push('open'), close: () => calls.push('close') };
-  opener.props.onClick();
-  findReactElement(dialog, node => node.type === 'button' && /^(Close image|关闭图片)$/.test(node.props.children)).props.onClick();
-  assert.deepEqual(calls, ['open', 'close']);
-  assert.equal((html.match(/src="blob:loaded-image"/g) ?? []).length, 2);
-  assert.match(html, /<dialog[^>]+aria-label="Rendered chart"/);
-  assert.equal(opener.props.disabled, false, 'loaded thumbnails remain clickable');
-  assert.equal(findReactElement(dialog, node => node.type === 'button' && /^(Fit to window|适应窗口)$/.test(node.props.children)).props['aria-pressed'], true);
-  for (const label of [/^(Zoom in|放大图片)$/, /^(Zoom out|缩小图片)$/]) {
-    assert.equal(findReactElement(dialog, node => node.type === 'button' && label.test(node.props['aria-label'])).props.disabled, true,
-      'zoom waits for the decoded image and visible viewport dimensions');
-  }
+  const props = { source: 'blob:loaded-image', alt: 'Rendered chart' };
+  const thumbnail = renderToStaticMarkup(createElement(ImageReview, props));
+  assert.equal((thumbnail.match(/src="blob:loaded-image"/g) ?? []).length, 1);
+  assert.match(thumbnail, /<dialog[^>]+aria-label="Rendered chart"[^>]*><\/dialog>/);
+  assert.doesNotMatch(thumbnail, /disabled=""/);
+  assert.match(thumbnail, /aria-label="[^"]*Rendered chart"/);
 });
 
-test('intrinsic SVG sizes use the same fit controls and native dismissal as decoded images', async t => {
-  const { ImageReview } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
+test('open viewers retain fit, zoom, close and native dismissal for intrinsic and decoded images', async t => {
+  const { ImageReviewDialog } = await loadGuiModule(t, '/src/components/local-agent/ImageReview.tsx');
+  const props = { source: 'blob:loaded-image', alt: 'Rendered chart' };
   for (const intrinsicSize of [undefined, { width: 500, height: 4200 }]) {
-    let view;
-    function Probe() {
-      view = ImageReview({ source: 'blob:diagram', alt: 'Tall diagram', intrinsicSize });
-      return view;
-    }
-    renderToStaticMarkup(createElement(Probe));
-    const dialog = findReactElement(view, node => node.type === 'dialog');
     const calls = [];
-    const element = { showModal: () => calls.push('open'), close: () => calls.push('close') };
+    let dialog;
+    function Probe() { dialog = ImageReviewDialog({ ...props, open: true, intrinsicSize, onClose: () => calls.push('closed') }); return dialog; }
+    const html = renderToStaticMarkup(createElement(Probe));
+    assert.match(html, /<dialog[^>]+aria-label="Rendered chart"/);
+    assert.equal((html.match(/src="blob:loaded-image"/g) ?? []).length, 1);
+    const element = { close: () => calls.push('close') };
     dialog.props.ref.current = element;
-    findReactElement(view, node => node.type === 'button' && node.props['aria-label']?.includes('Tall diagram')).props.onClick();
-    assert.equal(findReactElement(dialog, node => node.type === 'button' && /^(Fit to window|适应窗口)$/.test(node.props.children)).props['aria-pressed'], true);
+    const button = label => findReactElement(dialog, node => node.type === 'button' && label.test(node.props['aria-label'] ?? node.props.children));
+    assert.equal(button(/^(Fit to window|适应窗口)$/).props['aria-pressed'], true);
+    for (const label of [/^(Zoom in|放大图片)$/, /^(Zoom out|缩小图片)$/]) assert.equal(button(label).props.disabled, true);
     dialog.props.onClick({ target: {}, currentTarget: element });
-    assert.deepEqual(calls, ['open'], 'content clicks do not dismiss the viewer');
+    assert.deepEqual(calls, [], 'content clicks do not dismiss');
+    button(/^(Close image|关闭图片)$/).props.onClick();
     dialog.props.onClick({ target: element, currentTarget: element });
     dialog.props.onCancel({ stopPropagation: () => calls.push('cancel') });
-    assert.deepEqual(calls, ['open', 'close', 'cancel']);
+    dialog.props.onClose();
+    assert.deepEqual(calls, ['close', 'close', 'cancel', 'closed']);
   }
 });
 
@@ -59,18 +46,19 @@ test('artifact image card is a single viewer trigger and stays unavailable until
     children: [createElement('span', { key: 'thumbnail', className: 'document-artifacts__thumbnail' },
       createElement('img', { src: 'blob:artifact', alt: '' })), createElement('strong', { key: 'label' }, 'result.png')] };
   const html = renderToStaticMarkup(createElement(ImageReview, { ...props, source: 'blob:artifact' }));
-  const item = html.slice(0, html.indexOf('<dialog'));
+  const item = html;
   assert.equal((item.match(/<button\b/g) ?? []).length, 1, 'thumbnail and label share one clickable image item');
   assert.match(item, /document-artifacts__item/);
   assert.match(item, /result\.png/);
   assert.doesNotMatch(item, /disabled=/);
   const loading = renderToStaticMarkup(createElement(ImageReview, props));
-  assert.match(loading.slice(0, loading.indexOf('<dialog')), /disabled=""/);
-  assert.doesNotMatch(loading.slice(loading.indexOf('<dialog')), /<img\b/);
+  assert.match(loading, /disabled=""/);
+  assert.match(loading, /<dialog[^>]*><\/dialog>/);
   const artifact = renderToStaticMarkup(createElement(ArtifactLinks, { artifacts: [{
     artifactId: 'artifact:image', sessionId: 'session:image', label: 'output/result.png', createdAt: '2026-10-14T00:00:00Z',
     contentMode: 'fixed', contentType: 'image/png',
   }], onOpen: async () => {} }));
-  assert.match(artifact, /<dialog[^>]+aria-label="result.png"/, 'the actual fixed-image output entry mounts the shared viewer');
-  assert.equal((artifact.slice(0, artifact.indexOf('<dialog')).match(/<button\b/g) ?? []).length, 1);
+  assert.match(artifact, /aria-label="[^"]*result.png"/);
+  assert.match(artifact, /<dialog[^>]+aria-label="result.png"[^>]*><\/dialog>/, 'the output owns an empty native dialog until opened');
+  assert.equal((artifact.match(/<button\b/g) ?? []).length, 1);
 });

@@ -4775,6 +4775,7 @@
       "required": ["jobId", "command", "output"],
       "properties": {
         "jobId": {"$ref": "#/$defs/Id"},
+        "blocking": {"type": "boolean"},
         "command": {"type": "string"},
         "output": {"$ref": "#/$defs/ToolOutputProjection"},
         "result": {

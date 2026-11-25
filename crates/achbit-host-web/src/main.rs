@@ -187,6 +187,7 @@ fn localhost_cors_layer() -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
+        .expose_headers([header::HeaderName::from_static("x-achbit-reading-window")])
         .allow_headers([
             header::CONTENT_TYPE,
             header::HeaderName::from_static(HOST_UI_TOKEN_HEADER),
@@ -410,6 +411,9 @@ async fn proxy_api(
     {
         request = request.header(reqwest::header::CONTENT_TYPE, content_type);
     }
+    if let Some(accept) = headers.get(header::ACCEPT) {
+        request = request.header(reqwest::header::ACCEPT, accept);
+    }
     // Bound connection/headers separately: an SSE subscription lives until its owner closes it.
     match tokio::time::timeout(Duration::from_secs(60), request.send()).await {
         Ok(Ok(response)) => proxy_response(response).await,
@@ -527,6 +531,7 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("POST", ["api", "conversation", "input-resources", "prepare-image"])
         | ("POST", ["api", "conversation", "sessions", _, "input-resources", _])
         | ("POST", ["api", "conversation", "sessions", _, "changes", "read"])
+        | ("POST", ["api", "conversation", "sessions", _, "shell-output", "read"])
         | ("DELETE", ["api", "conversation", "sessions", _, "directory-indexes", _])
         | ("GET", ["api", "conversation", "sessions", _, "projection"])
         | ("GET", ["api", "conversation", "sessions", _, "context-compositions", _])
@@ -590,6 +595,13 @@ mod tests {
         assert!(message.contains(&url));
         assert!(message.contains(&original_cause), "{message}");
         assert_ne!(message, error.to_string());
+    }
+
+    #[test]
+    fn host_proxy_exposes_owned_shell_output_read_only() {
+        let path = "/api/conversation/sessions/session:one/shell-output/read";
+        assert!(host_proxy_path_allowed("POST", path));
+        assert!(!host_proxy_path_allowed("GET", path));
     }
 
     #[test]
@@ -740,6 +752,13 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 async fn proxy_response(response: reqwest::Response) -> Response {
     let status = response.status();
+    const READING_WINDOW: &str = "x-achbit-reading-window";
+    let reading_window = status.is_success()
+        && response.url().path() == "/api/conversation/statuses"
+        && response
+            .headers()
+            .get(READING_WINDOW)
+            .is_some_and(|v| v == "1");
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -750,6 +769,7 @@ async fn proxy_response(response: reqwest::Response) -> Response {
         .get(reqwest::header::CACHE_CONTROL)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let vary = response.headers().get(reqwest::header::VARY).cloned();
     let content_type_options = response
         .headers()
         .get("x-content-type-options")
@@ -778,6 +798,15 @@ async fn proxy_response(response: reqwest::Response) -> Response {
     match tokio::time::timeout(Duration::from_secs(60), response.bytes()).await {
         Ok(Ok(bytes)) => {
             let mut builder = Response::builder().status(status);
+            if let Some(vary) = vary {
+                builder = builder.header(header::VARY, vary);
+            }
+            if let Some(cache_control) = cache_control {
+                builder = builder.header(header::CACHE_CONTROL, cache_control);
+            }
+            if reading_window {
+                builder = builder.header(READING_WINDOW, "1");
+            }
             if let Some(content_type) = content_type {
                 builder = builder.header(header::CONTENT_TYPE, content_type);
             }

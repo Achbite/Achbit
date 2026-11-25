@@ -1,3 +1,4 @@
+import { copyObservationFields, observeReading, type Observe } from './interaction';
 /** Only the explicit Debug entry installs this registry. Actions retain their UI owner. */
 export interface DebugActionState {
   unavailableReason: string | null;
@@ -37,10 +38,17 @@ export function createDebugUiRegistry(inspectIdentity: (id: string, source: Comp
     return Object.entries(target).every(([key, value]) => source.target?.()[key] === value);
   };
   const entries = () => [...components].flatMap(([id, instances]) => [...instances].map(source => ({ id, source })));
-  const measure = (componentId: string, event: string, startedAt: number, outcome: 'completed' | 'failed') => {
+  const append = (record: object) => {
     if (records.length === 4096) { records.shift(); dropped++; }
+    records.push(record);
+  };
+  const observe: Observe = (componentId, event, fields) => {
+    append({ componentId, event, observation: copyObservationFields(fields), outcome: 'observed',
+      occurredAtMs: Date.now(), startedAt: performance.now(), clockDomain: 'webview.performance' });
+  };
+  const measure = (componentId: string, event: string, startedAt: number, outcome: 'completed' | 'failed') => {
     const endedAt = performance.now();
-    records.push({ componentId, event, outcome, startedAt, endedAt, durationMs: endedAt - startedAt, clockDomain: 'webview.performance', occurredAt: new Date().toISOString(), occurredAtMs: Date.now() });
+    append({ componentId, event, outcome, startedAt, endedAt, durationMs: endedAt - startedAt, clockDomain: 'webview.performance', occurredAt: new Date().toISOString(), occurredAtMs: Date.now() });
   };
   const registry = {
     register(id: string, source: ComponentSource) {
@@ -52,7 +60,10 @@ export function createDebugUiRegistry(inspectIdentity: (id: string, source: Comp
         if (instances.size === 0 && components.get(id) === instances) components.delete(id);
       };
     },
-    measure,
+    measure, observe,
+    observeReading(sessionId: string, body: HTMLElement, rail: HTMLElement | null, anchors: Parameters<typeof observeReading>[3]) {
+      return observeReading(sessionId, body, rail, anchors, observe);
+    },
     list: () => [...components].flatMap(([id, instances]) => [...instances].map(source => ({
       id, instanceId: id, ownerId: source.ownerId ?? null, slot: source.slot, pluginId: source.pluginId,
       identityStatus: instances.size === 1 ? 'unique' : 'ambiguous', ...inspectIdentity(id, source),

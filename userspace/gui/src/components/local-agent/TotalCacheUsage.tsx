@@ -4,7 +4,7 @@ import { inputCacheMetric } from '../../utils/providerUsage';
 
 /** Display the Session-owned aggregate for this conversation and its descendant Agents. */
 export default function TotalCacheUsage({ projection, language }: {
-  projection: SessionProjection | null;
+  projection: Pick<SessionProjection, 'totalTokenUsage' | 'run'> | null;
   language: UiLanguage;
 }) {
   const summary = cacheHitSummary(projection, language);
@@ -15,7 +15,7 @@ export default function TotalCacheUsage({ projection, language }: {
 }
 
 function cacheHitSummary(
-  projection: SessionProjection | null,
+  projection: Pick<SessionProjection, 'totalTokenUsage' | 'run'> | null,
   language: UiLanguage,
 ): { value: string; title: string } {
   const usage = projection?.totalTokenUsage;

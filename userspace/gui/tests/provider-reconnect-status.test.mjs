@@ -55,7 +55,7 @@ test('a scheduled retry names the actual provider failure alongside its deadline
 });
 
 test('terminal status names the provider failure and reserves Loop failure for internal errors', async t => {
-  const { RunFailureDetails } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
+  const { RunFailureDetails, RunFailureDiagnostics } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
   const provider = (details, extra = {}) => ({ code: 'provider_error', message: 'Original upstream detail', diagnostics: {
     source: 'providerTransport', phase: 'response', category: 'provider', retryable: false, causes: [],
     ...(Object.keys(details).length ? { providerError: details } : {}), ...extra,
@@ -101,16 +101,17 @@ test('terminal status names the provider failure and reserves Loop failure for i
     assert.deepEqual(error, before, 'classification preserves the original failure and retry directive');
   }
   const historical = cases[0][0];
-  const html = renderToStaticMarkup(createElement(RunFailureDetails, { language: 'en-US', onError() {}, projection: {
-    sessionId: 'session:historical', run: { status: 'failed' }, failureSnapshot: { error: historical,
-      revision: 1, phase: 'provider', providerAttemptIds: [], toolRecordIds: [], pendingCallIds: [] },
-  } }));
+  const projection = { sessionId: 'session:historical', run: { status: 'failed' }, failureSnapshot: { error: historical,
+    revision: 1, phase: 'provider', providerAttemptIds: [], toolRecordIds: [], pendingCallIds: [] } };
+  const html = renderToStaticMarkup(createElement(RunFailureDetails, { language: 'en-US', onError() {}, projection }));
   assert.match(html, /Model service overloaded/);
-  assert.match(html, /NO_MORE_RETRY/);
+  assert.doesNotMatch(html, /local-agent__continuity-details/);
+  const details = renderToStaticMarkup(createElement(RunFailureDiagnostics, { language: 'en-US', projection }));
+  assert.match(details, /NO_MORE_RETRY/);
 });
 
 test('incomplete Responses output keeps its cause and is not presented as a rejected request', async t => {
-  const { RunFailureDetails } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
+  const { RunFailureDetails, RunFailureDiagnostics } = await loadGuiModule(t, '/src/components/local-agent/RunFailureDetails.tsx');
   const error = {
     code: 'provider_response_failed', message: 'Responses 请求未完成：max_output_tokens',
     diagnostics: { source: 'providerTransport', phase: 'response', category: 'provider',
@@ -129,7 +130,8 @@ test('incomplete Responses output keeps its cause and is not presented as a reje
       assert.ok(html.includes(`<span>${label}</span>`), `${language} ${source}: ${html}`);
       assert.doesNotMatch(html, /模型服务拒绝了请求|Model service rejected the request/);
       assert.ok(html.includes(error.message));
-      assert.match(html, /response\.incomplete/);
+      const details = renderToStaticMarkup(createElement(RunFailureDiagnostics, { language, projection }));
+      assert.match(details, /response\.incomplete/);
       assert.deepEqual(error, before, 'presentation preserves the original failure, diagnostics and retry policy');
     }
   }

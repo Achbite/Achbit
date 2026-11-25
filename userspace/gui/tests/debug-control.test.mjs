@@ -24,6 +24,22 @@ test('direct component action uses mounted owner, awaits it, and records its act
   await assert.rejects(registry.call('composer', 'submitDraft', []), /not_mounted/);
 });
 
+test('semantic inputs keep their originating IDs, drop undeclared content and share the bounded drain', async t => {
+  const { createDebugUiRegistry } = await loadGuiModule(t, '/src/debug/registry.ts');
+  const registry = createDebugUiRegistry();
+  const fields = { submissionId: 'submit:A', sessionId: 'A', commandId: 'cmd:A', source: 'keydown',
+    text: 'private draft', payload: { authorization: 'secret' }, revision: Infinity };
+  for (let i = 0; i < 4097; i++) registry.observe('conversation.composer', 'send.command', fields);
+  const { records, coverage, dropped } = registry.measurements();
+  assert.equal(coverage, 'incomplete');
+  assert.equal(dropped, 1);
+  assert.equal(records.length, 4096);
+  assert.equal(records[0].outcome, 'observed');
+  assert.deepEqual(records[0].observation, { submissionId: 'submit:A', sessionId: 'A', commandId: 'cmd:A', source: 'keydown' });
+  assert.equal(records[0].durationMs, undefined, 'an observed boundary has no measured duration');
+  assert.deepEqual(registry.measurements(), { records: [], coverage: 'complete-since-last-read', dropped: 0 });
+});
+
 test('component schema rejects arbitrary methods and bad inputs; original owner failures remain failures', async t => {
   const { createDebugUiRegistry } = await loadGuiModule(t, '/src/debug/registry.ts');
   const registry = createDebugUiRegistry();

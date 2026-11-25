@@ -4,6 +4,10 @@
   /* Leave a scrollable tab beside the Reader tools and desktop window controls. */
   --reader-split-min: 400px;
   --ac-context-width: 296px;
+  --ac-workbench-layer-content: 20;
+  --ac-workbench-layer-titlebar: 21;
+  --ac-workbench-layer-navigation: 22;
+  --ac-workbench-layer-feedback: 30;
   --ac-navigation-row: 36px;
   display: grid;
   position: relative;
@@ -20,7 +24,7 @@
 .achbit-gui-workbench:has([data-navigation-density='compact']) { --ac-navigation-row: 31px; }
 .achbit-gui-notification-error {
   position: absolute;
-  z-index: 30;
+  z-index: var(--ac-workbench-layer-feedback);
   top: var(--ac-titlebar-height);
   right: 16px;
   max-width: min(440px, calc(100% - 32px));
@@ -57,7 +61,7 @@
   align-items: flex-start;
   flex: 0 0 var(--ac-titlebar-height);
   padding-inline: var(--ac-navigation-inset) 14px;
-  z-index: 22;
+  z-index: var(--ac-workbench-layer-navigation);
   -webkit-app-region: drag;
   app-region: drag;
 }
@@ -100,7 +104,7 @@
   background: transparent;
 }
 
-.achbit-gui-usage-boundary { position: absolute; inset: 0 auto auto 0; z-index: 30; pointer-events: none; }
+.achbit-gui-usage-boundary { position: absolute; inset: 0 auto auto 0; z-index: var(--ac-workbench-layer-feedback); pointer-events: none; }
 .achbit-gui-usage-boundary > .ui-plugin-view { position: absolute; inset: 0; pointer-events: none; }
 
 .achbit-gui-shell--no-context,
@@ -110,10 +114,10 @@
 .achbit-gui-context-panel { grid-column: 2; grid-row: 1; }
 .achbit-gui-shell:has(.local-agent--reading) .achbit-gui-context-panel { display: none; }
 
-.achbit-local-agent-overlay {
+.achbit-gui-settings-panel {
   grid-column: 2;
   grid-row: 2;
-  z-index: 20;
+  z-index: var(--ac-workbench-layer-content);
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -121,7 +125,15 @@
   background: transparent;
 }
 
-.achbit-gui-workbench--settings .achbit-gui-main-surfaces > * { visibility: hidden; }
+.achbit-gui-main-surfaces[aria-hidden="true"] > * { visibility: hidden; }
+.achbit-gui-conversation-opening {
+  grid-area: 1 / 1 / 2 / -1;
+  place-self: center;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  color: var(--ac-muted);
+}
 
 @media (max-width: 1120px) {
   .achbit-gui-workbench { --ac-header-context-width: auto; }
@@ -149,7 +161,7 @@
 
 @media (max-width: 760px) {
   .achbit-gui-workbench { --ac-sidebar-width:0px; --reader-stacked-leading:var(--ac-navigation-leading); }
-  .achbit-gui-navigation-box { position:absolute; inset:0 auto 0 0; width:var(--ac-navigation-width); z-index:22; box-shadow:var(--ac-shadow-panel); }
+  .achbit-gui-navigation-box { position:absolute; inset:0 auto 0 0; width:var(--ac-navigation-width); z-index: var(--ac-workbench-layer-navigation); box-shadow:var(--ac-shadow-panel); }
   .achbit-gui-workbench--navigation-collapsed .achbit-gui-navigation-box { width:0; box-shadow:none; }
   .achbit-gui-titlebar .local-agent__header-conversation,
   .achbit-gui-titlebar .local-agent__header--expanded .local-agent__header-preview,
@@ -160,4 +172,4 @@
 .achbit-gui-settings-header { display: flex; align-items: center; gap: 16px; padding: 0 16px; min-width: 0; }
 .achbit-gui-settings-header > strong { font-size: calc(13px * var(--ac-ui-font-scale, 1)); font-weight: 600; }
 .achbit-gui-settings-header > button { margin-left: auto; }
-.achbit-gui-titlebar { position: relative; z-index: 21; }
+.achbit-gui-titlebar { position: relative; z-index: var(--ac-workbench-layer-titlebar); }

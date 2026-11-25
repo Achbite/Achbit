@@ -1,4 +1,8 @@
-# Achbit interface styling
+# Achbit interface configuration
+
+[Display plugin slots](plugin-slots.json) lists the public manifest keys in discovery order. Each entry describes its role as a replaceable region, renderer, settings contribution, tool-specific renderer or theme. The [component guide](../../userspace/gui/src/ui-components/README.md#slot-roles) maps roles to their runtime owners.
+
+## Palette
 
 `palette.json` is the single source of built-in interface colors. `tokens` defines GUI and Editor semantic colors, `themes` defines named light and dark palettes, and `terminal` and `diff` define terminal and diff colors. Components reference semantic variables; do not embed new color values in component CSS or TSX.
 

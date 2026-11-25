@@ -115,7 +115,7 @@ pub fn render(input: &DocumentInput, context: DocumentContext<'_>) -> ToolResult
         _ => "text/markdown",
     };
     Ok(json!({
-        "workspaceId":context.workspace_id, "path":input.path,
+        "saved":true, "workspaceId":context.workspace_id, "path":input.path,
         "mediaType":media_type, "sizeBytes":bytes.len(),
         "artifacts":[{
             "artifactId":format!("artifact:{}", context.invocation_id),

@@ -1,0 +1,22 @@
+# Developing and updating installed plugins
+
+## Develop an importable plugin
+
+Use `achbitCli` and `hostDataDirectory` from the `Achbit product resources` returned after the built-in file reader reads the installed product operations guide. Submit CLI commands through Host Shell with `requestHostPermission` and a specific reason, including read-only `plugins capabilities`, `plugins inspect` and `plugins status`; the active permission policy handles authorization. The CLI is unavailable when Host execution is disabled. `instance` identifies the target; `--host-data-dir` selects an already running instance and fails if it is unavailable. Keep the normal and Debug instances distinct.
+
+1. Run `plugins capabilities` for the small directory. Read only the needed `plugins guide plugins` or `plugins guide ui`, and `plugins template cli|service|ui|guidance`. These resources come from the running package; no source checkout is required.
+2. Author the returned template files in the task workspace. Customize its ID, contract and implementation. UI TypeScript needs compilation into a standalone browser module. Include dependencies/resources in the distributable, preserving the manifest's files contract.
+3. Run `plugins inspect <directory|manifest|zip>`, then `plugins install <path>` on the intended instance. Use existing Shell approval with the exact target and effect; installing a plugin does not change the task's permissions.
+4. Read both the saved registration and `application`. Services report actual process status and errors. UI status reports connected window modules; module activation alone does not prove rendering. CLI tools and Skills become discoverable at the next model request in the same run. Search and activate only the required plugin using its returned URI, then call the declared tool or read the Skill.
+5. Correct observed issues in the same plugin. `plugins update <id|installed-path> <new-path>` installs a new managed copy, retaining enablement and service state. Existing tool attempts retain their binding until completion; later requests see the update. `plugins status <target>` reads current state. Explicitly disable then enable a failed service to retry after addressing its cause; no automatic retry loop is added.
+6. Package the plugin's manifest and runtime files after the authorized Debug check. Keep state, credentials and logs outside the artifact. A plugin using published interfaces does not require rebuilding Achbit itself. Changes to compiled Host/Kernel/Session interfaces do.
+
+The source directory is an authoring location. The watcher observes the installed copy. Recompiling the source requires `plugins update`; it does not by itself hot-replace the installation. `plugins disable` withdraws task tools at the request boundary; `plugins remove` removes registration while retaining plugin data.
+
+Plugin refresh does not rewrite recorded user messages, native calls or tool results. New declarations are appended where possible; changed or removed tools must still be represented accurately. Newly callable effects can add permission guidance to the next request’s system message. Compare that message separately from replayed history and tool declarations; use the Provider’s reported cache usage, not a prefix comparison, to measure hits.
+
+## Repair a plugin from the current Session
+
+When the user asks to repair an installed plugin, run `plugins list` or `plugins status <target>` on the selected Host. Match the ID or exact installed path to the user's plugin. Keep the original error. A UI window reports module and rendering errors, a hosted service reports its process error and log path, and a CLI tool reports execution failures on the actual tool call. A pending UI client needs a connected window for verification.
+
+Use the author's workspace copy when available. If only the installation remains, copy its plugin files into the task workspace under the current permissions and edit that copy. Read the running Host's guide for the failing interface. Inspect the repaired artifact, update the same registered plugin through the CLI, then repeat the action that failed. For a UI plugin, check the affected view in a connected window; for a tool, activate it as needed and call it with a representative input. Report the observed result and any remaining error. An unresolved identity, denied Host action or unavailable runtime is a reason to report what remains unverified.

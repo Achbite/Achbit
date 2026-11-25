@@ -75,6 +75,64 @@ export class InMemoryCommandJournal {
     };
   }
 
+  async readTranscriptFacts(sessionId, around, knownTip) {
+    const all = this.#events.get(sessionId);
+    if (!all?.length) throw new Error('session_not_found');
+    const revision = all.at(-1).sequence, anchor = around ?? revision;
+    if (!Number.isSafeInteger(anchor) || anchor < 1 || anchor > revision) throw new Error('conversation_read_anchor_not_found');
+    const tip = revision + ':' + all.at(-1).eventId;
+    if (knownTip === tip) return null;
+    const edits = all.filter(e => e.type === 'conversation.revised').map(e => e.payload);
+    const user = all.filter(e => e.type === 'message.committed' && e.payload.role === 'user'
+      && !edits.some(r => r.fromSequence <= e.sequence && e.sequence <= r.throughSequence));
+    const starts = user.filter(e => !e.runId).map(e => e.sequence);
+    const index = Math.max(0, starts.findLastIndex(sequence => sequence <= anchor));
+    const start = index ? starts[index] : 1, next = starts[index+1] ?? null, end = next === null ? revision : next-1;
+    const within = e => e.sequence >= start && e.sequence <= end;
+    return { tip, sessionId, revision, start, end, previous: starts[index-1] ?? null, next,
+      navigation: user.map(e => ({key:e.payload.messageId,sequence:e.sequence,label:e.payload.content?.trim().slice(0,180) || e.payload.filesystemReferences?.[0]?.displayName || ''})),
+      compositions: all.filter(e => within(e) && e.type === 'context.composed').map(e => ({sequence:e.sequence,runId:e.runId,providerRequestId:e.payload.providerRequestId,purpose:e.payload.purpose})),
+      events: structuredClone(all.filter(e => e.type !== 'context.composed' && (within(e) || e.type === 'session.created' || e.type === 'conversation.revised'
+        || e.type.startsWith('plan.') || projectAgentLifecycleEvent(e) || e.type === 'message.feedback.updated'
+        || (e.sequence < start && ['session.workspaces.updated','session.directory-index.attached','session.directory-index.detached','session.model-settings.updated','session.subagent-settings.updated','session.mode.updated'].includes(e.type))))),
+    };
+  }
+
+  async readOverviewFacts(sessionId) {
+    const all = this.#events.get(sessionId);
+    if (!all?.length) throw new Error('session_not_found');
+    const events = all.flatMap(e => {
+      switch (e.type) {
+        case 'context.updated': case 'conversation.revised': case 'todo.updated': case 'artifacts.presented': return [e];
+        case 'provider.turn.settled': return [{...e,payload:{providerRequestId:e.payload.providerRequestId,purpose:e.payload.purpose,
+          hosted:!!(e.payload.hostedWebSearchCalls?.length || e.payload.orderedOutputBlocks?.some(b=>b.item.type==='web_search_call'))}}];
+        case 'message.committed':return e.payload.role==='assistant' ? [{...e,payload:{}}] : [];
+        case 'tool.completed':return e.payload.record.output?.artifacts ? [e] : [];
+        case 'run.started':return [{...e,payload:{boundary:e.payload.contextStart?.historyThroughSequence ?? null}}];
+        case 'run.settled':return [{...e,payload:{outcome:e.payload.outcome}}];
+        default:return [];
+      }
+    });
+    return {sessionId,revision:all.at(-1).sequence,events:structuredClone(events)};
+  }
+
+  async readRunInput(sessionId, startSequence) {
+    const events = this.#events.get(sessionId) ?? [];
+    const start = events.find(e => e.sequence === startSequence && e.type === 'run.started');
+    const message = events.findLast(e => e.sequence < startSequence && e.type === 'message.committed'
+      && e.payload.role === 'user' && e.payload.messageId === start?.payload.inputMessageId);
+    if (!message) throw new Error('run_input_message_missing');
+    const {messageId, content, filesystemReferences=[]} = message.payload;
+    return {messageId, content, filesystemReferences:filesystemReferences.map(({displayName})=>({displayName}))};
+  }
+
+  async readWindowPartitions(sessionId, sequence) {
+    const all = this.#events.get(sessionId), usage = all?.find(e=>e.sequence===sequence && e.type==='context.updated');
+    const receipt = usage && all.find(e=>e.type==='context.composed' && e.sequence<sequence && e.runId===usage.runId && e.payload.providerRequestId===usage.payload.providerRequestId);
+    if (!receipt) throw new Error('provider_request_receipt_missing');
+    return {sequence:receipt.sequence,partitions:structuredClone(receipt.payload.partitions)};
+  }
+
   async readAgentLifecycle(sessionId) {
     const events = this.#events.get(sessionId);
     if (!events) throw new Error('session_not_found');

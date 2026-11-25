@@ -10,9 +10,9 @@ import { loadGuiModules, loadGuiModule } from './gui-projection-contract.mjs';
 
 test('the catalog and imports expose the same stable implementations, including existing controls', async t => {
   const [ui, modal, toggle, select, resize, icons, shellIcons] = await loadGuiModules(t, [
-    '/src/ui-components/index.ts', '/src/components/shared/ModalDialog.tsx',
-    '/src/components/shared/ToggleSwitch.tsx', '/src/components/shared/NativeSelect.tsx',
-    '/src/components/shared/ResizeHandle.tsx', '/src/icons/registry.tsx', '/src/components/shared/AchbitShellIcon.tsx',
+    '/src/ui-components/index.ts', '/src/ui-components/ModalDialog.tsx',
+    '/src/ui-components/ToggleSwitch.tsx', '/src/ui-components/NativeSelect.tsx',
+    '/src/ui-components/ResizeHandle.tsx', '/src/icons/registry.tsx', '/src/components/shared/AchbitShellIcon.tsx',
   ]);
   assert.ok(Object.isFrozen(ui.UI_COMPONENTS));
   for (const [name, component] of Object.entries(ui)) {
@@ -23,6 +23,7 @@ test('the catalog and imports expose the same stable implementations, including 
   for (const [name, entry] of Object.entries(ui.UI_COMPONENTS)) {
     assert.equal(ui[name], entry.component, `${name} must not get a registration wrapper`);
     assert.ok(entry.purpose);
+    assert.ok(entry.family, `${name} has a component family`);
     if (entry.base) assert.ok(ui.UI_COMPONENTS[entry.base], `${name} has a registered base`);
   }
   assert.equal(ui.ModalDialog, modal.default);
@@ -130,11 +131,14 @@ test('PanelHeader preserves caller headings and action nodes in one semantic hea
 });
 
 test('region declarations drive built-ins while external selection replaces only its own slots', async t => {
-  const [{ UI_REGION_SLOTS, regionSlots }, { withBuiltinRegions }] = await loadGuiModules(t, [
+  const [{ UI_REGION_SLOTS, regionSlots, isSettingsContributionSlot }, { withBuiltinRegions }] = await loadGuiModules(t, [
     '/src/ui-plugins/slots.ts', '/src/ui-plugins/builtins.ts',
   ]);
   assert.deepEqual(regionSlots, Object.keys(UI_REGION_SLOTS));
   assert.equal(new Set(regionSlots).size, regionSlots.length);
+  assert.equal(isSettingsContributionSlot('settings.navigation'), false, 'navigation has one region owner');
+  for (const slot of ['settings.models.overview', 'settings.connection.detail', 'settings.usage.panel'])
+    assert.equal(isSettingsContributionSlot(slot), true, 'installed settings contributions may coexist');
   const builtin = withBuiltinRegions([], false);
   assert.equal(builtin.length, 1);
   assert.deepEqual(builtin[0].manifest.slots, regionSlots);

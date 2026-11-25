@@ -1,7 +1,9 @@
-import { useLocalAgentStore } from '../../state/localAgentStore';
+import { deferredShell } from '../../services/desktopHistory';
+import { useHistoryDetail } from './useHistoryDetail';
+import { ShellLiveOutput, useShellStop } from './ShellCommandProgress';
 import { UiRegion } from '../../ui-plugins/UiRegion';
-import { hostedEntryKey, type HostedBlock, type HostedDraftGroup } from './conversationItems';
-import { isPendingShell, shellCommandPreview } from './shellProgress';
+import { batchConflictRole, hostedEntryKey, type BatchConflictSummary, type HostedBlock, type HostedDraftGroup } from './conversationItems';
+import { isPendingShell, isRunningShell, shellCommandPreview, type BlockingShell } from './shellProgress';
 import './shellProgress.css';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
@@ -10,7 +12,7 @@ import { t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { ApprovalActivity } from './ApprovalActivity';
-import { AgentGroupSummary } from './agentNavigation';
+import { AgentActivityDisclosure } from './agentNavigation';
 import { FileChanges } from './FileChanges';
 import { FileReadPreview } from './FileReadPreview';
 import { changedFiles } from './fileChangeSummary';
@@ -28,9 +30,11 @@ function shellWriteScopeLabel(language: UiLanguage, writeScope: string): string 
 
 interface ToolActivityGroupProps {
   artifacts?: readonly ArtifactProjection[];
+  foregroundShells?: readonly BlockingShell[];
   pendingApproval?: SessionProjection['pendingApproval'];
   reviewingApproval?: boolean;
   activities: ActivityProjection[];
+  batchConflicts?: BatchConflictSummary[];
   hostedDraft?: HostedDraftGroup;
   hostedKeys?: ReadonlyMap<string, string>;
   language: UiLanguage;
@@ -39,8 +43,8 @@ interface ToolActivityGroupProps {
 }
 
 export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
-  artifacts = [],
-  activities, hostedDraft, hostedKeys, pendingApproval, reviewingApproval = false,
+  artifacts = [], foregroundShells = [],
+  activities, batchConflicts, hostedDraft, hostedKeys, pendingApproval, reviewingApproval = false,
   language,
   onExpand,
   onOpenWorkspaceResource,
@@ -60,14 +64,24 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
     setExpanded(next);
   };
   const tools = activities.filter(activity => !activity.agent);
+  const runningShell = !expanded && tools.some(a => isRunningShell(a) && !foregroundShells.some(f => f.activityId === a.activityId && f.runId === a.runId));
   const blocks = hostedDraft?.blocks ?? [];
   const hasTools = tools.length > 0 || blocks.length > 0;
-  const summary = toolGroupSummary(tools, language, blocks);
+  const conflictLabels = (batchConflicts ?? []).map(({ sources, peers }) =>
+    t(language, 'agent.tool.batchConflict.summary', { sources, peers }));
+  // A pure rejected batch never ran its advertised actions. Merged rows can also
+  // contain real work from other requests; preserve its own status in the heading.
+  const actions = conflictLabels.length ? tools.filter(activity => !batchConflictRole(activity)) : tools;
+  const summary = [...(actions.length || blocks.length ? [toolGroupSummary(actions, language, blocks)] : []), ...conflictLabels].join(' · ');
   const regionData = (values: ActivityProjection[]) => !activities.length && hostedDraft
     ? { kind: 'providerHosted' as const, blocks, expanded }
     : { kind: 'activities' as const, activities: values, ...(blocks.length ? { blocks } : {}), expanded };
   const hostedEntry = (key: string, hosted: ProviderHostedActivityProjection, status: ActivityProjection['status']) =>
     <ProviderHostedEntry key={key} entryKey={key} hosted={hosted} status={status} language={language} onExpand={onExpand} />;
+  if (!hasTools && first?.agent) return <UiRegion slot="activity.row" data={regionData(activities)} actions={{ setExpanded: changeExpanded }}>
+    <article {...identity.part('root')} className="local-agent__tool-group"><AgentActivityDisclosure activities={activities} language={language} expanded={expanded}
+      summaryAction={identity.action('toggle','click')} onChange={(next, node) => { onExpand(node); setExpanded(next); }} /></article>
+  </UiRegion>;
   return (
     <UiRegion slot="activity.row" data={regionData(activities)} actions={{ setExpanded: changeExpanded }}><article {...identity.part('root')} className={`local-agent__tool-group${expanded ? ' local-agent__tool-group--expanded' : ''}`}>
       <div className="local-agent__tool-group-heading">{hasTools && <UiRegion slot="activity.summary" data={regionData(tools)} actions={{ setExpanded: changeExpanded }}><button
@@ -87,10 +101,13 @@ export const ToolActivityGroup: React.FC<ToolActivityGroupProps> = ({
           />
         </span>
         <strong>{summary}</strong>
-        <span className="local-agent__tool-group-chevron" aria-hidden="true">
-          <AchbitShellIcon name="chevronRight" />
+        <span className="local-agent__tool-group-tail">
+          {runningShell && <span className="local-agent__shell-running" role="img" aria-label={t(language, 'agent.tool.shell.running')} title={t(language, 'agent.tool.shell.running')}>
+            <span className="local-agent__run-spinner" aria-hidden="true" />
+          </span>}
+          <span className="local-agent__tool-group-chevron" aria-hidden="true"><AchbitShellIcon name="chevronRight" /></span>
         </span>
-      </button></UiRegion>}<AgentGroupSummary activities={activities} language={language} /></div>
+      </button></UiRegion>}</div>
       {expanded && hasTools && (
         <UiRegion slot="activity.detail" data={regionData(tools)} actions={{ setExpanded: changeExpanded }}><div className="local-agent__tool-group-items">
           {[...tools.map((activity) => (
@@ -204,15 +221,12 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   const tool = activity.tool;
   const shell = tool?.shell;
   const process = tool?.process;
-  const result = shell?.result;
+  const deferred = deferredShell(activity);
+  const detail = useHistoryDetail(expanded ? deferred?.output : undefined);
+  const result = shell?.result ?? deferred?.summary;
+  const streams = shell?.result ?? detail.value;
   const output = activity.liveOutput ?? process?.output;
-  const [stopping, setStopping] = useState(false);
-  const [stopError, setStopError] = useState<string>();
-  const canStop = Boolean(sessionId && activity.runId && activity.callId
-    && activity.status === 'active' && isPendingShell(activity));
-  useEffect(() => {
-    if (activity.status !== 'active') setStopping(false);
-  }, [activity.status]);
+  const { canStop, stopping, stop, error: stopError } = useShellStop(sessionId, activity);
   const resources = tool?.resources.filter((resource) => !(resource.kind === 'workspacePath'
     && tool.fileChanges?.some((change) => change.workspaceId === resource.workspaceId && change.path === resource.logicalPath))) ?? [];
   const file = activity.status === 'completed' && isFileMutationOperation(tool?.operation) && files.length === 1 ? files[0] : undefined;
@@ -257,7 +271,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
         {activity.status !== 'completed' && !activity.notExecuted && (
           <span>{stopping && canStop ? t(language, 'agent.tool.shell.stopping')
             : activity.status === 'cancelled' && (shell || process) ? t(language, 'agent.tool.shell.stopped')
-              : toolActivityStatus(activity.status, language)}</span>
+              : batchRejectionStatus(activity, language) ?? toolActivityStatus(activity.status, language)}</span>
         )}
         {activity.status === 'active' && activity.startedAt && (
           <ToolElapsed startedAt={activity.startedAt} language={language} />
@@ -268,12 +282,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
       </button>
       {canStop && <button {...identity.action('stop', 'click')} type="button" className="local-agent__tool-stop"
         aria-label={t(language, stopping ? 'agent.tool.shell.stopping' : 'agent.tool.shell.stop')}
-        disabled={stopping} onClick={() => {
-          if (stopping) return;
-          setStopping(true); setStopError(undefined);
-          void useLocalAgentStore.getState().cancelTool(sessionId!, activity.runId!, activity.callId!)
-            .catch(error => { setStopError(String(error)); setStopping(false); });
-        }}>
+        disabled={stopping} onClick={() => void stop()}>
         <AchbitShellIcon name={stopping ? 'spinner' : 'stop'} className={stopping ? 'local-agent__run-status-spinner' : undefined} />
         {!stopping && <span className="local-agent__tool-stop-hint" aria-hidden="true">{t(language, 'agent.tool.shell.stop')}</span>}
       </button>}
@@ -330,10 +339,11 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
           {activity.notExecuted && <p role="status">{notExecutedStatus(activity, language)}</p>}
           {activity.inputRejection && (
             <div className="local-agent__input-rejection">
-              <p>{activity.inputRejection.message}</p>
+              <p><code>{activity.inputRejection.code}</code>: {activity.inputRejection.message}</p>
               {activity.inputRejection.issues.map((issue, index) => (
                 <div key={`${issue.path}:${issue.rule}:${index}`}>
-                  <code>{issue.path}</code><span>{issue.message}</span>
+                  <code>{issue.path} · {issue.rule}</code>
+                  {issue.message !== activity.inputRejection!.message && <span>{issue.message}</span>}
                   {issue.expected !== undefined && <code>{JSON.stringify(issue.expected)}</code>}
                 </div>
               ))}
@@ -383,19 +393,22 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
                 {result.timedOut && <span>{t(language, 'agent.tool.shell.timedOut')}</span>}
                 {result.truncated && <span>{t(language, 'agent.tool.shell.truncated')}</span>}
               </div>
-              {result.stdout && (
+              {streams?.stdout && (
                 <section>
                   <span>{t(language, 'agent.tool.shell.stdout')}</span>
-                  <pre>{result.stdout}</pre>
+                  <pre>{streams.stdout}</pre>
                 </section>
               )}
-              {result.stderr && (
+              {streams?.stderr && (
                 <section>
                   <span>{t(language, 'agent.tool.shell.stderr')}</span>
-                  <pre>{result.stderr}</pre>
+                  <pre>{streams.stderr}</pre>
                 </section>
               )}
-              {!result.stdout && !result.stderr && (
+              {deferred && !streams && (detail.error
+                ? <div role="alert">{detail.error} <button type="button" onClick={deferred.output.retry}>{t(language, 'achbitGui.statusAction.retry')}</button></div>
+                : <small role="status">{t(language, 'agent.tool.detail.loading')}</small>)}
+              {streams && !streams.stdout && !streams.stderr && (
                 <small>{t(language, 'agent.tool.shell.noOutput')}</small>
               )}
             </div>
@@ -405,20 +418,7 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
             <span>{t(language, 'agent.tool.shell.duration', {duration: process.result.durationMs})}</span>
             {process.result.timedOut && <span>{t(language, 'agent.tool.shell.timedOut')}</span>}
           </div>}
-          {!result && (output || isPendingShell(activity)) && (
-            <div className="local-agent__shell-result">
-              {output?.truncated && <small>{t(language, 'agent.tool.shell.truncated')}</small>}
-              {(['stdout', 'stderr'] as const).map((stream) => output?.[stream] && (
-                <section key={stream}>
-                  <span>{t(language, `agent.tool.shell.${stream}`)}</span>
-                  <pre>{output[stream]}</pre>
-                </section>
-              ))}
-              {!output?.stdout && !output?.stderr && (
-                <small>{language === 'zh-CN' ? '尚无输出' : 'No output yet'}</small>
-              )}
-            </div>
-          )}
+          {!result && (output || isPendingShell(activity)) && <ShellLiveOutput output={output} language={language} />}
         </div>
         </UiPluginSlotView>
       )}
@@ -467,6 +467,7 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
   const operation = activity.tool?.operation ?? activity.label;
   const target = activity.tool?.resources[0]?.label;
   const command = activity.tool?.shell?.command;
+  if (batchConflictRole(activity)) return operation;
   if (activity.notExecuted) return `${operation} · ${notExecutedStatus(activity, language)}`;
   if (activity.status === 'requested' || activity.status === 'waiting') {
     return t(language, `agent.tool.summary.${activity.status}One`, { operation: command ?? operation });
@@ -511,6 +512,11 @@ export function toolActivitySummary(activity: ActivityProjection, language: UiLa
     operation,
     target: target ? ` · ${target}` : '',
   });
+}
+
+function batchRejectionStatus(activity: ActivityProjection, language: UiLanguage): string | undefined {
+  const role = batchConflictRole(activity);
+  if (role) return t(language, `agent.tool.batchConflict.${role}`);
 }
 
 function notExecutedStatus(activity: ActivityProjection, language: UiLanguage): string {

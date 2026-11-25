@@ -117,7 +117,18 @@ pub(crate) async fn shutdown_owned_host_resources_with_cancellation(
     let services = match host.execution.wait().await {
         Ok(services) => services,
         // Initialization cleans up its partial resources before publishing errors.
-        Err(_) => return service_cleanup_ok && host.execution.initialization_cleanup_complete(),
+        Err(_) => {
+            let reader_ok = match host.reading_service().await {
+                Ok(service) => matches!(
+                    tokio::task::spawn_blocking(move || service.shutdown()).await,
+                    Ok(Ok(()))
+                ),
+                Err(_) => true,
+            };
+            return service_cleanup_ok
+                && reader_ok
+                && host.execution.initialization_cleanup_complete();
+        }
     };
     let state = &AppState {
         local_agent: services.local_agent,

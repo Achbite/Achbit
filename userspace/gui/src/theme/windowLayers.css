@@ -1,0 +1,8 @@
+:root {
+  /* Body-level surfaces. Native dialogs and popovers use the browser top layer. */
+  --ac-window-layer-update-notice: 150;
+  --ac-window-layer-navigation-menu: 180;
+  --ac-window-layer-path-menu: 300;
+  --ac-window-layer-permission-menu: 1000;
+  --ac-window-layer-appearance-error: 10000;
+}

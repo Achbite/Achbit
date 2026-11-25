@@ -39,7 +39,14 @@ export class ConversationVirtualizer {
 
   layout(key: string): RowLayout {
     let layout = this.layouts.get(key);
-    if (!layout) { layout = { state: new Map() }; this.layouts.set(key, layout); }
+    if (!layout) layout = { state: new Map() };
+    this.layouts.delete(key); this.layouts.set(key, layout);
+    // Old per-row estimates/disclosures need not grow with all history ever scrolled.
+    // The active row always keeps its live state. Evict only inactive entries.
+    if (this.layouts.size > 768) for (const previous of this.layouts.keys()) {
+      if (previous !== key && !this.rows.has(previous)) this.layouts.delete(previous);
+      if (this.layouts.size <= 768) break;
+    }
     return layout;
   }
 
@@ -92,6 +99,8 @@ export class ConversationVirtualizer {
     }
   }
 
+  previewKeys(): IterableIterator<string> { return this.retainedPreviews.keys(); }
+
   measure(node: HTMLElement, measuredHeight?: number): void {
     if (node.hidden || node.dataset.virtualRendered !== 'true') return;
     const layout = this.layout(node.dataset.conversationAnchor!);
@@ -103,7 +112,6 @@ export class ConversationVirtualizer {
 
   disconnect(): void {
     this.connected = false;
-    this.retainedPreviews.clear();
     for (const row of this.rows.values()) this.cancelRelease(row);
     this.body?.removeEventListener('focusout', this.interactionEnded);
     this.body?.ownerDocument.removeEventListener('selectionchange', this.interactionEnded);

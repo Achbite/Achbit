@@ -1,3 +1,4 @@
+import { archivedMeasurements } from '../services/desktopHistory';
 import type { PastedImageInput } from '../services/pastedImage';
 import type { UserSettings, ShellAuthorizationScope, FilesystemReference, GuidanceReference } from '@achbit/protocol';
 import { takeRestoredInterfaceView } from '../services/interfaceReload';
@@ -23,10 +24,13 @@ import { CONVERSATION_COMMAND_VERSION, connectedModelReasoningEfforts, decodeAge
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
 import { normalizeUiLanguage } from '../i18n';
+import { retiredDraftSkillNotice } from '../pluginLocalization';
 import { runHandoffNotice } from './handoffNotice';
 import { selectPendingApproval, type ApprovalIdentity } from '../components/local-agent/composerDecisions';
 import { reportedWindowRounds, sessionView, type CachedSessionView, type ContextWindowReading } from './contextWindowReading';
 import { uiEvents } from './uiEvents';
+import { ChildDeliveryIndex } from '../components/local-agent/childDeliveryIndex';
+import { writePosition, type ReadingPosition } from './readingPosition';
 import { dismissUnappliedInputs } from './unappliedInputReminders';
 import type { PastedTextInput } from '../services/pastedText';
 import { supportsNativeFileInput } from '../services/modelFileInput';
@@ -40,13 +44,11 @@ import {
   deleteConversationSession as deleteSessionRequest,
   getConversationCatalog,
   getConversationStatuses,
-  readOpeningHistory,
   readMeasuredWindowHistory,
-  type OpeningHistoryPage,
   watchConversationCatalog,
   getConversationCatalogManagement,
   getPluginCatalog,
-  getLocalAgentProjection,
+  getDesktopSessionProjection,
   resolveConversationFilesystemReferences,
   submitLocalAgentCommand,
   uploadConversationPastedText,
@@ -84,6 +86,20 @@ type StoreErrorSource =
   | 'operation'
   | { kind: 'input'; submissionId: string };
 
+type ReadStatus = { phase: 'loading' } | { phase: 'ready' } | { phase: 'error'; message: string };
+const reading: ReadStatus = { phase: 'loading' };
+const ready: ReadStatus = { phase: 'ready' };
+
+/** The workbench reveals the selected Session when its visible regions have their facts. */
+export function conversationOpening(state: LocalAgentState): ReadStatus {
+  const id = state.sessionId;
+  if (!id) return ready;
+  if (state.projection?.sessionId === id && state.profileRead.phase === 'ready') return ready;
+  if (state.profileRead.phase === 'error') return state.profileRead;
+  const error = state.errorSource === 'initialization' || state.errorSource === 'projection' ? state.error : null;
+  return error ? { phase: 'error', message: error } : reading;
+}
+
 export interface LocalAgentState {
   welcomeIndex: number;
   sessionId: string | null;
@@ -94,6 +110,7 @@ export interface LocalAgentState {
   draftSubagentSettings: AgentSettings | null;
   subagentSettingsBusy: boolean;
   profiles: LlmProviderProfile[];
+  profileRead: ReadStatus;
   connections: ModelConnection[];
   defaultProfileId: string | null;
   catalog: ConversationCatalog;
@@ -104,10 +121,15 @@ export interface LocalAgentState {
   pluginCatalog: PluginCatalogProjection;
   projection: SessionProjection | null;
   contextWindowReading: ContextWindowReading | null;
-  openingHistory: OpeningHistoryPage | null;
+  rememberReadingAnchor(sessionId: string, anchor: Pick<ReadingPosition, 'key' | 'offset'> | null, sequence?: number): void;
+  observeHistory(event: 'ready' | 'change' | 'closed', id?: string): void;
+  childOutputs: ChildDeliveryIndex;
+  retainedProjections(): SessionProjection[];
   loading: boolean;
   loadingPurpose: 'initialization' | 'session' | null;
   submitting: boolean;
+  /** Transport feedback, never a transcript row or permission to start a second run. */
+  messageSubmission: { sessionId: string; commandId: string; text: string; phase: 'sending' | 'accepted'; revision?: number } | null;
   catalogBusy: boolean;
   error: string | null;
   errorSource: StoreErrorSource | null;
@@ -119,7 +141,7 @@ export interface LocalAgentState {
   retryCatalogWatch(): void;
   refreshPluginCatalog(): Promise<void>;
   startNewSession(projectId?: string | null): void;
-  activateSession(sessionId: string): Promise<void>;
+  activateSession(sessionId: string, rememberedAnchor?: Pick<ReadingPosition, 'key' | 'offset'> | null): Promise<void>;
   selectModel(profileId: string, effort: LlmReasoningEffort | null): Promise<boolean>;
   setSubagentSettings(patches: Partial<AgentSettings>): Promise<void>;
   setMode(mode: 'minimal' | 'full'): Promise<CommandReply>;
@@ -200,6 +222,17 @@ async function waitForExecution(signal?: AbortSignal): Promise<void> {
 let generation = 0;
 let catalogVersion = 0;
 let viewReadController = new AbortController();
+const childOutputs = new ChildDeliveryIndex();
+// A complete read that crosses a known Host gap can still be displayed immediately.
+let observationGap = 0;
+const needsRevalidation = new WeakSet<SessionProjection>();
+function observeConnection(ready: boolean) {
+  if (childOutputs.connected) observationGap++;
+  childOutputs.connection(ready);
+}
+function observationAtRead() {
+  return observationGap && !childOutputs.connected ? null : observationGap;
+}
 function advanceView(): number {
   viewReadController.abort();
   viewReadController = new AbortController();
@@ -207,49 +240,77 @@ function advanceView(): number {
 }
 // Draft deltas do not advance the journal revision. Serialize reads across
 // polling, navigation and command reconciliation so responses cannot rewind them.
-const projectionReadQueues = new Map<string, Promise<void>>();
+const projectionReadQueues = new Map<string, { tail?: Promise<void>; signal?: AbortSignal }>();
 const projectionCache = new Map<string, CachedSessionView>();
-function cacheProjection(projection: SessionProjection): CachedSessionView {
+let openingFlight: { sessionId: string; generation: number; promise: Promise<void> } | null = null;
+function cacheProjection(projection: SessionProjection, observedAt: number | null, selectedId = store.getState().sessionId): CachedSessionView {
   const cached = projectionCache.get(projection.sessionId);
-  const view = cached && !shouldApplyProjection(cached.projection, projection) ? cached : sessionView(projection, cached);
+  const active = store.getState();
+  const previous = cached ?? (active.projection?.sessionId === projection.sessionId
+    ? { projection: active.projection, contextWindowReading: active.contextWindowReading } : undefined);
+  const view = previous && !shouldApplyProjection(previous.projection, projection) ? previous : sessionView(projection, previous);
+  if (observedAt === observationGap) needsRevalidation.delete(view.projection);
+  else needsRevalidation.add(view.projection);
   projectionCache.delete(projection.sessionId);
   projectionCache.set(projection.sessionId, view);
-  while (projectionCache.size > 6) projectionCache.delete(projectionCache.keys().next().value!);
+  if (projectionCache.size > 6) {
+    const oldest = [...projectionCache.keys()].find(id => id !== selectedId);
+    if (oldest) projectionCache.delete(oldest);
+  }
   return view;
 }
-function readSessionView(sessionId: string, signal?: AbortSignal, boundary: number | (() => Promise<number>) = 0): Promise<CachedSessionView> {
-  const read = (projectionReadQueues.get(sessionId) ?? Promise.resolve())
-    .then(async () => {
-      signal?.throwIfAborted();
-      // Start the bounded page first, but let transport and Session recovery
-      // overlap. Neither response enters the cache until both are validated.
-      const [minimumRevision, first] = await Promise.all([
-        typeof boundary === 'number' ? boundary : boundary(), getLocalAgentProjection(sessionId, signal),
-      ]);
-      signal?.throwIfAborted();
-      if (first.revision >= minimumRevision) return first;
-      signal?.throwIfAborted();
-      const fresh = await getLocalAgentProjection(sessionId, signal);
-      if (fresh.revision < minimumRevision) throw new Error('session_projection_revision_behind');
-      return fresh;
-    })
-    .then((projection) => {
-      signal?.throwIfAborted();
-      const cached = projectionCache.get(sessionId);
-      const current = cacheProjection(projection);
-      const notice = runHandoffNotice(cached?.projection, current.projection,
+function readSessionView(sessionId: string, signal?: AbortSignal): Promise<CachedSessionView> {
+  const previous = projectionReadQueues.get(sessionId);
+  const queue = previous && !previous.signal?.aborted ? previous : { signal, tail: undefined };
+  projectionReadQueues.set(sessionId, queue);
+  const checkOwner = () => {
+    signal?.throwIfAborted();
+    if (projectionReadQueues.get(sessionId) !== queue) throw new Error('conversation_session_not_found');
+  };
+  const fetchView = async () => {
+      checkOwner();
+      const observedAt = observationAtRead();
+      let projection = await getDesktopSessionProjection(sessionId, signal);
+      checkOwner();
+      const observed = store.getState().sessionStatuses[sessionId]?.revision ?? 0;
+      if (projection.revision < observed) {
+        projection = await getDesktopSessionProjection(sessionId, signal);
+        checkOwner();
+        if (projection.revision < observed) throw new Error('session_projection_revision_behind');
+      }
+      const visible = store.getState().projection;
+      const previous = projectionCache.get(sessionId)?.projection ?? (visible?.sessionId === sessionId ? visible : undefined);
+      const current = cacheProjection(projection, observedAt);
+      const notice = runHandoffNotice(previous, current.projection,
         store.getState().profiles.find(profile => profile.id === current.projection.contextHandoff?.profileId)?.name,
         normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']));
       if (notice) uiEvents.publish(notice);
       return current;
-    });
-  const queue = read.then(() => undefined, () => undefined);
-  projectionReadQueues.set(sessionId, queue);
-  void queue.then(() => {
-    if (projectionReadQueues.get(sessionId) === queue) projectionReadQueues.delete(sessionId);
+  };
+  const read = queue.tail ? queue.tail.then(fetchView) : fetchView();
+  const tail = queue.tail = read.then(() => undefined, () => undefined);
+  void tail.then(() => {
+    if (projectionReadQueues.get(sessionId) === queue && queue.tail === tail) projectionReadQueues.delete(sessionId);
   });
   return read;
 }
+async function freshRun(id: string): Promise<SessionProjection | null> {
+  const signal = viewReadController.signal;
+  if (!store.getState().runtimeReady) await waitForExecution(signal);
+  const previousInput = acceptedInputs.get(id);
+  if (previousInput) await previousInput;
+  if (openingFlight?.sessionId === id) await openingFlight.promise;
+  const state = store.getState();
+  if (state.sessionId !== id) throw new Error('conversation_session_changed');
+  if (state.errorSource === 'projection') {
+    const current = await readSessionView(id, signal);
+    signal.throwIfAborted();
+    store.setState({ ...current, ...projectModelSettings(current.projection), error: null, errorSource: null });
+    return current.projection;
+  }
+  return state.projection;
+}
+
 let activeSubmissionCount = 0;
 const decisionSubmissions = new Map<string, Promise<CommandReply>>();
 let projectionRefreshFlight: {
@@ -259,19 +320,47 @@ let projectionRefreshFlight: {
 } | null = null;
 
 
-async function refreshProfileConfiguration(set: StoreSet): Promise<string | null> {
-  const profileResult = await getLlmProfiles();
-  if (!profileResult.ok) {
-    set({
-      error: profileResult.message ?? 'llm_profiles_unavailable',
-      errorSource: 'profiles',
+let statusFlight: { owner: number; promise: Promise<ConversationSessionStatus[] | null> } | null = null;
+function observeStatuses(set: StoreSet, owner: number, signal: AbortSignal) {
+  if (statusFlight?.owner === owner) return statusFlight.promise;
+  const promise = getConversationStatuses(signal).then(items => {
+    if (generation !== owner) return null;
+    set(state => {
+      const sessionStatuses = Object.fromEntries(items.map(item => {
+        const current = state.sessionStatuses[item.sessionId];
+        return [item.sessionId, current && current.revision > item.revision ? current : item];
+      }));
+      if (state.statusError === null && JSON.stringify(sessionStatuses) === JSON.stringify(state.sessionStatuses)) return state;
+      return { sessionStatuses, statusError: null };
     });
-    return profileResult.message ?? 'llm_profiles_unavailable';
+    return items;
+  }).catch(error => {
+    if (generation === owner) set({ sessionStatuses: {}, statusError: errorMessage(error) });
+    return null;
+  });
+  statusFlight = { owner, promise };
+  void promise.then(() => { if (statusFlight?.promise === promise) statusFlight = null; });
+  return promise;
+}
+
+async function refreshProfileConfiguration(set: StoreSet): Promise<void> {
+  set(state => state.profileRead.phase === 'error' ? { profileRead: reading } : state);
+  const owner = executionReady;
+  const profileResult = await getLlmProfiles();
+  if (owner !== executionReady) return;
+  const data = profileResult.data;
+  if (!profileResult.ok || !Array.isArray(data?.profiles)) {
+    const message = profileResult.message ?? 'llm_profiles_unavailable';
+    set(state => ({
+      profileRead: state.profileRead.phase === 'ready' ? ready : { phase: 'error', message },
+      error: message, errorSource: 'profiles',
+    }));
+    return;
   }
-  const profiles = (profileResult.data?.profiles ?? []);
+  const profiles = data.profiles;
   const defaultProfileId = initialProfileId(
     profiles,
-    profileResult.data?.defaultProfileId,
+    data.defaultProfileId,
   );
   set((state) => {
     const summary = state.sessionId
@@ -279,7 +368,8 @@ async function refreshProfileConfiguration(set: StoreSet): Promise<string | null
       : undefined;
     return {
       profiles,
-      connections: profileResult.data?.connections ?? [],
+      profileRead: ready,
+      connections: data.connections ?? [],
       defaultProfileId,
       selectedProfileId: state.selectedProfileId ?? summary?.profileId ?? defaultProfileId,
       ...(!state.selectedProfileId && !state.sessionId ? {
@@ -288,7 +378,6 @@ async function refreshProfileConfiguration(set: StoreSet): Promise<string | null
       ...(state.errorSource === 'profiles' ? { error: null, errorSource: null } : {}),
     };
   });
-  return null;
 }
 
 const store = create<LocalAgentState>((set, get) => ({
@@ -301,6 +390,7 @@ const store = create<LocalAgentState>((set, get) => ({
   draftSubagentSettings: null,
   subagentSettingsBusy: false,
   profiles: [],
+  profileRead: reading,
   connections: [],
   defaultProfileId: null,
   catalog: EMPTY_CATALOG,
@@ -311,9 +401,35 @@ const store = create<LocalAgentState>((set, get) => ({
   pluginCatalog: EMPTY_PLUGIN_CATALOG,
   projection: null,
   contextWindowReading: null,
-  openingHistory: null,
+  rememberReadingAnchor: (id, anchor, sequence) => {
+    const state = get();
+    const session = state.catalog.sessions.find(entry => entry.id === id);
+    if (!session || state.sessionId !== id) return;
+    if (!anchor) { writePosition(id, null); return; }
+    // Named navigation and reading positions refer directly to the complete timeline.
+    const seq = sequence ?? state.projection?.timeline.find(row => row.timelineId === anchor.key
+      || 'streamId' in row && row.streamId === anchor.key || row.kind === 'message' && row.messageId === anchor.key)?.sequence;
+    if (seq !== undefined) writePosition(id, { ...anchor, sequence: seq, createdAt: session.createdAt });
+  },
+  childOutputs,
+  retainedProjections: () => Array.from(projectionCache.values(), view => view.projection).filter(canRestoreProjection),
+  observeHistory: (event, id) => {
+    const previousSize = projectionCache.size;
+    if (event === 'change' && id) {
+      childOutputs.changed(id);
+      projectionCache.delete(id);
+      for (const [key, view] of projectionCache) {
+        if (view.projection.agentChildren?.some(child => child.agentSessionId === id)
+          || view.projection.agentContext?.ownerSessionId === id) projectionCache.delete(key);
+      }
+    } else {
+      if (childOutputs.connected || event === 'closed') projectionCache.clear();
+      observeConnection(event === 'ready');
+    }
+    if (projectionCache.size !== previousSize) set({});
+  },
   loading: false, loadingPurpose: null,
-  submitting: false,
+  submitting: false, messageSubmission: null,
   catalogBusy: false,
   error: null,
   errorSource: null,
@@ -322,17 +438,25 @@ const store = create<LocalAgentState>((set, get) => ({
   initialize: async (runtimeReady) => {
     if (initialization) return await initialization;
     if (runtimeReady) {
-      set({ runtimeReady: false });
-      executionReady = runtimeReady.then(() => { set({ runtimeReady: true }); });
+      observeConnection(false);
+      projectionReadQueues.clear();
+      projectionCache.clear();
+      set({ profileRead: reading, runtimeReady: false, projection: null, contextWindowReading: null, sessionStatuses: {} });
+      const gate: Promise<void> = runtimeReady.then(() => {
+        if (executionReady === gate) set({ runtimeReady: true });
+      }, error => {
+        if (executionReady === gate) set({ runtimeReady: false, error: errorMessage(error), errorSource: 'initialization' });
+        throw error;
+      });
+      executionReady = gate;
     }
     const currentGeneration = advanceView();
     initialization = (async () => {
       const readVersion = catalogVersion;
       set({ loading: true, loadingPurpose: 'initialization', catalogStatus: 'pending', error: null, errorSource: null });
       try {
-        // Publish navigation as soon as its own request is ready. Plugin discovery
-        // and model configuration must not gate history or a restored conversation.
-        const [, , profileError] = await Promise.all([
+        // The sidebar can select a Session while its first screen is being prepared.
+        await Promise.all([
           getConversationCatalog().catch((error) => {
             if (readVersion === catalogVersion) set({ catalogStatus: 'error' });
             throw error;
@@ -348,18 +472,11 @@ const store = create<LocalAgentState>((set, get) => ({
             }
           }),
           executionReady.then(() => getPluginCatalog()).then(pluginCatalog => set({ pluginCatalog })),
-          // Publish model configuration independently of filesystem plugin discovery.
-          executionReady.then(() => refreshProfileConfiguration(set)),
+          // Both the model catalog and the conversation reader are available at Host publication.
+          refreshProfileConfiguration(set),
         ]);
-        // Restoring a history entry may finish after profiles and replace an
-        // absent historical model with null. Keep the existing default rule.
-        set(state => ({
-          selectedProfileId: state.selectedProfileId ?? state.defaultProfileId,
-          ...(profileError ? { error: profileError, errorSource: 'profiles' as const } : {}),
-          ...(!state.selectedProfileId && !state.sessionId ? {
-            reasoningEffortOverride: state.profiles.find(profile => profile.id === state.defaultProfileId)?.reasoningEffort ?? null,
-          } : {}),
-        }));
+        const profileRead = get().profileRead;
+        if (profileRead.phase === 'error') set({ error: profileRead.message, errorSource: 'profiles' });
         // A selected history entry owns its first projection read. Do not queue
         // another full read of a child-bearing session behind that activation.
         if (!get().sessionId || (currentGeneration === generation && get().projection)) void get().refresh();
@@ -466,11 +583,11 @@ const store = create<LocalAgentState>((set, get) => ({
     const defaults = useSettingsStore.getState();
     activeSubmissionCount = 0;
     set({
+      messageSubmission: null,
       welcomeIndex: get().sessionId === null ? get().welcomeIndex : Math.floor(Math.random() * 4),
       sessionId: null,
       projection: null,
       contextWindowReading: null,
-      openingHistory: null,
       draftProjectId: projectId,
       draftSubagentSettings: defaults.storePath && !defaults.errorMessage ? subagentDefaults(defaults.effectiveSettings) : null,
       subagentSettingsBusy: false,
@@ -490,95 +607,59 @@ const store = create<LocalAgentState>((set, get) => ({
     });
   },
 
-  activateSession: async (sessionId) => {
-    if (get().sessionId === sessionId && (get().projection || get().loading)) return;
-    const currentGeneration = advanceView();
+  activateSession: async (sessionId, rememberedAnchor) => {
+    if (openingFlight?.sessionId === sessionId && openingFlight.generation === generation) return openingFlight.promise;
+    if (get().sessionId === sessionId) {
+      if (get().profileRead.phase === 'error') void get().refreshProfiles();
+      const current = get().projection;
+      if (current?.sessionId === sessionId && !needsRevalidation.has(current)) return;
+    }
+    const owner = advanceView();
     const signal = viewReadController.signal;
-    let summary = get().catalog.sessions.find((session) => session.id === sessionId);
-    if (!summary) {
-      // CLI and other windows can create conversations after this view's catalog read.
-      const readVersion = catalogVersion;
-      set({ loading: true, loadingPurpose: 'session', openingHistory: null, error: null, errorSource: null });
-      try {
-        let catalog = await getConversationCatalog(signal);
-        if (currentGeneration !== generation) return;
-        if (readVersion !== catalogVersion) catalog = get().catalog;
-        else { catalogVersion += 1; set({ catalog, catalogStatus: 'ready' }); }
-        summary = catalog.sessions.find((session) => session.id === sessionId);
-      } catch (error) {
-        if (currentGeneration === generation) set({ loading: false, loadingPurpose: null,
-          ...(readVersion === catalogVersion ? { catalogStatus: 'error' as const } : {}),
-          error: errorMessage(error), errorSource: 'catalog' });
-        return;
-      }
-    }
-    if (!summary) {
-      set({ loading: false, loadingPurpose: null, error: 'conversation_session_not_found', errorSource: 'operation' });
-      return;
-    }
     activeSubmissionCount = 0;
-    const cached = projectionCache.get(sessionId) ?? null;
-    if (cached) cacheProjection(cached.projection);
-    // Live text can change without a journal revision. A cached draft followed
-    // by its catch-up snapshot would replay text received while the user was away.
-    const observed = get().sessionStatuses[sessionId];
-    const settledCache = cached && !cached.projection.assistantDraft
-      && (observed?.revision ?? 0) <= cached.projection.revision
-      && !['running', 'waiting', 'releasing'].includes(cached.projection.run?.status ?? '') ? cached : null;
-    const visibleCached = get().runtimeReady ? settledCache : null;
-    set({
-      submitting: false,
-      modelSettingsBusy: false,
-      subagentSettingsBusy: false,
-      draftSubagentSettings: null,
-      loading: !visibleCached,
-      loadingPurpose: visibleCached ? null : 'session',
-      error: null,
-      errorSource: null,
-      sessionId,
-      selectedProfileId: cached?.projection.modelSettings?.profileId ?? summary.profileId ?? null,
-      reasoningEffortOverride: cached?.projection.modelSettings?.reasoningEffortOverride ?? null,
-      ...(visibleCached ?? { projection: null, contextWindowReading: null }),
-      openingHistory: null,
-      draftProjectId: null,
-    });
-    try {
-      if (!get().runtimeReady) await waitForExecution(signal);
-      if (currentGeneration !== generation) return;
-      if (settledCache) {
-        if (!visibleCached) set({ ...settledCache, loading: false, loadingPurpose: null });
-        await get().refresh();
+    let summary = get().catalog.sessions.find(s => s.id === sessionId);
+    if (!summary) {
+      set({ loading: true, loadingPurpose: 'session', error: null, errorSource: null });
+      try {
+        const catalog = await getConversationCatalog(signal);
+        if (owner !== generation) return;
+        summary = catalog.sessions.find(s => s.id === sessionId);
+        if (!summary) throw new Error('conversation_session_not_found');
+        set({ catalog, catalogStatus: 'ready' });
+      } catch (error) {
+        if (owner === generation) set({ loading: false, loadingPurpose: null, catalogStatus: 'error', error: errorMessage(error), errorSource: 'catalog' });
         return;
       }
-      const revision = get().sessionStatuses[sessionId]?.revision;
-      const pair = new AbortController();
-      const reading = AbortSignal.any([signal, pair.signal]);
-      // A known status already proves the minimum revision. Don't scan the
-      // journal twice just to obtain an unused excerpt for this same boundary.
-      const readBoundary = !cached && revision === undefined ? async () => {
-        const page = await readOpeningHistory(sessionId, reading);
-        reading.throwIfAborted();
-        if (page.messages.length && currentGeneration === generation) set({ openingHistory: page });
-        return page.revision;
-      } : Math.max(cached?.projection.revision ?? 0, revision ?? 0);
-      const view = await readSessionView(sessionId, reading, readBoundary).finally(() => pair.abort());
-      if (currentGeneration !== generation) return;
-      set({
-        sessionId,
-        selectedProfileId: view.projection.modelSettings?.profileId ?? summary.profileId ?? null,
-        reasoningEffortOverride: view.projection.modelSettings?.reasoningEffortOverride ?? null,
-        ...view, openingHistory: null,
-        loading: false, loadingPurpose: null,
-      });
-    } catch (error) {
-      if (currentGeneration === generation) {
-        set({
-          loading: false, loadingPurpose: null, openingHistory: null,
-          error: errorMessage(error),
-          errorSource: 'projection',
-        });
-      }
     }
+    const retained = projectionCache.get(sessionId);
+    const cached = retained && canRestoreProjection(retained.projection) ? retained : undefined;
+    const status = get().sessionStatuses[sessionId];
+    if (cached) {
+      projectionCache.delete(sessionId);
+      projectionCache.set(sessionId, cached);
+    }
+    if (rememberedAnchor === null) writePosition(sessionId, null);
+    set({
+      sessionId, projection: null, contextWindowReading: null, ...cached,
+      messageSubmission: null, draftProjectId: null, selectedProfileId: summary.profileId ?? get().defaultProfileId, reasoningEffortOverride: null,
+      ...projectModelSettings(cached?.projection ?? null),
+      submitting: false, modelSettingsBusy: false, subagentSettingsBusy: false, loading: !cached, loadingPurpose: cached ? null : 'session',
+      error: null, errorSource: null,
+    });
+    const open = async () => {
+      if (cached && !needsRevalidation.has(cached.projection)
+        && (!status || status.revision <= cached.projection.revision && !isLiveRun(status.run))) return;
+      if (!get().runtimeReady) await waitForExecution(signal);
+      const view = await readSessionView(sessionId, signal);
+      if (owner === generation && get().sessionId === sessionId) {
+        set({ ...view, ...projectModelSettings(view.projection), loading: false, loadingPurpose: null });
+      }
+    };
+    const flight = { sessionId, generation: owner, promise: open() };
+    openingFlight = flight;
+    try { await flight.promise; } catch (error) {
+      if (owner === generation) set({ loading: false, loadingPurpose: null, error: errorMessage(error), errorSource: 'projection' });
+    } finally { if (openingFlight === flight) openingFlight = null; }
   },
 
   setMode: async (mode) => {
@@ -596,10 +677,10 @@ const store = create<LocalAgentState>((set, get) => ({
     return saveModelSettings(set, get, { profileId, reasoningEffortOverride });
   },
   setSubagentSettings: async patches => {
-    const { sessionId, projection, draftSubagentSettings, subagentSettingsBusy, submitting } = get();
+    const { sessionId, draftSubagentSettings, subagentSettingsBusy, submitting } = get();
     if (subagentSettingsBusy || submitting) throw new Error('subagent_settings_busy');
     const defaults = useSettingsStore.getState();
-    const current = sessionId ? projection?.subagentSettings : draftSubagentSettings ?? subagentDefaults(defaults.effectiveSettings);
+    const current = sessionId ? (await freshRun(sessionId))?.subagentSettings : draftSubagentSettings ?? subagentDefaults(defaults.effectiveSettings);
     if (!current) throw new Error('session_subagent_settings_unavailable');
     const settings = decodeAgentSettings({ ...current, ...patches });
     const owner = generation;
@@ -640,38 +721,21 @@ const store = create<LocalAgentState>((set, get) => ({
     }
 
     const promise = (async () => {
-      const statuses = (async () => {
-        try {
-          const items = await getConversationStatuses(signal);
-          if (generation !== refreshGeneration) return null;
-          set((state) => {
-            const sessionStatuses = Object.fromEntries(items.map((item) => {
-              const current = state.sessionStatuses[item.sessionId];
-              return [item.sessionId, current && current.revision > item.revision ? current : item];
-            }));
-            if (state.statusError === null
-              && JSON.stringify(sessionStatuses) === JSON.stringify(state.sessionStatuses)) return state;
-            return { sessionStatuses, statusError: null };
-          });
-          return items;
-        } catch (error) {
-          if (generation === refreshGeneration) set({ sessionStatuses: {}, statusError: errorMessage(error) });
-          return null;
-        }
-      })();
+      const statuses = observeStatuses(set, refreshGeneration, signal);
       try {
         const items = await statuses;
         if (!sessionId || generation !== refreshGeneration || (get().loading && !get().projection)) return;
-        const cached = projectionCache.get(sessionId)?.projection;
+        const cachedView = projectionCache.get(sessionId);
+        const cached = cachedView?.projection;
         const status = items?.find((item) => item.sessionId === sessionId);
-        if (cached && !cached.agentContext && !cached.agentChildren?.length && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
+        if (cached && !needsRevalidation.has(cached) && !cached.agentContext && !cached.agentChildren?.length && get().errorSource !== 'projection' && status?.revision === cached.revision && !cached.assistantDraft
           && !['running', 'waiting', 'releasing'].includes(status.run?.status ?? '')) {
           return;
         }
         const view = await readSessionView(sessionId, signal);
         if (generation !== refreshGeneration || get().sessionId !== sessionId) return;
         set((state) => {
-          const apply = shouldApplyProjection(state.projection, view.projection);
+          const apply = state.projection !== view.projection;
           if (!apply && state.errorSource !== 'projection') return state;
           return {
             ...(apply ? view : {}),
@@ -789,9 +853,10 @@ const store = create<LocalAgentState>((set, get) => ({
     const sessionId = requiredSession(get());
     set({ catalogBusy: true, error: null, errorSource: null });
     try {
+      const observedAt = observationAtRead();
       const projection = await attachConversationDirectoryIndex(sessionId, canonicalRoot);
       if (get().sessionId !== sessionId) throw new Error('conversation_session_changed');
-      set(cacheProjection(projection));
+      set(cacheProjection(projection, observedAt));
     } catch (error) {
       set({ error: errorMessage(error), errorSource: 'operation' });
       throw error;
@@ -804,9 +869,10 @@ const store = create<LocalAgentState>((set, get) => ({
     const sessionId = requiredSession(get());
     set({ catalogBusy: true, error: null, errorSource: null });
     try {
+      const observedAt = observationAtRead();
       const projection = await detachConversationDirectoryIndex(sessionId, workspaceId);
       if (get().sessionId !== sessionId) throw new Error('conversation_session_changed');
-      set(cacheProjection(projection));
+      set(cacheProjection(projection, observedAt));
     } catch (error) {
       set({ error: errorMessage(error), errorSource: 'operation' });
       throw error;
@@ -816,8 +882,8 @@ const store = create<LocalAgentState>((set, get) => ({
   },
 
   rebindHost: async (hostBinding) => {
-    const { sessionId, projection } = get();
-    const run = projection?.run;
+    const { sessionId } = get();
+    const run = sessionId ? (await freshRun(sessionId))?.run : null;
     if (!sessionId || run?.status !== 'waiting' || !run.hostBinding) throw new Error('host_rebind_not_waiting');
     return submitCommandAndReconcile(set, get, {
       schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'run.host.rebind', commandId: `command:${crypto.randomUUID()}`,
@@ -827,8 +893,9 @@ const store = create<LocalAgentState>((set, get) => ({
   respondInteraction: async (response, interactionId, submissionId) => {
     const state = get();
     const sessionId = requiredSession(state);
-    const interaction = interactionId ? state.projection?.interactions.find(item => item.interactionId === interactionId)
-      : state.projection?.pendingInteraction;
+    const current = await freshRun(sessionId);
+    const interaction = current?.pendingInteraction;
+    if (interactionId && interaction?.interactionId !== interactionId) throw new Error('interaction_response_missing');
     if (!interaction || interaction.status !== 'pending' || !response.trim()) throw new Error('interaction_response_missing');
     return await submitDecision(
       set,
@@ -867,7 +934,9 @@ const store = create<LocalAgentState>((set, get) => ({
   respondApproval: async (decision, authorizationScope, target) => {
     const state = get();
     const sessionId = requiredSession(state);
-    const approval = sessionId === target.sessionId ? selectPendingApproval(state.projection, target) : null;
+    if (sessionId !== target.sessionId) throw new Error('approval_response_missing');
+    const view = await freshRun(sessionId);
+    const approval = selectPendingApproval(view, target);
     if (!approval) throw new Error('approval_response_missing');
     return await submitDecision(
       set,
@@ -900,7 +969,7 @@ const store = create<LocalAgentState>((set, get) => ({
   cancelRun: async () => {
     const state = get();
     const sessionId = requiredSession(state);
-    const runId = state.projection?.run?.runId;
+    const runId = (await freshRun(sessionId))?.run?.runId;
     if (!runId) throw new Error('conversation_run_missing');
     return await submitDecision(set, get, `cancel:${sessionId}:${runId}`, () => ({
       schemaVersion: CONVERSATION_COMMAND_VERSION,
@@ -985,6 +1054,7 @@ const store = create<LocalAgentState>((set, get) => ({
     const summary = requiredSummary(get().catalog, sessionId);
     const projectId = summary.projectId;
     await mutateCatalog(set, async () => await deleteSessionRequest(sessionId));
+    writePosition(sessionId, null);
     projectionCache.delete(sessionId);
     uiEvents.clear(sessionId);
     if (get().sessionId === sessionId) get().startNewSession(projectId ?? null);
@@ -1007,7 +1077,7 @@ async function submitPlanResponse(
 ): Promise<CommandReply> {
   const state = get();
   const sessionId = requiredSession(state);
-  const plan = state.projection?.pendingPlan;
+  const plan = (await freshRun(sessionId))?.pendingPlan;
   if (!plan) throw new Error('plan_response_missing');
   return await submitDecision(
     set,
@@ -1043,11 +1113,19 @@ async function submitNewRun(
   const submissionGeneration = beginSubmission(set);
   try {
     if (filesystemPaths.length + pastedTexts.length + pastedImages.length + (retained.filesystemReferences?.length ?? 0) > 8) throw new Error('message_filesystem_reference_limit');
+    if (pluginSelections.length || retained.guidanceReferences?.length) {
+      const notice = retiredDraftSkillNotice(get().pluginCatalog, pluginSelections, retained.guidanceReferences,
+        normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']));
+      if (notice) throw new Error(notice);
+    }
     const messageProfileId = get().selectedProfileId;
     const profile = get().profiles.find(item => item.id === messageProfileId);
     const reasoningEffortOverride = get().reasoningEffortOverride
       ?? (!get().sessionId && profile?.thinking !== 'disabled' ? profile?.reasoningEffort ?? null : null);
-    const activeRun = get().projection?.run;
+    const selected = get().sessionId;
+    const controls = selected ? await freshRun(selected) : null;
+    if (generation !== submissionGeneration || get().sessionId !== selected) throw new Error('conversation_session_changed');
+    const activeRun = controls?.run;
     const queuedMessage = type === 'message.submit' && activeRun && ['running', 'waiting'].includes(activeRun.status);
     if (queuedMessage && planMode) throw new Error('plan_run_active');
     if (!queuedMessage && (!messageProfileId || !get().profiles.some((profile) => profile.id === messageProfileId && profile.enabled))) throw new Error('llm_profile_unavailable');
@@ -1069,6 +1147,7 @@ async function submitNewRun(
     if (!sessionId) {
       const { draftProjectId, draftSubagentSettings } = get();
       // Materialize the visible draft, not a newer profile from another window before the first message.
+      const observedAt = observationAtRead();
       const created = await createLocalAgentSession({
         profileId: messageProfileId!,
         ...(reasoningEffortOverride ? { recipe: { reasoningEffort: reasoningEffortOverride } } : {}),
@@ -1078,8 +1157,8 @@ async function submitNewRun(
       if (generation !== submissionGeneration) throw new Error('conversation_session_changed');
       sessionId = created.sessionId;
       onSessionCreated?.(sessionId);
-      set({ sessionId, ...cacheProjection(created), draftProjectId: null, draftSubagentSettings: null });
-      await get().refreshCatalog();
+      set({ sessionId, ...cacheProjection(created, observedAt, sessionId), draftProjectId: null, draftSubagentSettings: null });
+      void get().refreshCatalog();
     }
     const filesystemReferences = [...(retained.filesystemReferences ?? []), ...(filesystemPaths.length
       ? await resolveConversationFilesystemReferences(sessionId, filesystemPaths)
@@ -1118,15 +1197,14 @@ async function submitNewRun(
     const command: ConversationCommand = type === 'message.submit'
       ? { ...common, type, text, ...(planMode ? { planMode } : {}), ...(queuedMessage ? { runId: activeRun.runId } : {}) }
       : { ...common, type, task: text };
-    const reply = await submitCommandAndReconcile(set, get, command);
-    await Promise.all([
-      get().refreshCatalog(),
-      get().refreshPluginCatalog(),
-    ]);
-    return reply;
+    if (type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.command',
+      { sessionId, submissionId: retained.submissionId, commandId: command.commandId });
+    return await submitCommandAndReconcile(set, get, command);
   } catch (error) {
+    if (type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.failed',
+      { submissionId: retained.submissionId, reason: generation === submissionGeneration ? 'submission-failed' : 'session-changed' });
     if (errorMessage(error).includes('plugin_selection_stale')) {
-      await get().refreshPluginCatalog();
+      void get().refreshPluginCatalog();
     }
     if (generation === submissionGeneration) set({ error: errorMessage(error),
       errorSource: retained.submissionId ? { kind: 'input', submissionId: retained.submissionId } : 'command' });
@@ -1179,13 +1257,30 @@ async function submitCommandAndReconcile(
   get: StoreGet,
   command: ConversationCommand,
 ): Promise<CommandReply> {
+  const id = command.sessionId;
+  if (command.type === 'message.submit' && get().sessionId === id) set({ messageSubmission: {
+    sessionId: id, commandId: command.commandId, text: command.text.trim().slice(0, 180), phase: 'sending',
+  } });
+  const clearReceipt = () => {
+    const pending = get().messageSubmission;
+    if (pending?.sessionId === id && pending.commandId === command.commandId) set({ messageSubmission: null });
+  };
+  try { return await sendAndReconcile(set, get, command, clearReceipt); }
+  catch (error) { clearReceipt(); throw error; }
+}
+
+const acceptedInputs = new Map<string, Promise<void>>();
+async function sendAndReconcile(set: StoreSet, get: StoreGet, command: ConversationCommand, clearReceipt: () => void): Promise<CommandReply> {
   const commandGeneration = generation;
+  const fullOwner = get().projection?.sessionId === command.sessionId;
   const previousProjection = get().projection;
   const previousReminders = (command.type === 'message.submit' || command.type === 'context.focus')
     && previousProjection?.sessionId === command.sessionId
     ? previousProjection.queuedInputs?.filter(input => input.status === 'notApplied').map(input => input.commandId) ?? []
     : [];
   const reply = await submitLocalAgentCommand(command).catch(async error => {
+    if (command.type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.transport-failed',
+      { sessionId: command.sessionId, commandId: command.commandId });
     // This Host error acknowledges a Session edit while reporting a failed save of future defaults.
     if ((command.type === 'session.subagent-settings.set' || command.type === 'session.model-settings.set')
       && error instanceof ConversationRequestError && error.code === 'conversation_defaults_save_failed') {
@@ -1194,6 +1289,12 @@ async function submitCommandAndReconcile(
     }
     throw error;
   });
+  if (command.type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.receipt',
+    { sessionId: reply.sessionId, commandId: reply.commandId, revision: reply.revision, phase: reply.status });
+  const pending = get().messageSubmission;
+  if (generation === commandGeneration && pending?.commandId === reply.commandId && pending.sessionId === reply.sessionId) {
+    set({ messageSubmission: reply.status === 'rejected' ? null : { ...pending, phase: 'accepted', revision: reply.revision } });
+  }
   if ((reply.status === 'accepted' || reply.status === 'replayed') && previousReminders.length
     && typeof sessionStorage !== 'undefined') {
     try {
@@ -1206,12 +1307,54 @@ async function submitCommandAndReconcile(
     }
   }
   const rejection = reply.status === 'rejected' ? commandRejectionMessage(reply) : null;
-  try {
-    await reconcileProjectionAfterReply(set, get, command.sessionId, reply.revision, commandGeneration);
-  } catch (error) {
-    const reconciliation = `conversation_projection_reconcile_failed:${errorMessage(error)}`;
-    throw new Error(rejection ? `${rejection};${reconciliation}` : reconciliation);
+  const isSendReceipt = command.type === 'message.submit' && !rejection;
+  const covered = () => {
+    const s = get();
+    const current = s.projection;
+    return isSendReceipt && generation === commandGeneration && s.sessionId === command.sessionId
+      && !s.statusError && s.errorSource !== 'projection' && current?.sessionId === reply.sessionId
+      && current.revision >= reply.revision && current !== previousProjection;
+  };
+  const reconcile = async () => {
+    if (isSendReceipt && (generation !== commandGeneration || get().sessionId !== command.sessionId)) {
+      projectionCache.delete(command.sessionId);
+      globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.projection', {
+        sessionId: reply.sessionId, commandId: reply.commandId, replyRevision: reply.revision, phase: 'inactive' });
+      return;
+    }
+    const refresh = projectionRefreshFlight;
+    if (isSendReceipt && refresh?.generation === commandGeneration && refresh.sessionId === command.sessionId && !covered()) await refresh.promise;
+    if (!covered()) await reconcileProjectionAfterReply(set, get, command.sessionId, reply.revision, commandGeneration, fullOwner);
+    const diagnostics = globalThis.window?.__ACHBIT_DEBUG_UI__;
+    if (isSendReceipt && diagnostics?.observe) {
+      const state = get();
+      const current = generation === commandGeneration && state.sessionId === command.sessionId;
+      const projection = state.projection;
+      const adopted = current && projection?.sessionId === reply.sessionId && projection.revision >= reply.revision;
+      diagnostics.observe('conversation.composer', 'send.projection', {
+        sessionId: reply.sessionId, commandId: reply.commandId, replyRevision: reply.revision,
+        revision: current ? projection?.revision : undefined, phase: adopted ? 'adopted' : current ? 'uncovered' : 'inactive',
+      });
+    }
+  };
+  if (isSendReceipt) {
+    const publication = reconcile().catch(error => {
+      globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.projection', {
+        sessionId: reply.sessionId, commandId: reply.commandId, replyRevision: reply.revision, phase: 'failed' });
+      if (generation === commandGeneration) set({ error: `conversation_projection_reconcile_failed:${errorMessage(error)}`, errorSource: 'projection' });
+    }).finally(() => {
+      if (acceptedInputs.get(command.sessionId) === publication) acceptedInputs.delete(command.sessionId);
+      clearReceipt();
+    });
+    acceptedInputs.set(command.sessionId, publication);
+    return reply;
   }
+  try { await reconcile(); }
+  catch (error) {
+    const message = `conversation_projection_reconcile_failed:${errorMessage(error)}`;
+    throw new Error(rejection ? `${rejection};${message}` : message);
+  }
+  clearReceipt();
   if (rejection) throw new Error(rejection);
   if (generation === commandGeneration) set({ error: null, errorSource: null });
   return reply;
@@ -1223,8 +1366,13 @@ async function reconcileProjectionAfterReply(
   sessionId: string,
   replyRevision: number,
   commandGeneration: number,
+  completeSnapshot = false,
 ): Promise<void> {
-  const view = await readSessionView(sessionId);
+  if (get().sessionId !== sessionId || generation !== commandGeneration) {
+    if (completeSnapshot) await readSessionView(sessionId);
+    return;
+  }
+  const view = await readSessionView(sessionId, viewReadController.signal);
   if (view.projection.revision < replyRevision) {
     throw new Error(
       `conversation_projection_behind_command_reply:${view.projection.revision}:${replyRevision}`,
@@ -1237,7 +1385,7 @@ async function reconcileProjectionAfterReply(
   });
 }
 
-function projectModelSettings(projection: SessionProjection | null): Partial<LocalAgentState> {
+function projectModelSettings(projection: Pick<SessionProjection, 'modelSettings'> | null): Partial<LocalAgentState> {
   return projection?.modelSettings ? {
     selectedProfileId: projection.modelSettings.profileId,
     reasoningEffortOverride: projection.modelSettings.reasoningEffortOverride,
@@ -1350,6 +1498,12 @@ function initialProfileId(
   return preferred ?? profiles.find((profile) => profile.enabled)?.id ?? null;
 }
 
+function isLiveRun(run: ConversationSessionStatus['run'] | undefined) {
+  return run?.status === 'running' || run?.status === 'waiting' || run?.status === 'releasing';
+}
+function canRestoreProjection(projection: SessionProjection) {
+  return !projection.assistantDraft && !isLiveRun(projection.run);
+}
 function shouldApplyProjection(
   current: SessionProjection | null,
   incoming: SessionProjection,
@@ -1412,11 +1566,29 @@ function errorMessage(error: unknown): string {
 // timeline, a new live reading, or another conversation behind this read-only lookup.
 let historyLookup: { key: string; controller: AbortController } | null = null;
 store.subscribe((state, previous) => {
+  if (state.catalog !== previous.catalog) {
+    // A catalog title change is not a new Session; deletion/recreation is. Its former
+    // monotone sidebar revision cannot impose a minimum on a new incarnation either.
+    const now = new Map(state.catalog.sessions.map(s => [s.id, s.createdAt]));
+    let remaining: LocalAgentState['sessionStatuses'] | undefined;
+    for (const before of previous.catalog.sessions) {
+      const id = before.id;
+      if (now.has(id) && now.get(id) === before.createdAt) continue;
+      writePosition(id, null);
+      if (openingFlight?.sessionId === id && openingFlight.generation === generation) viewReadController.abort(new Error('conversation_session_not_found'));
+      projectionReadQueues.delete(id);
+      projectionCache.delete(id);
+      if (state.sessionStatuses[id]) {
+        remaining ??= { ...state.sessionStatuses }; delete remaining[id];
+      }
+    }
+    if (remaining) store.setState({ sessionStatuses: remaining });
+  }
   if (state.projection === previous.projection && state.sessionId === previous.sessionId) return;
   // Only a decoded snapshot admitted to this view's cache can authorize a journal lookup.
   const admitted = state.sessionId ? projectionCache.get(state.sessionId) : undefined;
   const p = admitted && admitted.projection === state.projection ? admitted.projection : null;
-  const rounds = p?.run && !p.contextUsage ? reportedWindowRounds(p) : [];
+  const rounds = p?.run && !p.contextUsage && !archivedMeasurements.has(p) ? reportedWindowRounds(p) : [];
   const newest = rounds[0];
   // Only new usage can yield a new reading. Draft deltas, tool progress, and starting
   // a successor with zero reports must neither cancel the lookup nor trigger another scan.

@@ -4,7 +4,7 @@ import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { requestAgentConversation, requestAgentOverview } from './agentNavigation';
 
 /** A display of the latest member facts; opening history reuses the conversation's navigation. */
-export function agentOverviewMembers(projection: SessionProjection) {
+export function agentOverviewMembers(projection: Pick<SessionProjection, 'sessionId' | 'agentTasks' | 'agentChildren' | 'pendingAgentDecisions'>) {
   const tasks = new Map(projection.agentTasks?.map(task => [task.agentSessionId, task]));
   const children = new Map(projection.agentChildren?.map(child => [child.agentSessionId, child]));
   const decisions = new Map(projection.pendingAgentDecisions?.map(decision => [decision.agentSessionId, decision]));
@@ -18,7 +18,7 @@ export function agentOverviewMembers(projection: SessionProjection) {
 
 const statusKey = (status: string) => status === 'closed' ? 'agent.team.closed' : status === 'needsInput' ? 'agent.team.needsInput' : `agent.team.status.${status}`;
 
-export function AgentOverview({ projection, language }: { projection: SessionProjection; language: UiLanguage }) {
+export function AgentOverview({ projection, language }: { projection: Pick<SessionProjection, 'sessionId' | 'agentTasks' | 'agentChildren' | 'pendingAgentDecisions'>; language: UiLanguage }) {
   const members = agentOverviewMembers(projection);
   // Finished or closed members still have history; hide only a Session with no members.
   if (!members.length) return null;
@@ -40,7 +40,7 @@ export function AgentOverview({ projection, language }: { projection: SessionPro
 }
 
 /** Only parent projection facts are used; this list does not open every child's history. */
-export function AgentOverviewList({ projection, language }: { projection: SessionProjection; language: UiLanguage }) {
+export function AgentOverviewList({ projection, language }: { projection: Pick<SessionProjection, 'sessionId' | 'agentTasks' | 'agentChildren' | 'pendingAgentDecisions'>; language: UiLanguage }) {
   const members = agentOverviewMembers(projection);
   if (!members.length) return <p className="agent-tasks__list-empty">{t(language, 'agent.page.empty')}</p>;
   return <div className="agent-tasks__overview">

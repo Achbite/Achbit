@@ -47,10 +47,12 @@ import {
 } from '@achbit/protocol';
 import { createProviderToolAliases } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
-import { readJournalSequence, type JournalPermissions, type JournalPublication } from './journalSequence.js';
+import { readJournalSequence, READING_FACTS_V1, type JournalPermissions, type JournalPublication } from './journalSequence.js';
+import { checkCompleteHistory, projectionEventBatch } from './conversationRead.js';
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
 import { environmentInstruction } from './sessionEnvironment.js';
+import { USER_SYSTEM_PROMPT_ID } from './coreInstructions.js';
 import type { ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import {
   decodeRunPluginConfig,
@@ -218,11 +220,24 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
   }
 
   async *read(sessionId: string, afterSequence = 0): AsyncIterable<SessionEvent> {
+    yield* await this.eventBatch(sessionId, afterSequence, false);
+  }
+
+  [projectionEventBatch](sessionId: string, independentlyOwned = false): Promise<SessionEvent[]> {
+    return this.eventBatch(sessionId, 0, true, independentlyOwned);
+  }
+
+  private async eventBatch(sessionId: string, afterSequence: number, projectionOnly: boolean, independentlyOwned = false): Promise<SessionEvent[]> {
     const path = `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSequence}`;
-    const response = await this.request(path, { headers: { accept: 'application/json-seq' } });
-    const result = await this.decodeEvents(response, path);
+    const accept = projectionOnly ? `${READING_FACTS_V1}, application/json-seq` : 'application/json-seq';
+    const response = await this.request(path, { headers: { accept } });
+    const media = response.headers.get('content-type')?.split(';', 1)[0].trim();
+    const result = projectionOnly && response.ok && media === READING_FACTS_V1
+      ? await readJournalSequence(response.body, true, sessionId, independentlyOwned)
+      : await this.decodeEvents(response, path, projectionOnly && !independentlyOwned);
+    if (projectionOnly) checkCompleteHistory(result.value, sessionId);
     this.publishPermissions(result.permissions);
-    yield* result.value;
+    return result.value;
   }
 
   async readMessageHistory(sessionId: string): Promise<{ revision: number; events: SessionEvent[] } | undefined> {
@@ -238,9 +253,9 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     return { revision: result.revision, events: result.value };
   }
 
-  private async decodeEvents(response: Response, path: string): Promise<JournalPublication<SessionEvent[]>> {
+  private async decodeEvents(response: Response, path: string, projectionOnly = false): Promise<JournalPublication<SessionEvent[]>> {
     const sequence = response.headers.get('content-type')?.split(';', 1)[0].trim() === 'application/json-seq';
-    return response.ok && sequence ? await readJournalSequence(response.body)
+    return response.ok && sequence ? await readJournalSequence(response.body, projectionOnly)
       : await this.decodeJson<JournalPublication<SessionEvent[]>>(response, path);
   }
 
@@ -258,6 +273,27 @@ export class HttpCommandJournal extends LocalAgentHttpPort implements CommandJou
     return await this.json(
       `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/run-lifecycle?after=${afterSequence}`,
     );
+  }
+
+  async readOverviewFacts(sessionId: string): ReturnType<import('@achbit/protocol').JournalPort['readOverviewFacts']> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/overview`);
+  }
+
+  async readRunInput(sessionId: string, startSequence: number): ReturnType<import('@achbit/protocol').JournalPort['readRunInput']> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/overview?runInput=${startSequence}`);
+  }
+
+  async readWindowPartitions(sessionId: string, usageSequence: number): ReturnType<import('@achbit/protocol').JournalPort['readWindowPartitions']> {
+    return this.json(`/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/overview?measurement=${usageSequence}`);
+  }
+
+  async readTranscriptFacts(sessionId: string, around?: number, knownTip?: string): Promise<import('@achbit/protocol').TranscriptFacts | null> {
+    const query = new URLSearchParams();
+    if (around !== undefined) query.set('around', String(around));
+    if (knownTip !== undefined) query.set('knownTip', knownTip);
+    const path = `/api/local-agent/journal/sessions/${encodeURIComponent(sessionId)}/transcript?${query}`;
+    const response = await this.request(path);
+    return response.status === 204 ? null : this.decodeJson(response, path);
   }
 
   async readAgentLifecycle(sessionId: string): Promise<import('@achbit/protocol').AgentLifecycleRead> {
@@ -561,7 +597,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       'environment',
       'agentCapabilities',
       'contextManagement',
-    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions', 'mode', 'subagentSettings'])) throw new Error('run_runtime_prepared_invalid');
+    ], ['approvalReviewer', 'approvalReviewerError', 'agentToolsEnabled', 'toolSelection', 'projectInstructions', 'userSystemPrompt', 'mode', 'subagentSettings'])) throw new Error('run_runtime_prepared_invalid');
     if (
       value.schemaVersion !== LOCAL_AGENT_PROTOCOL_VERSION
       || value.type !== 'run.runtime.prepared'
@@ -639,6 +675,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           permissions: pluginConfig.permissions,
           instructions: [...runtimeInstructions([
             ...this.#instructions, environmentInstruction(value.environment),
+            ...userSystemPromptContribution(value.userSystemPrompt),
             ...projectInstructionContributions(value.projectInstructions, this.#codingTools),
             ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
           ])],
@@ -680,6 +717,12 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
       ...(released.recoveredAfterRestart ? { recoveredAfterRestart: true as const } : {}),
     });
   }
+}
+
+function userSystemPromptContribution(value: unknown): InstructionContribution[] {
+  if (value === undefined) return [];
+  if (typeof value !== 'string' || Buffer.byteLength(value) > 64 * 1024) throw new Error('run_runtime_user_system_prompt_invalid');
+  return value.trim() ? [{ id: USER_SYSTEM_PROMPT_ID, text: value }] : [];
 }
 
 function projectInstructionContributions(value: unknown, coding = false): InstructionContribution[] {

@@ -11,6 +11,7 @@ import { useLocalAgentStore } from '../../../state/localAgentStore';
 import { useSettingsStore } from '../../../state/settingsStore';
 import { useSettingsSearchEntries } from '../settingsSearch';
 import { useSettingsHelp } from '../SettingsHelp';
+import { useSettingsEscape } from '../useSettingsEscape';
 import { AgentSettingsSection } from './CategorizedSettingsSections';
 import ModelEditor, { newModelDraft } from '../model-services/ModelEditor';
 import ModelPickerDialog from '../model-services/ModelPickerDialog';
@@ -18,7 +19,10 @@ import SubscriptionAuth from '../model-services/SubscriptionAuth';
 import UsageView from '../model-services/UsageView';
 import SubagentSettings from '../model-services/SubagentSettings';
 import type { ModelSettingsTarget } from '../modelSettingsNavigation';
-import { Cost, data, Hint, message, periodQuery, useModelLanguage } from '../model-services/shared';
+import { requireServiceData, serviceErrorMessage, useModelLanguage } from '../model-services/modelServiceSettings';
+import { ModelSettingsHelp } from '../model-services/ModelSettingsHelp';
+import { formatUsageTokens, periodQuery } from '../model-services/usageFormatting';
+import { UsageCost } from '../model-services/UsageCost';
 import { UiSettingsContributions, useDisplayTheme } from '../../../ui-plugins/UiPlugins';
 import '../model-services/modelServices.css';
 
@@ -42,7 +46,7 @@ function ApprovalReviewerModel({ profiles, connections }: { profiles: LlmProvide
     try {
       const activation = await useSettingsStore.getState().patchUserSettingsBatch(patches);
       if (!activation) setError(useSettingsStore.getState().errorMessage ?? t(language, 'settings.common.saveFailed'));
-    } catch (error) { setError(message(error)); }
+    } catch (error) { setError(serviceErrorMessage(error)); }
     finally { setSaving(false); }
   };
   return <details className="model-editor model-divider">
@@ -116,10 +120,10 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
   const save = async () => {
     setBusy(true); setError(''); setSaved(false);
     try {
-      data(await patchModelConnections({ connection: draft, ...(apiKey ? { apiKey } : {}),
+      requireServiceData(await patchModelConnections({ connection: draft, ...(apiKey ? { apiKey } : {}),
         ...(!current ? { profile: newModelDraft(draft.id, adapter, initialModel) } : {}) }));
       setApiKey(''); await onSaved(draft.id); setSaved(true);
-    } catch (e) { setError(message(e)); } finally { setBusy(false); }
+    } catch (e) { setError(serviceErrorMessage(e)); } finally { setBusy(false); }
   };
   return <>
     <div className="model-heading"><h2>{current?.name ?? (mode === 'subscription' ? text('添加 Coding Plan', 'Add Coding Plan') : text('添加 API 连接', 'Add API connection'))}</h2></div>
@@ -154,8 +158,8 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
       {pickerOpen && <ModelPickerDialog connection={current} adapter={adapter} onClose={() => setPickerOpen(false)}
         onSaved={async () => { await onSaved(); setModelAdded(true); setPickerOpen(false); }} />}
       <div className="model-actions model-divider"><button onClick={() => void onSaved()}>{text('重新加载', 'Reload')}</button><button className="model-danger model-push" disabled={busy || models.length > 0} onClick={async () => {
-        setBusy(true); try { data(await patchModelConnections({ removeConnectionId: draft.id })); await onSaved(); onBack(); } catch (e) { setError(message(e)); } finally { setBusy(false); }
-      }}>{text('移除连接', 'Remove connection')}</button>{models.length > 0 && <Hint>{text('先移除连接下的模型，再移除连接。', 'Remove the models before removing this connection.')}</Hint>}</div>
+        setBusy(true); try { requireServiceData(await patchModelConnections({ removeConnectionId: draft.id })); await onSaved(); onBack(); } catch (e) { setError(serviceErrorMessage(e)); } finally { setBusy(false); }
+      }}>{text('移除连接', 'Remove connection')}</button>{models.length > 0 && <ModelSettingsHelp>{text('先移除连接下的模型，再移除连接。', 'Remove the models before removing this connection.')}</ModelSettingsHelp>}</div>
     </>}
   </>;
 }
@@ -174,24 +178,16 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
   const addButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!active) return;
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]') || (event.target instanceof Element && event.target.closest('[data-escape-layer="open"]'))) return;
-      if (page.kind === 'list') return;
-      event.preventDefault(); event.stopPropagation();
-      const origin = captureFocusReturn();
-      setPage({ kind: 'list' });
-      requestAnimationFrame(() => returnInteractionFocus({ ...origin, target: addButton.current }, interaction?.keyboard ?? true));
-    };
-    // Inner editors own Escape first (for example, cancelling a number draft).
-    // Handle navigation only after their React handlers have had a chance to stop it.
-    document.addEventListener('keydown', escape);
-    return () => document.removeEventListener('keydown', escape);
-  }, [active, page.kind, interaction]);
+  const backToPeriod = useRef<(() => boolean) | null>(null);
+  useSettingsEscape(active && page.kind !== 'list', () => {
+    if (backToPeriod.current?.()) return;
+    const origin = captureFocusReturn();
+    setPage({ kind: 'list' });
+    requestAnimationFrame(() => returnInteractionFocus({ ...origin, target: addButton.current }, interaction?.keyboard ?? true));
+  });
   const refresh = useCallback(async (id?: string) => {
     const [connectionsResult, profilesResult] = await Promise.all([getModelConnections(), getLlmProfiles()]);
-    setCatalog(data(connectionsResult));
+    setCatalog(requireServiceData(connectionsResult));
     // An invalid default still exposes editable profiles; the original error remains visible.
     if (profilesResult.data) setProfiles(profilesResult.data);
     if (!profilesResult.ok) setError(profilesResult.message ?? profilesResult.error ?? 'Profile read failed');
@@ -199,10 +195,10 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
     setRevision(n => n + 1);
     if (id) setPage({ kind: 'connection', id });
   }, []);
-  useEffect(() => { setLoading(true); void refresh().catch(e => setError(message(e))).finally(() => setLoading(false)); }, [refresh]);
+  useEffect(() => { setLoading(true); void refresh().catch(e => setError(serviceErrorMessage(e))).finally(() => setLoading(false)); }, [refresh]);
   useEffect(() => {
     const controller = new AbortController(); setUsageError(''); setUsage(null);
-    void queryModelUsage(periodQuery(30), controller.signal).then(result => { if (controller.signal.aborted) return; try { setUsage(data(result)); } catch (e) { setUsageError(message(e)); } });
+    void queryModelUsage(periodQuery(30), controller.signal).then(result => { if (controller.signal.aborted) return; try { setUsage(requireServiceData(result)); } catch (e) { setUsageError(serviceErrorMessage(e)); } });
     return () => controller.abort();
   }, [revision]);
   useSettingsSearchEntries('llm', [{ id: 'llm-connections', category: 'llm', title: text('模型与服务', 'Models & services'), keywords: 'API Coding Plan OpenAI Codex subagent delegation 子代理 协作成员 并发 连接 模型 用量 订阅' }]);
@@ -212,7 +208,7 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
     if (!catalog) return;
     const order = catalog.connections.map(c => c.id); const index = order.indexOf(id);
     [order[index], order[index + delta]] = [order[index + delta], order[index]];
-    try { setCatalog(data(await patchModelConnections({ order }))); } catch (e) { setError(message(e)); }
+    try { setCatalog(requireServiceData(await patchModelConnections({ order }))); } catch (e) { setError(serviceErrorMessage(e)); }
   };
   return <section className="model-services" id="llm-connections">
     {page.kind !== 'list' && <nav className="model-breadcrumb"><button onClick={goBack}>← {text('模型与服务', 'Models & services')}</button><span>›</span><span>{page.kind === 'usage' ? text('用量统计', 'Usage') : page.kind === 'web' ? text('Web 工具', 'Web tools') : current?.name ?? text('添加连接', 'Add connection')}</span></nav>}
@@ -227,13 +223,13 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
       {profiles && <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />}
       {catalog && (['metered', 'subscription'] as const).map(mode => {
         const list = catalog.connections.filter(c => c.billingMode === mode);
-        return <section className="model-connection-group" key={mode}><div className="model-heading"><h3>{mode === 'metered' ? text('API 连接', 'API connections') : 'Coding Plan'}</h3><span>{text('近 30 天', 'Last 30 days')}{mode === 'metered' && <Hint>{text('显示已记录请求的 API 费用估算，非服务方账单。', 'Estimated cost of recorded requests; not a provider invoice.')}</Hint>}</span></div>
+        return <section className="model-connection-group" key={mode}><div className="model-heading"><h3>{mode === 'metered' ? text('API 连接', 'API connections') : 'Coding Plan'}</h3><span>{text('近 30 天', 'Last 30 days')}{mode === 'metered' && <ModelSettingsHelp>{text('显示已记录请求的 API 费用估算，非服务方账单。', 'Estimated cost of recorded requests; not a provider invoice.')}</ModelSettingsHelp>}</span></div>
           {list.length === 0 ? <div className="model-empty">{text('暂无连接', 'No connections')}</div> : list.map(c => {
             const stat = usage?.connections.find(v => v.connectionId === c.id);
             const index = catalog!.connections.findIndex(v => v.id === c.id);
             return <div className="model-connection-row" key={c.id}>
               <button className="model-connection-open" onClick={() => setPage({ kind: 'connection', id: c.id })}><span className={`model-status model-status--${c.authStatus}`} /><span><strong>{c.name}</strong><small>{c.credentialKind === 'oauth' ? c.account?.label ?? text('未登录', 'Signed out') : `${catalog?.adapters.find(a => a.id === c.adapterId)?.name ?? c.adapterId} · ${c.authStatus === 'ready' ? text('已配置', 'Configured') : text('待配置', 'Not configured')}`} · {profiles?.profiles.filter(p => p.connectionId === c.id && p.enabled).length ?? 0} {text('个模型', 'models')}</small></span></button>
-              <button className="model-connection-usage" onClick={() => setPage({ kind: 'usage', connectionId: c.id })}>{mode === 'metered' ? <Cost totals={stat} /> : <span>{stat?.reportedCalls ? (stat.inputTokens + stat.outputTokens).toLocaleString() : '—'} tokens</span>}<small>{stat?.calls ?? (usage ? 0 : '—')} {text('次调用', 'calls')}</small></button>
+              <button className="model-connection-usage" onClick={() => setPage({ kind: 'usage', connectionId: c.id })}>{mode === 'metered' ? <UsageCost totals={stat} /> : <span>{stat?.reportedCalls ? formatUsageTokens(stat.inputTokens + stat.outputTokens) : '—'} tokens</span>}<small>{stat?.calls ?? (usage ? 0 : '—')} {text('次调用', 'calls')}</small></button>
               <div className="model-reorder"><button aria-label={text('上移', 'Move up')} disabled={index === 0} onClick={() => void reorder(c.id, -1)}>↑</button><button aria-label={text('下移', 'Move down')} disabled={index === (catalog?.connections.length ?? 0)-1} onClick={() => void reorder(c.id, 1)}>↓</button></div>
               <button aria-label={text('配置连接', 'Configure connection')} onClick={() => setPage({ kind: 'connection', id: c.id })}>›</button>
             </div>;
@@ -242,10 +238,10 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
       })}
       {catalog && <UiSettingsContributions slot="settings.models.overview" input={{ kind: 'settings.models', connections: catalog.connections, adapters: catalog.adapters, locale: language, theme }} />}
       {usageError && <div className="settings-error" role="alert">{usageError}</div>}
-      <div className="model-actions model-divider"><button onClick={() => setPage({ kind: 'web' })}>{text('Web 工具', 'Web tools')} ›</button><button className="model-push" onClick={() => void refresh().catch(e => setError(message(e)))}>{text('重新加载', 'Reload')}</button></div>
+      <div className="model-actions model-divider"><button onClick={() => setPage({ kind: 'web' })}>{text('Web 工具', 'Web tools')} ›</button><button className="model-push" onClick={() => void refresh().catch(e => setError(serviceErrorMessage(e)))}>{text('重新加载', 'Reload')}</button></div>
     </>}
     {catalog && profiles && (page.kind === 'new' || current) && <ConnectionDetail key={current?.id ?? (page.kind === 'new' ? page.mode : '')} current={current} adapters={catalog.adapters} profiles={profiles.profiles} defaultId={profiles.defaultProfileId} targetProfileId={page.kind === 'connection' ? page.profileId : undefined} mode={current?.billingMode ?? (page.kind === 'new' ? page.mode : 'metered')} onMode={mode => setPage({ kind: 'new', mode })} onSaved={refresh} onBack={goBack} />}
-    {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} />}
+    {page.kind === 'usage' && catalog && <UsageView connections={catalog.connections} initialConnection={page.connectionId} backToPeriodRef={backToPeriod} />}
     {page.kind === 'web' && <AgentSettingsSection category="services" />}
   </section>;
 }

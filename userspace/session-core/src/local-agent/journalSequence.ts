@@ -1,15 +1,40 @@
 import { permissionSettings, type RunRuntimeSnapshot, type SessionEvent } from '@achbit/protocol';
 
+// Only JSON.parse results enter this comparison. Preserve property order, all extension fields, -0,
+// and the distinction between arrays and records. Unusual deep data simply stays independent.
+function sameDecodedJson(a: unknown, b: unknown, depth = 0): boolean {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || depth >= 6) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameDecodedJson(a[i], b[i], depth + 1)) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const keys = Object.keys(a), other = Object.keys(b);
+  if (keys.length !== other.length) return false;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i]!;
+    if (k !== other[i] || !sameDecodedJson((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], depth + 1)) return false;
+  }
+  return true;
+}
+
 export type JournalPermissions = Record<string, { revision: number; settings: RunRuntimeSnapshot['permissions'] }>;
 export interface JournalPublication<T> { value: T; permissions: JournalPermissions; revision?: number }
 
+export const READING_FACTS_V1 = 'application/vnd.achbit.reading-facts-v1+json-seq';
+const recordObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
 // The record separator cannot occur unescaped inside valid JSON, including legacy
 // pretty-printed payloads. Keep only unfinished record bytes outside the decoded events.
-export async function readJournalSequence(body: ReadableStream<Uint8Array> | null): Promise<JournalPublication<SessionEvent[]>> {
+export async function readJournalSequence(body: ReadableStream<Uint8Array> | null, projectionOnly = false, factsSessionId?: string, independentlyOwned = false): Promise<JournalPublication<SessionEvent[]>> {
   if (!body) throw new Error('journal_sequence_invalid: no body');
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
   const events: SessionEvent[] = [];
+  let previousMessages: unknown[] | undefined;
+  let previousContextSequence: number | undefined;
   let permissions: JournalPermissions | undefined;
   let revision: number | undefined;
   let pieces: Uint8Array[] = [];
@@ -19,8 +44,23 @@ export async function readJournalSequence(body: ReadableStream<Uint8Array> | nul
     const bytes = pieces.length === 1 ? pieces[0] : Buffer.concat(pieces);
     pieces = [];
     if (permissions || bytes.at(-1) !== 10) throw new Error('unexpected or incomplete record');
-    const record: unknown = JSON.parse(decoder.decode(bytes));
-    if (typeof record !== 'object' || record === null || Array.isArray(record)) throw new Error('invalid record');
+    const wire: unknown = JSON.parse(decoder.decode(bytes));
+    if (!recordObject(wire)) throw new Error('invalid record');
+    let record = wire;
+    if (factsSessionId && 'readingPrefix' in wire) {
+      const { event, baseSequence, prefixCount } = wire;
+      if (wire.readingPrefix !== 1 || Object.keys(wire).length !== 4 || !recordObject(event)
+        || event.type !== 'context.composed' || event.sessionId !== factsSessionId || event.sequence !== events.length + 1
+        || !recordObject(event.payload) || !Array.isArray(event.payload.messages) || !previousMessages
+        || previousContextSequence === undefined || baseSequence !== previousContextSequence
+        || typeof prefixCount !== 'number' || !Number.isSafeInteger(prefixCount) || prefixCount < 1
+        || prefixCount > previousMessages.length) throw new Error('invalid reading facts prefix');
+      // Archived projections may borrow immutable descriptors. A continuing Actor
+      // must own each request, including nested extensions, like ordinary full JSON.
+      const prefix = previousMessages.slice(0, prefixCount);
+      event.payload.messages = (independentlyOwned ? structuredClone(prefix) : prefix).concat(event.payload.messages);
+      record = event;
+    }
     if ('permissions' in record || 'count' in record) {
       if (!('count' in record) || record.count !== events.length || !('permissions' in record)
         || !record.permissions || typeof record.permissions !== 'object' || Array.isArray(record.permissions)) {
@@ -43,7 +83,21 @@ export async function readJournalSequence(body: ReadableStream<Uint8Array> | nul
       permissions = checked;
     } else {
       if (!('sessionId' in record) || !('type' in record)) throw new Error('invalid journal event');
-      events.push(record as SessionEvent);
+      if (factsSessionId && record.type === 'context.composed') {
+        const candidate = record.payload;
+        previousMessages = record.sessionId === factsSessionId && recordObject(candidate) && Array.isArray(candidate.messages) ? candidate.messages : undefined;
+        previousContextSequence = typeof record.sequence === 'number' ? record.sequence : undefined;
+      } else if (projectionOnly && record.type === 'context.composed' && 'payload' in record && record.payload
+        && typeof record.payload === 'object' && 'messages' in record.payload && Array.isArray(record.payload.messages)) {
+        // A composed context often repeats the preceding request's message descriptors. These newly decoded
+        // values are private to one synchronous projection; the public journal reader never shares them.
+        const current = record.payload.messages;
+        if (previousMessages) for (let i = 0, end = Math.min(current.length, previousMessages.length); i < end; i++) {
+          if (sameDecodedJson(current[i], previousMessages[i])) current[i] = previousMessages[i];
+        }
+        previousMessages = current;
+      }
+      events.push(record as unknown as SessionEvent);
     }
   };
 

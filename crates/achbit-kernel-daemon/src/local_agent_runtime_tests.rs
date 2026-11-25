@@ -43,6 +43,7 @@ impl Fixture {
                     gui.clone(),
                 )),
                 &captured.user_settings,
+                Arc::from(random_service_token().unwrap()),
             )
             .unwrap()
         };
@@ -428,6 +429,67 @@ fn pending_mcp_prepare_keeps_request_snapshot_and_new_settings_publication() {
         active.get("editor.fontSize").is_none(),
         "old preparation must not restore deleted immediate settings"
     );
+}
+
+#[test]
+fn user_system_prompt_is_frozen_across_plugin_refresh_and_scoped_to_top_level_runs() {
+    let fixture = Fixture::new();
+    let set = |text: &str| {
+        fixture.gui.lock().unwrap().user_settings["agent.systemPrompt"] = json!(text);
+    };
+    let prepare = |run_id: &str| {
+        let mut request = Fixture::request("parent", false);
+        request.run_id = run_id.into();
+        fixture
+            .runtime
+            .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
+            .unwrap()
+    };
+    let release = |view: &Value| {
+        fixture
+            .runtime
+            .release_run_runtime(ReleaseToolCatalogRequest::new(
+                view["sessionId"].as_str().unwrap(),
+                view["runId"].as_str().unwrap(),
+                view["kernelCatalogSnapshotRef"].as_str().unwrap(),
+            ))
+            .unwrap();
+    };
+    let original = "  User preference\n保持原文。\n";
+    set(original);
+    let initial = prepare("run:parent");
+    assert_eq!(initial["userSystemPrompt"], original);
+    let child = fixture.prepare("child", false).unwrap();
+    assert!(child.get("userSystemPrompt").is_none());
+    release(&child);
+
+    set("Updated for the next task.");
+    let mut request = Fixture::request("parent", false);
+    request.refresh_plugins = true;
+    request.plugin_selections = serde_json::from_value(json!([{
+        "selectionId":"selected:docs", "uri":"plugin://documents@builtin", "label":"Documents"
+    }]))
+    .unwrap();
+    let refreshed = fixture
+        .runtime
+        .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
+        .unwrap();
+    assert_ne!(
+        initial["kernelCatalogSnapshotRef"],
+        refreshed["kernelCatalogSnapshotRef"]
+    );
+    assert_eq!(refreshed["userSystemPrompt"], original);
+    release(&refreshed);
+
+    let next = prepare("run:next");
+    assert_eq!(next["userSystemPrompt"], "Updated for the next task.");
+    release(&next);
+    for (run_id, text) in [("run:cleared", ""), ("run:blank", "  \n")] {
+        set(text);
+        let cleared = prepare(run_id);
+        assert!(cleared.get("userSystemPrompt").is_none());
+        release(&cleared);
+    }
 }
 
 #[test]

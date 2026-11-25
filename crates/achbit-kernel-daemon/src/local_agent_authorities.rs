@@ -68,7 +68,7 @@ struct Session {
     tools: BTreeMap<RunKey, Value>,
     requests: BTreeMap<ApprovalKey, Value>,
     reviews: BTreeMap<ApprovalKey, Value>,
-    providers: BTreeMap<RunKey, Value>,
+    completed_approval_reviews: BTreeSet<RunKey>,
     grants: BTreeMap<String, Grant>,
     revoked: BTreeSet<String>,
     scopes: BTreeMap<ScopeKey, Value>,
@@ -112,22 +112,52 @@ impl KernelAuthorityModel {
     }
 
     pub(crate) fn apply(&mut self, event: &Value) {
+        self.record_fact(event);
+        if matches!(
+            event["type"].as_str(),
+            Some(
+                "run.started"
+                    | "run.finishing"
+                    | "run.settled"
+                    | "plan.confirmed"
+                    | "plan.revision.requested"
+                    | "plan.superseded"
+                    | "plan.cancelled"
+                    | "plan.invalidated"
+                    | "agent.task.created"
+                    | "agent.task.started"
+                    | "agent.task.completed"
+                    | "conversation.revised"
+            )
+        ) {
+            self.publish_delegations();
+        }
+    }
+
+    pub(crate) const PROVIDER_FACT_FIELDS: [&'static str; 3] =
+        ["providerRequestId", "purpose", "outcome"];
+
+    pub(crate) fn record_fact(&mut self, event: &Value) {
         if !Self::observes(event) {
             return;
         }
         let id = text(event, "sessionId");
         let session = Arc::make_mut(self.sessions.entry(id).or_default());
-        let mut fact = event.clone();
-        if matches!(
-            event["type"].as_str(),
-            Some("session.created" | "run.started" | "run.finishing" | "run.settled")
-        ) {
-            fact["payload"] = json!({});
-        } else if event["type"] == "provider.turn.settled" {
-            fact["payload"] = json!({"providerRequestId": event["payload"]["providerRequestId"],
-                "purpose": event["payload"]["purpose"], "outcome": event["payload"]["outcome"]});
-        }
-        session.facts.push(Arc::new(fact));
+        // Keep only the facts needed when a revision replays this session.
+        // The provider response and run snapshot can be much larger than the authority facts.
+        let payload = match event["type"].as_str() {
+            Some("session.created" | "run.started" | "run.finishing" | "run.settled") => json!({}),
+            Some("provider.turn.settled") => Self::PROVIDER_FACT_FIELDS
+                .iter()
+                .map(|&key| (key.to_owned(), event["payload"][key].clone()))
+                .collect(),
+            _ => event["payload"].clone(),
+        };
+        let mut fact = json!({"type":event["type"], "runId":event["runId"],
+            "callId":event["callId"], "sequence":event["sequence"]});
+        fact["payload"] = payload;
+        let fact = Arc::new(fact);
+        session.facts.push(fact.clone());
         if event["type"] == "conversation.revised" {
             let facts = std::mem::take(&mut session.facts);
             let ranges: Vec<_> = facts
@@ -152,26 +182,7 @@ impl KernelAuthorityModel {
             }
             session.facts = facts;
         } else {
-            session.apply(event);
-        }
-        if matches!(
-            event["type"].as_str(),
-            Some(
-                "run.started"
-                    | "run.finishing"
-                    | "run.settled"
-                    | "plan.confirmed"
-                    | "plan.revision.requested"
-                    | "plan.superseded"
-                    | "plan.cancelled"
-                    | "plan.invalidated"
-                    | "agent.task.created"
-                    | "agent.task.started"
-                    | "agent.task.completed"
-                    | "conversation.revised"
-            )
-        ) {
-            self.publish_delegations();
+            session.apply(&fact);
         }
     }
 
@@ -338,7 +349,7 @@ impl KernelAuthorityModel {
             .collect()
     }
 
-    fn publish_delegations(&mut self) {
+    pub(crate) fn publish_delegations(&mut self) {
         let mut parents: BTreeMap<RunKey, Vec<RunKey>> = BTreeMap::new();
         for (id, session) in &self.sessions {
             for ((run, _), task) in &session.tasks {
@@ -470,19 +481,19 @@ impl Session {
                     .get(&approval_key)
                     .is_some_and(|request| request["preview"]["approvalReviewer"] == "agent")
                     && self
-                        .providers
-                        .get(&(run, text(payload, "providerRequestId")))
-                        .is_some_and(|provider| {
-                            provider["purpose"] == "approvalReview"
-                                && provider["outcome"] == "completed"
-                        })
+                        .completed_approval_reviews
+                        .contains(&(run, text(payload, "providerRequestId")))
                 {
                     self.reviews.insert(approval_key, payload.clone());
                 }
             }
             "provider.turn.settled" => {
-                self.providers
-                    .insert((run, text(payload, "providerRequestId")), payload.clone());
+                let key = (run, text(payload, "providerRequestId"));
+                if payload["purpose"] == "approvalReview" && payload["outcome"] == "completed" {
+                    self.completed_approval_reviews.insert(key);
+                } else {
+                    self.completed_approval_reviews.remove(&key);
+                }
             }
             "approval.revoked" => {
                 self.revoked.insert(text(payload, "authorityId"));
@@ -656,6 +667,97 @@ mod tests {
         model.remove("c");
         assert!(model.delegated("g", "rg").unwrap().is_empty());
     }
+    #[test]
+    fn recovered_delegations_and_revised_review_evidence_match_the_live_model() {
+        let mut live = KernelAuthorityModel::default();
+        let mut recovered = crate::local_agent_permissions::KernelPermissionModel::default();
+        let authority = json!({"sessionId":"parent","runId":"run","authorityId":"original"});
+        for (session, seq, kind, payload) in [
+            ("parent", 1, "run.started", json!({})),
+            ("child", 1, "run.started", json!({})),
+            (
+                "parent",
+                2,
+                "plan.confirmed",
+                json!({"planId":"plan","revision":1,"authorities":[authority]}),
+            ),
+            (
+                "parent",
+                3,
+                "agent.task.created",
+                json!({"taskId":"task","agentSessionId":"child"}),
+            ),
+            (
+                "parent",
+                4,
+                "agent.task.started",
+                json!({"taskId":"task","childRunId":"run"}),
+            ),
+            (
+                "child",
+                2,
+                "provider.turn.settled",
+                json!({"providerRequestId":"review","purpose":"approvalReview","outcome":"completed","content":"unused"}),
+            ),
+            (
+                "child",
+                3,
+                "provider.turn.settled",
+                json!({"providerRequestId":"review","purpose":"approvalReview","outcome":"failed"}),
+            ),
+            (
+                "child",
+                4,
+                "conversation.revised",
+                json!({"fromSequence":3,"throughSequence":3}),
+            ),
+            (
+                "child",
+                5,
+                "approval.requested",
+                json!({"approvalId":"a","preview":{"approvalReviewer":"agent"}}),
+            ),
+            (
+                "child",
+                6,
+                "approval.reviewed",
+                json!({"approvalId":"a","providerRequestId":"review","decision":"allow"}),
+            ),
+            (
+                "child",
+                7,
+                "approval.resolved",
+                json!({"approvalId":"a","authorityId":"grant","decision":"allow"}),
+            ),
+        ] {
+            let event = json!({"sessionId":session,"sequence":seq,"type":kind,"runId":"run","callId":"call","payload":payload});
+            live.apply(&event);
+            recovered.authorities.record_fact(&event);
+            if kind == "provider.turn.settled" {
+                let key = (String::from("run"), String::from("review"));
+                for model in [&live, &recovered.authorities] {
+                    assert_eq!(
+                        model.sessions["child"]
+                            .completed_approval_reviews
+                            .contains(&key),
+                        event["payload"]["outcome"] == "completed"
+                    );
+                }
+            }
+        }
+        recovered.finish_restore();
+        for model in [&live, &recovered.authorities] {
+            assert_eq!(
+                model.delegated("child", "run").unwrap(),
+                vec![authority.clone()]
+            );
+            assert_eq!(
+                model.grant("child", "grant").unwrap().review.as_deref(),
+                Some("allow")
+            );
+        }
+    }
+
     #[test]
     fn automatic_review_cannot_borrow_a_provider_completion_that_arrived_after_review() {
         let mut model = KernelAuthorityModel::default();

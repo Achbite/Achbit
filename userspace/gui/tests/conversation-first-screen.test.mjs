@@ -1,3 +1,4 @@
+import { history, reader, pause } from './complete-reading-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
@@ -39,8 +40,65 @@ test('long conversation Markdown waits for its real tree without a raw tail; the
   assert.match(short, /<strong>REAL_BODY<\/strong>/);
 });
 
-test('only the actual reading viewport holds the first frame', async t => {
-  const [{ firstConversationFrameReady: ready }] = await loadGuiModules(t, ['/src/components/local-agent/firstConversationFrame.ts']);
+test('the first transcript uses the saved row on both sides of the page threshold, and the tail when following', async t => {
+  const oldSelf = globalThis.self; globalThis.self = {};
+  t.after(() => { if (oldSelf === undefined) delete globalThis.self; else globalThis.self = oldSelf; });
+  const [{ ConversationTranscript }, { ConversationLayoutCache }, { projectionItems }, { MarkdownContent }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ConversationTranscript.tsx', '/src/components/local-agent/conversationVirtualizer.ts',
+    '/src/components/local-agent/conversationItems.ts', '/src/components/local-agent/BufferedMarkdown.tsx']);
+  for (const [count, rowsPerRound, middle] of [[32, 1, 8], [33, 1, 8], [160, 8, 80]]) {
+    const projection = projectSession(emptySessionState(`session:first-${count}`));
+    for (let i = 0; i < count; i++) {
+      const messageId = `q:${i}`, runId = `run:${Math.floor(i / rowsPerRound)}`, sequence = i + 1;
+      projection.messages.push({ messageId, runId, sequence, role: 'user', content: `body ${i}`, filesystemReferences: [] });
+      projection.timeline.push({ kind: 'message', timelineId: `timeline:${i}`, messageId, sequence });
+    }
+    const lastRun = `run:${Math.floor((count-1) / rowsPerRound)}`;
+    projection.run = { runId: lastRun, status: 'completed' };
+    projection.fileChangeRounds = [{ runId:lastRun, recordIds:['change'] }];
+    projection.activities.push({ activityId:'a', runId:lastRun, tool:{recordId:'change',fileChanges:[{workspaceId:'w',path:'note.txt',kind:'modify'}]} });
+    const presentation = { layoutKey: 'test', content: key => createElement(MarkdownContent, null, `**${key}**`) };
+    const render = openingAnchor => renderToStaticMarkup(createElement(ConversationTranscript, {
+      layoutCache: new ConversationLayoutCache(), projection, conversationItems: projectionItems(projection), draftItems: [],
+      hasConversationContent: true, language: 'en-US', displaySettledRunIds: new Set([lastRun]), presentation,
+      viewport: { openingAnchor, followingLatest: !openingAnchor, bodyRef: { current: null }, transcriptRef: { current: null }, messageEndRef: { current: null } },
+    }));
+    for (const [anchor, target] of [[`q:${middle}`, middle], [undefined, count - 1], ['missing-row', count - 1]]) {
+      const markup = render(anchor);
+      const rows = markup.match(/<div\b[^>]*data-conversation-anchor="[^"]+"[^>]*>/g) ?? [];
+      const rendered = (key, sequence) => rows.some(tag => tag.includes(`data-conversation-anchor="${key}"`)
+        && tag.includes('data-virtual-rendered="true"') && tag.includes(`data-transcript-sequence="${sequence}"`));
+      assert.ok(rendered(`q:${target}`, target + 1), `${count} rounds, ${anchor ?? 'tail'}: target starts as a real row`);
+      assert.ok(markup.includes(`<strong>message:q:${target}:content</strong>`), 'the target contains formatted text, not a spacer or a rail label');
+      if (!anchor) assert.ok(rendered(`${lastRun}:file-changes`, count), 'following: the actual tail footer must replace its pending neighbour without hiding the message for an observer turn');
+      if (anchor === `q:${middle}`) {
+        assert.ok(rendered('q:0', 1), 'the start stays in the same scroll surface');
+        assert.ok(markup.includes(`<strong>message:q:${target + 1}:content</strong>`), 'also mount the adjacent text');
+        assert.ok(rendered(`q:${count - 1}`, count), 'the final message is present on first mount');
+      }
+    }
+  }
+});
+
+test('a measured mixed screen shows its formatted anchor between two scrollable pages without paging labels', async t => {
+  const oldSelf = globalThis.self; globalThis.self = {};
+  t.after(() => { if (oldSelf === undefined) delete globalThis.self; else globalThis.self = oldSelf; });
+  const [{ ConversationTranscript }, { ConversationLayoutCache }, { MarkdownContent }] = await loadGuiModules(t, [
+    '/src/components/local-agent/ConversationTranscript.tsx', '/src/components/local-agent/conversationVirtualizer.ts', '/src/components/local-agent/BufferedMarkdown.tsx']);
+  const message = { role: 'user', messageId: 'q', content: '**Anchor**', filesystemReferences: [], runId: 'r', sequence: 9 };
+  const p=history('session:mixed',3);p.messages[2]={...p.messages[2],content:message.content};
+  const [{projectionItems}]=await loadGuiModules(t,['/src/components/local-agent/conversationItems.ts']);
+  const html=renderToStaticMarkup(createElement(ConversationTranscript,{projection:p,layoutCache:new ConversationLayoutCache(),
+    conversationItems:projectionItems(p),draftItems:[],displaySettledRunIds:new Set(),language:'en-US',hasConversationContent:true,loading:false,
+    presentation:{layoutKey:'test',content:()=>createElement(MarkdownContent,null,message.content)},
+    viewport:{followingLatest:false,bodyRef:{current:null},transcriptRef:{current:null},messageEndRef:{current:null},openingAnchor:p.messages[2].messageId}}));
+  assert.match(html,/<strong>Anchor<\/strong>/);assert.ok(html.includes(p.messages[0].messageId) && html.includes(p.messages.at(-2).messageId), 'both adjacent turns are in the document');
+  assert.doesNotMatch(html, /data-transcript-page|Earlier turns|Later turns/);
+  assert.doesNotMatch(html,/data-pending-neighbor|Opening conversation/);
+});
+
+test('the frame acceptance helper only counts pending content in the actual reading viewport', async t => {
+  const [{ firstConversationFrameReady: ready }] = await loadGuiModules(t, ['/tests/support/firstConversationFrame.ts']);
   const box = (top, bottom) => ({ getBoundingClientRect: () => ({ top, bottom, width: 400, height: bottom - top }) });
   const pending = (top, bottom) => ({ ...box(top, bottom), hasAttribute: () => true });
   const row = (top, bottom, rendered, parts = []) => ({ ...box(top, bottom), dataset: { virtualRendered: String(rendered) }, querySelectorAll: () => parts });
@@ -66,53 +124,54 @@ test('a visible image is local to its formatted row, including while its URL is 
   t.after(() => { if (oldSelf === undefined) delete globalThis.self; else globalThis.self = oldSelf;
     if (oldImage === undefined) delete globalThis.HTMLImageElement; else globalThis.HTMLImageElement = oldImage; });
   const [{ firstConversationFrameReady }, { ImageContent }] = await loadGuiModules(t, [
-    '/src/components/local-agent/firstConversationFrame.ts', '/src/components/local-agent/RichContent.tsx']);
+    '/tests/support/firstConversationFrame.ts', '/src/components/local-agent/RichContent.tsx']);
   const img = new HeldImage();
   const body = { getBoundingClientRect: () => ({ top: 0, bottom: 400, width: 480, height: 400 }) };
   const row = { ...body, dataset: { virtualRendered: 'true' }, querySelectorAll: selector => selector.includes('img') ? [img] : [] };
   assert.equal(firstConversationFrameReady(body, [row]), true, 'do not wait for the image request to finish');
-  const pending = renderToStaticMarkup(createElement(ImageContent, { source: 'workspace://files/picture.png', alt: 'Picture' }));
+  const props = { source: 'workspace://files/picture.png', alt: 'Picture', width: 800, height: 600 };
+  const pending = renderToStaticMarkup(createElement(ImageContent, props));
+  assert.match(pending, /data-reading-image="loading"/);
+  assert.match(pending, /aspect-ratio:800\s*\/\s*600/);
+  const [{ MarkdownContent }] = await loadGuiModules(t, ['/src/components/local-agent/BufferedMarkdown.tsx']);
+  const message = renderToStaticMarkup(createElement(MarkdownContent, null, '**Before** ![Picture](workspace://files/picture.png) **After**'));
+  assert.match(message, /<strong>Before<\/strong>.*data-reading-image="loading".*<strong>After<\/strong>/s);
   assert.match(pending, /role="status"/);
   assert.doesNotMatch(pending, /data-conversation-pending/, 'resolving a local image is not unfinished Markdown');
 });
 
-test('the full read overlaps a held opening page without publishing a stale projection', async t => {
-  const id = 'session:overlap', fresh = projectSession(emptySessionState(id));
-  fresh.revision = 76;
-  let release, fullReads = 0;
-  const held = new Promise(resolve => { release = resolve; });
-  t.after(release);
-  installGuiFetch(t, async url => {
-    if (url.pathname.endsWith('/read')) { await held; return Response.json({ ok: true, data: { sessionId: id, revision: 76, view: 'messages', items: [], nextBefore: null } }); }
-    if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: { ...fresh, revision: ++fullReads === 1 ? 75 : 76 } });
-    throw new Error(`Unexpected ${url.pathname}`);
-  });
-  const store = await loadGuiModelStore(t);
-  store.setState({ catalog: { projects: [], sessions: [{ id }] } });
-  const activation = store.getState().activateSession(id);
-  await waitUntil(() => fullReads === 1, 'full read while page pending');
-  assert.equal(store.getState().projection, null);
-  release(); await activation;
-  assert.equal(store.getState().error, null);
-  assert.equal(store.getState().projection.revision, 76);
-  assert.equal(fullReads, 2, 'the one established retry verifies the page revision');
+test('a conversation without children opens its history and run with one read',async t=>{
+  const p=history('a'),f=await reader(t,[p]);const state=await f.open('a');
+  assert.deepEqual(state.projection.messages,p.messages);assert.deepEqual(state.projection.run,p.run);
+  assert.equal(state.loading,false);assert.deepEqual(f.seen.map(x=>x.route),['projection']);
+});
+test('a persistently older page fails at the authenticated revision floor without fetching excerpts',async t=>{
+  const p=history('a'),f=await reader(t,[p]);f.store.setState({sessionStatuses:{a:{sessionId:'a',revision:p.revision+1,run:null}}});
+  const state=await f.open('a');assert.match(state.error,/session_projection_revision_behind/);assert.equal(state.projection,null);assert.equal(f.reads().length,2);
 });
 
-test('a known long-history revision needs no excerpt query and a persistently older response still fails', async t => {
-  const id = 'session:known', view = projectSession(emptySessionState(id));
-  let reads=0, revision=85;
-  const requests=[];
-  installGuiFetch(t, async url => {
-    requests.push(url.pathname.split('/').at(-1));
-    if (!url.pathname.endsWith('/projection')) throw new Error(`Unexpected ${url.pathname}`);
-    reads++; return Response.json({ok:true,data:{...view,revision}});
-  });
-  const store=await loadGuiModelStore(t);
-  store.setState({catalog:{projects:[],sessions:[{id}]},sessionStatuses:{[id]:{revision:86}}});
-  await store.getState().activateSession(id);
-  assert.equal(store.getState().error,'session_projection_revision_behind');
-  assert.equal(store.getState().projection,null);
-  revision=86; await store.getState().activateSession(id);
-  assert.equal(store.getState().projection.revision,86);
-  assert.equal(reads,3); assert.deepEqual(requests,['projection','projection','projection']);
+test('a saved historical page opens with the current model and run and retains both on hot return', async t => {
+  const p = history('session:anchor-model'), other = history('session:other-model');
+  p.modelSettings = { profileId: 'profile:bound', reasoningEffortOverride: 'high' };
+  const f = await reader(t, [p, other]);
+  const anchor = p.messages[2];
+  await f.open(p.sessionId);
+  const state = f.store.getState();
+  state.rememberReadingAnchor(p.sessionId, { key: anchor.messageId, offset: 0 }, anchor.sequence);
+  await f.open(other.sessionId);
+  f.store.getState().observeHistory('closed');
+  f.store.getState().observeHistory('ready');
+  const before = f.reads().length;
+  const restored = await f.open(p.sessionId);
+  assert.deepEqual(f.reads().slice(before).map(r => r.id), [p.sessionId]);
+  assert.equal(restored.projection.messages[2].messageId, anchor.messageId);
+  assert.deepEqual(restored.projection.run, p.run);
+  assert.equal(restored.selectedProfileId, p.modelSettings.profileId);
+  assert.equal(restored.reasoningEffortOverride, 'high');
+  await f.open(other.sessionId);
+  const count = f.reads().length;
+  const hot = await f.open(p.sessionId);
+  assert.equal(f.reads().length, count);
+  assert.equal(hot.projection, restored.projection);
+  assert.equal(hot.selectedProfileId, p.modelSettings.profileId);
 });

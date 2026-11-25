@@ -11,6 +11,7 @@ import type {
   RunRuntimeSnapshot,
   SessionEvent,
   TodoItem,
+  ToolInputIssue,
 } from '@achbit/protocol';
 import {
   isLlmReasoningEffort,
@@ -232,7 +233,7 @@ const agentTurnPolicies = {
   models: 'tools',
   spawn: 'agents',
   assign: 'agents',
-  send: 'agents',
+  send: 'tools',
   compact: 'exclusive',
   wait: 'exclusive',
   cancel: 'exclusive',
@@ -293,7 +294,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
         requireIsolatedProcesses: { type: 'boolean', description: 'Run Shell commands through the selected isolation backend.' },
       } } } : {}),
     }, ['task', 'name', 'delivery', ...(options.helperMenu ? ['preset'] : [])])] : []),
-    ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
+    ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Independent sends and ordinary tools may share a turn. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
     ...(delegation && options.coordinator !== false && options.canSpawn !== false ? [
       operation('assign', 'Coordinator only: asynchronously assign a new task to an idle retained agent, preserving its Session, model and configuration. Use send for an active task.',
         { agentId: id, task: { ...id, description: 'Necessary context, scope and expected evidence for the new task.' } }, ['agentId', 'task']),
@@ -327,7 +328,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
           : 'Coordinate with available teammates, agree on shared interfaces and one writer per shared file. Return a final answer with evidence when the task is complete. Call action=models for contacts and operations.'
         : 'Proactively delegate useful independent work using available templates; keep short or tightly coupled work local. Supply necessary context, scope, file references and expected evidence. Coordinate one writer per shared file, wait at dependencies, and verify final results before integrating them. Call action=models for operations and configuration.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
-        action: { type: 'string', minLength: 1, description: 'models discovers the operation contracts; other actions use their returned arguments.' },
+        action: { type: 'string', minLength: 1, description: 'models lists arguments and turn rules. models and send may accompany ordinary tools and at most one todo.update. Keep agentCalls separate from ordinary tools; submit singleCall alone.' },
       } },
     },
     {
@@ -342,7 +343,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Activate discovered plugins by exact URI. Their tools and guidance appear on the next request; use the new declarations for calls. Discovery, installation, enablement, task activation and execution permission are separate. Submit alone.',
+      description: 'Activate exact discovered URIs. The result lists prepared capabilities; call only names declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate. Submit alone.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -398,13 +399,13 @@ export function decodeSessionControlCall(
       assertExactKeys(input, schedule ? ['action', 'afterSeconds', 'text'] : ['action', 'timeoutSeconds'], schedule ? [] : ['timeoutSeconds']);
       const seconds = schedule ? input.afterSeconds : input.timeoutSeconds;
       if ((schedule || seconds !== undefined) && (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0 || seconds > 2147483)) {
-        throw new SessionControlError('session_delay_invalid', 'Seconds must be positive and fit a native timer (at most 2147483).');
+        throw new SessionControlError('session_delay_invalid', `${schedule ? 'afterSeconds' : 'timeoutSeconds'} must be positive and fit a native timer (at most 2147483).`, schedule ? '$.afterSeconds' : '$.timeoutSeconds');
       }
       operation = schedule ? { action: 'schedule', afterSeconds: seconds as number, text: requiredText(input.text, 'text') }
         : { action: 'wait', ...(seconds === undefined ? {} : { timeoutSeconds: seconds as number }) };
     } else if (input.action === 'cancelSchedule') {
       assertExactKeys(input, ['action', 'scheduleId']); operation = { action: 'cancelSchedule', scheduleId: requiredIdentifier(input.scheduleId, 'scheduleId') };
-    } else throw new SessionControlError('session_action_invalid', 'Call action=describe for the operation contracts.');
+    } else throw new SessionControlError('session_action_invalid', 'Unsupported session action. Call action=describe for the operation contracts.', '$.action');
     return { kind: 'session', callId: canonicalCallId, operation };
   }
   if (name === SESSION_CONTROL_AGENT) {
@@ -480,7 +481,7 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
         throw new SessionControlError('agent_capabilities_invalid', 'continuation/delegation accept booleans; messaging accepts false, parent or true.');
       }
       if (input.delivery !== 'wait' && input.delivery !== 'async') {
-        throw new SessionControlError('agent_delivery_invalid', 'delivery 必须是 wait 或 async。');
+        throw new SessionControlError('agent_delivery_invalid', 'delivery 必须是 wait 或 async。', '$.delivery');
       }
       if (input.reasoningEffort !== undefined && !isLlmReasoningEffort(input.reasoningEffort)) {
         throw new SessionControlError('agent_reasoning_effort_invalid', 'reasoningEffort 必须是有效推理强度。');
@@ -533,7 +534,7 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
     case 'close':
       assertExactKeys(input, ['action', 'agentId']);
       return { action: 'close', agentId: requiredIdentifier(input.agentId, 'agentId') };
-    default: throw new SessionControlError('agent_action_invalid', '不支持的 agent action。');
+    default: throw new SessionControlError('agent_action_invalid', '不支持的 agent action。使用 action=models 查看当前可用操作及其参数。', '$.action');
   }
 }
 
@@ -840,6 +841,12 @@ function assertExactKeys(
     throw new SessionControlError(
       'session_control_shape_invalid',
       `Session control ${location} 字段与当前 schema 不一致：${details}。允许字段：${allowed.map(wireField).join(', ')}。`,
+      // agent/session operations have an exact top-level field contract. Other
+      // validators retain their own location (including nested Plan fields).
+      allowed.includes('action') ? [
+        ...unexpected.map(key => ({ path: `$.${wireField(key)}`, rule: 'additionalProperties', message: `不支持字段 ${wireField(key)}。` })),
+        ...missing.map(key => ({ path: `$.${wireField(key)}`, rule: 'required', message: `缺少字段 ${wireField(key)}。` })),
+      ] : undefined,
     );
   }
 }
@@ -849,8 +856,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export class SessionControlError extends Error {
-  constructor(readonly code: string, message: string) {
+  readonly issues: ToolInputIssue[];
+  constructor(readonly code: string, message: string, field: string | ToolInputIssue[] = '$') {
     super(message);
     this.name = 'SessionControlError';
+    this.issues = typeof field === 'string' ? [{ path: field, rule: code, message }] : field;
   }
 }

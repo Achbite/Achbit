@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Measure the production controls, not just the <img>: an oversized button is a letterbox too.
 export async function checkAttachmentThumbnails({ navigate, evaluate, cmd, until, frame, click, key, record }) {
   await navigate('messages', { thumbnails: '1' });
-  const sent = '.local-agent__message-attachments > .local-agent__message-image';
+  const sent = '.local-agent__message-attachments .local-agent__message-image';
   const draft = '.local-agent__image-attachment > .conversation-image-review__open';
   const rail = '.local-agent__draft-attachments';
   const editor = '[data-ui-action="composer.controls.input"]';
@@ -49,7 +49,7 @@ export async function checkAttachmentThumbnails({ navigate, evaluate, cmd, until
   // A split pane can be narrower than the transcript's usual thumbnail limit.
   await evaluate(`document.querySelector('.fixture-main').style.width = '220px'`); await frame();
   const fitsPane = await evaluate(`(() => {
-    const b = document.querySelector('${sent}'), group = b.parentElement.getBoundingClientRect(), r = b.querySelector('img').getBoundingClientRect();
+    const b = document.querySelector('${sent}'), group = b.closest('.local-agent__message-attachments').getBoundingClientRect(), r = b.querySelector('img').getBoundingClientRect();
     return r.width < 256 && r.left >= group.left - 1 && r.right <= group.right + 1 && Math.abs(r.height - r.width * 810 / 1440) < 1;
   })()`);
   assert.ok(fitsPane, 'a sent image also scales down to the available column width');

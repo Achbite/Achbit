@@ -8,7 +8,7 @@ import { installPaletteDefaults } from '../theme/palette';
 import { installInterfaceUpdateMonitor } from '../services/interfaceUpdates';
 import { InterfaceUpdateNotice } from '../components/shared/InterfaceUpdateNotice';
 import React from 'react';
-import '../theme/controls.css';
+import '../theme/nativeControls.css';
 import ReactDOM from 'react-dom/client';
 import AchbitGuiApp from './AchbitGuiApp';
 import { installNativeContextMenuGuard } from '../utils/nativeContextMenuGuard';
@@ -116,8 +116,9 @@ document.documentElement.dataset.shell = isTauriShell ? 'tauri' : 'browser';
 installNativeContextMenuGuard();
 
 async function mountProduct(rootEl: HTMLElement) {
+  // A restarted window consumes its saved views and drafts before React reads them.
   await restoreAfterProductUpdate();
-  const stopProductUpdates = await installProductUpdateMonitor();
+  const stopProductUpdates = installProductUpdateMonitor();
   const stopReloadShortcut = installInterfaceReloadShortcut();
   const stopUpdateMonitor = installInterfaceUpdateMonitor();
   const interaction = createInteractionFocus();

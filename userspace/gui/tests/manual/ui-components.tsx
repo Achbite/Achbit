@@ -61,7 +61,7 @@ function Catalog() {
       </details>
     </section>
     <section><h2>注册目录</h2><ul>{Object.entries(UI_COMPONENTS).map(([name, entry]) => <li key={name}>
-      <code>{name}</code>{'base' in entry ? ` ← ${entry.base}` : ''}
+      <code>{entry.family} / {name}</code>{'base' in entry ? ` ← ${entry.base}` : ''}
     </li>)}</ul><small>{Object.keys(UI_REGION_SLOTS).length} 个既有可替换区域；没有新增插件接口。</small></section>
     <section><h2>操作记录</h2><output id="events" aria-live="polite">{events.join(' · ') || '尚无操作'}</output></section>
     {modal && <ModalDialog className="catalog-overlay" aria-labelledby="dialog-title" onClose={close} busy={busy}>

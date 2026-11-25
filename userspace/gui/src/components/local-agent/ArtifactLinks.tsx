@@ -1,3 +1,4 @@
+import { whenPreviewVisible } from './visibleImageReads';
 import { DisclosureSummary } from '../../ui-components';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { useLocalAgentStore } from '../../state/localAgentStore';
@@ -51,22 +52,23 @@ export function ArtifactImageLink({ artifact, label, title, trigger, className =
   const language = useUiLanguage();
   const runtimeReady = useLocalAgentStore(state => state.runtimeReady);
   const host=useConversationHost();
+  const button = React.useRef<HTMLButtonElement>(null);
   const [url,setUrl]=React.useState('');
   const [error,setError]=React.useState<string|null>(null);
   React.useEffect(()=>{
-    if (!runtimeReady) return;
+    if (!runtimeReady || !button.current) return;
     const controller=new AbortController();let release:(()=>void)|undefined;
     setUrl('');setError(null);
-    void host.loadImage(artifact.sessionId,`artifact://${artifact.artifactId}`,controller.signal).then((result)=>{
+    const unobserve = whenPreviewVisible(button.current, () => host.loadImage(artifact.sessionId,`artifact://${artifact.artifactId}`,controller.signal).then((result)=>{
       if(controller.signal.aborted){result.release?.();return;}release=result.release;setUrl(result.url);
-    }).catch((reason:unknown)=>{if(!controller.signal.aborted)setError(String(reason));});
-    return ()=>{controller.abort();release?.();};
+    }).catch((reason:unknown)=>{if(!controller.signal.aborted)setError(String(reason));}));
+    return ()=>{unobserve();controller.abort();release?.();};
   },[artifact.sessionId,artifact.artifactId,host,runtimeReady]);
   const failed = () => setError(t(language, 'content.image.decodeError'));
-  return <ImageReview triggerIdentity={trigger} source={error ? undefined : url || undefined} alt={label}
+  return <ImageReview triggerRef={button} triggerIdentity={trigger} source={error ? undefined : url || undefined} alt={label}
     className={className} title={error ?? title} onError={failed}>
     <span className="document-artifacts__thumbnail">{error ? <span role="alert" title={error}>!</span>
-      : url ? <img className="document-artifact-image" src={url} alt="" onError={failed} />
+      : url ? <img className="document-artifact-image" decoding="async" src={url} alt="" onError={failed} />
       : <span aria-label={t(language, 'reader.imageLoading')}><AchbitShellIcon name="artifact" /></span>}</span>
     <strong>{label}</strong>
   </ImageReview>;

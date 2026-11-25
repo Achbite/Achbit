@@ -5,39 +5,33 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const SLOTS: &[&str] = &[
-    "workbench.layout",
-    "navigation",
-    "conversation.header",
-    "activity.row",
-    "activity.summary",
-    "activity.detail",
-    "composer.layout",
-    "composer.model",
-    "composer.attachments",
-    "composer.actions",
-    "task.panel",
-    "artifact.panel",
-    "reader.layout",
-    "reader.toolbar",
-    "reader.tree",
-    "settings.navigation",
-    "usage.widget",
-    "message.plain",
-    "message.markdown",
-    "document.html",
-    "document.markdown",
-    "document.pdf",
-    "theme",
-    "settings.models.overview",
-    "settings.connection.detail",
-    "settings.usage.panel",
-    "tool.result",
-];
-
-/// The same slot directory used by manifest validation and development discovery.
+/// The Host and GUI use the same installed plugin IDs. Preserve declaration order
+/// for development discovery. The GUI interprets the role and description values.
 pub fn ui_plugin_slots() -> &'static [&'static str] {
-    SLOTS
+    static SLOTS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
+        struct SlotNames;
+        impl<'de> Visitor<'de> for SlotNames {
+            type Value = Vec<&'de str>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an ordered map of display plugin slots")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut names = Vec::new();
+                while let Some((id, _)) = map.next_entry::<&str, IgnoredAny>()? {
+                    names.push(id);
+                }
+                Ok(names)
+            }
+        }
+
+        serde_json::Deserializer::from_str(include_str!("../../../config/ui/plugin-slots.json"))
+            .deserialize_map(SlotNames)
+            .expect("embedded display plugin slot catalog")
+    });
+    SLOTS.as_slice()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -91,7 +85,7 @@ pub fn read_ui_module(root: &Path) -> Result<(UiPluginManifest, String), String>
         || manifest
             .slots
             .iter()
-            .any(|slot| !SLOTS.contains(&slot.as_str()))
+            .any(|slot| !ui_plugin_slots().contains(&slot.as_str()))
         || manifest
             .slots
             .iter()
@@ -470,6 +464,32 @@ mod installation_tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn public_display_slots_are_accepted_by_the_installer_in_discovery_order() {
+        let fixture = Fixture::new();
+        let root = &fixture.0;
+        std::fs::write(root.join("entry.mjs"), "export default {};").unwrap();
+        let document = |slots: &[&str]| {
+            json!({
+                "name":"Catalog", "id":"catalog-test", "entry":"entry.mjs",
+                "toolId":"catalog-tool", "slots":slots
+            })
+        };
+        let path = root.join("achbit-ui.json");
+        let slots = ui_plugin_slots();
+        std::fs::write(&path, document(slots).to_string()).unwrap();
+        let (manifest, _) = read_ui_module(root).unwrap();
+        assert_eq!(manifest.slots, slots);
+        assert_eq!(slots.first(), Some(&"workbench.layout"));
+        assert_eq!(slots.last(), Some(&"tool.result"));
+        assert_eq!(
+            slots.iter().collect::<std::collections::HashSet<_>>().len(),
+            slots.len()
+        );
+        std::fs::write(&path, document(&["not-a-supported-slot"]).to_string()).unwrap();
+        assert!(read_ui_module(root).is_err());
     }
 
     #[test]

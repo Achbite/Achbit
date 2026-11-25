@@ -72,26 +72,28 @@ test('the mounted composer connects and releases its own transcript boundary mea
   const conversationBodyRef = { current: null };
   const tree = render(draftComposer(), false, undefined, conversationBodyRef);
   const footer = findReactElement(tree, node => node.type === 'footer');
-  const previous = globalThis.ResizeObserver;
-  let observed = 0, disconnected = 0;
+  const previous = globalThis.ResizeObserver, previousMutation = globalThis.MutationObserver;
+  let observed = 0, disconnected = 0, mutationDisconnected = false;
+  globalThis.MutationObserver = class { observe() {} disconnect() { mutationDisconnected = true; } };
   globalThis.ResizeObserver = class {
     observe() { observed++; }
     disconnect() { disconnected++; }
   };
-  t.after(() => { globalThis.ResizeObserver = previous; });
+  t.after(() => { globalThis.ResizeObserver = previous; globalThis.MutationObserver = previousMutation; });
   const properties = new Map();
   const viewport = { clientHeight: 400, getBoundingClientRect: () => ({ bottom: 400 }), style: {
     getPropertyValue: name => properties.get(name), setProperty: (name, value) => properties.set(name, value),
     removeProperty: name => properties.delete(name),
   } };
   conversationBodyRef.current = { parentElement: viewport };
-  const shell = { closest: () => null,
-    querySelector: () => ({ getBoundingClientRect: () => ({ top: 448 }) }) };
+  const shell = { closest: () => null, children: [],
+    querySelector: selector => selector === '.local-agent__composer' ? { getBoundingClientRect: () => ({ top: 448 }) } : null };
   footer.props.ref(shell);
   assert.equal(properties.get('--conversation-composer-overlap'), '48px');
   assert.equal(observed, 3);
   footer.props.ref(null);
   assert.equal(disconnected, 1);
+  assert.equal(mutationDisconnected, true);
   assert.equal(properties.size, 0);
 });
 

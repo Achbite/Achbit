@@ -1,7 +1,7 @@
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import { parseLocalTarget, type SourcePosition } from './resourceLinks';
 import { ConversationBodyLinkScope, useConversationBodyLinks } from './useConversationBodyLinks';
-import React, { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MessageFeedback, SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useConversationHost } from './ConversationHost';
@@ -18,12 +18,15 @@ import ProviderStageStatus from './ProviderStageStatus';
 import { RunTiming } from './RunTiming';
 import { SourceReferences } from './SourceReferences';
 import { BufferedMarkdown, MarkdownContent, MarkdownInline } from './BufferedMarkdown';
-import { StreamingMarkdownParser } from './streamingMarkdown';
 import PlanCard from './PlanCard';
 import { ToolActivityGroup } from './ToolActivityDetails';
-import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow } from './conversationItems';
+import type { BlockingShell } from './shellProgress';
+import { openingRows } from './openingRows';
+import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow, type ConversationRound } from './conversationItems';
 import type { ConversationViewport } from './useConversationViewport';
 import { ConversationNavigation } from './ConversationNavigation';
+import { ReadingBodyActive } from './ConversationBodies';
+import { useConversationSessionId } from './ConversationSessionScope';
 import { conversationNavigation } from './conversationWindow';
 import { ConversationLayoutCache, ConversationVirtualizer } from './conversationVirtualizer';
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
@@ -38,12 +41,24 @@ import { isAutomaticApproval } from './composerDecisions';
 import { PreviewArtifactsScope } from './InteractivePreview';
 import { RichContentScope } from './RichContentIdentity';
 
+// Session switching preserves message objects. Bind their operations once per visible state.
+const TranscriptMessageActions = React.memo(function TranscriptMessageActions({ message, onCopy, onFeedback, onEdit, ...state }:
+  Omit<React.ComponentProps<typeof MessageActions>, 'onCopy' | 'onFeedback' | 'onEdit'> & {
+    onCopy(message: SessionProjection['messages'][number]): void;
+    onFeedback(messageId: string, feedback: MessageFeedback | null): void;
+    onEdit(message: SessionProjection['messages'][number]): void;
+  }) {
+  return <MessageActions {...state} message={message} onCopy={() => onCopy(message)}
+    onFeedback={feedback => onFeedback(message.messageId, feedback)} onEdit={() => onEdit(message)} />;
+});
+
 interface ConversationTranscriptProps {
   layoutCache: ConversationLayoutCache;
   language: UiLanguage;
   loading: boolean;
   showReasoning?: boolean;
   automaticReview?: React.ReactNode;
+  foregroundShells?: readonly BlockingShell[];
   foregroundInteractionId?: string | null;
   onFocusInteraction?: () => void;
   readInteractionDraft?: (interactionId: string) => string;
@@ -56,19 +71,20 @@ interface ConversationTranscriptProps {
   conversationItems: ProjectionItem[];
   draftItems: AssistantDraftItem[];
   presentation: PresentedCommittedContent;
-  viewport: ConversationViewport;
+  viewport: ConversationViewport['reading'];
   openWorkspaceResource: (workspaceId: string, logicalPath: string, position?: SourcePosition) => Promise<void>;
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   unappliedRecovery?: UnappliedRecovery;
   canEditMessage?: boolean;
-  onEditMessage?: (message: SessionProjection['messages'][number]) => void;
+  onEditMessage?: (message: SessionProjection['messages'][number], restored?: SessionProjection) => void;
 }
 
-export function ConversationTranscript({
+export const ConversationTranscript = React.memo(function ConversationTranscript({
   layoutCache,
   language,
   showReasoning = false,
   automaticReview,
+  foregroundShells = [],
   foregroundInteractionId,
   onFocusInteraction,
   readInteractionDraft,
@@ -89,9 +105,13 @@ export function ConversationTranscript({
   unappliedRecovery,
   onEditMessage,
 }: ConversationTranscriptProps) {
+  const active = useContext(ReadingBodyActive);
   const host = useConversationHost();
+  const content = projection;
+  const runView = projection;
+  const sessionKey = projection?.sessionId ?? '';
   const interaction = useInteractionFocus();
-  const referencesIdentity = useUiOwner('conversation.references', undefined, { sessionId: projection?.sessionId });
+  const referencesIdentity = useUiOwner('conversation.references', undefined, { sessionId: sessionKey });
   const { transcriptRef, messageEndRef, setLatestFollowMode } = viewport;
   const onPlanToggle = (card: HTMLElement, expanded: boolean) => {
     const body = viewport.bodyRef.current;
@@ -102,18 +122,9 @@ export function ConversationTranscript({
     }
     setLatestFollowMode(false);
   };
-  const selectedSession = useLocalAgentStore((state) => state.sessionId);
-  const opening = useLocalAgentStore((state) => state.openingHistory);
-  // Use the bounded page to prepare the last complete answer, never as a second
-  // transcript. Only an exact text match can reuse the parser's bounded tree cache.
-  useEffect(() => {
-    if (!opening || projection || !viewport.followingLatest) return;
-    const last = opening.messages.at(-1);
-    if (!last || last.role !== 'assistant' || last.truncated) return;
-    new StreamingMarkdownParser().update(last.content, false);
-  }, [opening, projection, viewport.followingLatest]);
-  const assistantDraft = projection?.assistantDraft ?? null;
-  const submitting = useLocalAgentStore((state) => state.submitting);
+  const selectedSession = useConversationSessionId();
+  const assistantDraft = runView?.assistantDraft ?? null;
+  const submitting = useLocalAgentStore(state => state.sessionId === sessionKey && state.submitting);
   const welcomeIndex = useLocalAgentStore((state) => state.welcomeIndex);
   const welcomeSuffix = welcomeIndex === 0 ? '' : `.${welcomeIndex}`;
   const setMessageFeedback = useLocalAgentStore((state) => state.setMessageFeedback);
@@ -123,13 +134,14 @@ export function ConversationTranscript({
   const [pathMenu, setPathMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const pathMenuRef = useRef<HTMLDivElement>(null);
   const pathTriggerRef = useRef<HTMLAnchorElement>(null);
-  const bodyLinks = useConversationBodyLinks(projection, language, setUiActionError, true);
-  const currentSessionRef = useRef({ sessionId: projection?.sessionId });
-  if (currentSessionRef.current.sessionId !== projection?.sessionId) currentSessionRef.current = { sessionId: projection?.sessionId };
+  const bodyLinks = useConversationBodyLinks(active ? projection : null, language, setUiActionError, true);
+  const activeId = active ? sessionKey : null;
+  const currentSessionRef = useRef({ sessionId: activeId });
+  if (currentSessionRef.current.sessionId !== activeId) currentSessionRef.current = { sessionId: activeId };
   useLayoutEffect(() => {
     setCopyFeedback(null);
     setPathMenu(null);
-  }, [projection?.sessionId]);
+  }, [activeId]);
   useEffect(() => {
     if (!pathMenu) return;
     const menu = pathMenuRef.current;
@@ -146,7 +158,7 @@ export function ConversationTranscript({
     return <BufferedMarkdown text={content} streamIdentity={identity} streaming={false} onDisplayed={onDisplayed} />;
   };
 
-  const copyMessage = async (messageId: string, content: string) => {
+  const copyMessage = useCallback(async (messageId: string, content: string) => {
     const requestedView = currentSessionRef.current;
     try {
       await host.copyText(content);
@@ -157,9 +169,17 @@ export function ConversationTranscript({
       if (currentSessionRef.current !== requestedView) return;
       setUiActionError(copyError instanceof Error ? copyError.message : String(copyError));
     }
-  };
+  }, [host, setUiActionError]);
 
-  const updateMessageFeedback = async (
+  const copyVisibleMessage = useCallback((message: SessionProjection['messages'][number]) => {
+    void copyMessage(message.messageId, messageDisplayText(message, content?.interactions ?? []));
+  }, [copyMessage, content?.interactions]);
+
+  const editAction = useRef(onEditMessage);
+  useLayoutEffect(() => { editAction.current = onEditMessage; }, [onEditMessage]);
+  const editMessage = useCallback((message: SessionProjection['messages'][number]) => editAction.current?.(message), []);
+
+  const updateMessageFeedback = useCallback(async (
     messageId: string,
     feedback: MessageFeedback | null,
   ) => {
@@ -174,38 +194,38 @@ export function ConversationTranscript({
         ? feedbackError.message
         : String(feedbackError));
     }
-  };
+  }, [setMessageFeedback, setUiActionError]);
 
   const renderItem = (item: Exclude<ProjectionItem, { type: 'toolGroup' }>): React.ReactNode => item.type === 'message' ? (
         <article
+          data-message-id={item.value.messageId}
           className={`local-agent__message local-agent__message--${item.value.role}`}
         >
           <div className="local-agent__message-content">
             {(item.value.content.trim() || item.value.replyToInteraction) && (
               <div className="local-agent__message-text">
-                {item.value.replyToInteraction && <InteractionReplyQuote sessionId={projection?.sessionId} interactionId={item.value.replyToInteraction.interactionId} prompt={item.value.replyToInteraction.prompt} language={language} />}
+                {item.value.replyToInteraction && <InteractionReplyQuote sessionId={sessionKey} interactionId={item.value.replyToInteraction.interactionId} prompt={item.value.replyToInteraction.prompt} language={language} />}
                 {item.value.role === 'assistant'
                   ? committedProviderContent(
                       item.streamId,
                       item.value.displayContent ?? item.value.content,
                       presentation.content(`message:${item.value.messageId}:content`),
                     )
-                  : item.value.replyToInteraction ? <MarkdownContent>{messageDisplayText(item.value, projection?.interactions ?? [])}</MarkdownContent>
+                  : item.value.replyToInteraction ? <MarkdownContent>{messageDisplayText(item.value, content?.interactions ?? [])}</MarkdownContent>
                   : presentation.content(`message:${item.value.messageId}:content`)}
               </div>
             )}
             <SourceReferences references={item.value.sourceReferences} language={language} />
             {item.value.filesystemReferences.length > 0 && (
-              <MessageAttachments sessionId={projection!.sessionId} references={item.value.filesystemReferences} language={language}
+              <MessageAttachments sessionId={sessionKey} references={item.value.filesystemReferences} language={language}
                 identity={reference => referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
                 onOpen={openWorkspaceResource} onError={setUiActionError} />
             )}
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
-            <MessageActions message={item.value} language={language} copied={copiedMessageId === item.value.messageId}
-              busy={submitting} canEdit={canEditMessage} onCopy={() => void copyMessage(item.value.messageId, messageDisplayText(item.value, projection?.interactions ?? []))}
-              onFeedback={(feedback) => void updateMessageFeedback(item.value.messageId, feedback)}
-              onEdit={() => onEditMessage?.(item.value)} />
+            <TranscriptMessageActions message={item.value} language={language} copied={copiedMessageId === item.value.messageId}
+              busy={submitting} canEdit={canEditMessage} onCopy={copyVisibleMessage}
+              onFeedback={updateMessageFeedback} onEdit={editMessage} />
           )}
         </article>
       ) : item.type === 'narrative' ? (
@@ -223,8 +243,8 @@ export function ConversationTranscript({
         <PlanCard
           key={`plan:${item.value.planId}:${item.value.revision}`}
           plan={item.value}
-          previousPlan={projection?.plans.find((plan) => plan.planId === item.value.planId && plan.revision === item.value.revision - 1)}
-          workspaceBindings={projection?.workspaceBindings}
+          previousPlan={content?.plans.find((plan) => plan.planId === item.value.planId && plan.revision === item.value.revision - 1)}
+          workspaceBindings={content?.workspaceBindings}
           active={samePlanReference(projection?.activePlanRef, item.value)}
           language={language}
           onToggle={onPlanToggle}
@@ -245,64 +265,112 @@ export function ConversationTranscript({
             ? undefined
             : 'local-agent__message-content'}
           >
-            <BufferedMarkdown
-              text={item.block.displayContent ?? item.block.content}
-              streamIdentity={item.block.streamId}
-            />
+            {item.block.kind === 'narrative' ? <BufferedMarkdown
+              text={item.block.displayContent ?? item.block.content} streamIdentity={item.block.streamId} />
+              : <div className="local-agent__message-text"><BufferedMarkdown
+                text={item.block.displayContent ?? item.block.content} streamIdentity={item.block.streamId} /></div>}
           </div>
         </article>
       ) : <PlanPreviewCard preview={item.value} key={item.key} language={language} onToggle={onPlanToggle} />;
   const renderRow = ({ item, draft }: ConversationRow) => {
     if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
       const group = item?.type === 'toolGroup' ? item : undefined;
-      return <ToolActivityGroup activities={group?.values ?? []} hostedKeys={group?.hostedKeys}
-        hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={projection?.artifacts}
-        pendingApproval={projection?.pendingApproval} reviewingApproval={isAutomaticApproval(projection?.pendingApproval ?? null, projection?.run)}
+      return <ToolActivityGroup activities={group?.values ?? []} foregroundShells={foregroundShells} hostedKeys={group?.hostedKeys} batchConflicts={group?.batchConflicts}
+        hostedDraft={draft?.type === 'providerHostedGroup' ? draft : undefined} artifacts={content?.artifacts}
+        pendingApproval={runView?.pendingApproval} reviewingApproval={isAutomaticApproval(runView?.pendingApproval ?? null, projection?.run)}
         language={language} onExpand={node => node ? viewport.anchorDisclosure(node) : setLatestFollowMode(false)}
         onOpenWorkspaceResource={openWorkspaceResource} />;
     }
     return item ? renderItem(item) : renderDraft(draft!);
   };
-  const currentActivity = assistantDraft?.runId === projection?.run?.runId ? assistantDraft?.activity : undefined;
+  const currentActivity = assistantDraft?.runId === runView?.run?.runId ? assistantDraft?.activity : undefined;
   const providerStatus = <>
       {automaticReview}
-      {projection && providerRetryAttempt(projection, currentActivity) !== null
-        ? <ProviderRetryStatus projection={projection} language={language} activity={currentActivity} />
-        : projection?.run && projection.run.status !== 'completed' && (
-        <ProviderStageStatus run={projection.run} language={language}
-          reasoning={showReasoning && assistantDraft ? { sessionId: projection.sessionId, requestId: assistantDraft.turnId } : undefined}
-          key={`${projection.run.runId}:${assistantDraft?.turnId ?? 'idle'}`}
-          activity={assistantDraft?.runId === projection.run.runId ? assistantDraft.activity : undefined}
-          toolPending={projection.activities.some((activity) => activity.runId === projection.run?.runId
+      {runView && providerRetryAttempt(runView, currentActivity) !== null
+        ? <ProviderRetryStatus projection={runView} language={language} activity={currentActivity} />
+        : runView?.run && runView.run.status !== 'completed'
+          && !(foregroundShells.length && !currentActivity && runView.run.status === 'running') && (
+        <ProviderStageStatus run={runView.run} language={language}
+          reasoning={showReasoning && assistantDraft ? { sessionId: runView.sessionId, requestId: assistantDraft.turnId } : undefined}
+          key={`${runView.run.runId}:${assistantDraft?.turnId ?? 'idle'}`}
+          activity={assistantDraft?.runId === runView.run.runId ? assistantDraft.activity : undefined}
+          toolPending={!!content?.activities.some((activity) => activity.runId === runView.run?.runId
             && activity.kind === 'tool' && ['requested', 'active', 'waiting'].includes(activity.status))} />
       )}
 </>;
-  const rounds = useMemo(() => conversationRounds(conversationItems, draftItems, projection?.run?.runId), [conversationItems, draftItems, projection?.run?.runId]);
+  const items = conversationItems;
+  const rounds = useMemo(() => conversationRounds(items, draftItems, runView?.run?.runId), [items, draftItems, runView?.run?.runId]);
   const timingsByRun = useMemo(() => {
     const timings = new Map<string, NonNullable<SessionProjection['runTimings']>[number]>();
-    for (const timing of projection?.runTimings ?? []) {
+    for (const timing of content?.runTimings ?? []) {
       if (!timings.has(timing.runId)) timings.set(timing.runId, timing);
     }
     return timings;
-  }, [projection?.runTimings]);
-  const sessionKey = projection?.sessionId ?? '';
-  const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), viewport.preserveReadingPosition), [layoutCache, sessionKey, viewport.preserveReadingPosition]);
+  }, [content?.runTimings]);
+  const preservePosition = useRef(viewport.preserveReadingPosition);
+  useLayoutEffect(() => { preservePosition.current = viewport.preserveReadingPosition; }, [viewport.preserveReadingPosition]);
+  const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), () => preservePosition.current()), [layoutCache, sessionKey]);
   const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
-  const eagerRows = useMemo(() => new Set(rounds.flatMap((round) => round.rows).slice(-12).map((row) => row.key)), [rounds]);
+  const latestUserRow = navigation.at(-1)?.key;
+  useEffect(() => {
+    const diagnostics = globalThis.window?.__ACHBIT_DEBUG_UI__;
+    const body = viewport.bodyRef.current;
+    if (!diagnostics?.observe || !active || !body || !latestUserRow) return;
+    const row = viewport.anchors.read(body).byKey.get(latestUserRow);
+    const article = row?.querySelector<HTMLElement>('article[data-message-id]');
+    if (!row || !article) return;
+    const view = body.getBoundingClientRect();
+    const content = article.getBoundingClientRect();
+    diagnostics.observe('conversation.transcript', 'reading.latest-user-dom', {
+      sessionId: sessionKey, messageId: article.dataset.messageId, rowKey: latestUserRow, sequence: Number(row.dataset.transcriptSequence),
+      inViewport: content.height > 0 && content.bottom > view.top && content.top < view.bottom,
+      documentVisible: document.visibilityState === 'visible',
+    });
+  }, [active, latestUserRow, sessionKey, viewport.anchors, viewport.bodyRef]);
+  const eagerRows = useMemo(() => openingRows(rounds, viewport.openingAnchor), [rounds, viewport.openingAnchor]);
   // The scroll body belongs to a parent host node; its ref is attached after
   // child layout effects on a fresh mount (including cached session switches).
   useEffect(() => {
+    if (!active) return;
     if (viewport.bodyRef.current) virtualizer.connect(viewport.bodyRef.current);
     return () => virtualizer.disconnect();
-  }, [virtualizer, viewport.bodyRef]);
+  }, [active, virtualizer, viewport.bodyRef]);
+
+  const renderRound = (round: ConversationRound, eager = eagerRows) => {
+    const current = runView?.run?.runId === round.runId;
+    const displaySettled = displaySettledRunIds.has(round.runId);
+    const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(runView!.run!.status);
+    const timing = timingsByRun.get(round.runId);
+    const rows = round.rows.map((row) => ({
+      key: row.key, sequence: row.item?.sequence,
+      process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
+      required: row.item?.type === 'plan' && samePlanReference(runView?.pendingPlan, row.item.value)
+        || row.item?.type === 'interaction' && row.item.value.status === 'pending',
+      live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
+      content: () => <RichContentScope.Provider value={row.item?.type === 'message' || row.item?.type === 'narrative' || row.draft?.type === 'text'
+        ? { sessionId: sessionKey, rowKey: row.key, contentKey: 'body' } : null}>{renderRow(row)}</RichContentScope.Provider>,
+    }));
+    if (showReasoning && content) rows.push({ key: `${round.key}:reasoning-history`, sequence: undefined, process: true, required: false,
+      live: current && !displaySettled, content: () => <ReasoningHistory sessionId={content.sessionId} runId={round.runId}
+        activeTurnId={current ? assistantDraft?.turnId : undefined} throughTimelineId={current ? content.timeline.at(-1)?.timelineId : undefined} /> });
+    if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, sequence: undefined, process: true, required: false, live: true, content: () => providerStatus });
+    const changeActivities = displaySettled || terminal
+      ? roundChangeActivities(content, round.runId)
+      : [];
+    return <ConversationRoundView sessionId={sessionKey} language={language} key={`${sessionKey}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eager}
+      displaySettled={displaySettled} timing={timing} onToggleProcess={viewport.anchorDisclosure} rows={rows}
+      eagerFooter={(current && !viewport.openingAnchor && round === rounds.at(-1)) || eager.has(`${round.key}:file-changes`)}>
+      {changeActivities.some(activity => activity.tool?.fileChanges?.length) ? <FileChanges activities={changeActivities} /> : null}
+    </ConversationRoundView>;
+  };
 
   return (
     <ConversationBodyLinkScope.Provider value={bodyLinks.open}><PreviewArtifactsScope.Provider value={projection}>
     {bodyLinks.selection}
-    <ConversationNavigation key={sessionKey} sessionId={sessionKey} entries={navigation} viewport={viewport} language={language}
-      onNavigate={(entry) => viewport.scrollToAnchor(entry.key)} />
+    {active && <ConversationNavigation key={sessionKey} sessionId={sessionKey} entries={navigation} viewport={viewport} language={language}
+      onNavigate={entry => viewport.scrollToAnchor(entry.key)} />}
     <div
-      ref={transcriptRef}
+      ref={active ? transcriptRef : undefined}
       className="local-agent__transcript"
       onClick={bodyLinks.open}
       onAuxClick={bodyLinks.open}
@@ -322,10 +390,8 @@ export function ConversationTranscript({
           setPathMenu(null);
         }}>{language === 'zh-CN' ? '复制路径' : 'Copy path'}</button>
       </div>}
-      {loading && !projection && (
-        <div role="status" className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>
-      )}
-      {!hasConversationContent && !loading && (!selectedSession || projection) && (
+      {loading && !content && <div role="status" className="local-agent__empty">{t(language, 'agent.chat.opening')}</div>}
+      {!hasConversationContent && !loading && (!selectedSession || content) && (
         <div className="local-agent__empty local-agent__empty--welcome">
           <strong>
             {activeProject
@@ -334,46 +400,18 @@ export function ConversationTranscript({
           </strong>
         </div>
       )}
-      {rounds.map((round) => {
-        const current = projection?.run?.runId === round.runId;
-        const displaySettled = displaySettledRunIds.has(round.runId);
-        const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(projection!.run!.status);
-        const timing = timingsByRun.get(round.runId);
-        const rows = round.rows.map((row) => ({
-          key: row.key,
-          // Progress narratives and execution details share the run's process disclosure.
-          process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
-          required: row.item?.type === 'plan' && samePlanReference(projection?.pendingPlan, row.item.value)
-            || row.item?.type === 'interaction' && row.item.value.status === 'pending',
-          live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
-          content: () => <RichContentScope.Provider value={row.item?.type === 'message' || row.item?.type === 'narrative' || row.draft?.type === 'text'
-            ? { sessionId: sessionKey, rowKey: row.key, contentKey: 'body' } : null}>
-            {renderRow(row)}
-          </RichContentScope.Provider>,
-        }));
-        if (showReasoning && projection) rows.push({ key: `${round.key}:reasoning-history`, process: true, required: false,
-          live: current && !displaySettled, content: () => <ReasoningHistory sessionId={projection.sessionId} runId={round.runId}
-            activeTurnId={current ? assistantDraft?.turnId : undefined}
-            throughTimelineId={current ? projection.timeline.at(-1)?.timelineId : undefined} /> });
-        if (current && !displaySettled) rows.push({ key: `${round.key}:provider-status`, process: true, required: false, live: true, content: () => providerStatus });
-        const changeActivities = displaySettled || terminal ? roundChangeActivities(projection, round.runId) : [];
-        const hasFileChanges = changeActivities.some(activity => activity.tool?.fileChanges?.length);
-        return <ConversationRoundView sessionId={sessionKey} language={language} key={`${projection?.sessionId}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eagerRows}
-          displaySettled={displaySettled} timing={timing} onToggleProcess={viewport.anchorDisclosure} rows={rows}>
-          {hasFileChanges ? <FileChanges activities={changeActivities} /> : null}
-        </ConversationRoundView>;
-      })}
-      {projection && <UiEventStack sessionId={projection.sessionId} language={language} />}
-      {projection && <StoppedRunStatus projection={projection} language={language} onError={setUiActionError} />}
-      {projection && <RunFailureDetails projection={projection} language={language} onError={setUiActionError} />}
-      {projection && <UnappliedInputs key={projection.sessionId} sessionId={projection.sessionId} inputs={projection.queuedInputs} language={language} recovery={unappliedRecovery}
+      {rounds.map(round => renderRound(round))}
+      {content && <UiEventStack sessionId={content.sessionId} language={language} />}
+      {runView && <StoppedRunStatus projection={runView} language={language} onError={setUiActionError} />}
+      {runView && <RunFailureDetails key={runView.run?.runId} projection={runView} language={language} onError={setUiActionError} />}
+      {runView && <UnappliedInputs key={`unapplied:${runView.sessionId}`} sessionId={runView.sessionId} inputs={runView.queuedInputs} language={language} recovery={unappliedRecovery}
         copiedId={copiedMessageId} onCopy={(id, text) => void copyMessage(id, text)}
         onOpenReference={reference => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }} />}
-      <div ref={messageEndRef} />
+      <div ref={active ? messageEndRef : undefined} />
     </div>
     </PreviewArtifactsScope.Provider></ConversationBodyLinkScope.Provider>
   );
-}
+});
 
 function samePlanReference(
   reference: { planId: string; revision: number } | null | undefined,
@@ -382,35 +420,39 @@ function samePlanReference(
   return reference?.planId === plan.planId && reference.revision === plan.revision;
 }
 
-function ConversationRoundView({ sessionId, language, roundKey, virtualizer, eagerRows, displaySettled, timing, onToggleProcess, rows, children }: {
+function ConversationRoundView({ sessionId, language, roundKey, virtualizer, eagerRows, eagerFooter, displaySettled, timing, onToggleProcess, rows, children }: {
   sessionId: string; language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
-  displaySettled: boolean; onToggleProcess(node: HTMLElement): void;
+  eagerFooter: boolean; displaySettled: boolean; onToggleProcess(node: HTMLElement): void;
   timing: NonNullable<SessionProjection['runTimings']>[number] | undefined;
-  rows: Array<{ key: string; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
+  rows: Array<{ key: string; sequence?: number; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
   children: React.ReactNode;
 }) {
   const identity = useUiOwner('conversation.round', undefined, { sessionId, roundKey });
-  const state = virtualizer.layout(`${roundKey}:disclosure`).state;
-  const [disclosure, updateDisclosure] = useState(() => (state.get('process') as { displaySettled: boolean; open: boolean } | undefined) ?? { displaySettled, open: false });
-  const setDisclosure = (value: typeof disclosure) => { state.set('process', value); updateDisclosure(value); };
+  const [disclosure, updateDisclosure] = useState(() =>
+    (virtualizer.layout(`${roundKey}:disclosure`).state.get('process') as { displaySettled: boolean; open: boolean } | undefined)
+      ?? { displaySettled, open: false });
+  const setDisclosure = (value: typeof disclosure) => {
+    virtualizer.layout(`${roundKey}:disclosure`).state.set('process', value);
+    updateDisclosure(value);
+  };
   // Wait for the existing display acknowledgement; never collapse while final text is still arriving.
   if (disclosure.displaySettled !== displaySettled) setDisclosure({ displaySettled, open: false });
   const expanded = !displaySettled || disclosure.open;
   const firstProcess = rows.find(row => row.process)?.key;
-  return <section className="conversation-round">
+  return <section className="conversation-round" data-transcript-sequence={rows.find(row => row.sequence)?.sequence}>
     {rows.map(row => <React.Fragment key={row.key}>
       {displaySettled && row.key === firstProcess && <div className="conversation-process-heading"><button {...identity.action('toggle-process', 'click')} className="conversation-process-toggle" type="button"
-        data-conversation-anchor={`${roundKey}:disclosure`} aria-expanded={expanded} onClick={(event) => {
+        data-conversation-anchor={`${roundKey}:disclosure`} data-transcript-sequence={row.sequence} aria-expanded={expanded} onClick={(event) => {
         onToggleProcess(event.currentTarget);
         setDisclosure({ displaySettled, open: !expanded });
       }}>
         <AchbitShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span>
         <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
       </button><RunTiming timing={timing} language={language} /></div>}
-      <ConversationVirtualRow rowKey={row.key} virtualizer={virtualizer} hidden={row.process && !expanded && !row.required}
+      <ConversationVirtualRow rowKey={row.key} sequence={row.sequence} virtualizer={virtualizer} virtualize={row.process && !row.required} hidden={row.process && !expanded && !row.required}
         eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>
     </React.Fragment>)}
-    {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} virtualizer={virtualizer}>
+    {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} sequence={rows.findLast(row => row.sequence !== undefined)?.sequence} eager={eagerFooter} virtualizer={virtualizer} virtualize={false}>
       {() => children}
     </ConversationVirtualRow>}
   </section>;

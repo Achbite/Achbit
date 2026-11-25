@@ -1,4 +1,12 @@
-import type { ActivityProjection, AssistantDraftBlockProjection, SessionProjection } from '@achbit/protocol';
+import { CONTROL_TURN_ISSUE, type ActivityProjection, type AssistantDraftBlockProjection, type SessionProjection, type TranscriptContent } from '@achbit/protocol';
+
+export interface BatchConflictSummary { providerRequestId: string; sources: number; peers: number }
+
+export function batchConflictRole(activity: ActivityProjection): 'source' | 'peer' | undefined {
+  if (activity.kind !== 'tool' || activity.status !== 'rejected') return;
+  const issue = activity.inputRejection?.issues.find(issue => issue.rule === CONTROL_TURN_ISSUE.source || issue.rule === CONTROL_TURN_ISSUE.peer);
+  if (issue) return issue.rule === CONTROL_TURN_ISSUE.source ? 'source' : 'peer';
+}
 
 export type ProjectionItem =
   | {
@@ -20,6 +28,7 @@ export type ProjectionItem =
       sequence: number;
       groupId: string;
       values: ActivityProjection[];
+      batchConflicts?: BatchConflictSummary[];
       /** Shared lookup for this snapshot; a Provider call ID is scoped to its request. */
       hostedKeys?: ReadonlyMap<string, string>;
     };
@@ -29,7 +38,8 @@ export type HostedDraftGroup = { type: 'providerHostedGroup'; runId: string; tur
 export const hostedEntryKey = (runId: string, turnId: string, callId: string): string =>
   `hosted:${JSON.stringify([runId, turnId, callId])}`;
 
-const hasMemberNotice = (values: ActivityProjection[]) => values.some(a => a.agent && a.agent.phase !== 'started');
+const decisionActivity = (a: ActivityProjection) => a.kind === 'plan' || a.kind === 'interaction' || a.status === 'waiting'
+  || (a.kind === 'approval' && (a.status === 'active' || a.status === 'requested')) || a.notExecuted?.reason === 'approvalRequired';
 
 export type AssistantDraftItem =
   | { type: 'planPreview'; value: NonNullable<NonNullable<SessionProjection['assistantDraft']>['planPreview']>; key: string }
@@ -64,8 +74,8 @@ export function assistantDraftItems(
   return items;
 }
 
-const projectionItemCache = new WeakMap<SessionProjection, ProjectionItem[]>();
-export function projectionItems(projection: SessionProjection | null): ProjectionItem[] {
+const projectionItemCache = new WeakMap<TranscriptContent, ProjectionItem[]>();
+export function projectionItems(projection: TranscriptContent | null): ProjectionItem[] {
   if (!projection) return [];
   const cached = projectionItemCache.get(projection);
   if (cached) return cached;
@@ -75,6 +85,10 @@ export function projectionItems(projection: SessionProjection | null): Projectio
   const activities = new Map(projection.activities.map((value) => [value.activityId, value]));
   const interactions = new Map(projection.interactions.map(value => [value.callId, value]));
   const hostedKeys = new Map<string, string>();
+  // A request can span narrative rows, and consecutive requests share disclosures.
+  // Count only Session's explicit per-call roles; anchor each request's notice once.
+  const batchCounts = new Map<string, BatchConflictSummary>();
+  const batchAtActivity = new Map<string, BatchConflictSummary>();
   const items = projection.timeline.map((item): ProjectionItem => {
     switch (item.kind) {
       case 'message':
@@ -109,7 +123,17 @@ export function projectionItems(projection: SessionProjection | null): Projectio
       case 'toolGroup': {
         const values = item.activityIds.map(id => requiredProjectionValue(activities.get(id), 'conversation_timeline_activity_missing'));
         for (const a of values) {
-          if (a.providerHosted && item.providerRequestId) hostedKeys.set(a.activityId, hostedEntryKey(a.runId, item.providerRequestId, a.providerHosted.providerCallId));
+          if (!item.providerRequestId) continue;
+          if (a.providerHosted) hostedKeys.set(a.activityId, hostedEntryKey(a.runId, item.providerRequestId, a.providerHosted.providerCallId));
+          const role = batchConflictRole(a);
+          if (!role) continue;
+          let batch = batchCounts.get(item.providerRequestId);
+          if (!batch) {
+            batch = { providerRequestId: item.providerRequestId, sources: 0, peers: 0 };
+            batchCounts.set(item.providerRequestId, batch);
+            batchAtActivity.set(a.activityId, batch);
+          }
+          if (role === 'source') batch.sources++; else batch.peers++;
         }
         return { type: 'toolGroup', sequence: item.sequence, groupId: item.timelineId, values, hostedKeys };
       }
@@ -134,14 +158,33 @@ export function projectionItems(projection: SessionProjection | null): Projectio
     }
     return rows;
   });
+  // Keep one disclosure anchored to the first child event in an uninterrupted segment.
+  // Later notices can pass ordinary tools into that disclosure; tools never change order.
+  let agents: Extract<ProjectionItem, { type: 'toolGroup' }> | undefined;
   for (const item of displayItems) {
-    const previous = grouped.at(-1);
-    if (item.type === 'toolGroup' && previous?.type === 'toolGroup'
-      && item.values[0]?.runId === previous.values[0]?.runId
-      // An arriving member notification belongs at its event position, after preceding tools.
-      && !hasMemberNotice(item.values) && !hasMemberNotice(previous.values)) {
-      previous.values.push(...item.values);
-    } else grouped.push(item);
+    if (item.type !== 'toolGroup') { agents = undefined; grouped.push(item); continue; }
+    for (const [i, a] of item.values.entries()) {
+      if (agents?.values[0]?.runId !== a.runId) agents = undefined;
+      if (a.agent) {
+        if (agents) agents.values.push(a);
+        else {
+          agents = { ...item, groupId: `agent-fold:${a.activityId}`, sequence: a.sequence, values: [a] };
+          grouped.push(agents);
+        }
+        continue;
+      }
+      const barrier = decisionActivity(a);
+      if (barrier) agents = undefined;
+      const previous = grouped.at(-1);
+      if (!barrier && previous?.type === 'toolGroup' && !previous.values[0]?.agent
+        && previous.values[0]?.runId === a.runId && !decisionActivity(previous.values.at(-1)!)) previous.values.push(a);
+      else grouped.push({ ...item, groupId: i ? `${item.groupId}:${a.activityId}` : item.groupId, sequence: a.sequence, values: [a] });
+    }
+  }
+  if (batchAtActivity.size) for (const item of grouped) {
+    if (item.type !== 'toolGroup') continue;
+    const batches = item.values.flatMap(a => batchAtActivity.get(a.activityId) ?? []);
+    if (batches.length) item.batchConflicts = batches;
   }
   projectionItemCache.set(projection, grouped);
   return grouped;
@@ -158,8 +201,14 @@ function requiredProjectionValue<Value>(
 export type ConversationRow = { key: string; item?: ProjectionItem; draft?: AssistantDraftItem };
 export interface ConversationRound { key: string; runId: string; rows: ConversationRow[] }
 
+// A settled snapshot may be revisited many times. Keys, ordering and indexes belong
+// to this exact immutable item list; live draft rows are never cached here.
+const settledRounds = new WeakMap<ProjectionItem[], { runId?: string; rounds: ConversationRound[] }>();
+
 /** Stream identity keeps a text row in place when Session commits it to the timeline. */
 export function conversationRounds(items: ProjectionItem[], drafts: AssistantDraftItem[], currentRunId?: string): ConversationRound[] {
+  const previous = !drafts.length ? settledRounds.get(items) : undefined;
+  if (previous && previous.runId === currentRunId) return previous.rounds;
   const rounds: ConversationRound[] = [];
   const append = (runId: string, row: ConversationRow) => {
     let round = rounds.at(-1);
@@ -198,10 +247,11 @@ export function conversationRounds(items: ProjectionItem[], drafts: AssistantDra
       const round = rounds.at(-1);
       const last = round?.runId === currentRunId ? round.rows.at(-1) : undefined;
       if (last?.draft?.type === 'providerHostedGroup') last.draft = { ...draft, blocks: [...last.draft.blocks, ...blocks] };
-      else if (last?.item?.type === 'toolGroup' && !hasMemberNotice(last.item.values)) last.draft = { ...draft, blocks };
+      else if (last?.item?.type === 'toolGroup' && !last.item.values[0]?.agent && !decisionActivity(last.item.values.at(-1)!)) last.draft = { ...draft, blocks };
       else append(currentRunId, { key: keyOf(blocks[0]!), draft: { ...draft, blocks } });
     }
     if (rounds.at(-1)?.runId !== currentRunId) rounds.push({ key: currentRunId, runId: currentRunId, rows: [] });
   }
+  if (!drafts.length) settledRounds.set(items, { runId: currentRunId, rounds });
   return rounds;
 }

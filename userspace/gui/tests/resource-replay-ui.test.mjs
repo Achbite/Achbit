@@ -7,11 +7,27 @@ import { loadGuiModule, loadGuiModules } from './gui-projection-contract.mjs';
 test('change statistics select only displayed rows, retaining the entire archived list',async t=>{
   const {displayedChangedFiles}=await loadGuiModule(t,'/src/components/local-agent/fileChangeSummary.ts');
   const files=Array.from({length:8},(_,index)=>({key:String(index),path:`file-${index}`,changes:[]}));const before=structuredClone(files);
-  assert.deepEqual(displayedChangedFiles(files,false,false,false),[]);
-  assert.deepEqual(displayedChangedFiles(files,false,true,false),files.slice(0,3));
-  assert.equal(displayedChangedFiles(files,false,true,true),files);
-  assert.equal(displayedChangedFiles(files,true,false,false),files);
+  assert.deepEqual(displayedChangedFiles(files,false,false),[]);
+  assert.deepEqual(displayedChangedFiles(files,false,true),[], 'no invisible file rows, even after an earlier show-all');
+  assert.deepEqual(displayedChangedFiles(files,true,false),files.slice(0,3));
+  assert.equal(displayedChangedFiles(files,true,true),files);
   assert.deepEqual(files,before);
+});
+
+test('repeated file edits retain ordered unique receipts, distinct workspaces and revision-scoped net statistics', async t => {
+  const { changedFiles, readChangeStatistics } = await loadGuiModule(t, '/src/components/local-agent/fileChangeSummary.ts');
+  const row = (i, workspaceId='A') => ({tool:{recordId:'rec:'+i,fileChanges:[{workspaceId,path:'same.txt'}]}});
+  const history = Array.from({length:1000}, (_,i)=>row(i));
+  const [one,two] = changedFiles([...history,...history,row(0,'B')]);
+  assert.equal(one.changes.length,1000); assert.equal(two.changes.length,1); assert.notEqual(one.key,two.key);
+  assert.deepEqual(one.changes.map(e=>e.recordId),history.map(e=>e.tool.recordId));
+  let reads=0, counts=0;const signal=new AbortController().signal;
+  const read=async()=>{reads++;return {workspaceId:'A',path:'same.txt',before:'old',after:'new'};};
+  const count=async()=>{counts++;return {added:1,removed:1};};
+  const ends=changedFiles([history[0],history.at(-1)])[0];
+  await readChangeStatistics(read,'session:A',ends,signal,count);await readChangeStatistics(read,'session:A',one,signal,count);
+  assert.deepEqual([reads,counts],[2,1],'immutable first and last match; intervening history remains accessible');
+  await readChangeStatistics(read,'session:B',one,signal,count);assert.deepEqual([reads,counts],[4,2]);
 });
 
 test('selected Reader tabs scroll only their strip and do not steal focus',async t=>{
@@ -140,13 +156,21 @@ test('artifact thumbnails wait for execution readiness, then read and release no
   const React=await import('react');
   const [{ArtifactImageLink},{useLocalAgentStore:store},{useConversationHost}]=await loadGuiModules(t,[
     '/src/components/local-agent/ArtifactLinks.tsx','/src/state/localAgentStore.ts','/src/components/local-agent/ConversationHost.tsx']);
-  let effect,reads=0,releases=0;
+  let effect,showImage,reads=0,releases=0;
+  const element={}, previousObserver=globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver=class {
+    constructor(callback){this.callback=callback;}
+    observe(target){assert.equal(target,element);showImage=()=>this.callback([{target,isIntersecting:true}]);}
+    unobserve(){} disconnect(){}
+  };
+  t.after(()=>{if(previousObserver)globalThis.IntersectionObserver=previousObserver;else delete globalThis.IntersectionObserver;});
   t.mock.method(React.default,'useEffect', callback=>{effect=callback;});
   t.mock.method(useConversationHost(),'loadImage',async()=>{reads++;return {url:'blob:test',release(){releases++;}};});
-  function Probe(){ArtifactImageLink({artifact:{artifactId:'artifact:pending',sessionId:'session:history'},label:'Image',title:'Image'});return null;}
+  function Probe(){const preview=ArtifactImageLink({artifact:{artifactId:'artifact:pending',sessionId:'session:history'},label:'Image',title:'Image'});preview.props.triggerRef.current=element;return null;}
   store.setState({runtimeReady:false});Object.assign(store.getInitialState(),store.getState());
   renderToStaticMarkup(createElement(Probe));effect();await Promise.resolve();assert.equal(reads,0);
   store.setState({runtimeReady:true});Object.assign(store.getInitialState(),store.getState());
-  renderToStaticMarkup(createElement(Probe));const dispose=effect();await Promise.resolve();assert.equal(reads,1);
+  renderToStaticMarkup(createElement(Probe));const dispose=effect();await Promise.resolve();assert.equal(reads,0,'a mounted offscreen image has not requested archive bytes');
+  showImage();await Promise.resolve();assert.equal(reads,1);
   dispose();assert.equal(releases,1);
 });

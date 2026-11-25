@@ -72,10 +72,17 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
   useLayoutEffect(() => {
     const element = viewport.current!;
     const tableNode = element.querySelector('table')!;
-    const measure = () => setOverflowing(element.scrollWidth > element.clientWidth + 1);
+    const first = tableNode.rows[0]?.cells[0];
+    const measure = () => {
+      const width = element.clientWidth;
+      setOverflowing(element.scrollWidth > width + 1);
+      // A pinned label must leave room to read and hit the other columns, including in a split pane.
+      element.toggleAttribute('data-leading-crowds', !!first && first.offsetWidth > width / 2);
+    };
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     observer.observe(tableNode);
+    if (first) observer.observe(first);
     // Only leading cells that can enter the reading viewport need compositor layers.
     const leading = new IntersectionObserver(entries => {
       for (const entry of entries) entry.target.toggleAttribute('data-pin-leading', entry.isIntersecting);

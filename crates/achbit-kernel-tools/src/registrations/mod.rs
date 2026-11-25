@@ -108,7 +108,7 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             &[],
         ),
         KernelToolKind::ProcessShell => (
-            "Run Bash from the selected workspace. Use ls, rg or find when the target path is unknown. Project writes are limited to authorized output directories. The session working directory is writable.",
+            "Run Bash from the selected workspace. Use ls or find when the target path is unknown. Project writes are limited to authorized output directories. The session working directory is writable.",
             &[],
         ),
     }

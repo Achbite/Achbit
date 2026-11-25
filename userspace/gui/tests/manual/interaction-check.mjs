@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { checkReaderFileMenu, checkReaderSplit } from './reader-split-check.mjs';
 import { checkComposerPluginMentions } from './composer-plugin-mentions-check.mjs';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
+import { checkRichFormatBoundaries } from './rich-format-boundary-check.mjs';
 import { checkAttachmentThumbnails } from './attachment-thumbnails-check.mjs';
 import { checkPluginMarketplace } from './plugin-marketplace-check.mjs';
 const preview = resolve(process.env.UI_FIXTURE_ROOT ?? fileURLToPath(new URL('../../../../.task-artifacts/manual-preview', import.meta.url)));
@@ -141,6 +142,39 @@ try {
   await click('[data-ui-action="settings.model-picker.custom"]');
   const restored = await evaluate(`document.querySelector('${customName}').value`);
   await record('model-picker-draft', { restored }, restored === '手写网关模型');
+  const hintSelector = 'dialog[open] .model-hint > button';
+  const anchor = await evaluate(`(() => {
+    const button = document.querySelector('${hintSelector}');
+    button.scrollIntoView({ block: 'center' });
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await frame();
+  const movePointer = async (x, y) => { await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }); await frame(); };
+  await movePointer(anchor.x, anchor.y);
+  const help = await evaluate(`(() => {
+    const button = document.querySelector('${hintSelector}');
+    const tooltip = document.getElementById(button.getAttribute('aria-describedby'));
+    const rect = tooltip?.getBoundingClientRect();
+    return { id: tooltip?.id, x: rect?.left + rect?.width / 2, y: rect?.top + rect?.height / 2 };
+  })()`);
+  // Travel through the actual gap and validate the entire gesture, including the top-layer hit target.
+  for (let step = 1; step <= 12; step++) {
+    await movePointer(anchor.x + (help.x - anchor.x) * step / 12, anchor.y + (help.y - anchor.y) * step / 12);
+  }
+  const readable = await evaluate(`(() => {
+    const tip = document.getElementById(${JSON.stringify(help.id)});
+    return tip?.matches(':popover-open') && tip.contains(document.elementFromPoint(${help.x}, ${help.y}));
+  })()`);
+  await key('Escape');
+  const modalRemained = await evaluate("!!document.querySelector('dialog[open]') && !document.querySelector('[role=tooltip]:popover-open')");
+  await record('settings-help-pointer-and-nested-escape', { readable, modalRemained }, readable && modalRemained);
+  await evaluate("document.querySelector('dialog[open] .model-danger').focus()");
+  await key('Tab', 'Tab', 8);
+  const hintFocused = await evaluate(`document.activeElement.matches('${hintSelector}') && !!document.querySelector('[role=tooltip]:popover-open')`);
+  await key('Escape');
+  const focusRetained = await evaluate(`document.activeElement.matches('${hintSelector}') && !document.querySelector('[role=tooltip]:popover-open')`);
+  await record('settings-help-keyboard-focus', { hintFocused, focusRetained }, hintFocused && focusRetained);
   await key('Escape');
   const open = async mode => { await navigate('path-picker'); await click('#open-' + mode); await until('window.__sharedControlsAudit.observe().address==="/audit/A" && !window.__sharedControlsAudit.snapshot().requests.some(x=>x.status==="pending")'); await frame(); };
   const go = async path => { await type('.ws-open-dialog__address', path); await key('Enter'); await frame(); };
@@ -197,6 +231,7 @@ try {
   await record('plugin-disclosure', plugin, plugin.control==='DisclosureSummary' && plugin.open && plugin.arrows===1);
   await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, key, type, selectFixture, record });
   await checkPreviewLayout({ navigate, evaluate, cmd, until, frame, click, key, record });
+  await checkRichFormatBoundaries({ navigate, evaluate, cmd, until, frame, record });
   assert.ok(results.every(result => result.pass), 'see the retained browser result for failed invariants');
   await call('Browser.close');
 } finally {

@@ -1,4 +1,11 @@
-.conversation-image-review { display: block; max-width: 640px; margin: 12px 0; }
+/* Markdown thumbnails reserve space before the URL resolves. Unknown sizes get a
+   modest reading-column slot; the original image and the full-size viewer keep their scale. */
+.conversation-image-review { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); width: min(100%, 20rem); aspect-ratio: 16 / 9; margin: 12px 0; }
+.conversation-image-review > [role='status'], .conversation-image-review > .conversation-image-review__open { grid-area: 1 / 1; }
+.conversation-image-review > [role='status'] { align-self: center; max-height: 100%; overflow: auto; }
+.conversation-image-review[data-reading-image='loading'] > .conversation-image-review__open { opacity: 0; }
+.conversation-image-review > .conversation-image-review__open { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center start; width: 100%; height: 100%; }
+.conversation-image-review > .conversation-image-review__open > img { width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
 .conversation-image-review__open { display: block; padding: 0; border: 0; border-radius: 12px; background: transparent; cursor: zoom-in; max-width: 100%; overflow: hidden; }
 /* Keep Windows screenshots flush when the shared .local-agent button rule applies. */
 .conversation-image-review__open[data-frameless] { min-height: 0; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: zoom-in; }

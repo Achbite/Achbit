@@ -433,6 +433,7 @@ struct Totals {
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
+    cache_reported_input_tokens: u64,
     estimated_cost: Option<f64>,
 }
 impl Totals {
@@ -446,6 +447,9 @@ impl Totals {
         if let Some(cache) = record.cache_read_tokens {
             self.cache_reported_calls += 1;
             self.cache_read_tokens += cache;
+            if let Some(input) = record.input_tokens {
+                self.cache_reported_input_tokens += input;
+            }
         }
         if let Some(cost) = record.estimated_cost {
             *self.estimated_cost.get_or_insert(0.0) += cost;
@@ -603,6 +607,60 @@ mod tests {
         observed.usage = None;
         assert_eq!(estimate(&price, &observed), (None, false));
     }
+    #[test]
+    fn usage_query_sums_inputs_paired_with_cache_reads() {
+        const HOUR: u64 = 3_600_000;
+        let store = UsageStore::open(FsPath::new(":memory:")).unwrap();
+        for (id, hour, input, output, read) in [
+            ("hit", 0, Some(100), Some(5), Some(75)),
+            ("zero", 1, Some(50), Some(3), Some(0)),
+            ("no-cache", 2, Some(850), Some(2), None),
+            ("no-usage", 2, None, None, None),
+        ] {
+            let record = serde_json::from_value(json!({
+                "id":id, "connectionId":"test", "purpose":"probe", "startedAt":hour * HOUR,
+                "billingMode":"subscription", "requestedModel":"test", "priceComplete":false,
+                "inputTokens":input, "outputTokens":output, "cacheReadTokens":read
+            }))
+            .unwrap();
+            store.save(&record).unwrap();
+        }
+        let query = |granularity: &str| {
+            store
+                .query(&UsageQuery {
+                    from: 0,
+                    to: 3 * HOUR,
+                    time_zone: "UTC".into(),
+                    granularity: granularity.into(),
+                    connection_id: None,
+                    model_id: None,
+                    session_id: None,
+                })
+                .unwrap()
+        };
+        let cache = |row: &Value| {
+            [
+                "cacheReportedCalls",
+                "cacheReadTokens",
+                "cacheReportedInputTokens",
+            ]
+            .map(|field| row[field].as_u64().unwrap())
+        };
+        let daily = query("day");
+        let totals = &daily["totals"];
+        assert_eq!(totals["calls"], 4);
+        assert_eq!(totals["reportedCalls"], 3);
+        assert_eq!(totals["inputTokens"], 1000);
+        assert_eq!(totals["outputTokens"], 10);
+        assert_eq!(cache(totals), [2, 75, 150]);
+        assert_eq!(cache(&daily["buckets"][0]), [2, 75, 150]);
+
+        let hourly = query("hour");
+        assert_eq!(cache(&hourly["buckets"][0]), [1, 75, 100]);
+        assert_eq!(cache(&hourly["buckets"][1]), [1, 0, 50]);
+        assert_eq!(cache(&hourly["buckets"][2]), [0, 0, 0]);
+    }
+
     #[test]
     fn local_day_buckets_follow_daylight_saving_instead_of_fixed_day_lengths() {
         let from = DateTime::parse_from_rfc3339("2026-03-08T00:00:00-05:00")

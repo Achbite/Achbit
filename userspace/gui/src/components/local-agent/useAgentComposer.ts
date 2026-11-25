@@ -1,7 +1,8 @@
+import type { SessionProjection } from '@achbit/protocol';
 import { composerContentKey, readResubmittedInputs, rememberResubmittedInputs, restoreUnappliedInputs } from './composerRecovery';
 import type { QueuedInputProjection } from '@achbit/protocol';
 import { formatBrowserAnnotation, type BrowserAnnotation } from './browserReview';
-import { localizePlugin } from '../../pluginLocalization';
+import { localizePlugin, retiredDraftSkillNotice } from '../../pluginLocalization';
 import { nextEnabledIndex } from '../shared/keyboardNavigation';
 import { focusOpenedPanel, returnFocusTo, useInteractionFocus } from '../shared/interactionFocus';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
@@ -62,6 +63,7 @@ export function useAgentComposer(
     const last = p.contextCompositions.at(-1);
     return last?.purpose === 'agent' && last.sequence > usage.sequence ? state.contextWindowReading : null;
   });
+  const current = projection;
   const conversationKey = sessionId ?? `new:${draftProjectId ?? 'independent'}`;
   const pendingInteractions = useMemo(() => foregroundInteractions(projection), [projection]);
   const [interactionSelection, setInteractionSelection] = useState<{ conversationKey: string; interactionId: string } | null>(null);
@@ -69,10 +71,10 @@ export function useAgentComposer(
     interactionSelection?.conversationKey === conversationKey && item.interactionId === interactionSelection.interactionId
   ));
   const interactionIndex = selectedInteractionIndex >= 0 ? selectedInteractionIndex : Math.max(0,
-    pendingInteractions.findIndex(item => item.interactionId === projection?.pendingInteraction?.interactionId));
+    pendingInteractions.findIndex(item => item.interactionId === current?.pendingInteraction?.interactionId));
   const pendingInteraction = pendingInteractions.at(interactionIndex) ?? null;
-  const pendingApproval = selectPendingApproval(projection);
-  const pendingPlan = foregroundPlan(projection?.pendingPlan ?? null, projection?.effectivePermissions);
+  const pendingApproval = selectPendingApproval(current);
+  const pendingPlan = foregroundPlan(current?.pendingPlan ?? null, current?.effectivePermissions);
   const pendingScopeAddition = pendingPlan ? planScopeAddition(projection?.plans.find((plan) => (
     plan.planId === pendingPlan.planId && plan.revision === pendingPlan.revision - 1
   )), pendingPlan) : null;
@@ -115,8 +117,8 @@ export function useAgentComposer(
   const [recoveredContent, setRecoveredContent] = useState(() => recoveredDraftContent(initialComposer));
   const [recoveryUndo, setRecoveryUndo] = useState<{ key: string; before: ComposerState; after: string } | null>(null);
   const [resubmittedInputs, setResubmittedInputs] = useState<Record<string, string[]>>({});
-  const resubmittedIds = useMemo(() => sessionId && projection?.queuedInputs?.some(input => input.status === 'notApplied')
-    ? resubmittedInputs[sessionId] ?? readResubmittedInputs(sessionId) : [], [sessionId, projection?.queuedInputs, resubmittedInputs]);
+  const resubmittedIds = useMemo(() => sessionId && current?.queuedInputs?.some(input => input.status === 'notApplied')
+    ? resubmittedInputs[sessionId] ?? readResubmittedInputs(sessionId) : [], [sessionId, current?.queuedInputs, resubmittedInputs]);
   const [pastedImages, setPastedImages] = useState(initialComposer.pastedImages);
   const [pastedTexts, setPastedTexts] = useState<PastedTextDraft[]>(initialComposer.pastedTexts);
   const [pendingFilesystemPaths, setPendingFilesystemPaths] = useState<
@@ -177,7 +179,7 @@ export function useAgentComposer(
     });
   };
 
-  const setComposerStateForKey = (key: string, state: ComposerState) => {
+  const setComposerStateForKey = useCallback((key: string, state: ComposerState) => {
     const copy = cloneComposerState(state);
     composerStatesRef.current.set(key, copy);
     saveComposerDraft(key,copy);
@@ -190,7 +192,7 @@ export function useAgentComposer(
     setPendingFilesystemPaths(copy.filesystemPaths);
     setPluginSelections(copy.pluginSelections);
     pendingComposerRestoreRef.current = { key, state: copy };
-  };
+  }, []);
 
   const readInteractionDraft = (interactionId: string) => {
     const key = `${conversationKey}:interaction:${interactionId}`;
@@ -208,14 +210,21 @@ export function useAgentComposer(
   const canEditMessage = Boolean(sessionId && projection && !loading && !submitting && !catalogBusy
     && !pendingPlan && !pendingInteraction && !pendingApproval
     && (!projection.run || ['completed', 'failed', 'cancelled', 'indeterminate'].includes(projection.run.status)));
-  const beginMessageEdit = (message: ProjectionMessage) => {
-    if (!canEditMessage || !sessionId || !projection || message.role !== 'user' || message.replyToInteraction || message.runId) return;
+  const beginMessageEdit = useCallback((message: ProjectionMessage, restored?: SessionProjection) => {
+    const live = useLocalAgentStore.getState();
+    // A click on a retained window may be awaiting its original full read. Recheck
+    // selection and the exact canonical message before letting that click open an edit.
+    const owner = restored ?? projection;
+    const allowed = restored ? live.projection === restored && !live.loading && !live.submitting && !live.catalogBusy
+      && !restored.pendingApproval && !restored.pendingInteraction && !restored.pendingPlan
+      && (!restored.run || ['completed','failed','cancelled','indeterminate'].includes(restored.run.status)) : canEditMessage;
+    if (!allowed || !sessionId || !owner || live.sessionId !== sessionId || message.role !== 'user' || message.replyToInteraction || message.runId) return;
     const key = `${conversationKey}:edit:${message.messageId}`;
     // The ordinary composer keeps its own draft, attachments and selection.
     setComposerStateForKey(key, { ...emptyComposerState(), draft: message.content,
       selectionStart: message.content.length, selectionEnd: message.content.length, focused: true });
-    setMessageEdit({ sessionId, message, revision: projection.revision });
-  };
+    setMessageEdit({ sessionId, message, revision: owner.revision });
+  }, [projection, sessionId, conversationKey, canEditMessage, setComposerStateForKey]);
   const cancelMessageEdit = () => { if (!submitting) setMessageEdit(null); };
 
   useLayoutEffect(() => {
@@ -305,7 +314,7 @@ export function useAgentComposer(
     if (menu) focusOpenedPanel(menu, menu.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'), interaction);
   }, [attachmentMenuOpen, interaction]);
 
-  const submitDraft = async () => {
+  const submitDraft = async (input?: Event) => {
     const submittedText = draft;
     if (compositionActiveRef.current || compositionCommitPendingRef.current) return;
     if (!textDecision && !editingMessage && !pendingApproval) {
@@ -356,6 +365,10 @@ export function useAgentComposer(
       selectionEnd: submittedTextarea?.selectionEnd ?? submittedText.length,
       focused: document.activeElement === submittedTextarea,
     };
+    globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.input', {
+      submissionId: submittedComposerState.submissionId, sessionId, source: input?.type ?? 'callback',
+      reason: input ? (input.isTrusted ? 'trusted' : 'synthetic') : 'programmatic',
+    });
     setPluginPickerOpen(false);
     setLatestFollowMode(true);
     pendingSubmissionsRef.current.set(submission.key, submittedComposerState);
@@ -514,7 +527,7 @@ export function useAgentComposer(
     });
   };
 
-  const canCancel = Boolean(projection?.run && ['running', 'waiting'].includes(projection.run.status));
+  const canCancel = Boolean(current?.run && ['running', 'waiting'].includes(current.run.status));
   const commandEnabled = (id: ComposerCommand): boolean => {
     if (loading || submitting) return false;
     if (id === 'cancel') return canCancel;
@@ -626,7 +639,7 @@ export function useAgentComposer(
       commitPending: compositionCommitPendingRef.current,
     })) return;
     event.preventDefault();
-    void submitDraft();
+    void submitDraft(event.nativeEvent);
   };
 
   const submitPlanDecision = useCallback(async (
@@ -656,7 +669,7 @@ export function useAgentComposer(
       }
       if (additions.some(item => item.kind === 'file' && mediaTypeForPath(item.path) === 'application/pdf')
         && !supportsNativeFileInput('application/pdf', selectedProfile,
-          parseComposerCommand(draft)?.name === 'focus' ? null : projection?.run)) {
+          parseComposerCommand(draft)?.name === 'focus' ? null : current?.run)) {
         const matches = pluginCatalog.plugins.filter((plugin) => (
           plugin.activationMediaTypes.includes('application/pdf')
         ));
@@ -769,10 +782,12 @@ export function useAgentComposer(
   };
   const draftCommand = !textDecision && !editingMessage && !pendingApproval ? parseComposerCommand(draft) : null;
   const guiCommand = draftCommand && !draftCommand.argument && composerCommands.find(command => command.id === draftCommand.name);
-  const canSend = !runtimeReady || readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
+  const retiredSkillNotice = guiCommand || textDecision || editingMessage || pendingApproval ? null
+    : retiredDraftSkillNotice(pluginCatalog, pluginSelections, recoveredContent.guidanceReferences, language);
+  const canSend = !runtimeReady || (sessionId !== null && !projection) || readingImages > 0 ? false : guiCommand ? commandEnabled(guiCommand.id) : !loading && !submitting && (!editingMessage || canEditMessage) && (textDecision
     ? Boolean(draft.trim()) && (Boolean(pendingPlan) || !pendingInteraction || pendingInteraction.allowFreeform)
     : Boolean(draft.trim() || pastedTexts.length || pastedImages.length || pendingFilesystemPaths.length || recoveredContent.filesystemReferences.length || editingMessage?.message.filesystemReferences.length)
-      && !modelSettingsBusy && !catalogBusy
+      && !retiredSkillNotice && !modelSettingsBusy && !catalogBusy
       && Boolean(canCancel || (modelSelectionConfirmed && profiles.some((profile) => profile.id === selectedProfileId && profile.enabled))));
   const showStopAction = canCancel && !pendingPlan && (Boolean(pendingInteraction)
     || (!draft.trim() && !pastedTexts.length && !pastedImages.length && !pendingFilesystemPaths.length && !recoveredContent.filesystemReferences.length));
@@ -798,7 +813,7 @@ export function useAgentComposer(
     canUndo: recoveryUndo?.key === conversationKey && composerContentKey(ordinaryDraft()) === recoveryUndo.after,
     restore: (inputs: readonly QueuedInputProjection[], append = false) => {
       if (!sessionId || useLocalAgentStore.getState().sessionId !== sessionId) throw new Error('conversation_session_changed');
-      const eligible = inputs.filter(input => !resubmittedIds.includes(input.commandId) && projection?.queuedInputs.some(item => item.commandId === input.commandId && item.status === 'notApplied'));
+      const eligible = inputs.filter(input => !resubmittedIds.includes(input.commandId) && current?.queuedInputs.some(item => item.commandId === input.commandId && item.status === 'notApplied'));
       const before = cloneComposerState(ordinaryDraft());
       const next = restoreUnappliedInputs(before, eligible, append);
       if (next === before) return;
@@ -912,6 +927,7 @@ export function useAgentComposer(
     submitDraft,
     selectMessageAttachments,
     canSend,
+    retiredSkillNotice,
     showStopAction,
     failedDrafts: failedDrafts[composerStateKey] ?? [],
     canRestoreFailedDraft,

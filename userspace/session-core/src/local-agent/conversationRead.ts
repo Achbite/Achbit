@@ -11,6 +11,23 @@ const MAX_PAGE_BYTES = 48 * 1024;
 export function decodeConversationReadQuery(value: unknown): ConversationReadQuery {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('conversation_read_invalid');
   const query = value as Record<string, unknown>;
+  if (query.view === 'overview') {
+    if (!identifier(query.sessionId) || Object.keys(query).some(key => key !== 'sessionId' && key !== 'view')) throw new Error('conversation_read_invalid');
+    return query as unknown as ConversationReadQuery;
+  }
+  if (query.view === 'transcript') {
+    if (!identifier(query.sessionId) || Object.keys(query).some(key => !['sessionId','view','around'].includes(key))
+      || query.around !== undefined && (!Number.isSafeInteger(query.around) || Number(query.around) < 1)) throw new Error('conversation_read_invalid');
+    return query as unknown as ConversationReadQuery;
+  }
+  if (query.view === 'readingWindow') {
+    if (!identifier(query.sessionId) || !Number.isSafeInteger(query.throughSequence) || Number(query.throughSequence) < 1
+      || Object.keys(query).some(key => !['sessionId', 'view', 'throughSequence', 'limit', 'anchorKey'].includes(key))
+      || query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) < 1 || Number(query.limit) > 24)
+      || query.anchorKey !== undefined && (typeof query.anchorKey !== 'string' || !query.anchorKey.length
+        || query.anchorKey.length > 8192 || /[\u0000-\u001f]/u.test(query.anchorKey))) throw new Error('conversation_read_invalid');
+    return query as unknown as ConversationReadQuery;
+  }
   if (Object.keys(query).some((key) => !['sessionId', 'view', 'before', 'limit', 'recordId', 'messageId', 'providerRequestId', 'offset', 'imageIds', 'throughSequence'].includes(key))
     || !identifier(query.sessionId)
     || (query.throughSequence !== undefined && (!Number.isSafeInteger(query.throughSequence) || Number(query.throughSequence) < 1))
@@ -31,19 +48,37 @@ export function decodeConversationReadQuery(value: unknown): ConversationReadQue
   return query as unknown as ConversationReadQuery;
 }
 
-export async function readSessionEvents(journal: CommandJournalPort, sessionId: string): Promise<SessionEvent[]> {
-  const events: SessionEvent[] = [];
-  for await (const event of journal.read(sessionId)) {
-    if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
-    if (event.sequence !== events.length + 1) throw new Error('session_event_sequence_gap');
-    events.push(event);
-  }
+// Optional in-process adapter fast path. The published journal protocol and ordinary event ownership are unchanged.
+export const projectionEventBatch = Symbol('private projection event batch');
+type ProjectionJournal = CommandJournalPort & { [projectionEventBatch]?(id: string, independentlyOwned: boolean): Promise<SessionEvent[]> };
+
+function checkEvent(event: SessionEvent, sessionId: string, sequence: number) {
+  if (event.sessionId !== sessionId) throw new Error('session_event_identity_mismatch');
+  if (event.sequence !== sequence) throw new Error('session_event_sequence_gap');
+}
+function checkCreated(events: readonly SessionEvent[]) {
   if (!events.length) throw new Error('session_not_found');
   if (events[0].type !== 'session.created') throw new Error('session_creation_event_missing');
+}
+export function checkCompleteHistory(events: readonly SessionEvent[], sessionId: string) {
+  for (let i = 0; i < events.length; i++) checkEvent(events[i]!, sessionId, i + 1);
+  checkCreated(events);
+}
+export async function readSessionEvents(journal: ProjectionJournal, sessionId: string, mode: boolean | 'execution' = false): Promise<SessionEvent[]> {
+  const batch = mode ? await journal[projectionEventBatch]?.(sessionId, mode === 'execution') : undefined;
+  if (batch) { checkCompleteHistory(batch, sessionId); return batch; }
+  const events: SessionEvent[] = [];
+  for await (const event of journal.read(sessionId)) {
+    checkEvent(event, sessionId, events.length + 1);
+    events.push(event);
+  }
+  checkCreated(events);
   return events;
 }
 
 export async function readConversation(journal: CommandJournalPort, query: ConversationReadQuery): Promise<ConversationReadResult> {
+  // The public window must use SessionService.snapshot, including actor and child ownership checks.
+  if (query.view === 'readingWindow') throw new Error('conversation_read_window_requires_session_service');
   const selected = query.view === 'messages' ? await journal.readMessageHistory?.(query.sessionId) : undefined;
   const allEvents = selected?.events ?? await readSessionEvents(journal, query.sessionId);
   const revision = selected?.revision ?? allEvents.at(-1)!.sequence;
@@ -117,7 +152,7 @@ export async function readConversation(journal: CommandJournalPort, query: Conve
         : event.type === 'narrative.committed' && !query.messageId;
       case 'tools': return event.type === 'tool.completed'
         ? !query.recordId || event.payload.record.recordId === query.recordId
-        : isToolHistory(event) && !query.recordId;
+        : !query.recordId && (event.type === 'tool.interrupted' || isToolHistory(event));
       case 'plans': return event.type.startsWith('plan.') || event.type.startsWith('todo.');
       case 'reasoning': return event.type === 'provider.turn.settled' && event.payload.outcome === 'completed'
         && (!query.providerRequestId || event.payload.providerRequestId === query.providerRequestId);
@@ -190,6 +225,8 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
       ...(offset === null ? textExcerpt(event.payload.content, 12 * 1024) : textChunk(event.payload.content, 12 * 1024, offset)) };
   }
   if (event.type === 'tool.not-executed') return { ...base, callId: event.callId, outcome: 'notExecuted', ...event.payload };
+  if (event.type === 'tool.interrupted') return { ...base, callId: event.callId, attemptId: event.payload.attemptId,
+    outcome: 'indeterminate', error: textExcerpt(JSON.stringify(event.payload.error), 4000) };
   if (event.type === 'session.control.rejected') return { ...base, callId: event.callId,
     providerCallId: event.payload.providerCallId, toolName: event.payload.toolName, outcome: 'rejected', executed: false,
     input: textExcerpt(JSON.stringify(event.payload.input), summary ? 600 : 4000),

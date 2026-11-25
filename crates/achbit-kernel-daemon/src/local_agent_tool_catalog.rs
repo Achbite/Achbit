@@ -1260,46 +1260,28 @@ impl PreparedCatalogBinding {
                 );
                 Ok(match result {
                     Ok(mut output) => {
-                        let archived = context.output_directory.as_ref().ok_or_else(|| {
-                            ToolCatalogError::new(
-                                "artifact_storage_unavailable",
-                                "Document archive is unavailable.",
-                            )
-                        })?;
-                        let filename =
-                            std::path::Path::new(target).file_name().ok_or_else(|| {
-                                ToolCatalogError::new(
-                                    "artifact_target_invalid",
-                                    "Document filename is missing.",
-                                )
-                            })?;
-                        let archived = archived.join(filename);
-                        std::fs::create_dir_all(archived.parent().expect("artifact parent"))
-                            .and_then(|_| std::fs::copy(target, &archived))
-                            .map_err(|error| {
-                                ToolCatalogError::new("artifact_archive_failed", error.to_string())
-                            })?;
-                        output["artifacts"][0]["contentRef"] = json!(archived);
-                        output["artifacts"][0]["contentMode"] = json!("fixed");
-                        output["artifacts"][0]["uri"] =
-                            json!(format!("artifact://artifact:{invocation_id}"));
-                        let after = json!({"exists":true,"contentRef":archived,"sizeBytes":output["sizeBytes"]});
-                        output["fileChanges"] =
-                            json!([achbit_kernel_runtime::executors::file_change_fact(
-                                &context,
-                                &input.path,
-                                before,
-                                after
-                            )
-                            .map_err(|error| ToolCatalogError::new(
-                                "file_change_failed",
-                                error.to_string()
-                            ))?]);
+                        let error = archive_saved_document(
+                            invocation_id,
+                            &context,
+                            std::path::Path::new(target),
+                            &input.path,
+                            before,
+                            &mut output,
+                        )
+                        .err()
+                        .map(|error| KernelToolExecutionFailure {
+                            code: error.code.into(),
+                            message: error.message,
+                        });
                         KernelToolExecutionResult {
                             invocation_id: invocation_id.into(),
-                            outcome: KernelToolExecutionOutcome::Completed,
+                            outcome: if error.is_some() {
+                                KernelToolExecutionOutcome::Failed
+                            } else {
+                                KernelToolExecutionOutcome::Completed
+                            },
                             output,
-                            error: None,
+                            error,
                         }
                     }
                     Err(error) => KernelToolExecutionResult {
@@ -1433,6 +1415,45 @@ impl PreparedCatalogBinding {
             snapshot: Arc::clone(&self.snapshot),
         })
     }
+}
+
+fn archive_saved_document(
+    invocation_id: &str,
+    context: &KernelToolExecutionContext,
+    target: &std::path::Path,
+    logical_path: &str,
+    before: Value,
+    output: &mut Value,
+) -> Result<(), ToolCatalogError> {
+    // The renderer supplies a live file descriptor. Publish it only once the fixed copy exists.
+    let mut artifacts = output
+        .as_object_mut()
+        .expect("document result")
+        .remove("artifacts")
+        .expect("rendered document descriptor");
+    let directory = context.output_directory.as_ref().ok_or_else(|| {
+        ToolCatalogError::new(
+            "artifact_storage_unavailable",
+            "Document archive is unavailable.",
+        )
+    })?;
+    let filename = target.file_name().ok_or_else(|| {
+        ToolCatalogError::new("artifact_target_invalid", "Document filename is missing.")
+    })?;
+    let archived = directory.join(filename);
+    std::fs::create_dir_all(directory)
+        .and_then(|_| std::fs::copy(target, &archived))
+        .map_err(|error| ToolCatalogError::new("artifact_archive_failed", error.to_string()))?;
+    artifacts[0]["contentRef"] = json!(archived);
+    artifacts[0]["contentMode"] = json!("fixed");
+    artifacts[0]["uri"] = json!(format!("artifact://artifact:{invocation_id}"));
+    output["artifacts"] = artifacts;
+    let after = json!({"exists":true,"contentRef":archived,"sizeBytes":output["sizeBytes"]});
+    let fact =
+        achbit_kernel_runtime::executors::file_change_fact(context, logical_path, before, after)
+            .map_err(|error| ToolCatalogError::new("file_change_failed", error.to_string()))?;
+    output["fileChanges"] = json!([fact]);
+    Ok(())
 }
 
 pub(crate) struct PhysicalAttemptLease {
@@ -2133,6 +2154,125 @@ for line in sys.stdin:
             }
             catalog.dispose().unwrap();
         }
+    }
+
+    fn document_context(
+        target: &std::path::Path,
+        archive: Option<std::path::PathBuf>,
+    ) -> KernelToolExecutionContext {
+        KernelToolExecutionContext {
+            output_directory: archive,
+            workspace_root: Some(target.parent().unwrap().to_str().unwrap().into()),
+            workspace_id: Some("workspace:docs".into()),
+            private_resolved_targets: vec![target.to_str().unwrap().into()],
+            workspace_write_targets: None,
+            file_access: Default::default(),
+            cancellation: Default::default(),
+            progress: Default::default(),
+        }
+    }
+
+    #[test]
+    fn document_archive_failure_keeps_the_written_file_and_original_error() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("workspace/report.md");
+        let blocker = root.path().join("not-a-directory");
+        std::fs::write(&blocker, "block archive").unwrap();
+        let io_error = std::fs::create_dir_all(&blocker).unwrap_err().to_string();
+        let catalog = ToolCatalogSnapshot::from_providers(
+            "extension:docs",
+            vec![Box::new(DocumentToolProvider {
+                instance: "plugin-instance:docs".into(),
+            })],
+        )
+        .unwrap();
+        let binding = catalog.binding_for_name("document.render").unwrap();
+        let content = "# 已保存\n";
+        for (archive, code, message) in [
+            (
+                None,
+                "artifact_storage_unavailable",
+                "Document archive is unavailable.",
+            ),
+            (Some(blocker), "artifact_archive_failed", io_error.as_str()),
+        ] {
+            let input = binding
+                .canonicalize(json!({"path":"report.md", "format":"markdown", "content":content}))
+                .unwrap();
+            let run = binding.invoke("attempt:doc", input, document_context(&target, archive));
+            assert_eq!(std::fs::read(&target).unwrap(), content.as_bytes());
+            let run = run.expect(
+                "a successful write must have an execution result even if its archive failed",
+            );
+            assert_eq!(run.outcome, KernelToolExecutionOutcome::Failed);
+            let error = run.error.unwrap();
+            assert_eq!(
+                (error.code.as_str(), error.message.as_str()),
+                (code, message)
+            );
+            assert_eq!(run.output["saved"], true);
+            assert_eq!(run.output["workspaceId"], "workspace:docs");
+            assert_eq!(run.output["path"], "report.md");
+            assert_eq!(run.output["sizeBytes"], content.len());
+            assert!(run.output.get("artifacts").is_none());
+            assert!(run.output.get("fileChanges").is_none());
+        }
+        catalog.dispose().unwrap();
+    }
+
+    #[test]
+    fn archived_document_survives_a_later_change_fact_error() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("workspace/report.md");
+        let archive = root.path().join("archive");
+        let content = "Written first.";
+        let input =
+            documents::prepare(json!({"path":"report.md","format":"markdown","content":content}))
+                .unwrap();
+        let mut saved = documents::render(
+            &input,
+            DocumentContext {
+                invocation_id: "attempt:doc",
+                workspace_id: "workspace:docs",
+                target: &target,
+                renderer: std::path::Path::new("unused"),
+                cancelled: &|| false,
+            },
+        )
+        .unwrap();
+        let mut context = document_context(&target, Some(archive.clone()));
+        // Exercise the fact builder's real missing-binding error, after a real archive copy.
+        context.workspace_id = None;
+        let error = archive_saved_document(
+            "attempt:doc",
+            &context,
+            &target,
+            &input.path,
+            json!({"exists":false}),
+            &mut saved,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "file_change_failed");
+        assert_eq!(
+            error.message,
+            achbit_kernel_abi::KernelError::MissingWorkspaceBinding.to_string()
+        );
+        assert_eq!(saved["saved"], true);
+        assert_eq!(saved["artifacts"][0]["contentMode"], "fixed");
+        assert_eq!(
+            saved["artifacts"][0]["uri"],
+            "artifact://artifact:attempt:doc"
+        );
+        assert_eq!(
+            saved["artifacts"][0]["contentRef"],
+            json!(archive.join("report.md"))
+        );
+        assert!(saved.get("fileChanges").is_none());
+        std::fs::write(&target, "Changed after archive.").unwrap();
+        assert_eq!(
+            std::fs::read(archive.join("report.md")).unwrap(),
+            content.as_bytes()
+        );
     }
 
     struct DesktopStatus(bool);

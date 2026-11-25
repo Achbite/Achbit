@@ -1,3 +1,20 @@
+.local-agent__tool-group-tail { display: inline-flex; flex: none; align-items: center; gap: 4px; }
+.local-agent__shell-running { display: grid; place-items: center; }
+.local-agent__shell-running .local-agent__run-spinner { border-color: var(--ac-accent); border-inline-end-color: var(--ac-accent-border); animation-duration: 1.1s; }
+.local-agent__shell-wait.local-agent__interaction-panel { flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-height: 0; max-height: none; padding: 11px 15px 12px; margin-bottom: 8px; }
+.local-agent__shell-wait .local-agent__interaction-panel-heading { padding: 0; min-height: 0; }
+.local-agent__shell-wait .local-agent__interaction-caption { color: var(--ac-foreground); font-size: var(--ac-font-label); gap: 7px; }
+.local-agent__shell-wait .local-agent__interaction-caption strong { font-weight: var(--ac-weight-semibold); }
+.local-agent__shell-wait header > small { color: var(--ac-faint); font-size: var(--ac-font-caption); }
+.local-agent__shell-wait-command, .local-agent__shell-wait-meta code { font: var(--ac-font-code-size)/var(--ac-line-code) var(--ac-font-code); }
+.local-agent__shell-wait-command { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ac-muted); }
+.local-agent__shell-wait-actions { display: flex; flex-wrap: wrap; gap: 6px; font-size: var(--ac-font-caption); }
+.local-agent__shell-wait-output { min-height: 0; max-height: min(136px, 20dvh); overflow: auto; border-top: 1px solid var(--ac-border); padding-top: 6px; }
+.local-agent__shell-wait-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 8px; margin: 0 0 6px; color: var(--ac-muted); font-size: var(--ac-font-caption); }
+.local-agent__shell-wait-meta dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 460px) { .local-agent__shell-wait.local-agent__interaction-panel { padding: 9px 12px; } }
+@media (prefers-reduced-motion: reduce) { .local-agent__shell-running .local-agent__run-spinner, .local-agent__shell-wait .local-agent__run-spinner { animation: none; } }
+
 .local-agent__tool-entry-actions {
   display: flex;
   align-items: center;

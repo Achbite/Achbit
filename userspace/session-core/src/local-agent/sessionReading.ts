@@ -45,6 +45,7 @@ export function sessionReadScope(currentId: string, events: readonly SessionEven
 }
 
 export function sessionReadAllowed(scope: SessionReadScope, input: JsonObject): boolean {
+  if (input.view === 'readingWindow') return false; // Desktop read only; not a model tool capability.
   if (scope.handoffPending && (input.sessionId !== scope.currentId || (input.view ?? 'summary') !== 'summary')) return false;
   if (input.sessionId === scope.currentId && scope.historyThroughSequence !== undefined
     && input.throughSequence !== undefined && input.throughSequence !== scope.historyThroughSequence) return false;

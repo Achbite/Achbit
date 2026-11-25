@@ -4,6 +4,10 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { KERNEL_REPLY_VERSION, LOCAL_AGENT_PROTOCOL_VERSION } from '../../protocol/dist/index.js';
 import { buildAgentProviderRequest } from '../dist/local-agent/contextComposer.js';
+import { corePromptInstructions } from '../dist/local-agent/coreInstructions.js';
+import { prepareApprovalReview } from '../dist/local-agent/approvalReview.js';
+import { preparePlanReview } from '../dist/local-agent/planReview.js';
+import { emptySessionState } from '../dist/local-agent/reducer.js';
 import { prepareContextCompaction } from '../dist/local-agent/compaction.js';
 import { achbitProductComponents } from '../dist/local-agent/productInstructions.js';
 import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
@@ -13,11 +17,11 @@ import { assertRuntimeContract } from './support/runtimeContract.mjs';
 
 // Exercise the production HTTP adapter with the same envelope fields emitted by
 // Host prepare-run; actor FakePort fixtures cannot detect this decoder mismatch.
-async function httpPreparation(t, promptContributions) {
+async function httpPreparation(t, promptContributions, codingTools = false) {
   const seed = runtimeSnapshot('run:http-native');
   let provider = structuredClone(seed.provider);
   let reviewer = structuredClone(seed.provider);
-  let projectInstructions;
+  let projectInstructions, userSystemPrompt;
   const requests = [], releases = [];
   const server = createServer(async (request, response) => {
     try {
@@ -29,8 +33,9 @@ async function httpPreparation(t, promptContributions) {
       if (request.url === '/api/local-agent/runtime/prepare-run') {
         requests.push(input);
         data = { schemaVersion: LOCAL_AGENT_PROTOCOL_VERSION, type: 'run.runtime.prepared',
-          sessionId: input.sessionId, runId: input.runId, provider, approvalReviewer: reviewer,
+          sessionId: input.sessionId, runId: input.runId, mode: codingTools ? 'minimal' : 'full', provider, approvalReviewer: reviewer,
           ...(projectInstructions === undefined ? {} : { projectInstructions }),
+          ...(userSystemPrompt === undefined ? {} : { userSystemPrompt }),
           webSearch: seed.webSearch, extensionGenerationRef: seed.extensionGenerationRef,
           kernelCatalogSnapshotRef: seed.kernelCatalogSnapshotRef, tools: [], toolPromptProviders: [],
           toolSelection: { kernel: [], controls: [], plugins: seed.selectedPlugins.plugins.length > 0 },
@@ -56,11 +61,12 @@ async function httpPreparation(t, promptContributions) {
     await new Promise(resolve => server.close(resolve));
   });
   const port = new HttpRunPreparationPort({ apiBase: `http://127.0.0.1:${server.address().port}`,
-    serviceToken: 'fixture-http-token', stableCoreInstructions: seed.instructions, promptContributions });
+    serviceToken: 'fixture-http-token', stableCoreInstructions: corePromptInstructions(!codingTools), promptContributions, codingTools });
   const request = { sessionId: 'session:http-native', runId: 'run:http-native', profileId: seed.provider.profileId,
     workspaceBindingIds: [] };
   return { port, request, requests, releases,
     useProjectInstructions(value) { projectInstructions = value; },
+    useUserSystemPrompt(value) { userSystemPrompt = value; },
     usePlugins(uris) { seed.selectedPlugins.plugins = uris.map(uri => ({ uri,
       pluginArtifactRef: `artifact:${uri}`, pluginInstanceRef: `instance:${uri}`,
       extensionGenerationRef: seed.extensionGenerationRef, capabilityRefs: [] })); },
@@ -199,6 +205,53 @@ test('project instruction sources enter system context and replay unchanged unti
     && message.content.includes('The updated project contract.')));
   assert.deepEqual((await compose(replay)).messages, firstRequest.messages, 'recorded snapshots do not reread current sources');
   assert.deepEqual(replay.instructions, first.instructions);
+});
+
+for (const mode of ['full', 'minimal']) test(`HTTP user system prompt enters only the ${mode} working prefix once`, async t => {
+  const fixture = await httpPreparation(t, [], mode === 'minimal');
+  const { sessionId, runId } = fixture.request;
+  const id = 'achbit.user-system-prompt', marker = 'global-only-marker', text = `  ${marker}\n按原文保留。\n`;
+  fixture.useProjectInstructions([{ path: '/project/AGENTS.md', text: 'project-only-marker' }]);
+  const prepare = async () => JSON.parse(JSON.stringify((await fixture.port.prepare(fixture.request)).runtimeSnapshot));
+  const compose = runtime => buildAgentProviderRequest({ sessionId, runId, runtime, events: [], workspaceBindings: [],
+    responseConstraint: 'normal', providerRequestId: 'request:user-prompt' });
+  const baseline = await prepare();
+  const empty = await compose(baseline);
+  fixture.useUserSystemPrompt(text);
+  const saved = await prepare();
+  assertRuntimeContract('RunRuntimeSnapshot', saved);
+  assert.equal(saved.mode, mode);
+  assert.deepEqual(saved.instructions.filter(item => item.id === id), [{ id, text }]);
+  const { request, receipt } = await compose(saved);
+  assertRuntimeContract('ProviderRequest', request);
+  const position = receipt.messages.findIndex(item => item.contributionId === `instruction:${id}`);
+  assert.ok(position > 0 && position < request.messages.findIndex(message => message.content.includes('project-only-marker')));
+  assert.deepEqual(request.messages[position], { role: 'system', content: text });
+  assert.deepEqual(request.messages.toSpliced(position, 1), empty.request.messages, 'no other instruction replaced or duplicated');
+  assert.deepEqual(request.tools, empty.request.tools);
+  assert.deepEqual(saved.permissions, baseline.permissions);
+  // Decision packets are built independently; the preference is not a user message or approval.
+  const snapshot = { events: [], state: { ...emptySessionState(sessionId), run: { runId, workspaceBindings: [] } } };
+  const approval = { runId, callId: 'call:review', preview: { effects: ['process'], logicalTargets: ['.'],
+    operation: { toolName: 'bash', arguments: { command: 'pwd' } } } };
+  const plan = { runId, planId: 'plan:review', revision: 1, title: 'Review', steps: [], mutationManifest: [], workspaceRequests: [] };
+  for (const review of [prepareApprovalReview(snapshot, saved, approval, 'request:execution'), preparePlanReview(snapshot, saved, plan, 'request:plan')]) {
+    assert.ok(review.request.messages.every(message => !message.content.includes(marker)));
+  }
+  for (const value of ['', ' \n']) {
+    fixture.useUserSystemPrompt(value);
+    assert.deepEqual((await compose(await prepare())).request.messages, empty.request.messages);
+  }
+  assert.deepEqual((await compose(saved)).request.messages, request.messages, 'replaying a captured snapshot does not consult live settings');
+});
+
+test('invalid HTTP user system prompt preserves the decoder error and releases the acquired runtime', async t => {
+  const fixture = await httpPreparation(t);
+  for (const invalid of [null, 42, '界'.repeat(21_846)]) {
+    fixture.useUserSystemPrompt(invalid);
+    await assert.rejects(fixture.port.prepare(fixture.request), /run_runtime_user_system_prompt_invalid/);
+  }
+  assert.equal(fixture.releases.length, 3);
 });
 
 test('invalid project instruction wire entries reject and release the prepared runtime', async t => {

@@ -138,7 +138,10 @@ export function providerWireName(
 /** One binding-to-model projection for all contexts; optional plugins retain their own definitions. */
 export function providerToolView(tools: readonly PreparedToolDescriptor[], runtime: RunRuntimeSnapshot,
   bindings: readonly WorkspaceBindingDisplay[], directories?: readonly WorkspaceBindingDisplay[]): readonly PreparedToolDescriptor[] {
-  return codingToolView(hostShellToolView(tools, runtime, bindings, directories), runtime.codingTools === true);
+  const selection = runtime.toolSelection;
+  const compact = runtime.codingTools === true && selection?.plugins === false && selection.controls?.length === 0
+    && selection.kernel?.every(name => codingToolNames.has(name)) === true;
+  return codingToolView(hostShellToolView(tools, runtime, bindings, directories, compact), runtime.codingTools === true, compact);
 }
 
 /** Render the actual Shell route and only the permission requests its policy can admit. */
@@ -147,6 +150,7 @@ export function hostShellToolView(
   runtime: RunRuntimeSnapshot,
   bindings: readonly WorkspaceBindingDisplay[],
   directories: readonly WorkspaceBindingDisplay[] | undefined,
+  compact = false,
 ): readonly PreparedToolDescriptor[] {
   const composition = runtime.environment.agentComposition;
   const hostForbidden = isRecord(composition) && isRecord(composition.policyConstraints)
@@ -164,18 +168,32 @@ export function hostShellToolView(
       delete properties.requestFileAccess;
       delete properties.requestNetworkPermission;
     }
-    if (host && tool.name === 'bash' && isRecord(properties.command)) {
+    if (!compact && host && tool.name === 'bash' && isRecord(properties.command)) {
       properties.command.description = 'Bash script in the selected workspace. Preserve the target command\'s exit status through pipelines and trailing diagnostics.';
     }
     const shell = tool.name === 'bash' ? 'Bash' : 'PowerShell';
-    const discovery = tool.name === 'bash' ? ' Use ls, rg or find when the target path is unknown.' : ' List or search when the target path is unknown.';
+    const discovery = tool.name === 'bash' ? ' Use ls or find when the target path is unknown.' : ' List or search when the target path is unknown.';
     const access = resourceHandles.length
       ? `Project and session directories use host-user filesystem permissions. File references (${resourceHandles.join(', ')}) retain their own access permissions.`
       : "Commands run as the host user and can write files writable by that user.";
     const target = runtime.environment.shell;
     const environment = isRecord(target) && target.tool === tool.name
       ? `\nCommand environment: ${target.dialect} on ${runtime.environment.os} (${runtime.environment.arch}).` : '';
-    const description = host ? `Run ${shell} from the selected workspace. ${access}${discovery}` : tool.description;
+    let description = host ? `Run ${shell} from the selected workspace. ${access}${discovery}` : tool.description;
+    if (compact) {
+      // Scope comes from the resolved route; discovery is already in the callable-tool rules.
+      if (!host) description = `Run ${shell} in the workspace sandbox. Project writes need authorized output paths; the session directory is writable.`;
+      else description = resourceHandles.length
+        ? `Run ${shell} as the host user in project and session directories. File references (${resourceHandles.join(', ')}) retain their own permissions.`
+        : `Run ${shell} as the host user in the selected workspace.`;
+      if (tool.name === 'bash' && isRecord(properties.command)) properties.command.description = host
+        ? 'Bash script; preserve the target exit status.'
+        : 'Bash script. Sandbox HOME is session-local; TMPDIR lasts one call. Preserve the target exit status.';
+      if (isRecord(properties.timeout)) properties.timeout.description = 'Seconds; omit for no time limit.';
+      if (isRecord(properties.requestHostPermission)) properties.requestHostPermission.description = 'Reason to run on the host instead of in the sandbox.';
+      if (isRecord(properties.requestNetworkPermission)) properties.requestNetworkPermission.description = 'Reason to grant sandbox network access; omit if already granted.';
+      if (isRecord(properties.requestFileAccess)) properties.requestFileAccess.description = 'External absolute paths only. Approved read-only grants can be reused in this task and file environment.';
+    }
     return { ...tool, inputSchema, description: description + environment };
   });
 }

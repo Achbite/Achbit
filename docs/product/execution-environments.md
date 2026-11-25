@@ -1,6 +1,6 @@
 # Execution environments
 
-Use the run's recorded target, shell and PATH, plus the project's build instructions. The product operations Skill supplies `commandPaths` for executables found on that PATH. This is location discovery; actual command results establish runtime dependencies, sandbox access and service readiness. Command-not-found, access denial and an unreachable service are different failures. Host permission changes access, not the selected execution target or shell.
+Use the run's recorded target, shell and PATH, plus the project's build instructions. A successful built-in file read of the installed operations.md guide supplies `commandPaths` for executables found on that PATH. This is location discovery; actual command results establish runtime dependencies, sandbox access and service readiness. Command-not-found, access denial and an unreachable service are different failures. Host permission changes access, not the selected execution target or shell.
 
 ## Workspace Shell
 
@@ -17,7 +17,7 @@ Under delegated review, an approved read-only `requestFileAccess` scope can be r
 
 Project files remain read-only to workspace Shell even when file-tool edits are allowed. The session owns its working directory outside the project. Tools can return their results directly or keep intermediate files there. Shell execution follows the active permission policy. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
 
-Workspace Shell HOME is session-managed; it is not the application configuration root. After selection or use of the product or iteration Skill, `Achbit product resources` supplies `achbitCli` and `hostDataDirectory` with the originating message or successful activation/read result when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then the required management command. Submit the Shell call with `requestHostPermission` and a specific reason, including read-only commands such as `plugins status`; the current permission policy handles authorization. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
+Workspace Shell HOME is session-managed; it is not the application configuration root. After the built-in file reader reads operations.md from the installed Product guides directory, `Achbit product resources` supplies `achbitCli` and `hostDataDirectory` with the originating message or successful activation/read result when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then the required management command. Submit the Shell call with `requestHostPermission` and a specific reason, including read-only commands such as `plugins status`; the current permission policy handles authorization. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
 
 Workspace Shell is offline by default, including loopback access. Network grants can be per call, task or conversation as offered by the decision. Explicit command deny/ask rules still apply. Host execution uses real host-user permissions, including network and writes outside the sandbox; a working directory is not isolation. With Plan approval enabled or an active Plan, each Host call requires separate approval. An approval or a failed command does not authorize an automatic broader retry.
 
@@ -75,3 +75,21 @@ Command-not-found describes the prepared PATH, not all installed software. Denie
 Use PowerShell syntax on Windows; Windows PowerShell 5.1 lacks && and ||. Preserve $LASTEXITCODE for native commands and pipeline failures in Bash. The shell output tail is bounded to 2000 lines or 50 KiB. The model receives command output and its exit code. Timeouts, truncation and recoverable log paths are reported when applicable. Log paths accompany clipped output or a failed command whose archived streams contain additional bytes. The Kernel retains the full record. A terminal supplies bounded stdin once to a temporary PTY and must terminate; omitted terminal closes stdin.
 
 For long commands, dependency waits, one-time review and cancellation, read [managed processes](managed-processes.md).
+
+## Windows troubleshooting
+
+Use the recorded target, shell dialect and original error before changing anything.
+
+| Symptom | Next check |
+| --- | --- |
+| Command not found | Prepared PATH and selected shell; this is not an inventory of installed software |
+| PowerShell syntax failure | PowerShell 5.1 has no `&&` / `||`; use valid syntax and preserve native `$LASTEXITCODE` |
+| `powershell_unavailable` | Selected executable/path; choose or install a shell only with authorization |
+| Docker connection failure | Socket/access and actual daemon error; changing shells does not start Docker |
+| `*_workspace_sandbox_unavailable` | `workspaceSandbox.reason`; Settings → Execution environment → Check Windows support |
+| Linux/WSL sandbox failure | Bubblewrap and namespace support; WSL1 is not supported |
+| Missing GUI output | Read the matching tool result before concluding nothing executed |
+
+Automatic native selection prefers PowerShell 7, then Windows PowerShell. Explicit choices do not fall back. Git Bash is opt-in; `System32/bash.exe` is a WSL launcher. For a project requiring Linux, select an explicit WSL distribution and installed Linux Kernel rather than translating commands by guesswork.
+
+New runs capture configuration; explicit environment refresh updates Host paths. Do not reinstall the product, edit Session databases, relax permissions or switch to Host execution as a generic remedy. See `execution-environments.md` in `productDocsPath` for configuration.

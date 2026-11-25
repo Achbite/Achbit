@@ -18,6 +18,12 @@
 .conversation-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: var(--ac-code-background); font: inherit; font-family: var(--ac-font-code); overflow-wrap: anywhere; }
 .conversation-markdown a { color: var(--ac-accent); font-weight: 500; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--ac-accent) 35%, transparent); text-underline-offset: 3px; }
 .conversation-markdown a:hover { text-decoration-color: currentColor; }
+/* Scroll overlong inline math locally. The grid exports the math baseline; compensated
+   ink space keeps ordinary italic subscripts and fraction glyphs out of the scrollbars. */
+.conversation-markdown :not(.katex-display) > .katex {
+  display: inline-grid; vertical-align: baseline; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain;
+  padding: .24em .16em; margin: -.24em -.16em;
+}
 .conversation-markdown > :first-child { margin-top: 0; }
 .conversation-markdown > :last-child { margin-bottom: 0; }
 .conversation-markdown img, .conversation-diagram svg { max-width: 100%; height: auto; }
@@ -73,6 +79,7 @@
 .conversation-table [data-column='prose'] { min-width: 19em; }
 .conversation-table-scroll tr[data-pin-leading] > :is(th, td):first-child { position: sticky; left: 0; z-index: 1; }
 .conversation-table-scroll[data-scrolled='true'] tr[data-pin-leading] > :is(th, td):first-child { box-shadow: 5px 0 7px -6px color-mix(in srgb, var(--ac-shadow-color) 26.67%, transparent); }
+.conversation-table-scroll[data-leading-crowds] tr[data-pin-leading] > :is(th, td):first-child { position: static; box-shadow: none; }
 .conversation-table td code { overflow-wrap: normal; word-break: normal; }
 .conversation-table :is(th, td) p { margin: 0; }
 .conversation-table tbody tr:last-child td { border-bottom: 0; }

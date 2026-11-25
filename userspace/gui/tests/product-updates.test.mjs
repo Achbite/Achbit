@@ -45,7 +45,7 @@ test('product update notice renders the current update snapshot on the server', 
   ]);
   const render = () => renderToStaticMarkup(createElement(ProductUpdateNotice));
   assert.equal(render(), '');
-  const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop);
+  b.cleanups.push(updates.installProductUpdateMonitor()); await flush();
   assert.match(render(), /data-product-update="waiting"/);
   findReactElement(capture(ProductUpdateNotice).tree, node => node.type === 'button').props.onClick();
   await flush();
@@ -101,14 +101,107 @@ test('a newer updater event wins over a delayed initial status read', async t =>
   const [updates, { ProductUpdateNotice }] = await loadGuiModules(t, [
     '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
   ]);
-  const installing = updates.installProductUpdateMonitor(); await flush();
+  b.cleanups.push(updates.installProductUpdateMonitor()); await flush();
   const current = { ...b.status, phase: 'current', version: null };
   b.handlers.get('achbit:product-update')({ payload: current });
   resolveStatus(b.status);
-  b.cleanups.push(await installing); await flush();
+  await flush();
   assert.deepEqual(updates.productUpdateSnapshot(), current);
   assert.equal(renderToStaticMarkup(createElement(ProductUpdateNotice)), '');
   assert.equal(b.calls.some(call => ['achbit_update_check', 'achbit_update_install'].includes(call.command)), false);
+});
+
+test('a held update status does not block configuration or an explicit prepare decision', async t => {
+  const b = browser(t);
+  const { promise, resolve } = Promise.withResolvers();
+  const invoke = b.window.__TAURI__.core.invoke;
+  b.window.__TAURI__.core.invoke = (command, args) => {
+    if (command !== 'achbit_update_status') return invoke(command, args);
+    b.calls.push({ command }); return promise;
+  };
+  const [updates] = await loadGuiModules(t, ['/src/services/productUpdates.ts']);
+  b.cleanups.push(updates.installProductUpdateMonitor(), () => resolve(b.status));
+  await flush();
+  assert.ok(b.calls.some(call => call.command === 'achbit_update_status'));
+  assert.ok(b.calls.some(call => call.command === 'achbit_update_configure'), 'a pending snapshot is not the configuration gate');
+  b.handlers.get('achbit:update-prepare')({ payload: { nonce: 91, manual: true, busy: true } });
+  assert.deepEqual(updates.productUpdateConfirmation(), { busy: true, unsaved: [] });
+  assert.equal(b.root.inert, false);
+  updates.respondProductUpdate(false); await flush();
+  assert.deepEqual(b.calls.at(-1), { command: 'achbit_update_prepare_response', args: { nonce: 91, storage: null } });
+});
+
+test('a failed initial status preserves its native reason and leaves live updates subscribed', async t => {
+  const b = browser(t), original = 'updater IPC: status lock poisoned';
+  const invoke = b.window.__TAURI__.core.invoke;
+  b.window.__TAURI__.core.invoke = (command, args) => command === 'achbit_update_status'
+    ? Promise.reject(original) : invoke(command, args);
+  const [updates] = await loadGuiModules(t, ['/src/services/productUpdates.ts']);
+  b.cleanups.push(updates.installProductUpdateMonitor()); await flush();
+  assert.equal(updates.productUpdateSnapshot().phase, 'error');
+  assert.equal(updates.productUpdateSnapshot().error, original);
+  b.handlers.get('achbit:product-update')({ payload: b.status });
+  assert.deepEqual(updates.productUpdateSnapshot(), b.status, 'new native status can recover the monitor');
+});
+
+test('disposing during listener setup releases both installed and late handles exactly once', async t => {
+  const b = browser(t), registration = Promise.withResolvers(), released = [];
+  b.window.__TAURI__.event.listen = async (name, cb) => {
+    b.handlers.set(name, cb);
+    if (name === 'achbit:product-update') await registration.promise;
+    return () => { released.push(name); b.handlers.delete(name); };
+  };
+  const [updates] = await loadGuiModules(t, ['/src/services/productUpdates.ts']);
+  const stop = updates.installProductUpdateMonitor(); b.cleanups.push(stop, registration.resolve);
+  await flush();
+  const late = b.handlers.get('achbit:product-update'); assert.ok(late, 'registration started, unlisten handle withheld');
+  assert.equal(b.calls.some(call => call.command === 'achbit_update_configure'), false, 'do not enable updates before all subscriptions exist');
+  const before = updates.productUpdateSnapshot();
+  stop(); stop(); late({ payload: b.status }); registration.resolve(); await flush();
+  assert.equal(updates.productUpdateSnapshot(), before);
+  assert.deepEqual(released.sort(), ['achbit:product-update', 'achbit:update-prepare', 'achbit:update-resume']);
+  assert.equal(b.handlers.size, 0);
+  assert.equal(b.calls.length, 0, 'the disposed setup does not start native status/configuration');
+});
+
+test('disposal declines a pending decision even while the first status is held; late IPC cannot publish', async t => {
+  const b = browser(t), status = Promise.withResolvers(), configuration = Promise.withResolvers();
+  const invoke = b.window.__TAURI__.core.invoke;
+  b.window.__TAURI__.core.invoke = (command, args) => {
+    if (!['achbit_update_status', 'achbit_update_configure'].includes(command)) return invoke(command, args);
+    b.calls.push({ command, args });
+    return command === 'achbit_update_status' ? status.promise : configuration.promise;
+  };
+  const [updates, { useSettingsStore }] = await loadGuiModules(t, ['/src/services/productUpdates.ts', '/src/state/settingsStore.ts']);
+  const stop = updates.installProductUpdateMonitor(); b.cleanups.push(stop, () => status.resolve(b.status), configuration.resolve);
+  await flush();
+  b.handlers.get('achbit:update-prepare')({ payload: { nonce: 92, manual: true, busy: true } });
+  assert.notEqual(updates.productUpdateConfirmation(), null);
+  useSettingsStore.setState({ storePath: '/fixture/loaded.json' }); // queue a reconfiguration behind the first
+  const before = updates.productUpdateSnapshot();
+  stop(); updates.respondProductUpdate(true); status.resolve(b.status); configuration.reject(new Error('late failure')); await flush();
+  assert.equal(b.root.inert, false);
+  assert.equal(updates.productUpdateSnapshot(), before);
+  assert.deepEqual(b.calls.filter(c => c.command === 'achbit_update_prepare_response').map(c => c.args), [{ nonce: 92, storage: null }]);
+  assert.deepEqual(b.calls.filter(c => c.command === 'achbit_update_configure').map(c => c.args), [{ enabled: false }]);
+});
+
+test('a registration failure releases partial native and input listeners and keeps the original error', async t => {
+  const b = browser(t), original = 'native subscription rejected: event channel closed';
+  const add = t.mock.method(b.window, 'addEventListener'), remove = t.mock.method(b.window, 'removeEventListener');
+  const listen = b.window.__TAURI__.event.listen;
+  b.window.__TAURI__.event.listen = (name, cb) => name === 'achbit:product-update'
+    ? Promise.reject(original) : listen(name, cb);
+  const [updates] = await loadGuiModules(t, ['/src/services/productUpdates.ts']);
+  // Observe this monitor's input listeners, not other module initialization.
+  add.mock.resetCalls(); remove.mock.resetCalls();
+  b.cleanups.push(updates.installProductUpdateMonitor()); await flush();
+  assert.equal(updates.productUpdateSnapshot().phase, 'error');
+  assert.equal(updates.productUpdateSnapshot().error, original);
+  assert.equal(b.handlers.size, 0);
+  assert.ok(add.mock.callCount() > 0);
+  assert.deepEqual(remove.mock.calls.map(c => c.arguments), add.mock.calls.map(c => c.arguments));
+  assert.equal(b.calls.some(call => call.command === 'achbit_update_configure'), false);
 });
 
 test('a real restart snapshot restores the draft and selected conversation before mounting', async t => {

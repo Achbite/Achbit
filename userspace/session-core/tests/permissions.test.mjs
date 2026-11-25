@@ -7,7 +7,7 @@ import { APPROVAL_REVIEW_SCHEMA, decodeApprovalReview, prepareApprovalReview } f
 import { emptyRunLifecycle, reduceRunLifecycle } from '../dist/local-agent/runLifecycle.js';
 import {
   actorWith, createSession, fakeRunPreparation, emptyKernel,
-  workspaceBinding, providerEvent, messageCommand, waitForProjection, completedExecutionReply, readEvents, runtimeSnapshot,
+  workspaceBinding, providerEvent, messageCommand, waitForProjection, completedExecutionReply, failedExecutionReply, readEvents, runtimeSnapshot,
 } from './local-agent-fixtures.mjs';
 
 const shell = { toolBindingRef: 'binding:shell', name: 'bash', description: 'Run a command', origin: 'coreBuiltin',
@@ -74,7 +74,10 @@ test('approval review retains original user constraints without main-model summa
     { messageId: 'message:guidance', content: 'Use the existing build directory.' },
   ]);
   assert.deepEqual(request.tools, []);
-  assert.deepEqual(input.operation, context);
+  const { workspaceId, ...boundContext } = context;
+  assert.deepEqual(input.operation, { ...boundContext, workspace: 'primary' });
+  assert.deepEqual(input.requestedAccess.environment, input.operation);
+  assert.equal(approval.preview.authorizationContext.workspaceId, workspaceId, 'canonical grant is unmodified');
   assert.equal(input.grant, 'thisCallOnly');
   assert.equal(request.messages[1].content.includes('Keep project changes within the approved scope.'), false);
   const longInput = structuredClone(snapshot);
@@ -141,7 +144,7 @@ test('review reasons survive canonical permission metadata removal without chang
   const packet = JSON.parse(request.messages[1].content);
   assert.deepEqual(packet.requestReason, { host: original.requestHostPermission, network: original.requestNetworkPermission,
     files: original.requestFileAccess.reason });
-  assert.deepEqual(packet.operation, operation);
+  assert.deepEqual(packet.operation, { ...operation, workspace: 'primary' });
   assert.deepEqual(packet.requestedAccess.fileAccess, approval.preview.fileAccess);
   assert.equal(packet.grant, 'thisCallOnly');
   assert.deepEqual(request.tools, []);
@@ -1117,6 +1120,105 @@ const reviewHistoryTool = { toolBindingRef: 'binding:session-read', name: 'sessi
 const reviewFileTool = { toolBindingRef: 'binding:fs-read', name: 'fs.read', origin: 'coreBuiltin',
   availability: 'callable', description: 'Read file', possibleEffects: ['workspaceRead'],
   inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } };
+
+test('review file addresses survive truncated input excerpts without publishing or guessing an unavailable root', () => {
+  const sessionId = 'session:review-clipping', runId = 'run:review-clipping', callId = 'call:scope';
+  const second = { workspaceId: 'private:second-id', displayName: 'Notes' }, retired = 'private:retired-id';
+  const path = 'notes/check.sh', literal = '  {"workspaceId":"business-data"}\n', source = literal + 'x'.repeat(6200);
+  const record = (workspaceId, recordId) => ({ recordId, toolName: 'fs.write', outcome: 'completed', input: { path, content: source, workspaceId },
+    preparedEffect: { workspaceId, canonicalInvocation: { arguments: { path } } }, output: { saved: true, fileChanges: [{ workspaceId, path }] } });
+  const records = [record(second.workspaceId, 'record:known'), record(retired, 'record:unavailable')];
+  const events = [...records.map((record, i) => ({ type: 'tool.completed', sequence: i + 1, sessionId, runId, payload: { record } })),
+    { type: 'tool.requested', sequence: 3, sessionId, runId, callId, payload: { toolName: 'bash', input: { workspaceId: retired, command: 'sh notes/check.sh' } } }];
+  const snapshot = { events, state: { ...emptySessionState(sessionId), run: { runId, workspaceBindings: [workspaceBinding, second] } } };
+  const approval = { runId, callId, preview: { effects: ['process'], logicalTargets: ['.'], operation: { toolName: 'bash', arguments: { command: 'sh notes/check.sh' } },
+    authorizationContext: { fileEnvironment: { workspaceId: retired }, networkEnvironment: { workspaceId: retired } } } };
+  const request = prepareApprovalReview(snapshot, runtimeSnapshot(runId, { contextWindowTokens: 16384 }), approval, 'request:review-clipping').request;
+  const packet = JSON.parse(request.messages[1].content);
+  const [known, unavailable] = packet.recentObservations.records;
+  assert.deepEqual(known.file, { workspace: 'workspace2', path });
+  assert.equal(known.input.truncated, true);
+  assert.ok(known.input.text.includes(JSON.stringify(literal).slice(1, -1)), 'file contents that look like selectors remain untouched');
+  assert.deepEqual(JSON.parse(known.output.text).fileChanges, [{ workspace: 'workspace2', path }]);
+  assert.equal(unavailable.file, undefined);
+  assert.equal(packet.operation.workspace, 'unavailable');
+  assert.equal(packet.requestedAccess.environment.networkEnvironment.workspace, 'unavailable');
+  assert.deepEqual(packet.evidenceAccess.workspaces.map(binding => binding.handle), ['primary', 'workspace2']);
+  assert.doesNotMatch(request.messages[1].content, /private:second-id|private:retired-id/);
+  assert.deepEqual(records[0].input, { workspaceId: second.workspaceId, content: source, path });
+});
+
+test('reviewer corrects a wrong-root NotFound using the exact workspace/path of the source receipt', async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:review-two-roots';
+  const second = { workspaceId: 'workspace:other-bound-project', displayName: 'Second project' };
+  await createSession(journal, sessionId, [workspaceBinding, second]);
+  const path = 'checks/verify.sh', command = 'sh checks/verify.sh';
+  const file = 'review-only fixture source', error = { code: 'fs_read_metadata_failed', message: `Cannot inspect ${path}: No such file or directory` };
+  const miss = { stage: 'metadata', details: { path, ioKind: 'NotFound', osCode: 2 } };
+  const operation = { toolName: 'bash', arguments: { command }, workspaceRoot: '/selected-project', executionScope: 'workspace' };
+  const environment = { workspaceId: second.workspaceId, workspaceRoot: operation.workspaceRoot, fileEnvironment: { workspaceId: second.workspaceId } };
+  const reads = [], reviews = [], decisions = [];
+  let main = 0;
+  const prep = reviewerPreparation({ tools: [shell, reviewFileTool], contextWindowTokens: 16384, permissions: { 'agent.permissions.shell': 'review' } });
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    const emit = (id, name, input) => providerEvent(request.requestId, 'tool.call', { callId: id, name, input });
+    if (request.purpose === 'approvalReview') {
+      reviews.push(request);
+      const packet = JSON.parse(request.messages[1].content);
+      const receipt = packet.recentObservations.records.find(item => item.toolName === 'fs.read');
+      const source = JSON.parse(receipt.input.text);
+      assert.deepEqual(source, { workspace: 'workspace2', path });
+      assert.deepEqual(receipt.file, source);
+      assert.deepEqual(packet.operation, { ...operation, workspace: 'workspace2' });
+      assert.equal(packet.requestedAccess.environment.workspace, 'workspace2');
+      assert.equal(packet.requestedAccess.environment.fileEnvironment.workspace, 'workspace2');
+      assert.doesNotMatch(request.messages[1].content, /workspace:other-bound-project|workspace:test/);
+      if (reviews.length === 1) yield emit('review:wrong', 'fs_read', { path }); // Omitted handle is always primary.
+      else if (reviews.length === 2) {
+        const failure = JSON.parse(request.messages.findLast(message => message.role === 'tool').content);
+        assert.deepEqual(failure.error, error);
+        assert.equal(failure.result.stage, miss.stage);
+        assert.deepEqual(failure.result.details, miss.details);
+        assert.equal(failure.result.workspace, 'primary');
+        assert.doesNotMatch(failure.result.recovery, /workspace2/, 'the failed read cannot identify the correct root');
+        yield emit('review:correct', 'fs_read', source); // Use recorded evidence, not a guessed sibling.
+      } else {
+        assert.equal(reviews.length, 3);
+        assert.equal(request.messages.findLast(message => message.role === 'tool').content, file);
+        yield providerEvent(request.requestId, 'assistant.message', { content: JSON.stringify({ decision: 'ask', reason: 'File location resolved; the proposed execution still needs consent.' }) });
+      }
+    } else if (++main === 1) yield emit('main:source', 'fs_read', { workspace: 'workspace2', path });
+    else { assert.equal(main, 2); yield emit('main:proposed', 'bash', { workspace: 'workspace2', command }); }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel({ async execute(request) {
+    assert.equal(request.nonWorkspaceAuthority, undefined);
+    if (request.toolName === 'fs.read') {
+      reads.push({ workspaceId: request.input.workspaceId, path: request.input.path });
+      assert.equal(request.input.path, path);
+      return request.input.workspaceId === second.workspaceId ? completedExecutionReply(request, { content: file })
+        : failedExecutionReply(request, miss, error);
+    }
+    decisions.push(request);
+    return { schemaVersion: 'achbit.kernel-reply', type: 'tool.execution', requestId: request.requestId, callId: request.callId,
+      status: 'approvalRequired', preview: { summary: 'Run the project check', effects: ['process'], logicalTargets: ['.'],
+        approvalReviewer: 'agent', operation, authorizationContext: environment } };
+  } }), prep.port, 'review-two-roots');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Read the source and review the proposed project check.'));
+  const state = await waitForProjection(actor, value => value.run?.status === 'waiting' && value.pendingApproval?.preview.review?.decision === 'ask');
+  assert.deepEqual(reads, [second, workspaceBinding, second].map(binding => ({ workspaceId: binding.workspaceId, path })));
+  assert.equal(decisions.length, 1, 'the Kernel never gets a resumed/authorized shell call');
+  assert.deepEqual(state.shellAuthorizations, []);
+  assert.deepEqual(reviews.map(request => request.tools), [reviews[0].tools, reviews[0].tools, reviews[0].tools]);
+  assert.deepEqual(reviews.map(request => request.messages.slice(0, 2)), [0, 0, 0].map(() => reviews[0].messages.slice(0, 2)));
+  const events = await readEvents(journal, sessionId);
+  assert.equal(events.filter(event => event.type === 'approval.requested').length, 1);
+  assert.ok(!events.some(event => event.type === 'approval.resolved'));
+  const record = events.find(event => event.type === 'tool.completed' && event.payload.record.outcome === 'failed').payload.record;
+  assert.deepEqual(record.output, miss);
+  assert.deepEqual(record.error, error);
+  assert.equal(record.preparedEffect.workspaceId, workspaceBinding.workspaceId);
+});
 
 for (const mode of ['read', 'file', 'permission', 'other-session', 'write-tool', 'native', 'bounded']) test(`approval evidence loop keeps read scope and returns a decision (${mode})`, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = `session:evidence-${mode}`;

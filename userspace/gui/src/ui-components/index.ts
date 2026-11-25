@@ -1,42 +1,33 @@
-import { Button as ButtonView } from './Button';
-import { IconButton as IconButtonView } from './IconButton';
-import { CloseButton as CloseButtonView } from './CloseButton';
-import { PanelHeader as PanelHeaderView } from './PanelHeader';
-import { DisclosureSummary as DisclosureSummaryView } from './DisclosureSummary';
-import ModalDialogView from '../components/shared/ModalDialog';
-import ToggleSwitchView from '../components/shared/ToggleSwitch';
-import NativeSelectView from '../components/shared/NativeSelect';
-import ResizeHandleView from '../components/shared/ResizeHandle';
-import IconView from '../icons/registry';
+import { Button } from './Button';
+import { IconButton } from './IconButton';
+import { CloseButton } from './CloseButton';
+import { PanelHeader } from './PanelHeader';
+import { DisclosureSummary } from './DisclosureSummary';
+import ModalDialog from './ModalDialog';
+import ToggleSwitch from './ToggleSwitch';
+import NativeSelect from './NativeSelect';
+import ResizeHandle from './ResizeHandle';
+import UiIcon from '../icons/registry';
 
 /** Static implementation catalog, not another plugin runtime or state store.
  * Register once here; consumers import the named exports below. Component identities
  * remain unchanged, so registration never adds wrappers or resets mounted state.
  */
 export const UI_COMPONENTS = Object.freeze({
-  Button: { component: ButtonView, purpose: 'Native action with shared sizes and visual variants.' },
-  IconButton: { component: IconButtonView, base: 'Button', purpose: 'Named icon-only action.' },
-  CloseButton: { component: CloseButtonView, base: 'IconButton', purpose: 'Owner-controlled close action.' },
-  PanelHeader: { component: PanelHeaderView, purpose: 'Panel title and trailing controls.' },
-  DisclosureSummary: { component: DisclosureSummaryView, purpose: 'Native content disclosure with a shared chevron; details owns expansion.' },
-  ModalDialog: { component: ModalDialogView, purpose: 'Native modal layer, focus return and dismissal.' },
-  ToggleSwitch: { component: ToggleSwitchView, purpose: 'Native checkbox with switch semantics.' },
-  NativeSelect: { component: NativeSelectView, purpose: 'Native picker and pointer-focus completion.' },
-  ResizeHandle: { component: ResizeHandleView, purpose: 'Shared pointer and keyboard pane resizing.' },
-  UiIcon: { component: IconView, purpose: 'Registered application glyphs.' },
+  Button: { family: 'action', component: Button, purpose: 'Native action with shared sizes and visual variants.' },
+  IconButton: { family: 'action', component: IconButton, base: 'Button', purpose: 'Named icon-only action.' },
+  CloseButton: { family: 'action', component: CloseButton, base: 'IconButton', purpose: 'Owner-controlled close action.' },
+  PanelHeader: { family: 'layout', component: PanelHeader, purpose: 'Panel title and trailing controls.' },
+  DisclosureSummary: { family: 'disclosure', component: DisclosureSummary, purpose: 'Native content disclosure with a shared chevron; details owns expansion.' },
+  ModalDialog: { family: 'dialog', component: ModalDialog, purpose: 'Native modal layer, focus return and dismissal.' },
+  ToggleSwitch: { family: 'input', component: ToggleSwitch, purpose: 'Native checkbox with switch semantics.' },
+  NativeSelect: { family: 'input', component: NativeSelect, purpose: 'Native picker and pointer-focus completion.' },
+  ResizeHandle: { family: 'layout', component: ResizeHandle, purpose: 'Shared pointer and keyboard pane resizing.' },
+  UiIcon: { family: 'icon', component: UiIcon, purpose: 'Registered application glyphs.' },
 } as const);
 
 export type UiComponentName = keyof typeof UI_COMPONENTS;
-export const Button = UI_COMPONENTS.Button.component;
-export const IconButton = UI_COMPONENTS.IconButton.component;
-export const CloseButton = UI_COMPONENTS.CloseButton.component;
-export const PanelHeader = UI_COMPONENTS.PanelHeader.component;
-export const DisclosureSummary = UI_COMPONENTS.DisclosureSummary.component;
-export const ModalDialog = UI_COMPONENTS.ModalDialog.component;
-export const ToggleSwitch = UI_COMPONENTS.ToggleSwitch.component;
-export const NativeSelect = UI_COMPONENTS.NativeSelect.component;
-export const ResizeHandle = UI_COMPONENTS.ResizeHandle.component;
-export const UiIcon = UI_COMPONENTS.UiIcon.component;
+export { Button, IconButton, CloseButton, PanelHeader, DisclosureSummary, ModalDialog, ToggleSwitch, NativeSelect, ResizeHandle, UiIcon };
 export type { ButtonProps, ButtonVariant, ControlSize } from './Button';
 export type { IconButtonProps } from './IconButton';
 export type { CloseButtonProps } from './CloseButton';
