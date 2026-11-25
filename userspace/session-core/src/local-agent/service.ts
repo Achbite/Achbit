@@ -197,10 +197,6 @@ export class SessionService implements ConversationPort {
         if (!required && isMissingSession(error)) return;
         throw error;
       }
-      if (!events.length) {
-        if (required) throw new Error('session_not_found');
-        return;
-      }
       return projectSession(recoverSession(id, events));
     };
     try {

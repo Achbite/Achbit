@@ -339,7 +339,10 @@ impl HttpKernelClient {
                     .await?;
                 let saved: Value = decode_api_data(value)?;
                 command[field] = if field == "task" {
-                    json!("请依据本条消息的粘贴文本聚焦上下文。")
+                    json!(
+                        include_str!("../../../contracts/agent-runtime/focus-attachment.txt")
+                            .trim_end()
+                    )
                 } else {
                     saved["text"].clone()
                 };

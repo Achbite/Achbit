@@ -1,3 +1,4 @@
+import focusAttachment from '../../../../contracts/agent-runtime/focus-attachment.txt?raw';
 import { EventSourceParserStream } from 'eventsource-parser/stream';
 import { pastedImageBytes, type PastedImageInput } from './pastedImage';
 import { isLlmReasoningEffort } from '@achbit/protocol';
@@ -292,7 +293,7 @@ export async function submitLocalAgentCommand(
       const reference = await uploadConversationPastedText(command.sessionId, command.commandId, content, signal);
       const filesystemReferences = [...(command.filesystemReferences ?? []), reference];
       command = command.type === 'message.submit' ? { ...command, text: '', filesystemReferences }
-        : { ...command, task: '请依据本条消息的粘贴文本聚焦上下文。', filesystemReferences };
+        : { ...command, task: focusAttachment.trimEnd(), filesystemReferences };
     }
   }
   const reply = await request<unknown>(
@@ -1746,12 +1747,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function readConversation(sessionId: string, query: Omit<import('@achbit/protocol').ConversationReadQuery, 'sessionId'>, signal?: AbortSignal) {
+  if (query.view === 'readingWindow') {
+    const { throughSequence, anchorKey, limit = 12 } = query;
+    if (!isPositiveNaturalNumber(throughSequence) || !Number.isInteger(limit) || limit < 1 || limit > 24
+      || (anchorKey !== undefined && !isStreamId(anchorKey))) throw new Error('conversation_read_window_query_invalid');
+    query = { ...query, limit };
+  }
   const page = await request<import('@achbit/protocol').ConversationReadResult>(
     `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/read`,
     { method: 'POST', body: JSON.stringify(query), signal },
   );
-  if (page.sessionId !== sessionId || page.view !== (query.view ?? 'summary')) {
+  if (!isRecord(page) || page.sessionId !== sessionId || page.view !== (query.view ?? 'summary')) {
     throw new Error('conversation_read_identity_mismatch');
+  }
+  if (query.view === 'transcript') validateTranscriptPage(sessionId, page);
+  if (query.view === 'readingWindow') {
+    signal?.throwIfAborted();
+    page.readingWindow = decodeRevisionWindow(page, query.throughSequence!, query.anchorKey, query.limit!);
   }
   return page;
 }
@@ -1767,8 +1779,7 @@ export async function readTranscriptOverview(id: string, signal: AbortSignal) {
   return o;
 }
 
-export async function readTranscriptPage(sessionId: string, around: number | undefined, signal: AbortSignal) {
-  const response = await readConversation(sessionId, { view: 'transcript', ...(around === undefined ? {} : { around }) }, signal);
+function validateTranscriptPage(sessionId: string, response: import('@achbit/protocol').ConversationReadResult) {
   const page = response.transcript;
   if (!page || page.sessionId !== sessionId || page.revision !== response.revision || !isPositiveNaturalNumber(page.start)
     || !isPositiveNaturalNumber(page.end) || page.start > page.end || page.end > page.revision
@@ -1794,7 +1805,6 @@ export async function readTranscriptPage(sessionId: string, around: number | und
     || !isNullable(live.pendingPlan,isPendingPlan) || !isNullable(live.pendingApproval,isApproval)
     || !isNullable(live.pendingInteraction,isInteraction) || !isNullable(live.assistantDraft,isAssistantDraft)
     || !isArrayOf(live.queuedInputs,isQueuedInput))) throw new Error('conversation_transcript_run_invalid');
-  return page;
 }
 
 // Exact UTF-8 size of this plain JSON value, stopping at the negotiated bound. Do not
@@ -1829,17 +1839,9 @@ function fitsReadingWindow(value: unknown): boolean {
 
 /** A new wire view, not the old journal excerpt. Decode every canonical message using the
  * same validator as /projection. Only the explicit discriminator denotes a normal fallback. */
-export async function readRevisionWindow(sessionId: string, throughSequence: number, signal: AbortSignal,
-  anchorKey?: string, limit = 12): Promise<ConversationReadingWindow> {
-  if (!isPositiveNaturalNumber(throughSequence) || !Number.isInteger(limit) || limit < 1 || limit > 24
-    || (anchorKey !== undefined && !isStreamId(anchorKey))) throw new Error('conversation_read_window_query_invalid');
-  const data = await request<unknown>(`${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}/read`, {
-    method: 'POST', body: JSON.stringify({ view: 'readingWindow', throughSequence, ...(anchorKey !== undefined ? { anchorKey } : {}), limit }), signal,
-  });
-  signal.throwIfAborted();
+function decodeRevisionWindow(data: unknown, throughSequence: number, anchorKey: string | undefined, limit: number): ConversationReadingWindow {
   if (!isExactRecord(data, ['sessionId', 'revision', 'view', 'items', 'nextBefore', 'readingWindow'])
     || !Array.isArray(data.items) || data.items.length || data.nextBefore !== null) throw new Error('conversation_read_window_invalid');
-  if (data.sessionId !== sessionId || data.view !== 'readingWindow') throw new Error('conversation_read_identity_mismatch');
   if (data.revision !== throughSequence) throw new Error('conversation_read_window_revision_mismatch');
   const w = data.readingWindow;
   if (isExactRecord(w, ['kind']) && w.kind === 'requiresProjection') return { kind: 'requiresProjection' };

@@ -960,6 +960,11 @@ test('waiting input stays separate from the decision and explicit cancel retains
   assert.notEqual(newRun.run.runId, nextWaiting.run.runId);
   assert.equal(requests[2].messages.some((message) => message.content === 'Do not lose this text.'), false);
   assert.equal(newRun.queuedInputs[0].status, 'notApplied');
+  const { projectTranscriptFacts } = await import('../dist/local-agent/reducer.js');
+  const tail = projectTranscriptFacts(sessionId, await journal.readTranscriptFacts(sessionId));
+  assert.equal(tail.revision, newRun.revision);
+  assert.deepEqual(tail.current.queuedInputs, newRun.queuedInputs);
+  assert.equal(tail.current.run.runId, newRun.run.runId);
   const stale = await actor.submit({ ...messageCommand(sessionId, 'command:late-during-new-run', 'Stale queued input.'), runId: nextWaiting.run.runId });
   assert.equal(stale.status, 'rejected');
   assert.equal(stale.error.code, 'queued_input_run_unavailable');

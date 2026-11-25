@@ -278,15 +278,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (next.queuedInputs.some((input) => input.messageId === event.payload.messageId)) {
         throw new Error('queued_input_duplicate');
       }
-      next.queuedInputs = [...next.queuedInputs, {
-        ...event.payload,
-        runId: event.runId,
-        filesystemReferences: (event.payload.filesystemReferences ?? []).map((reference) => ({ ...reference })),
-        pluginSelections: (event.payload.pluginSelections ?? []).map((selection) => ({ ...selection })),
-        sequence: event.sequence,
-        createdAt: event.occurredAt,
-        status: 'queued',
-      }];
+      next.queuedInputs = [...next.queuedInputs, queuedInput(event, 'queued')];
       break;
     case 'run.host.rebound': {
       const binding = next.run?.hostBinding;
@@ -1373,6 +1365,18 @@ export function projectSessionHistory(sessionId: string, events: readonly Sessio
   return projectSession(replaySession(sessionId, events, true, undefined, undefined, reading));
 }
 
+function queuedInput(event: Extract<SessionEvent, { type: 'input.queued' }>, status: 'queued' | 'notApplied'): SessionProjection['queuedInputs'][number] {
+  return {
+    ...event.payload,
+    runId: event.runId,
+    filesystemReferences: (event.payload.filesystemReferences ?? []).map((reference) => ({ ...reference })),
+    pluginSelections: (event.payload.pluginSelections ?? []).map((selection) => ({ ...selection })),
+    sequence: event.sequence,
+    createdAt: event.occurredAt,
+    status,
+  };
+}
+
 export function projectTranscriptFacts(sessionId: string, facts: TranscriptFacts, around = facts.end): TranscriptPage {
   return transcriptPageAt(projectTranscriptTurn(sessionId, facts), around);
 }
@@ -1389,8 +1393,14 @@ export function projectTranscriptTurn(sessionId: string, facts: TranscriptFacts)
   if (receipts.size !== visible.length) throw new Error('provider_request_receipt_duplicate');
   const state = replaySession(sessionId, events, true, range, receipts);
   const groups = timelineGroups(state, visible);
-  return { range, groups, content: transcriptContent(state, groups.flatMap(g => g.items)),
-    current: range.end === range.revision ? projectTranscriptRun(state) : undefined };
+  const current = range.end === range.revision ? projectTranscriptRun(state) : undefined;
+  if (current && range.start > 1) {
+    const history = activeConversationEvents(events).filter(e => e.sequence < range.start);
+    const settled = new Set(history.flatMap(e => e.type === 'run.settled' ? [e.runId] : []));
+    current.queuedInputs = [...history.flatMap(e => e.type === 'input.queued'
+      ? [queuedInput(e, settled.has(e.runId) ? 'notApplied' : 'queued')] : []), ...current.queuedInputs];
+  }
+  return { range, groups, content: transcriptContent(state, groups.flatMap(g => g.items)), current };
 }
 
 export type TranscriptTurn = ReturnType<typeof projectTranscriptTurn>;
@@ -1460,6 +1470,7 @@ function replaySession(sessionId: string, events: readonly SessionEvent[], borro
     && event.sequence >= range.start && event.sequence <= range.end ? [event.payload.messageId] : [])) : undefined;
   for (const event of active) {
     const outside = !!range && (event.sequence < range.start || event.sequence > range.end);
+    if (outside && (event.type === 'input.queued' || event.type === 'run.settled')) continue;
     if (pageMessages && event.type === 'message.feedback.updated' && !pageMessages.has(event.payload.messageId)) continue;
     // Delivery and accounting references may span multiple turns. They belong to the
     // current controls / execution read; transcript rows only depend on their source tools.

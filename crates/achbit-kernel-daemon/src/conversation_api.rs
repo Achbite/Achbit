@@ -6,7 +6,7 @@ use crate::conversation_catalog::{
 use crate::prelude::*;
 use crate::HostState;
 use crate::ReadyState;
-use crate::{ApiResponse, AppState, GuiState, SessionServiceError, SessionServiceProcess};
+use crate::{ApiResponse, AppState, SessionServiceError, SessionServiceProcess};
 use axum::response::{sse::Event, IntoResponse, Response, Sse};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -156,31 +156,50 @@ pub(crate) async fn conversation_read(
     }
 }
 
-fn visible_session_ids(
-    catalog: &ConversationCatalog,
-    reader: &crate::local_agent_store::SessionCatalogReader,
+async fn visible_session_ids(
+    reader: crate::local_agent_store::SessionCatalogReader,
+    ids: Vec<String>,
 ) -> Result<Vec<String>, crate::local_agent_store::LocalAgentStoreError> {
-    let ids: Vec<_> = catalog
-        .sessions
-        .iter()
-        .map(|session| session.id.as_str())
-        .collect();
-    reader.visible_sessions(&ids)
+    tokio::task::spawn_blocking(move || {
+        reader.visible_sessions(&ids.iter().map(String::as_str).collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|error| {
+        crate::local_agent_store::LocalAgentStoreError::new(
+            "session_creation_read_failed",
+            error.to_string(),
+        )
+    })?
 }
 
-fn visible_catalog_response(
-    gui: &GuiState,
+async fn visible_catalog_response(
+    gui: &Mutex<crate::GuiState>,
     reader: &crate::local_agent_store::SessionCatalogReader,
     management: bool,
 ) -> Json<ApiResponse> {
-    let visible = match visible_session_ids(&gui.conversation_catalog, reader) {
+    let (mut value, ids) = {
+        let gui = gui.lock().expect("gui state lock");
+        if let Some(error) = gui.conversation_catalog_error.as_deref() {
+            return ApiResponse::error("conversation_catalog_unavailable", error);
+        }
+        let catalog = &gui.conversation_catalog;
+        let value = if management {
+            catalog.management_value()
+        } else {
+            catalog.public_value()
+        };
+        (
+            value,
+            catalog
+                .sessions
+                .iter()
+                .map(|session| session.id.clone())
+                .collect(),
+        )
+    };
+    let visible = match visible_session_ids(reader.clone(), ids).await {
         Ok(ids) => ids.into_iter().collect::<HashSet<_>>(),
         Err(error) => return ApiResponse::error(error.code, error.message),
-    };
-    let mut value = if management {
-        gui.conversation_catalog.management_value()
-    } else {
-        gui.conversation_catalog.public_value()
     };
     value["sessions"]
         .as_array_mut()
@@ -190,11 +209,7 @@ fn visible_catalog_response(
 }
 
 pub(crate) async fn conversation_catalog_get(State(state): State<HostState>) -> Json<ApiResponse> {
-    let gui = state.gui.lock().expect("gui state lock");
-    if let Some(error) = gui.conversation_catalog_error.as_deref() {
-        return ApiResponse::error("conversation_catalog_unavailable", error);
-    }
-    visible_catalog_response(&gui, &state.catalog_reader, false)
+    visible_catalog_response(&state.gui, &state.catalog_reader, false).await
 }
 
 pub(crate) async fn conversation_catalog_events(State(state): State<HostState>) -> Response {
@@ -231,10 +246,15 @@ pub(crate) async fn conversation_statuses_get(ReadyState(state): ReadyState) -> 
         if let Some(error) = gui.conversation_catalog_error.as_deref() {
             return ApiResponse::error("conversation_catalog_unavailable", error).into_response();
         }
-        match visible_session_ids(&gui.conversation_catalog, &state.catalog_reader) {
-            Ok(ids) => ids,
-            Err(error) => return ApiResponse::error(error.code, error.message).into_response(),
-        }
+        gui.conversation_catalog
+            .sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect()
+    };
+    let session_ids = match visible_session_ids(state.catalog_reader.clone(), session_ids).await {
+        Ok(ids) => ids,
+        Err(error) => return ApiResponse::error(error.code, error.message).into_response(),
     };
     match request_service(
         state.session_service.clone(),
@@ -500,15 +520,15 @@ fn read_document_resource(path: &StdPath) -> Result<(&'static str, Vec<u8>), Str
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-        return Err("文档超过 32 MiB 读取限额。".into());
+        return Err("document_size_limit_exceeded".into());
     }
     if suffix == "pdf" {
         if !bytes.starts_with(b"%PDF-") {
-            return Err("当前文件不是 PDF 文档。".into());
+            return Err("document_invalid_pdf".into());
         }
     } else {
         std::str::from_utf8(&bytes)
-            .map_err(|error| format!("文档不是有效的 UTF-8 文本：{error}"))?;
+            .map_err(|error| format!("file_encoding_unsupported: {error}"))?;
     }
     Ok((media_type, bytes))
 }
@@ -1041,11 +1061,7 @@ pub(crate) async fn conversation_directory_index_detach(
 pub(crate) async fn conversation_catalog_management_get(
     ReadyState(state): ReadyState,
 ) -> Json<ApiResponse> {
-    let gui = state.gui.lock().expect("gui state lock");
-    if let Some(error) = gui.conversation_catalog_error.as_deref() {
-        return ApiResponse::error("conversation_catalog_unavailable", error);
-    }
-    visible_catalog_response(&gui, &state.catalog_reader, true)
+    visible_catalog_response(&state.gui, &state.catalog_reader, true).await
 }
 
 pub(crate) async fn conversation_project_create(
@@ -1065,29 +1081,31 @@ pub(crate) async fn conversation_project_create(
         Err(error) => return session_service_error(error),
     };
     let now = crate::now_text();
-    let mut gui = state.gui.lock().expect("gui state lock");
-    if let Some(error) = gui.conversation_catalog_error.as_deref() {
-        return ApiResponse::error("conversation_catalog_unavailable", error);
-    }
-    let mut workspaces = Vec::new();
-    let workspace_ids = match prepare_roots(&gui.conversation_catalog, &mut workspaces, roots, &now)
     {
-        Ok(value) => value,
-        Err(error) => {
-            return session_service_error(error);
+        let mut gui = state.gui.lock().expect("gui state lock");
+        if let Some(error) = gui.conversation_catalog_error.as_deref() {
+            return ApiResponse::error("conversation_catalog_unavailable", error);
         }
-    };
-    let project = ConversationProjectRecord {
-        id,
-        title,
-        workspace_ids,
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
-        return ApiResponse::error("conversation_catalog_write_failed", error);
+        let mut workspaces = Vec::new();
+        let workspace_ids =
+            match prepare_roots(&gui.conversation_catalog, &mut workspaces, roots, &now) {
+                Ok(value) => value,
+                Err(error) => {
+                    return session_service_error(error);
+                }
+            };
+        let project = ConversationProjectRecord {
+            id,
+            title,
+            workspace_ids,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        if let Err(error) = persist_catalog_rows(&mut gui, workspaces, Some(project), None) {
+            return ApiResponse::error("conversation_catalog_write_failed", error);
+        }
     }
-    visible_catalog_response(&gui, &state.catalog_reader, false)
+    visible_catalog_response(&state.gui, &state.catalog_reader, false).await
 }
 
 pub(crate) async fn conversation_project_update(
@@ -1150,8 +1168,7 @@ pub(crate) async fn conversation_project_update(
             return session_service_error(error);
         }
     }
-    let gui = state.gui.lock().expect("gui state lock");
-    visible_catalog_response(&gui, &state.catalog_reader, false)
+    visible_catalog_response(&state.gui, &state.catalog_reader, false).await
 }
 
 /// Project metadata selects roots; each Session commits its own effective bindings.
@@ -1226,21 +1243,23 @@ pub(crate) async fn conversation_project_delete(
     Path(project_id): Path<String>,
 ) -> Json<ApiResponse> {
     let now = crate::now_text();
-    let mut gui = state.gui.lock().expect("gui state lock");
-    if let Some(error) = gui.conversation_catalog_error.as_deref() {
-        return ApiResponse::error("conversation_catalog_unavailable", error);
-    }
-    if gui.conversation_catalog.project(&project_id).is_none() {
-        return ApiResponse::error("conversation_project_not_found", "项目不存在。");
-    }
-    let path = gui.paths.catalog_store_path.clone();
-    if let Err(error) = gui
-        .conversation_catalog
-        .remove_project(&path, &project_id, &now)
     {
-        return ApiResponse::error("conversation_catalog_write_failed", error);
+        let mut gui = state.gui.lock().expect("gui state lock");
+        if let Some(error) = gui.conversation_catalog_error.as_deref() {
+            return ApiResponse::error("conversation_catalog_unavailable", error);
+        }
+        if gui.conversation_catalog.project(&project_id).is_none() {
+            return ApiResponse::error("conversation_project_not_found", "项目不存在。");
+        }
+        let path = gui.paths.catalog_store_path.clone();
+        if let Err(error) = gui
+            .conversation_catalog
+            .remove_project(&path, &project_id, &now)
+        {
+            return ApiResponse::error("conversation_catalog_write_failed", error);
+        }
     }
-    visible_catalog_response(&gui, &state.catalog_reader, false)
+    visible_catalog_response(&state.gui, &state.catalog_reader, false).await
 }
 
 pub(crate) async fn conversation_session_create(
@@ -1692,37 +1711,39 @@ pub(crate) async fn conversation_session_update(
         None => None,
     };
     let now = crate::now_text();
-    let mut gui = state.gui.lock().expect("gui state lock");
-    if let Some(error) = gui.conversation_catalog_error.as_deref() {
-        return ApiResponse::error("conversation_catalog_unavailable", error);
-    }
-    let Some(mut session) = gui.conversation_catalog.session(&session_id).cloned() else {
-        return ApiResponse::error("conversation_session_not_found", "对话不存在。");
-    };
-    let renamed = title.is_some();
-    if let Some(title) = title {
-        session.title = title;
-        session.title_source = Some(ConversationTitleSource::Manual);
-    }
-    if let Some(project_id) = body.project_id.as_ref() {
-        if project_id
-            .as_deref()
-            .is_some_and(|id| gui.conversation_catalog.project(id).is_none())
-        {
-            return ApiResponse::error("conversation_project_not_found", "项目不存在。");
+    {
+        let mut gui = state.gui.lock().expect("gui state lock");
+        if let Some(error) = gui.conversation_catalog_error.as_deref() {
+            return ApiResponse::error("conversation_catalog_unavailable", error);
         }
-        session.project_id = project_id.clone();
-    }
-    session.updated_at = now;
-    if let Err(error) = persist_catalog_rows(&mut gui, Vec::new(), None, Some(session)) {
-        return ApiResponse::error("conversation_catalog_write_failed", error);
-    }
-    if renamed {
-        if let Some(task) = gui.conversation_title_tasks.remove(&session_id) {
-            task.abort();
+        let Some(mut session) = gui.conversation_catalog.session(&session_id).cloned() else {
+            return ApiResponse::error("conversation_session_not_found", "对话不存在。");
+        };
+        let renamed = title.is_some();
+        if let Some(title) = title {
+            session.title = title;
+            session.title_source = Some(ConversationTitleSource::Manual);
+        }
+        if let Some(project_id) = body.project_id.as_ref() {
+            if project_id
+                .as_deref()
+                .is_some_and(|id| gui.conversation_catalog.project(id).is_none())
+            {
+                return ApiResponse::error("conversation_project_not_found", "项目不存在。");
+            }
+            session.project_id = project_id.clone();
+        }
+        session.updated_at = now;
+        if let Err(error) = persist_catalog_rows(&mut gui, Vec::new(), None, Some(session)) {
+            return ApiResponse::error("conversation_catalog_write_failed", error);
+        }
+        if renamed {
+            if let Some(task) = gui.conversation_title_tasks.remove(&session_id) {
+                task.abort();
+            }
         }
     }
-    visible_catalog_response(&gui, &state.catalog_reader, false)
+    visible_catalog_response(&state.gui, &state.catalog_reader, false).await
 }
 
 pub(crate) async fn conversation_session_delete(
@@ -1839,8 +1860,7 @@ async fn delete_conversation_session(
             ),
         );
     }
-    let gui = state.gui.lock().expect("gui state lock");
-    visible_catalog_response(&gui, &state.catalog_reader, false)
+    visible_catalog_response(&state.gui, &state.catalog_reader, false).await
 }
 
 fn deletion_cleanup_ids(
@@ -2128,7 +2148,10 @@ pub(crate) async fn conversation_command_submit(
                 Err(error) => return ApiResponse::error("input_resource_save_failed", &error),
             };
             command[field] = if field == "task" {
-                json!("请依据本条消息的粘贴文本聚焦上下文。")
+                json!(
+                    include_str!("../../../contracts/agent-runtime/focus-attachment.txt")
+                        .trim_end()
+                )
             } else {
                 json!("")
             };
@@ -3625,6 +3648,26 @@ fn random_id(prefix: &str) -> Result<String, SessionServiceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn catalog_waiting_on_sqlite_leaves_the_gui_and_async_worker_available() {
+        let tree = TemporaryTree::new("catalog-contention");
+        let gui = Mutex::new(crate::GuiState::open_at(&tree.0).unwrap());
+        let path = tree.0.join("catalog-reader.sqlite");
+        let reader = crate::local_agent_store::SessionCatalogReader::open(&path).unwrap();
+        let lock = rusqlite::Connection::open(&path).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let response = visible_catalog_response(&gui, &reader, false);
+        tokio::pin!(response);
+        tokio::select! {
+            biased;
+            _ = &mut response => panic!("catalog returned while the database was locked"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+        }
+        assert!(gui.try_lock().is_ok());
+        lock.execute_batch("COMMIT").unwrap();
+        assert!(response.await.0.ok);
+    }
 
     #[test]
     fn partial_deletion_cleans_only_confirmed_sessions_and_keeps_failure() {

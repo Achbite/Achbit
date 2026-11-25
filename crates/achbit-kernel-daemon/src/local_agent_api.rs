@@ -41,13 +41,15 @@ impl std::fmt::Debug for LocalAgentRuntime {
 impl LocalAgentRuntime {
     pub(crate) fn open(
         session_store_path: &FsPath,
+        catalog_reader: &crate::local_agent_store::SessionCatalogReader,
         tool_record_store_path: &FsPath,
         workspace_resolver: Arc<dyn WorkspaceResolverPort>,
         settings: &Value,
         token: Arc<str>,
     ) -> Result<Self, String> {
-        let journal = LocalAgentJournal::open(session_store_path)
-            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let journal =
+            LocalAgentJournal::open_with_catalog(session_store_path, Some(catalog_reader))
+                .map_err(|error| format!("{}: {}", error.code, error.message))?;
         let kernel =
             LocalAgentKernel::open(tool_record_store_path, journal.clone(), workspace_resolver)
                 .map_err(|error| format!("{}: {}", error.code, error.message))?;
@@ -1736,7 +1738,9 @@ fn journal_read_response(
     publication: Result<JournalEventPublication, LocalAgentStoreError>,
 ) -> Response {
     match publication {
-        Ok(events) if accepts(headers, "application/json-seq") => journal_sequence_response(events),
+        Ok(events) if accepts(headers, "application/json-seq") => {
+            journal_stream_response(events, false)
+        }
         Ok(events) => Json(ApiResponse {
             ok: true,
             data: Some(events),
@@ -1746,10 +1750,6 @@ fn journal_read_response(
         .into_response(),
         Err(error) => store_error(error).into_response(),
     }
-}
-
-fn journal_sequence_response(publication: JournalEventPublication) -> Response {
-    journal_stream_response(publication, false)
 }
 
 fn journal_stream_response(publication: JournalEventPublication, reading_facts: bool) -> Response {
@@ -1816,12 +1816,16 @@ pub(crate) async fn local_agent_resources_read(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state
-        .catalog_reader
-        .read_resources(&session_id, &body.record_ids)
+    match tokio::task::spawn_blocking(move || {
+        state
+            .catalog_reader
+            .read_resources(&session_id, &body.record_ids)
+    })
+    .await
     {
-        Ok(read) => ApiResponse::ok(read),
-        Err(error) => store_error(error),
+        Ok(Ok(read)) => ApiResponse::ok(read),
+        Ok(Err(error)) => store_error(error),
+        Err(error) => ApiResponse::error("session_resource_read_failed", error.to_string()),
     }
 }
 
@@ -1872,9 +1876,14 @@ pub(crate) async fn local_agent_agent_lifecycle_read(
     if let Err(response) = require_session_service(&state, &headers) {
         return response;
     }
-    match state.catalog_reader.read_agent_lifecycle(&session_id) {
-        Ok(read) => ApiResponse::ok(read),
-        Err(error) => store_error(error),
+    match tokio::task::spawn_blocking(move || {
+        state.catalog_reader.read_agent_lifecycle(&session_id)
+    })
+    .await
+    {
+        Ok(Ok(read)) => ApiResponse::ok(read),
+        Ok(Err(error)) => store_error(error),
+        Err(error) => ApiResponse::error("agent_lifecycle_read_failed", error.to_string()),
     }
 }
 
@@ -2883,7 +2892,7 @@ mod tests {
             .unwrap();
         let publication = journal.read_events_publication(id, 0).unwrap();
         let expected = serde_json::to_value(&publication).unwrap();
-        let response = journal_sequence_response(publication);
+        let response = journal_stream_response(publication, false);
         assert_eq!(response.headers()["content-type"], "application/json-seq");
         journal
             .append(&json!({"type":"message.committed","sessionId":id,

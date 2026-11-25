@@ -38,6 +38,10 @@ impl Fixture {
             let captured = gui.lock().unwrap();
             LocalAgentRuntime::open(
                 &captured.paths.session_store_path,
+                &crate::local_agent_store::SessionCatalogReader::open(
+                    &captured.paths.session_store_path,
+                )
+                .unwrap(),
                 &captured.paths.tool_record_store_path,
                 Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(
                     gui.clone(),

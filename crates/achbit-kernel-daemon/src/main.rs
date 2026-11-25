@@ -243,9 +243,11 @@ async fn run() {
     let execution = state.execution.clone();
     tokio::spawn(async move {
         let cleanup = execution.clone();
+        let catalog_reader = reading_host.catalog_reader.clone();
         let runtime = tokio::task::spawn_blocking(move || {
             let mut local_agent = LocalAgentRuntime::open(
                 &session_store_path,
+                &catalog_reader,
                 &tool_record_store_path,
                 workspace_resolver,
                 &user_settings,

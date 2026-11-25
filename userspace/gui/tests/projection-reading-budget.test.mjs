@@ -31,13 +31,13 @@ for(const bad of ['owner','bounds','cursor','dangling message','navigation','run
     case 'dangling message':x.content.messages=[];break;case 'navigation':x.navigation[0].sequence=-1;break;
     case 'run owner':x.current.sessionId='other';break;case 'missing tail controls':delete x.current;break;
   }
-  const { readTranscriptPage } = await loadGuiModule(t, '/src/services/localAgentApi.ts');
+  const { readConversation } = await loadGuiModule(t, '/src/services/localAgentApi.ts');
   const requests = [];
   installGuiFetch(t, async (url, init) => {
     requests.push([url.pathname.split('/').at(-1), JSON.parse(init.body).view]);
     return okFixture(response);
   });
-  await assert.rejects(readTranscriptPage('a', undefined, new AbortController().signal), /conversation_(transcript|read)_/);
+  await assert.rejects(readConversation('a', { view: 'transcript' }, new AbortController().signal), /conversation_(transcript|read)_/);
   assert.deepEqual(requests, [['read', 'transcript']]);
 });
 test('six recent sessions retain real turns and the seventh evicts the least recently visited',async t=>{

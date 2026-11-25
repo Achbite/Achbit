@@ -380,7 +380,15 @@ fn advise_replay_index_scan(path: &Path) -> std::io::Result<()> {
 }
 
 impl LocalAgentJournal {
+    #[cfg(test)]
     pub(crate) fn open(path: &Path) -> Result<Self, LocalAgentStoreError> {
+        Self::open_with_catalog(path, None)
+    }
+
+    pub(crate) fn open_with_catalog(
+        path: &Path,
+        catalog: Option<&SessionCatalogReader>,
+    ) -> Result<Self, LocalAgentStoreError> {
         let connection = open_session_store(path)?;
         // Index the kind together with JSON validity. Old stores build this once on the
         // execution thread; SQLite maintains it with each journal append afterwards.
@@ -389,6 +397,9 @@ impl LocalAgentJournal {
             [], |row| row.get(0),
         ).map_err(sql_error("session_store_index_create_failed"))?;
         if !has_replay_index {
+            // A long transcript uses this independent connection. Finish its transaction
+            // before taking SQLite's exclusive schema lock during an upgrade.
+            let _catalog_guard = catalog.map(SessionCatalogReader::lock).transpose()?;
             #[cfg(target_os = "macos")]
             let _ = advise_replay_index_scan(path); // Advisory only. SQLite owns validation and errors.
             connection.execute_batch(&format!(
@@ -6750,6 +6761,37 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn first_replay_index_waits_for_the_catalog_transaction() {
+        let store = Store::new();
+        let path = store.path();
+        let reader = SessionCatalogReader::open(&path).unwrap();
+        let mut connection = reader.lock().unwrap();
+        let tx = connection.transaction().unwrap();
+        tx.query_row("SELECT count(*) FROM session_events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+        let other = reader.clone();
+        let (done, completed) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            done.send(LocalAgentJournal::open_with_catalog(&path, Some(&other)).map(|_| ()))
+                .unwrap();
+        });
+        // Hold the old read past SQLite's five-second busy timeout.
+        assert!(matches!(
+            completed.recv_timeout(std::time::Duration::from_millis(5200)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        tx.commit().unwrap();
+        drop(connection);
+        completed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        writer.join().unwrap();
     }
 
     #[test]
