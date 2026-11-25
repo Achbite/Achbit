@@ -23,7 +23,7 @@ import type {
 import { CONVERSATION_COMMAND_VERSION, connectedModelReasoningEfforts, decodeAgentSettings } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
-import { normalizeUiLanguage } from '../i18n';
+import { normalizeUiLanguage, t } from '../i18n';
 import { retiredDraftSkillNotice } from '../pluginLocalization';
 import { runHandoffNotice } from './handoffNotice';
 import { selectPendingApproval, type ApprovalIdentity } from '../components/local-agent/composerDecisions';
@@ -100,6 +100,8 @@ export function conversationOpening(state: LocalAgentState): ReadStatus {
   return error ? { phase: 'error', message: error } : reading;
 }
 
+type PlanTarget = Pick<NonNullable<SessionProjection['pendingPlan']>, 'runId' | 'planId' | 'revision'> & { sessionId: string };
+
 export interface LocalAgentState {
   welcomeIndex: number;
   sessionId: string | null;
@@ -141,7 +143,7 @@ export interface LocalAgentState {
   retryCatalogWatch(): void;
   refreshPluginCatalog(): Promise<void>;
   startNewSession(projectId?: string | null): void;
-  activateSession(sessionId: string, rememberedAnchor?: Pick<ReadingPosition, 'key' | 'offset'> | null): Promise<void>;
+  activateSession(sessionId: string): Promise<void>;
   selectModel(profileId: string, effort: LlmReasoningEffort | null): Promise<boolean>;
   setSubagentSettings(patches: Partial<AgentSettings>): Promise<void>;
   setMode(mode: 'minimal' | 'full'): Promise<CommandReply>;
@@ -174,7 +176,7 @@ export interface LocalAgentState {
   setPermissions(patches: UserSettings): Promise<CommandReply>;
   revokeAuthorization(authorityId: string): Promise<CommandReply>;
   respondApproval(decision: 'allow' | 'deny', authorizationScope: ShellAuthorizationScope | undefined, target: ApprovalIdentity & { sessionId: string }): Promise<CommandReply>;
-  respondPlan(response: PlanResponse, submissionId?: string): Promise<CommandReply>;
+  respondPlan(response: PlanResponse, target: PlanTarget, submissionId?: string): Promise<CommandReply>;
   continueProvider(sessionId: string, runId: string): Promise<CommandReply>;
   cancelRun(): Promise<CommandReply>;
   cancelTool(sessionId: string, runId: string, callId: string): Promise<CommandReply>;
@@ -607,7 +609,7 @@ const store = create<LocalAgentState>((set, get) => ({
     });
   },
 
-  activateSession: async (sessionId, rememberedAnchor) => {
+  activateSession: async (sessionId) => {
     if (openingFlight?.sessionId === sessionId && openingFlight.generation === generation) return openingFlight.promise;
     if (get().sessionId === sessionId) {
       if (get().profileRead.phase === 'error') void get().refreshProfiles();
@@ -620,14 +622,24 @@ const store = create<LocalAgentState>((set, get) => ({
     let summary = get().catalog.sessions.find(s => s.id === sessionId);
     if (!summary) {
       set({ loading: true, loadingPurpose: 'session', error: null, errorSource: null });
+      const version = catalogVersion;
       try {
         const catalog = await getConversationCatalog(signal);
         if (owner !== generation) return;
-        summary = catalog.sessions.find(s => s.id === sessionId);
-        if (!summary) throw new Error('conversation_session_not_found');
-        set({ catalog, catalogStatus: 'ready' });
+        if (catalogVersion === version) {
+          catalogVersion += 1;
+          set({ catalog, catalogStatus: 'ready' });
+        }
       } catch (error) {
-        if (owner === generation) set({ loading: false, loadingPurpose: null, catalogStatus: 'error', error: errorMessage(error), errorSource: 'catalog' });
+        if (owner !== generation) return;
+        if (catalogVersion === version) {
+          set({ loading: false, loadingPurpose: null, catalogStatus: 'error', error: errorMessage(error), errorSource: 'catalog' });
+          return;
+        }
+      }
+      summary = get().catalog.sessions.find(s => s.id === sessionId);
+      if (!summary) {
+        set({ loading: false, loadingPurpose: null, error: 'conversation_session_not_found', errorSource: 'catalog' });
         return;
       }
     }
@@ -638,7 +650,6 @@ const store = create<LocalAgentState>((set, get) => ({
       projectionCache.delete(sessionId);
       projectionCache.set(sessionId, cached);
     }
-    if (rememberedAnchor === null) writePosition(sessionId, null);
     set({
       sessionId, projection: null, contextWindowReading: null, ...cached,
       messageSubmission: null, draftProjectId: null, selectedProfileId: summary.profileId ?? get().defaultProfileId, reasoningEffortOverride: null,
@@ -956,7 +967,7 @@ const store = create<LocalAgentState>((set, get) => ({
     );
   },
 
-  respondPlan: async (response, submissionId) => await submitPlanResponse(set, get, response, submissionId),
+  respondPlan: async (response, target, submissionId) => submitPlanResponse(set, get, response, target, submissionId),
 
   cancelTool: async (sessionId, runId, callId) => submitDecision(set, get, `cancel-tool:${sessionId}:${callId}`, () => ({
     schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'tool.cancel', commandId: nextId('command'), sessionId, runId, callId,
@@ -1073,12 +1084,16 @@ async function submitPlanResponse(
   set: StoreSet,
   get: () => LocalAgentState,
   response: PlanResponse,
+  target: PlanTarget,
   submissionId?: string,
 ): Promise<CommandReply> {
-  const state = get();
-  const sessionId = requiredSession(state);
+  const { sessionId, runId, planId, revision } = target;
   const plan = (await freshRun(sessionId))?.pendingPlan;
-  if (!plan) throw new Error('plan_response_missing');
+  if (get().sessionId !== sessionId || !plan || plan.runId !== runId || plan.planId !== planId || plan.revision !== revision) {
+    const message = t(normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']), 'tui.childDecisionChanged');
+    if (get().sessionId === sessionId) set({ error: message, errorSource: submissionId ? { kind: 'input', submissionId } : 'command' });
+    throw new Error(message);
+  }
   return await submitDecision(
     set,
     get,
@@ -1088,9 +1103,7 @@ async function submitPlanResponse(
       type: 'plan.respond',
       commandId: nextId('command'),
       sessionId,
-      runId: plan.runId,
-      planId: plan.planId,
-      revision: plan.revision,
+      runId, planId, revision,
       response,
     }),
     submissionId,

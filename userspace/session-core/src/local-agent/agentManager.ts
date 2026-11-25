@@ -145,9 +145,16 @@ export class AgentManager {
         // Delivery waits after the Provider completion is committed by the Loop.
         return { taskId: task.taskId, agentId: task.agentSessionId };
       }
-      case 'send':
-        // A message does not reserve a task and must not wait behind creation or cleanup.
-        return await abortable(this.send(caller, runId, operation.agentId, operation.text, signal), signal);
+      case 'send': {
+        let writing = false;
+        const beforeWrite = () => { signal.throwIfAborted(); writing = true; };
+        try {
+          return await abortable(this.send(caller, runId, operation.agentId, operation.text, signal, beforeWrite), signal);
+        } catch (error) {
+          if (!writing) throw error;
+          return { agentId: operation.agentId, status: 'indeterminate', error: errorFact(error) };
+        }
+      }
       case 'compact': {
         const ownerId = caller.agentContext?.ownerSessionId ?? sessionId;
         const family = await this.family(await this.snapshot(ownerId));
@@ -369,7 +376,7 @@ export class AgentManager {
     return task;
   }
 
-  private async send(caller: AgentSnapshot, runId: string, targetId: string, text: string, signal: AbortSignal): Promise<JsonObject> {
+  private async send(caller: AgentSnapshot, runId: string, targetId: string, text: string, signal: AbortSignal, beforeWrite: () => void): Promise<JsonObject> {
     signal.throwIfAborted();
     caller = await this.snapshot(caller.sessionId);
     if (targetId === caller.sessionId) throw new Error('agent_message_self');
@@ -394,11 +401,11 @@ export class AgentManager {
         signal.throwIfAborted();
         if (!managesTarget && !(await target.agentCapabilities(targetRunId)).messaging) throw new Error('agent_message_target_unavailable');
         await target.recordAgentEvents([{ type: 'agent.message.received', sessionId: targetId, runId: targetRunId,
-          payload: { sourceSessionId: caller.sessionId, text } }]);
+          payload: { sourceSessionId: caller.sessionId, text } }], beforeWrite);
       });
       return { agentId: targetId, delivered: true };
     }
-    throw new LoopFailure('agent_message_target_inactive', '消息未发送：目标没有可接收消息的活动任务。请由主会话使用 assign 显式续派；send 不会创建任务。');
+    throw new LoopFailure('agent_message_target_inactive', 'The target has no active task to receive this message. The owner can use assign to start a follow-up task.');
   }
 
   private async family(root: AgentManagementSnapshot | AgentSnapshot): Promise<AgentManagementSnapshot[]> {

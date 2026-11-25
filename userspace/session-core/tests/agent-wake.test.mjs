@@ -329,7 +329,7 @@ for (const scenario of [
 // TCR: T-020/locality-fix/revision-window/self-measure-01/TCR-session-send.md.
 // These are running Session actors, not a mocked message port. Hold the recipients through
 // the mixed turn so neither an idle-member rejection nor a second assignment can fake delivery.
-for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','exclusive','agent-only','agent-only-with-read']) test(`send batch: ${kind}`, async t => {
+for (const kind of ['mixed','mixed-todo','receipt-lost','individual-failures','two-todos','exclusive','agent-only','agent-only-with-read']) test(`send batch: ${kind}`, async t => {
   const ownerId = `session:send-batch:${kind}`, unrelated = 'session:unrelated', release = Promise.withResolvers();
   const denied = ['two-todos','exclusive','agent-only-with-read'].includes(kind), failing = kind === 'individual-failures';
   const tool = {name:'fs.read',toolBindingRef:'binding:send-read',description:'Read a file.',origin:'coreBuiltin',availability:'callable',possibleEffects:['workspaceRead'],
@@ -363,6 +363,14 @@ for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','excl
       ? failedExecutionReply(request,{}, {code:'file_read_failed',message:'Original file error'}) : completedExecutionReply(request,{content:'Read once.'});
   }})});
   try {
+    if (kind === 'receipt-lost') {
+      const append = fixture.journal.append.bind(fixture.journal);
+      fixture.journal.append = async event => {
+        const committed = await append(event);
+        if (event.type === 'agent.message.received' && event.payload.text === 'North note') throw new Error('delivery_receipt_lost');
+        return committed;
+      };
+    }
     await fixture.service.createSession({sessionId:unrelated,displayTitle:'Unrelated',workspaceBindings:[]});
     await fixture.service.submit(messageCommand(ownerId,'command:send-batch','Send two notes and inspect the file.'));
     const state=await completed(fixture.service,ownerId), events=await readEvents(fixture.journal,ownerId);
@@ -377,7 +385,13 @@ for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','excl
         if (kind!=='two-todos') assert.doesNotMatch(e.error.message,/todo\.update/iu,'one or no Todo is not the incompatibility');
       }
     } else {
-      assert.deepEqual(result('letter:north'),{agentId:targetIds[0],delivered:true});
+      if (kind === 'receipt-lost') {
+        const uncertain = result('letter:north');
+        assert.equal(uncertain.status, 'indeterminate');
+        assert.equal(uncertain.error.message, 'delivery_receipt_lost');
+        assert.equal('executed' in uncertain || 'delivered' in uncertain, false);
+        assert.equal(results.find(m => m.providerCallId === 'letter:north').toolOutcome, 'indeterminate');
+      } else assert.deepEqual(result('letter:north'),{agentId:targetIds[0],delivered:true});
       if (!failing) assert.deepEqual(result('letter:south'),{agentId:targetIds[1],delivered:true});
       else { assert.match(results.find(m=>m.providerCallId==='letter:south').content,/agent_message_target_not_related/u);
         assert.match(results.find(m=>m.providerCallId==='letter:invalid').content,/agentId/u);
@@ -420,9 +434,9 @@ test('plugin activation mixed with discovery and a read rejects the entire batch
       const errors = request.messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content));
       assert.equal(errors.length, 3);
       assert.ok(errors.every(error => error.executed === false && error.error.code === 'session_control_turn_conflict'));
-      assert.match(errors[0].error.message, /plugin\.activate \[exclusive:plugin\].*该调用触发冲突/u);
-      assert.match(errors[1].error.message, /plugin\.activate \[exclusive:plugin\].*本调用随批次拒绝/u);
-      assert.match(errors[2].error.message, /plugin\.activate \[exclusive:plugin\].*本调用随批次拒绝/u);
+      assert.match(errors[0].error.message, /plugin\.activate \[exclusive:plugin\].*This call caused the conflict/u);
+      assert.match(errors[1].error.message, /plugin\.activate \[exclusive:plugin\].*This call was rejected with the batch/u);
+      assert.match(errors[2].error.message, /plugin\.activate \[exclusive:plugin\].*This call was rejected with the batch/u);
       yield answer(request, 'The conflicting batch had no effects.');
     }
     yield done(request);
@@ -459,8 +473,8 @@ test('a session control mixed with child creation is rejected before either oper
   });
   assert.equal(errors.length, 2);
   assert.ok(errors.every(error => error.executed === false && error.error.code === 'session_control_turn_conflict'));
-  assert.match(errors[0].error.message, /session\(action=schedule\) \[mixed:session\].*本调用随批次拒绝/u);
-  assert.match(errors[1].error.message, /session\(action=schedule\) \[mixed:session\].*该调用触发冲突/u);
+  assert.match(errors[0].error.message, /session\(action=schedule\) \[mixed:session\].*This call was rejected with the batch/u);
+  assert.match(errors[1].error.message, /session\(action=schedule\) \[mixed:session\].*This call caused the conflict/u);
 });
 
 test('control conflicts preserve each input, identify the source and only hold back otherwise admissible siblings', async t => {

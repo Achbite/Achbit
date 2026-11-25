@@ -276,8 +276,8 @@ export class SessionActor {
   }
 
   /** Trusted Session coordination writes; the same journal admission/reducer owns these facts. */
-  async recordAgentEvents(events: readonly NewSessionEvent[]): Promise<void> {
-    await this.withWrite(async () => this.appendEvents(events, await this.loadSnapshot()));
+  async recordAgentEvents(events: readonly NewSessionEvent[], beforeWrite?: () => void): Promise<void> {
+    await this.withWrite(async () => this.appendEvents(events, await this.loadSnapshot(), beforeWrite));
   }
 
   async waitForInput(runId: string, signal?: AbortSignal, timeoutSeconds?: number,
@@ -1939,10 +1939,11 @@ export class SessionActor {
     await this.withWrite(async () => this.appendEvents(events, await this.loadSnapshot()));
   }
 
-  private async appendEvents(events: readonly NewSessionEvent[], current: LoopSnapshot): Promise<void> {
+  private async appendEvents(events: readonly NewSessionEvent[], current: LoopSnapshot, beforeWrite?: () => void): Promise<void> {
     if (!events.length) return;
     events = this.#timing.decorate(events);
     admitSessionEvents(current, events);
+    beforeWrite?.();
     try {
       const committed = events.length === 1
         ? [await this.#journal.append(events[0]!)]

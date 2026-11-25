@@ -686,6 +686,8 @@ export function messagesFromJournal(
         contributionId: `agent-control:${event.callId}`, contributionKind: 'journalMessages', label: 'Control result',
         sourceSequence: view.sourceSequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
+          ...(event.type === 'agent.control.completed' && event.payload.operation.action === 'send' && view.result.status === 'indeterminate'
+            ? { toolOutcome: 'indeterminate' as const } : {}),
           content: JSON.stringify(view.result) },
       });
     } else if (event.type === 'agent.task.completed') {

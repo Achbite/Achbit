@@ -107,7 +107,12 @@ export function useAgentComposer(
     if (!sessionId || !pendingApproval) return Promise.reject(new Error('approval_response_missing'));
     return submitApproval(decision, scope, { sessionId, runId: pendingApproval.runId, callId: pendingApproval.callId, approvalId: pendingApproval.approvalId });
   };
-  const respondPlan = useLocalAgentStore((state) => state.respondPlan);
+  const submitPlan = useLocalAgentStore((state) => state.respondPlan);
+  const respondPlan = useCallback((response: PlanResponse, submissionId?: string) => {
+    if (!sessionId || !pendingPlan) return Promise.reject(new Error('plan_response_missing'));
+    const { runId, planId, revision } = pendingPlan;
+    return submitPlan(response, { sessionId, runId, planId, revision }, submissionId);
+  }, [pendingPlan, sessionId, submitPlan]);
   const cancelRun = useLocalAgentStore((state) => state.cancelRun);
   const saveModelChoice = useLocalAgentStore(state => state.selectModel);
   const reasoningEffortOverride = useLocalAgentStore((state) => state.reasoningEffortOverride);
@@ -706,7 +711,7 @@ export function useAgentComposer(
   };
 
   const appendBrowserReview = (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => {
-    if (!sessionId) throw new Error('请先打开对话再添加批注。');
+    if (!sessionId) throw new Error(t(language, 'agent.annotation.openFirst'));
     // An annotation belongs to the normal message draft, including during a pending decision.
     const key = sessionId;
     const current = activeComposerStateKeyRef.current === key

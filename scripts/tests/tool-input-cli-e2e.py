@@ -400,9 +400,22 @@ def main() -> None:
                     "Host 调用审批改变了 Plan 范围")
             first_approval = pipeline_waiting["pendingApproval"]
             remaining_approval = next(item for item in host_approvals if item["callId"] != first_approval["callId"])
-            fixture.cli(daemon, session_id, "/reply 1", expected=5)
+            ambiguous = fixture.cli(daemon, session_id, "/reply 1", expected=3)
+            require(all(item["approvalId"] in ambiguous.stderr for item in host_approvals),
+                    "The ambiguous reply must identify both pending approvals")
+            unchanged = fixture.projection(daemon, session_id)["pendingApprovals"]
+            require({item["approvalId"] for item in unchanged} == {item["approvalId"] for item in host_approvals},
+                    "An ambiguous reply must leave both approvals pending")
+            fixture.cli(daemon, session_id, f"/reply --approval {first_approval['approvalId']} 1", expected=5)
             state.assert_healthy()
-            expected_waiting = fixture.projection(daemon, session_id)
+            def remaining_wait():
+                current = fixture.projection(daemon, session_id)
+                pending = [item["approvalId"] for item in current["pendingApprovals"]]
+                if (current["run"]["status"] == "waiting" and current["run"].get("waitingReason") == "approval"
+                        and pending == [remaining_approval["approvalId"]]):
+                    return current
+                return None
+            expected_waiting = fixture.wait_until(remaining_wait, 8, "The other Host call did not reach its approval gate")
             expected_approval = require_unexecuted_approval(daemon, expected_waiting)
             require(len(expected_waiting["pendingApprovals"]) == 1
                     and expected_approval["callId"] == remaining_approval["callId"]
