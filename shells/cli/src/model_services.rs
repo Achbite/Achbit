@@ -48,15 +48,20 @@ pub async fn login(
         .find(|c| c.connection.id == selector)
     {
         if c.connection.credential_kind != "oauth" {
-            return Err("此连接使用 API Key 或无需认证，请在模型与服务中配置；账号登录仅适用于 OAuth 服务。".into());
+            return Err(crate::language().text("cli.loginOauth").into());
         }
         c.connection.id.clone()
     } else {
         let adapter = catalog
             .adapters
             .iter()
-            .find(|a| a.id == selector && a.auth_methods.iter().any(|m| m == "browser" || m == "deviceCode"))
-            .ok_or("请指定支持账号登录的连接 ID 或服务 ID（openai-codex）；API Key 套餐请在模型与服务中配置。")?;
+            .find(|a| {
+                a.id == selector
+                    && a.auth_methods
+                        .iter()
+                        .any(|m| m == "browser" || m == "deviceCode")
+            })
+            .ok_or(crate::language().text("cli.loginTarget"))?;
         let connection = ModelConnection {
             id: new_id("connection"),
             name: adapter.name.clone(),
@@ -75,9 +80,15 @@ pub async fn login(
             .create_model_connection(&connection, profile.as_ref())
             .await
             .map_err(|e| e.to_string())?;
-        println!("连接：{}", connection.id);
+        println!(
+            "{}",
+            crate::language().format("cli.connection", &[connection.id.to_string()])
+        );
         if let Some(profile) = profile {
-            println!("模型：{}", profile.id);
+            println!(
+                "{}",
+                crate::language().format("cli.model", &[profile.id.to_string()])
+            );
         }
         connection.id
     };
@@ -86,12 +97,18 @@ pub async fn login(
         .await
         .map_err(|e| e.to_string())?;
     if let Some(url) = &flow.verification_url {
-        println!("在浏览器中打开：\n{url}");
+        println!(
+            "{}",
+            crate::language().format("cli.openBrowser", &[url.to_string()])
+        );
     }
     if let Some(code) = &flow.user_code {
-        println!("设备码：{code}");
+        println!(
+            "{}",
+            crate::language().format("cli.deviceCode", &[code.to_string()])
+        );
     }
-    println!("等待授权；Ctrl+C 取消。");
+    println!("{}", crate::language().text("cli.waitingAuth"));
     let operation = async {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -101,13 +118,20 @@ pub async fn login(
                 .map_err(|e| e.to_string())?;
             match current.status.as_str() {
                 "complete" => {
-                    println!("登录完成：{connection_id}");
+                    println!(
+                        "{}",
+                        crate::language().format("cli.loggedIn", &[connection_id.to_string()])
+                    );
                     return Ok(Outcome::Done);
                 }
-                "failed" => return Err(current.error.unwrap_or_else(|| "登录失败".into())),
+                "failed" => {
+                    return Err(current
+                        .error
+                        .unwrap_or_else(|| crate::language().text("cli.loginFailed").into()))
+                }
                 "cancelled" => return Ok(Outcome::Cancelled),
                 "pending" => {}
-                _ => return Err("未知认证状态。".into()),
+                _ => return Err(crate::language().text("cli.authState").into()),
             }
         }
     };
@@ -182,7 +206,7 @@ impl ConfigCommand {
             ["connections", "set"] => Some(Self::ConnectionSet {
                 input: input
                     .clone()
-                    .ok_or("connections set 需要 --input <JSON 文件|->。")?,
+                    .ok_or(crate::language().text("cli.connectionInput"))?,
                 key_file: key_file.clone(),
             }),
             ["connections", "remove", id] => Some(Self::ConnectionRemove((*id).into())),
@@ -190,7 +214,7 @@ impl ConfigCommand {
             ["models", "set"] => Some(Self::ProfileSet {
                 input: input
                     .clone()
-                    .ok_or("models set 需要 --input <JSON 文件|->。")?,
+                    .ok_or(crate::language().text("cli.modelInput"))?,
             }),
             ["models", "remove", id] => Some(Self::ProfileRemove((*id).into())),
             ["models", "default", id] => Some(Self::Default((*id).into())),
@@ -203,13 +227,13 @@ impl ConfigCommand {
                 Some(Self::ConnectionSet { .. } | Self::ProfileSet { .. })
             )
         {
-            return Err("--input 只用于 connections set 或 models set。".into());
+            return Err(crate::language().text("cli.inputOption").into());
         }
         if key_file.is_some() && !matches!(command, Some(Self::ConnectionSet { .. })) {
-            return Err("--api-key-file 只用于 connections set。".into());
+            return Err(crate::language().text("cli.apiKeyOption").into());
         }
         if input.as_deref() == Some("-") && key_file.as_deref() == Some("-") {
-            return Err("JSON 和密钥不能同时读取标准输入。".into());
+            return Err(crate::language().text("cli.stdinConflict").into());
         }
         Ok(command)
     }
@@ -219,7 +243,7 @@ fn read_config_input(path: &str) -> Result<String, String> {
     if path == "-" {
         use std::io::Read;
         if io::stdin().is_terminal() {
-            return Err("请通过管道提供标准输入；交互终端可能回显密钥。".into());
+            return Err(crate::language().text("cli.pipeInput").into());
         }
         let mut text = String::new();
         io::stdin()
@@ -227,15 +251,17 @@ fn read_config_input(path: &str) -> Result<String, String> {
             .map_err(|e| e.to_string())?;
         Ok(text)
     } else {
-        std::fs::read_to_string(path).map_err(|e| format!("读取输入文件失败 {path}: {e}"))
+        std::fs::read_to_string(path).map_err(|e| {
+            crate::language().format("cli.readInput", &[path.to_string(), e.to_string()])
+        })
     }
 }
 
 fn read_config_json(path: &str) -> Result<Value, String> {
     let value: Value = serde_json::from_str(&read_config_input(path)?)
-        .map_err(|e| format!("配置 JSON 无效: {e}"))?;
+        .map_err(|e| crate::language().format("cli.invalidConfigJson", &[e.to_string()]))?;
     if !value.is_object() {
-        return Err("配置必须是 JSON 对象。".into());
+        return Err(crate::language().text("cli.configObject").into());
     }
     Ok(value)
 }
@@ -268,13 +294,13 @@ pub async fn configure(
         ConfigCommand::ConnectionSet { input, key_file } => {
             let mut body = read_config_json(&input)?;
             if body.get("apiKey").is_some() {
-                return Err("密钥请使用 --api-key-file <文件|->，不要放入配置 JSON。".into());
+                return Err(crate::language().text("cli.keyOption").into());
             }
             if let Some(path) = key_file {
                 let key = read_config_input(&path)?;
                 let key = key.trim();
                 if key.is_empty() {
-                    return Err("密钥文件为空；移除认证请使用 auth logout。".into());
+                    return Err(crate::language().text("cli.emptyKey").into());
                 }
                 body["apiKey"] = json!(key);
             }
@@ -308,7 +334,7 @@ pub async fn configure(
         serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
     );
     if edit {
-        eprintln!("配置已保存；后续新任务使用新配置，当前运行保持已有快照。使用 models probe <id> 验证实际服务。仅保存密钥不代表认证成功。");
+        eprintln!("{}", crate::language().text("cli.configSaved"));
     }
     Ok(if probe && result["ok"] != true {
         Outcome::Failed

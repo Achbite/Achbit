@@ -42,8 +42,34 @@ const EXIT_INTERRUPTED: i32 = 130;
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+static HOST_LANGUAGE: std::sync::OnceLock<i18n::Language> = std::sync::OnceLock::new();
+static OFFLINE_LANGUAGE: std::sync::OnceLock<i18n::Language> = std::sync::OnceLock::new();
+
+fn language() -> i18n::Language {
+    HOST_LANGUAGE
+        .get()
+        .or_else(|| OFFLINE_LANGUAGE.get())
+        .copied()
+        .unwrap_or_default()
+}
+
 #[tokio::main]
 async fn main() {
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .find_map(|name| env::var(name).ok().filter(|value| !value.is_empty()));
+    let primary = locale
+        .as_deref()
+        .unwrap_or("C")
+        .split(['-', '_', '.', '@'])
+        .next();
+    let _ = OFFLINE_LANGUAGE.set(
+        if primary.is_some_and(|name| name.eq_ignore_ascii_case("zh")) {
+            i18n::Language::ZhCn
+        } else {
+            i18n::Language::EnUs
+        },
+    );
     let _installation = match achbit_host_connection::installation::Installation::current() {
         Ok(installation) => installation,
         Err(error) => {
@@ -86,24 +112,24 @@ async fn main() {
         .iter()
         .any(|value| matches!(value.as_str(), "--help" | "-h"))
     {
-        println!("{HELP}");
+        println!("{}", language().text("cli.help"));
         return;
     }
     let args = match Args::parse(values) {
         Ok(args) => args,
         Err(error) => {
-            eprintln!("{error}\n{HELP}");
+            eprintln!("{error}\n{}", language().text("cli.help"));
             std::process::exit(EXIT_BAD_ARGS);
         }
     };
     if matches!(args.command, Command::Help) {
-        println!("{HELP}");
+        println!("{}", language().text("cli.help"));
         return;
     }
     if matches!(args.command, Command::GuiAttach)
         && (args.api.is_some() || args.host_data_dir.is_some())
     {
-        eprintln!("gui-attach uses the shared Host of ACHBIT_USER_ROOT; --api/--host-data-dir are not supported");
+        eprintln!("{}", language().text("cli.guiAttachSharedHost"));
         std::process::exit(EXIT_BAD_ARGS);
     }
     let bootstrap = match KernelBootstrap::connect(
@@ -120,10 +146,34 @@ async fn main() {
     {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("Daemon 不可用：{error}");
+            eprintln!(
+                "{}",
+                crate::language().format("cli.daemonUnavailable", &[error.to_string()])
+            );
             std::process::exit(EXIT_DAEMON_UNAVAILABLE);
         }
     };
+    // Machine-readable commands and lifecycle probes do not need workbench settings.
+    if matches!(
+        args.command,
+        Command::Sessions
+            | Command::Chat
+            | Command::Ask(_)
+            | Command::Show
+            | Command::CancelPlan
+            | Command::Cancel { .. }
+            | Command::AttachDirectory { .. }
+            | Command::DetachDirectory { .. }
+            | Command::AuthLogin { .. }
+            | Command::AuthLogout { .. }
+            | Command::Connections
+    ) {
+        if let Ok(settings) = bootstrap.client().user_settings().await {
+            if let Ok(selected) = i18n::Language::from_settings(&settings) {
+                let _ = HOST_LANGUAGE.set(selected);
+            }
+        }
+    }
     let result = run(bootstrap.client(), args).await;
     drop(bootstrap);
     match result {
@@ -250,12 +300,15 @@ impl Args {
                 "--recipe" => {
                     index += 1;
                     let path = required_arg(&values, index, "--recipe")?;
-                    let text = std::fs::read_to_string(path)
-                        .map_err(|error| format!("读取 Agent 配方失败 {path}: {error}"))?;
-                    let value: Value = serde_json::from_str(&text)
-                        .map_err(|error| format!("Agent 配方 JSON 无效: {error}"))?;
+                    let text = std::fs::read_to_string(path).map_err(|error| {
+                        crate::language()
+                            .format("cli.readRecipe", &[path.to_string(), error.to_string()])
+                    })?;
+                    let value: Value = serde_json::from_str(&text).map_err(|error| {
+                        crate::language().format("cli.invalidRecipeJson", &[error.to_string()])
+                    })?;
                     if !value.is_object() {
-                        return Err("Agent 配方必须是 JSON 对象。".into());
+                        return Err(crate::language().text("cli.recipeObject").into());
                     }
                     recipe = Some(value);
                 }
@@ -285,14 +338,16 @@ impl Args {
                         _ => "limit",
                     };
                     let value = if matches!(field, "before" | "limit" | "offset") {
-                        let number = value
-                            .parse::<u64>()
-                            .map_err(|_| format!("{option} 需要正整数。"))?;
+                        let number = value.parse::<u64>().map_err(|_| {
+                            crate::language().format("cli.positiveInteger", &[option.to_string()])
+                        })?;
                         if (number == 0 && field != "offset")
                             || (field == "limit" && number > 50)
                             || number > 9_007_199_254_740_991
                         {
-                            return Err(format!("{option} 超出有效范围。"));
+                            return Err(
+                                crate::language().format("cli.optionRange", &[option.to_string()])
+                            );
                         }
                         json!(number)
                     } else {
@@ -314,15 +369,17 @@ impl Args {
                     directories.push(required_arg(&values, index, "--directory")?.to_string());
                 }
                 "--help" | "-h" => positional.push("help".to_string()),
-                value if value.starts_with('-') => return Err(format!("未知选项：{value}")),
+                value if value.starts_with('-') => {
+                    return Err(crate::language().format("cli.unknownOption", &[value.to_string()]))
+                }
                 _ => positional.push(values[index].clone()),
             }
             index += 1;
         }
         if session_id.is_some() && workspace.is_some() {
-            return Err(
-                "--session 指向已有 creation snapshot，不能同时使用 -C/--workspace。".to_string(),
-            );
+            return Err(crate::language()
+                .text("cli.sessionWorkspaceConflict")
+                .to_string());
         }
         let config_command =
             model_services::ConfigCommand::parse(&positional, config_input, api_key_file)?;
@@ -330,115 +387,145 @@ impl Args {
             Command::Configure(command)
         } else {
             match positional.first().map(String::as_str) {
-            None => Command::Chat,
-            Some("help") => Command::Help,
-            Some("status") => Command::Status,
-            Some("connections" | "models") if positional.len()==1 => Command::Connections,
-            Some("auth") => match positional.get(1).map(String::as_str) {
-                Some("status") if positional.len()==2 => Command::Connections,
-                Some("login") if (3..=4).contains(&positional.len()) => {
-                    let method=positional.get(3).map(String::as_str).unwrap_or("browser");
-                    if !matches!(method,"browser"|"device") { return Err("登录方式为 browser 或 device。".into()); }
-                    Command::AuthLogin { selector:positional[2].clone(),device_code:method=="device" }
+                None => Command::Chat,
+                Some("help") => Command::Help,
+                Some("status") => Command::Status,
+                Some("connections" | "models") if positional.len() == 1 => Command::Connections,
+                Some("auth") => match positional.get(1).map(String::as_str) {
+                    Some("status") if positional.len() == 2 => Command::Connections,
+                    Some("login") if (3..=4).contains(&positional.len()) => {
+                        let method = positional.get(3).map(String::as_str).unwrap_or("browser");
+                        if !matches!(method, "browser" | "device") {
+                            return Err(crate::language().text("cli.loginMethod").into());
+                        }
+                        Command::AuthLogin {
+                            selector: positional[2].clone(),
+                            device_code: method == "device",
+                        }
+                    }
+                    Some("logout") if positional.len() == 3 => Command::AuthLogout {
+                        connection_id: positional[2].clone(),
+                    },
+                    _ => return Err(crate::language().text("cli.authUsage").into()),
+                },
+                Some("quota") if positional.len() == 2 => Command::Quota {
+                    connection_id: positional[1].clone(),
+                },
+                Some("usage") if positional.len() <= 3 => {
+                    let days: u64 = positional
+                        .get(2)
+                        .map(|v| v.parse())
+                        .transpose()
+                        .map_err(|_| crate::language().text("cli.daysInteger"))?
+                        .unwrap_or(30);
+                    if !(1..=366).contains(&days) {
+                        return Err(crate::language().text("cli.daysRange").into());
+                    }
+                    Command::Usage {
+                        connection_id: positional.get(1).filter(|v| v.as_str() != "all").cloned(),
+                        days,
+                    }
                 }
-                Some("logout") if positional.len()==3 => Command::AuthLogout { connection_id:positional[2].clone() },
-                _ => return Err("用法：auth login <connection-id|openai-codex> [browser|device] / auth status / auth logout <connection-id>".into()),
-            },
-            Some("quota") if positional.len()==2 => Command::Quota { connection_id:positional[1].clone() },
-            Some("usage") if positional.len()<=3 => {
-                let days:u64=positional.get(2).map(|v|v.parse()).transpose().map_err(|_|"统计天数应填写整数，例如：achbit-cli usage all 7。")?.unwrap_or(30);
-                if !(1..=366).contains(&days) { return Err("统计天数必须在 1 至 366 之间，例如：achbit-cli usage all 7。".into()); }
-                Command::Usage { connection_id:positional.get(1).filter(|v|v.as_str()!="all").cloned(),days }
-            },
-            Some("stop-host") if positional.len() == 1 => Command::StopHost,
-            Some("start-host") if positional.len() == 1 => Command::StartHost,
-            Some("gui-attach") if positional.len() == 1 => Command::GuiAttach,
-            Some("diff") if positional.len() == 3 => Command::Diff {
-                record_id: positional[1].clone(),
-                index: positional[2]
-                    .parse()
-                    .map_err(|_| "diff index must be a nonnegative integer")?,
-            },
-            Some("sessions") if positional.len() == 1 && session_id.is_none() && workspace.is_none() => Command::Sessions,
-            Some("new") if positional.len() == 1 && session_id.is_none() => Command::Chat,
-            Some("resume") if positional.len() == 2 && session_id.is_none() && workspace.is_none() => {
-                session_id = Some(session_navigation::resolve_selector(i18n::Language::ZhCn, &positional[1], None)?);
-                Command::Chat
+                Some("stop-host") if positional.len() == 1 => Command::StopHost,
+                Some("start-host") if positional.len() == 1 => Command::StartHost,
+                Some("gui-attach") if positional.len() == 1 => Command::GuiAttach,
+                Some("diff") if positional.len() == 3 => Command::Diff {
+                    record_id: positional[1].clone(),
+                    index: positional[2]
+                        .parse()
+                        .map_err(|_| "diff index must be a nonnegative integer")?,
+                },
+                Some("sessions")
+                    if positional.len() == 1 && session_id.is_none() && workspace.is_none() =>
+                {
+                    Command::Sessions
+                }
+                Some("new") if positional.len() == 1 && session_id.is_none() => Command::Chat,
+                Some("resume")
+                    if positional.len() == 2 && session_id.is_none() && workspace.is_none() =>
+                {
+                    session_id = Some(session_navigation::resolve_selector(
+                        language(),
+                        &positional[1],
+                        None,
+                    )?);
+                    Command::Chat
+                }
+                Some("sessions" | "new" | "resume") => {
+                    return Err(crate::language().text("cli.sessionsUsage").into())
+                }
+                Some("chat") => Command::Chat,
+                Some("show") => Command::Show,
+                Some("read") => {
+                    if positional.len() != 1 || session_id.is_none() {
+                        return Err(crate::language().text("cli.readUsage").into());
+                    }
+                    Command::Read {
+                        query: Value::Object(read_query.clone()),
+                    }
+                }
+                Some("ask") => {
+                    let text = positional[1..].join(" ");
+                    if text.trim().is_empty() {
+                        return Err(crate::language().text("cli.askEmpty").to_string());
+                    }
+                    Command::Ask(text)
+                }
+                Some("cancel-plan") => {
+                    if positional.len() != 1 {
+                        return Err(crate::language().text("cli.cancelPlanUsage").to_string());
+                    }
+                    Command::CancelPlan
+                }
+                Some("cancel") => {
+                    if positional.len() != 2 {
+                        return Err(crate::language().text("cli.cancelUsage").to_string());
+                    }
+                    Command::Cancel {
+                        run_id: positional[1].clone(),
+                    }
+                }
+                Some("attach-directory") => {
+                    if positional.len() != 2 {
+                        return Err(crate::language().text("cli.attachUsage").to_string());
+                    }
+                    Command::AttachDirectory {
+                        path: positional[1].clone(),
+                    }
+                }
+                Some("detach-directory") => {
+                    if positional.len() != 2 {
+                        return Err(crate::language().text("cli.detachUsage").to_string());
+                    }
+                    Command::DetachDirectory {
+                        workspace_id: positional[1].clone(),
+                    }
+                }
+                Some("open-resource") => {
+                    if positional.len() != 3 && positional.len() != 4 {
+                        return Err(crate::language().text("cli.openResourceUsage").to_string());
+                    }
+                    Command::OpenResource {
+                        workspace_id: positional[1].clone(),
+                        logical_path: positional[2].clone(),
+                        start_byte: positional
+                            .get(3)
+                            .map(|value| value.parse::<u64>().map_err(|_| "invalid startByte"))
+                            .transpose()?,
+                    }
+                }
+                Some(other) => {
+                    return Err(crate::language().format("cli.unknownCommand", &[other.to_string()]))
+                }
             }
-            Some("sessions" | "new" | "resume") => return Err("用法：sessions | new [-C <workspace>] | resume <完整 session: ID>；不可同时指定 --session。".into()),
-            Some("chat") => Command::Chat,
-            Some("show") => Command::Show,
-            Some("read") => {
-                if positional.len() != 1 || session_id.is_none() {
-                    return Err("用法：read --session <id> [--view summary|messages|tools|plans|context|reasoning|images] [--before <sequence>] [--limit 1..50]".into());
-                }
-                Command::Read {
-                    query: Value::Object(read_query.clone()),
-                }
-            }
-            Some("ask") => {
-                let text = positional[1..].join(" ");
-                if text.trim().is_empty() {
-                    return Err("ask 需要非空输入。".to_string());
-                }
-                Command::Ask(text)
-            }
-            Some("cancel-plan") => {
-                if positional.len() != 1 {
-                    return Err("用法：cancel-plan --session <id>".to_string());
-                }
-                Command::CancelPlan
-            }
-            Some("cancel") => {
-                if positional.len() != 2 {
-                    return Err("用法：cancel --session <id> <run-id>".to_string());
-                }
-                Command::Cancel {
-                    run_id: positional[1].clone(),
-                }
-            }
-            Some("attach-directory") => {
-                if positional.len() != 2 {
-                    return Err("用法：attach-directory --session <id> <path>".to_string());
-                }
-                Command::AttachDirectory {
-                    path: positional[1].clone(),
-                }
-            }
-            Some("detach-directory") => {
-                if positional.len() != 2 {
-                    return Err("用法：detach-directory --session <id> <workspace-id>".to_string());
-                }
-                Command::DetachDirectory {
-                    workspace_id: positional[1].clone(),
-                }
-            }
-            Some("open-resource") => {
-                if positional.len() != 3 && positional.len() != 4 {
-                    return Err(
-                        "用法：open-resource --session <id> <workspace-id> <logical-path>"
-                            .to_string(),
-                    );
-                }
-                Command::OpenResource {
-                    workspace_id: positional[1].clone(),
-                    logical_path: positional[2].clone(),
-                    start_byte: positional
-                        .get(3)
-                        .map(|value| value.parse::<u64>().map_err(|_| "invalid startByte"))
-                        .transpose()?,
-                }
-            }
-            Some(other) => return Err(format!("未知命令：{other}")),
-        }
         };
         if !read_query.is_empty() && !matches!(command, Command::Read { .. }) {
-            return Err("--view/--record/--request/--before/--limit 仅用于 read。".into());
+            return Err(crate::language().text("cli.readOptions").into());
         }
         if recipe.is_some()
             && (session_id.is_some() || !matches!(command, Command::Ask(_) | Command::Chat))
         {
-            return Err("--recipe 仅用于 ask/chat 创建新会话，不能与 --session 同用。".into());
+            return Err(crate::language().text("cli.recipeOptions").into());
         }
         Ok(Self {
             api,
@@ -490,7 +577,7 @@ async fn resolve_plugin_selections(
             continue;
         }
         let Some(media_type) = reference.media_type.as_deref() else {
-            return Err("文件引用缺少 mediaType。".to_string());
+            return Err(crate::language().text("cli.fileMediaType").to_string());
         };
         let matches = catalog
             .plugins
@@ -522,7 +609,7 @@ async fn resolve_cli_filesystem_references(
     directories: &[String],
 ) -> Result<Vec<FilesystemReference>, String> {
     if files.len() + directories.len() > 8 {
-        return Err("单次 ask 最多附加八个文件系统引用。".to_string());
+        return Err(crate::language().text("cli.attachmentLimit").to_string());
     }
     let references = files
         .iter()
@@ -558,7 +645,7 @@ fn plugin_binding_from_catalog(
             .plugins
             .iter()
             .find(|plugin| plugin.uri == *uri)
-            .ok_or_else(|| format!("插件不在当前目录中或不可用：{uri}"))?;
+            .ok_or_else(|| crate::language().format("cli.pluginMissing", &[uri.to_string()]))?;
         if let Some(error) = plugin_unavailable_reason(plugin) {
             return Err(error);
         }
@@ -573,12 +660,12 @@ fn plugin_binding_from_catalog(
 
 async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
     if !args.plugins.is_empty() && !matches!(&args.command, Command::Ask(_) | Command::Chat) {
-        return Err("--plugin 只适用于 ask 或 chat。".to_string());
+        return Err(crate::language().text("cli.pluginOptions").to_string());
     }
     if (!args.files.is_empty() || !args.directories.is_empty())
         && !matches!(&args.command, Command::Ask(_))
     {
-        return Err("--file/--directory 只适用于单次 ask。".to_string());
+        return Err(crate::language().text("cli.fileOptions").to_string());
     }
     match args.command {
         Command::Help => Ok(Outcome::Done),
@@ -601,7 +688,10 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .logout_model_connection(&connection_id)
                 .await
                 .map_err(|e| e.to_string())?;
-            println!("已退出登录。{}　", connection_id);
+            println!(
+                "{}",
+                crate::language().format("cli.loggedOut", &[connection_id.to_string()])
+            );
             Ok(Outcome::Done)
         }
         Command::Quota { connection_id } => {
@@ -629,7 +719,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
         }
         Command::GuiAttach => gui_attach::serve().await.map(|()| Outcome::Done),
         Command::StartHost => {
-            println!("共享 Host 已启动为常驻服务。");
+            println!("{}", crate::language().text("cli.hostStarted"));
             Ok(Outcome::Done)
         }
         Command::StopHost => {
@@ -637,7 +727,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .stop_host()
                 .await
                 .map_err(|error| error.to_string())?;
-            println!("共享 Host 已接纳停止请求。");
+            println!("{}", crate::language().text("cli.hostStopping"));
             Ok(Outcome::Done)
         }
         Command::Diff { record_id, index } => {
@@ -738,7 +828,7 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
             let plan = before
                 .pending_plan
                 .as_ref()
-                .ok_or_else(|| "当前没有待处理 Plan。".to_string())?;
+                .ok_or_else(|| crate::language().text("cli.noPlan").to_string())?;
             let command = plan_cancel_command(session_id, &new_id("command"), plan);
             submit_checked(client, session_id, &command).await?;
             wait_for_projection(client, &before, args.plain).await
@@ -777,11 +867,17 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .collect::<Vec<_>>();
             if let [binding] = added.as_slice() {
                 println!(
-                    "已附加目录索引：{} ({})；后续请求生效。",
-                    binding.display_name, binding.workspace_id
+                    "{}",
+                    crate::language().format(
+                        "cli.attached",
+                        &[
+                            binding.display_name.to_string(),
+                            binding.workspace_id.to_string()
+                        ]
+                    )
                 );
             } else {
-                println!("对话目录已更新，后续请求生效。");
+                println!("{}", crate::language().text("cli.directoriesUpdated"));
             }
             Ok(Outcome::Done)
         }
@@ -791,7 +887,10 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .detach_conversation_directory_index(session_id, &workspace_id)
                 .await
                 .map_err(|error| error.to_string())?;
-            println!("已移除目录索引 {workspace_id}；后续请求生效。");
+            println!(
+                "{}",
+                crate::language().format("cli.detached", &[workspace_id.to_string()])
+            );
             Ok(Outcome::Done)
         }
         Command::OpenResource {
@@ -810,7 +909,18 @@ async fn run(client: &HttpKernelClient, args: Args) -> Result<Outcome, String> {
                 .await
                 .map_err(|error| error.to_string())?;
             if let Some(next) = resource.next_byte {
-                eprintln!("部分内容；续读：achbit-cli open-resource --session {session_id} {workspace_id} {logical_path:?} {next}");
+                eprintln!(
+                    "{}",
+                    crate::language().format(
+                        "cli.resourceContinue",
+                        &[
+                            session_id.to_string(),
+                            workspace_id.to_string(),
+                            format!("{:?}", logical_path),
+                            next.to_string()
+                        ]
+                    )
+                );
             }
             print!("{}", resource.content);
             if !resource.content.ends_with('\n') {
@@ -830,7 +940,7 @@ async fn open_session(
 ) -> Result<SessionProjection, String> {
     if let Some(session_id) = session_id {
         if recipe.is_some() {
-            return Err("--recipe 仅用于创建新会话；已有会话保留其配方。".into());
+            return Err(crate::language().text("cli.recipeExisting").into());
         }
         return client
             .conversation_projection(session_id)
@@ -840,7 +950,12 @@ async fn open_session(
     let workspace_paths = match workspace {
         Some(path) => Some(vec![path
             .canonicalize()
-            .map_err(|error| format!("工作区不可用 {}：{error}", path.display()))?
+            .map_err(|error| {
+                crate::language().format(
+                    "cli.workspaceUnavailable",
+                    &[(path.display()).to_string(), error.to_string()],
+                )
+            })?
             .to_string_lossy()
             .to_string()]),
         None => None,
@@ -868,8 +983,7 @@ async fn submit_input_and_wait(
     plain: bool,
 ) -> Result<Outcome, String> {
     let child =
-        conversation_input::child_reply_projection(i18n::Language::ZhCn, client, before, text)
-            .await?;
+        conversation_input::child_reply_projection(language(), client, before, text).await?;
     let target = child.as_ref().unwrap_or(before);
     let command = contextual_input_command(
         target,
@@ -883,7 +997,7 @@ async fn submit_input_and_wait(
         command["type"].as_str(),
         Some("session.permissions.set" | "approval.revoke")
     ) {
-        println!("权限设置已更新。");
+        println!("{}", crate::language().text("cli.permissionsSaved"));
         return Ok(Outcome::Done);
     }
     wait_for_projection(client, before, plain).await
@@ -897,7 +1011,7 @@ fn contextual_input_command(
     plugin_binding: Option<&PluginBinding>,
 ) -> Result<serde_json::Value, String> {
     conversation_input::contextual_input_command(
-        i18n::Language::ZhCn,
+        language(),
         projection,
         text,
         &new_id("command"),
@@ -920,7 +1034,7 @@ async fn submit_checked(
         let error = reply
             .error
             .map(|value| format!("{}: {}", value.code, value.message))
-            .unwrap_or_else(|| "命令被拒绝。".to_string());
+            .unwrap_or_else(|| crate::language().text("cli.commandRejected").to_string());
         return Err(error);
     }
     Ok(())
@@ -946,7 +1060,7 @@ async fn wait_for_projection(
             output
                 .finish_text(&mut io::stdout().lock())
                 .map_err(|error| error.to_string())?;
-            return Err("等待 Agent 运行结束超时。".to_string());
+            return Err(crate::language().text("cli.runTimeout").to_string());
         }
         let projection = match client.conversation_projection(session_id).await {
             Ok(projection) => projection,
@@ -1015,7 +1129,7 @@ async fn wait_for_projection(
                 if let Some(run) = projection.run.as_ref() {
                     let command = cancel_command(session_id, &new_id("command"), &run.run_id);
                     submit_checked(client, session_id, &command).await?;
-                    eprintln!("已请求取消 run {}", run.run_id);
+                    eprintln!("{}", crate::language().format("cli.cancelRequested", &[run.run_id.to_string()]));
                 }
                 return Ok(Outcome::Interrupted);
             }
@@ -1027,7 +1141,7 @@ fn print_sessions(
     sessions: &[achbit_kernel_client::ConversationSessionSummary],
     current: Option<&str>,
 ) {
-    let language = i18n::Language::ZhCn;
+    let language = language();
     println!("{}", language.text("tui.sessionsTitle"));
     if sessions.is_empty() {
         println!("{}", language.text("tui.sessionsEmpty"));
@@ -1050,7 +1164,7 @@ async fn run_chat(
     recipe: Option<&Value>,
 ) -> Result<Outcome, String> {
     if !io::stdin().is_terminal() {
-        return Err("chat 需要交互式终端；非交互调用请使用 ask。".to_string());
+        return Err(crate::language().text("cli.chatTerminal").to_string());
     }
     let mut projection =
         open_session(client, session_id, workspace, initial_profile_id, recipe).await?;
@@ -1065,8 +1179,8 @@ async fn run_chat(
     };
     println!("session: {}", projection.session_id);
     render_projection(&mut io::stdout().lock(), &projection).map_err(|error| error.to_string())?;
-    println!("/sessions 列出会话；/resume <序号或完整 ID> 进入；/new 沿用启动目录新建；切换不会取消后台任务。");
-    println!("普通文本随时发送，运行中按序排队；/reply <答复> 回应交互或修订 Plan，/reply 1 确认 Plan 或允许 effect，/reply 2 拒绝 effect；@ 显示插件，@<名称或 URI> 选择插件；/focus <task> 启动聚焦上下文；/plan <任务> 先提交计划，确认后执行本次任务；/attach <path> 与 /detach <workspace-id> 管理对话目录索引；/cancel-plan；/model <profile> 设置下一次 run 的模型；/SimLoop 极简、/FullLoop 完整（下一 run 生效）；/cancel；/quit。");
+    println!("{}", crate::language().text("cli.navigationHelp"));
+    println!("{}", crate::language().text("cli.chatHelp"));
     render_action_required_if_any(&mut io::stdout().lock(), &projection)
         .map_err(|error| error.to_string())?;
     render_pending_agent_decisions(client, &projection).await?;
@@ -1163,7 +1277,7 @@ async fn run_chat(
                     None
                 } else {
                     match session_navigation::resolve_selector(
-                        i18n::Language::ZhCn,
+                        language(),
                         value.trim_start_matches("/resume ").trim(),
                         session_list.as_deref(),
                     ) {
@@ -1190,10 +1304,9 @@ async fn run_chat(
                         output
                             .finish_text(&mut io::stdout().lock())
                             .map_err(|error| error.to_string())?;
-                        if let Some(notice) = session_navigation::background_notice(
-                            i18n::Language::ZhCn,
-                            Some(&projection),
-                        ) {
+                        if let Some(notice) =
+                            session_navigation::background_notice(language(), Some(&projection))
+                        {
                             println!("{notice}");
                         }
                         projection = next;
@@ -1216,7 +1329,7 @@ async fn run_chat(
                 let plan = projection
                     .pending_plan
                     .as_ref()
-                    .ok_or_else(|| "当前没有待处理 Plan。".to_string())?;
+                    .ok_or_else(|| crate::language().text("cli.noPlan").to_string())?;
                 let command = plan_cancel_command(&projection.session_id, &new_id("command"), plan);
                 submit_checked(client, &projection.session_id, &command).await?;
                 projection = refresh_projection(client, &projection.session_id).await?;
@@ -1241,35 +1354,38 @@ async fn run_chat(
             value if value.starts_with("/model ") => {
                 let profile_id = value.trim_start_matches("/model ").trim();
                 if profile_id.is_empty() {
-                    println!("用法：/model <profile>");
+                    println!("{}", crate::language().text("cli.modelUsage"));
                     continue;
                 }
                 next_message_profile_id = Some(profile_id.to_string());
-                println!("后续普通消息将提交模型 Profile {profile_id}；当前 run 不变。");
+                println!(
+                    "{}",
+                    crate::language().format("cli.nextModel", &[profile_id.to_string()])
+                );
             }
             value if value.starts_with("/attach ") => {
                 let path = value.trim_start_matches("/attach ").trim();
                 if path.is_empty() {
-                    println!("用法：/attach <path>");
+                    println!("{}", crate::language().text("cli.chatAttachUsage"));
                     continue;
                 }
                 projection = client
                     .attach_conversation_directory_index(&projection.session_id, path)
                     .await
                     .map_err(|error| error.to_string())?;
-                println!("目录索引已附加，后续请求生效。");
+                println!("{}", crate::language().text("cli.chatAttached"));
             }
             value if value.starts_with("/detach ") => {
                 let workspace_id = value.trim_start_matches("/detach ").trim();
                 if workspace_id.is_empty() {
-                    println!("用法：/detach <workspace-id>");
+                    println!("{}", crate::language().text("cli.chatDetachUsage"));
                     continue;
                 }
                 projection = client
                     .detach_conversation_directory_index(&projection.session_id, workspace_id)
                     .await
                     .map_err(|error| error.to_string())?;
-                println!("目录已移除，后续请求生效。");
+                println!("{}", crate::language().text("cli.chatDetached"));
             }
             _ if input.starts_with('@') => {
                 let query = input.trim_start_matches('@').trim();
@@ -1293,14 +1409,22 @@ async fn run_chat(
                         .iter()
                         .any(|selection| selection.uri == plugin.uri)
                     {
-                        println!("插件已为下一次请求选择：{}", plugin.display_name);
+                        println!(
+                            "{}",
+                            crate::language()
+                                .format("cli.nextPlugin", &[plugin.display_name.to_string()])
+                        );
                     } else {
                         selected_plugins.push(PluginSelectionInput {
                             selection_id: new_id("plugin-selection"),
                             uri: plugin.uri.clone(),
                             label: plugin.display_name.clone(),
                         });
-                        println!("已为下一次请求选择插件：{}", plugin.display_name);
+                        println!(
+                            "{}",
+                            crate::language()
+                                .format("cli.pluginSelected", &[plugin.display_name.to_string()])
+                        );
                     }
                 } else {
                     print_plugin_catalog(&plugin_catalog, &selected_plugins, query);
@@ -1311,7 +1435,7 @@ async fn run_chat(
                 let current = refresh_projection(client, &projection.session_id).await?;
                 let text = line.trim_end_matches(['\r', '\n']);
                 let check = conversation_input::check_reply_refresh(
-                    i18n::Language::ZhCn,
+                    language(),
                     &projection,
                     &current,
                     text,
@@ -1330,7 +1454,7 @@ async fn run_chat(
                     })
                 };
                 let child = match conversation_input::child_reply_projection(
-                    i18n::Language::ZhCn,
+                    language(),
                     client,
                     &projection,
                     text,
@@ -1366,8 +1490,11 @@ async fn run_chat(
                 }
                 if command["type"] == "session.mode.set" {
                     println!(
-                        "会话模式已保存为 {}，下一次 run 生效。",
-                        command["mode"].as_str().unwrap_or_default()
+                        "{}",
+                        crate::language().format(
+                            "cli.nextMode",
+                            &[(command["mode"].as_str().unwrap_or_default()).to_string()]
+                        )
                     );
                 }
                 projection = refresh_projection(client, &projection.session_id).await?;
@@ -1409,7 +1536,9 @@ fn plugin_unavailable_reason(plugin: &PluginCatalogItem) -> Option<String> {
             "{}：{} ({})",
             plugin.display_name, error.message, error.code
         ),
-        None => format!("插件不可用：{}", plugin.display_name),
+        None => {
+            crate::language().format("cli.pluginUnavailable", &[plugin.display_name.to_string()])
+        }
     })
 }
 
@@ -1443,9 +1572,9 @@ fn print_plugin_catalog(
         }
     }
     if !found {
-        println!("没有匹配的可用插件。");
+        println!("{}", crate::language().text("cli.noPluginMatch"));
     } else {
-        println!("输入 @<完整名称或 plugin:// URI> 为下一次请求选择插件。");
+        println!("{}", crate::language().text("cli.pluginHint"));
     }
 }
 
@@ -1478,8 +1607,14 @@ async fn render_pending_agent_decisions(
         let mut stdout = io::stdout().lock();
         writeln!(
             stdout,
-            "\n子代理 {} 等待确认 · {}",
-            decision.display_name, child.session_id
+            "{}",
+            crate::language().format(
+                "cli.childWaiting",
+                &[
+                    decision.display_name.to_string(),
+                    child.session_id.to_string()
+                ]
+            )
         )
         .map_err(|error| error.to_string())?;
         CliRenderState::default()
@@ -1487,14 +1622,19 @@ async fn render_pending_agent_decisions(
             .map_err(|error| error.to_string())?;
         let mut approvals = child.human_approvals();
         let reply = match (approvals.next(), approvals.next()) {
-            (Some(item), None) => format!("/reply --approval {} <决定>", item.approval_id),
-            (Some(_), Some(_)) => "/reply --approval <审批ID> <决定>".into(),
-            _ => "/reply <答复>".into(),
+            (Some(item), None) => {
+                crate::language().format("cli.selectedApproval", &[item.approval_id.to_string()])
+            }
+            (Some(_), Some(_)) => crate::language().text("cli.chooseApproval").into(),
+            _ => crate::language().text("cli.answerHint").into(),
         };
         writeln!(
             stdout,
-            "回复此子代理：achbit-cli ask --session {} \"{reply}\"",
-            child.session_id
+            "{}",
+            crate::language().format(
+                "cli.replyChild",
+                &[child.session_id.to_string(), reply.to_string()]
+            )
         )
         .map_err(|error| error.to_string())?;
     }
@@ -1541,14 +1681,14 @@ fn outcome_for_status(status: &str) -> Option<Outcome> {
 }
 
 fn require_session(session_id: Option<&str>) -> Result<&str, String> {
-    session_id.ok_or_else(|| "该命令需要 --session <id>。".to_string())
+    session_id.ok_or_else(|| crate::language().text("cli.sessionRequired").to_string())
 }
 
 fn required_arg<'a>(values: &'a [String], index: usize, option: &str) -> Result<&'a str, String> {
     values
         .get(index)
         .map(String::as_str)
-        .ok_or_else(|| format!("{option} 缺少参数。"))
+        .ok_or_else(|| crate::language().format("cli.missingArgument", &[option.to_string()]))
 }
 
 fn new_id(kind: &str) -> String {
@@ -1559,46 +1699,6 @@ fn new_id(kind: &str) -> String {
     let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     format!("{kind}:{}:{clock:x}:{sequence:x}", std::process::id())
 }
-
-const HELP: &str = r#"插件：plugins list/status [id|installed-path] | capabilities | guide plugins/ui | template cli/service/ui/guidance | inspect/install <path> | update <id|installed-path> <path> | enable/disable/remove <id|installed-path>
-管理使用当前 Host；安装后通过 plugin.search 与 plugin.activate 在同一轮后续步骤使用工具。
-配置：instance | services | connections list/set/remove | models list/set/remove/default/probe
-set 使用 --input <JSON 文件|->；connections set 可加 --api-key-file <文件|->。使用 --host-data-dir <当前实例 data 目录> 精确连接，失败时不会启动其他实例。
-模型服务：connections | auth login <connection-id|openai-codex> [browser|device] | auth status | auth logout <id> | quota <id> | usage [connection-id|all] [days]
-usage 按位置填写连接和天数；省略时查询全部连接最近 30 天，天数范围为 1 至 366。
-示例：achbit-cli usage all 7（全部连接最近 7 天）。
-ask/chat 支持 --model <profile-id>；usage 使用 UTC 日界线。
-配置 JSON：models set 的 --input 是完整 profile 对象；connections set 是 {"connection":{...},"profile":{...}}（profile 可选）。先用 models list/connections list 读取当前字段，修改后通过 set 保存。
-密钥只通过 --api-key-file <文件|-> 提供。models probe <profile-id> 发起真实请求，失败返回非零退出码。help/-h/--help 无需连接 Host。
-Achbit 本地编码 Agent
-
-用法：
-  achbit-cli ask [-C <workspace>] [--session <id>] [--file <path>]... [--directory <path>]... [--plugin <plugin://uri>]... [--plain] <message-or-response>
-  achbit-cli chat [-C <workspace>] [--session <id>] [--plugin <plugin://uri>]...
-  achbit-cli sessions
-  achbit-cli new [-C <workspace>]
-  achbit-cli resume <完整 session: ID>
-  achbit-cli show --session <id>
-  achbit-cli read --session <id> [--view summary|messages|tools|plans|context|reasoning|images] [--before <sequence>] [--limit 1..50] [--record <id>] [--request <id>]
-  achbit-cli cancel-plan --session <id>
-  achbit-cli cancel --session <id> <run-id>
-  achbit-cli attach-directory --session <id> <path>
-  achbit-cli detach-directory --session <id> <workspace-id>
-  achbit-cli open-resource --session <id> <workspace-id> <logical-path>
-  achbit-cli diff --session <id> <record-id> <file-index>
-  achbit-cli start-host
-  achbit-cli stop-host
-  achbit-cli status
-  achbit-cli ssh help
-
-使用 -C/--workspace 为新对话指定工作目录；已有对话通过 attach-directory/detach-directory 管理目录。
-chat 内 /sessions 列表，/resume <序号或完整 ID> 进入，/new 沿用启动目录新建；切换不会取消原会话或复制权限。序号仅对应本进程最后显示的列表。
-chat 普通文本随时发送，运行中按序排队；/reply 1 确认计划，/reply <说明> 修改计划或回答问题，/reply 1/2 允许/拒绝操作；cancel-plan 取消计划。
-多项审批并存时，使用 /reply --approval <审批ID> <决定> 选择已显示的原请求。
-权限请求提供时，/reply 3 本轮允许相同命令，/reply 4 本轮允许 Host Shell。/permissions <JSON> 修改当前任务权限；/revoke <authority-id> 撤销本轮授权。
-文件与目录引用只在 ask 中显式选择；--file 与 --directory 均可重复。图片以视觉内容发送给支持图片的模型，其他文件保留只读引用。
-ask/chat 创建新会话时支持 --recipe <JSON 文件> 选择模型、Loop 组件、权限策略和 Sandbox 后端。
-ask/chat 支持重复使用 --plugin 指定插件；Agent 也可按任务发现并加载已启用插件。PDF 文件需要已配置且支持 PDF 的 Skill。chat 使用 @ 选择下一次请求的插件，/focus <task> 开始任务，/plan <任务> 先提交计划，确认后执行本次任务。"#;
 
 #[cfg(test)]
 mod tests {
