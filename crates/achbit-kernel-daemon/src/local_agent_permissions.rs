@@ -100,11 +100,13 @@ impl KernelPermissionModel {
     }
     pub(crate) fn restore(&mut self, event: &Value) -> Result<(), LocalAgentStoreError> {
         self.apply_permissions_event(event, false)?;
-        self.authorities.apply(event);
+        self.authorities.record_fact(event);
         Ok(())
     }
 
     pub(crate) fn finish_restore(&mut self) {
+        // Nothing can query delegation lineage until all ordered facts have been restored.
+        self.authorities.publish_delegations();
         self.publish_grants(None);
     }
 

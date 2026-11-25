@@ -7,11 +7,14 @@ use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(feature = "debug-control")]
 mod debug_input;
+mod permission_replay;
 mod reading_facts;
 mod transcript;
 pub(crate) use reading_facts::{ReadingFactsEncoder, READING_FACTS_V1};
 
 const SESSION_STORE_SCHEMA: &str = include_str!("../../../contracts/agent-runtime/session.sql");
+// Keep the SQLite expression identical at index creation and indexed recovery reads.
+const INDEXED_EVENT_TYPE: &str = "CASE WHEN json_valid(payload_json) THEN event_type ELSE '' END";
 const EVENT_VERSION: &str = "achbit.session-event.v5";
 const COMMAND_VERSION: &str = "achbit.command.v3";
 const REPLY_VERSION: &str = "achbit.command-reply.v3";
@@ -365,17 +368,32 @@ pub(crate) struct RunProviderRuntime {
     pub(crate) file_input_media_types: Vec<String>,
 }
 
+// SQLite visits rows in journal order during the one-time replay index build. On cold
+// macOS volumes, a bounded sequential I/O hint lets the OS read ahead of JSON validation.
+#[cfg(target_os = "macos")]
+fn advise_replay_index_scan(path: &Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len().min(256 * 1024 * 1024);
+    rustix::fs::fcntl_rdadvise(&file, 0, length)?;
+    Ok(())
+}
+
 impl LocalAgentJournal {
     pub(crate) fn open(path: &Path) -> Result<Self, LocalAgentStoreError> {
         let connection = open_session_store(path)?;
         // Index the kind together with JSON validity. Old stores build this once on the
         // execution thread; SQLite maintains it with each journal append afterwards.
-        connection
-            .execute_batch(
-                "CREATE INDEX IF NOT EXISTS session_events_permission_replay
-             ON session_events(CASE WHEN json_valid(payload_json) THEN event_type ELSE '' END)",
-            )
-            .map_err(sql_error("session_store_index_create_failed"))?;
+        let has_replay_index: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='session_events_permission_replay')",
+            [], |row| row.get(0),
+        ).map_err(sql_error("session_store_index_create_failed"))?;
+        if !has_replay_index {
+            #[cfg(target_os = "macos")]
+            let _ = advise_replay_index_scan(path); // Advisory only. SQLite owns validation and errors.
+            connection.execute_batch(&format!(
+                "CREATE INDEX IF NOT EXISTS session_events_permission_replay ON session_events({INDEXED_EVENT_TYPE})"
+            )).map_err(sql_error("session_store_index_create_failed"))?;
+        }
         let mut permissions = KernelPermissionModel::default();
         {
             let observed_types = encode_json(
@@ -386,15 +404,14 @@ impl LocalAgentJournal {
             // merely to discard them. The live model owns the event selection;
             // rowid retains cross-session causality. Keep corrupt JSON in the
             // result so the original decoder still reports startup failures.
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare(&format!(
                 "SELECT session_id,event_type,payload_json,run_id,call_id,sequence FROM session_events
                  WHERE rowid IN (
                      SELECT rowid FROM session_events
-                     WHERE (CASE WHEN json_valid(payload_json) THEN event_type ELSE '' END)
-                           IN (SELECT value FROM json_each(?1) UNION ALL SELECT '')
+                     WHERE ({INDEXED_EVENT_TYPE}) IN (SELECT value FROM json_each(?1) UNION ALL SELECT '')
                  )
                  ORDER BY rowid",
-            ).map_err(sql_error("permission_model_restore_failed"))?;
+            )).map_err(sql_error("permission_model_restore_failed"))?;
             let rows = statement
                 .query_map([observed_types], |row| {
                     Ok((
@@ -412,7 +429,11 @@ impl LocalAgentJournal {
                     row.map_err(sql_error("permission_model_restore_failed"))?;
                 let mut event = json!({"sessionId":session,"type":kind,
                     "runId":run,"callId":call,"sequence":sequence});
-                event["payload"] = decode_json(&payload, "permission_model_restore_failed")?;
+                event["payload"] = if kind == "provider.turn.settled" {
+                    permission_replay::provider_fact(&payload)?
+                } else {
+                    decode_json(&payload, "permission_model_restore_failed")?
+                };
                 if KernelPermissionModel::observes(&event) {
                     permissions.restore(&event)?;
                 }
@@ -852,19 +873,22 @@ impl LocalAgentJournal {
         &self,
     ) -> Result<Vec<(String, String, String)>, LocalAgentStoreError> {
         let connection = self.lock()?;
-        let mut statement = connection.prepare(
-            "SELECT e.session_id, e.run_id,
-               CASE e.event_type WHEN 'run.started'
-                 THEN json_extract(e.payload_json, '$.runtimeSnapshot.kernelCatalogSnapshotRef')
-                 ELSE json_extract(e.payload_json, '$.toolView.kernelCatalogSnapshotRef') END
-             FROM session_events e
-             WHERE e.event_type IN ('run.started', 'run.tools.prepared')
-               AND EXISTS (SELECT 1 FROM session_events f
-                 WHERE f.session_id=e.session_id AND f.run_id=e.run_id AND f.event_type='run.finishing')
-               AND NOT EXISTS (SELECT 1 FROM session_events s
-                 WHERE s.session_id=e.session_id AND s.run_id=e.run_id
-                   AND s.event_type IN ('run.runtime.released','run.settled'))",
-        ).map_err(sql_error("session_unfinished_catalogs_read_failed"))?;
+        // Restore generations only for runs that reached finishing without release or settlement.
+        // Both sides read lifecycle rows through the index already validated at journal open.
+        let mut statement = connection.prepare(&format!(
+            "SELECT session_id, run_id,
+               CASE event_type WHEN 'run.started'
+                 THEN json_extract(payload_json, '$.runtimeSnapshot.kernelCatalogSnapshotRef')
+                 ELSE json_extract(payload_json, '$.toolView.kernelCatalogSnapshotRef') END
+             FROM session_events
+             WHERE ({INDEXED_EVENT_TYPE}) IN ('run.started','run.tools.prepared')
+               AND (session_id,run_id) IN (
+                 SELECT session_id,run_id FROM session_events
+                 WHERE ({INDEXED_EVENT_TYPE}) IN ('run.finishing','run.runtime.released','run.settled')
+                 GROUP BY session_id,run_id
+                 HAVING count(*) FILTER (WHERE event_type IN ('run.runtime.released','run.settled'))=0
+               )"
+        )).map_err(sql_error("session_unfinished_catalogs_read_failed"))?;
         let rows = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .map_err(sql_error("session_unfinished_catalogs_read_failed"))?;
@@ -8353,6 +8377,53 @@ mod tests {
             assert_eq!(encoded.code, decoded.code);
             assert_eq!(encoded.message, decoded.message);
         }
+    }
+
+    #[test]
+    fn startup_restores_all_catalog_generations_only_for_unfinished_runs() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        for (session, terminal) in [
+            ("unfinished", None),
+            ("released", Some("run.runtime.released")),
+            ("settled", Some("run.settled")),
+            ("running", None),
+        ] {
+            journal
+                .create_session(session, session, &json!([]), None, None)
+                .unwrap();
+            let db = journal.lock().unwrap();
+            let mut kinds = vec!["run.started", "run.tools.prepared"];
+            if session != "running" {
+                kinds.push("run.finishing");
+            }
+            if let Some(kind) = terminal {
+                kinds.push(kind);
+            }
+            for (sequence, kind) in (2_i64..).zip(kinds) {
+                let payload = match kind {
+                    "run.started" => {
+                        json!({"runtimeSnapshot":{"kernelCatalogSnapshotRef":"initial"}})
+                    }
+                    "run.tools.prepared" => json!({"toolView":{"kernelCatalogSnapshotRef":"next"}}),
+                    _ => json!({}),
+                };
+                db.execute(
+                    "INSERT INTO session_events (session_id,sequence,event_id,event_type,run_id,payload_json,occurred_at)
+                     VALUES (?1,?2,?3,?4,'shared-run',?5,'now')",
+                    params![session, sequence, format!("{session}-{sequence}"), kind, payload.to_string()],
+                ).unwrap();
+            }
+        }
+        let mut restored = journal.unfinished_catalogs().unwrap();
+        restored.sort();
+        assert_eq!(
+            restored,
+            vec![
+                ("unfinished".into(), "shared-run".into(), "initial".into()),
+                ("unfinished".into(), "shared-run".into(), "next".into()),
+            ]
+        );
     }
 
     #[test]
