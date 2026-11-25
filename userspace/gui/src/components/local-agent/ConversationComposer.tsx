@@ -62,6 +62,11 @@ export function ConversationComposer({
     return receipt && receipt.sessionId === state.sessionId && (receipt.revision === undefined
       || (state.projection?.revision ?? 0) < receipt.revision) ? receipt : null;
   });
+  const feedbackNode = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (submission && feedbackNode.current) globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.(
+      'conversation.composer', 'send.feedback-dom', { sessionId: submission.sessionId, commandId: submission.commandId, phase: submission.phase });
+  }, [submission]);
   const connections = useLocalAgentStore(state => state.connections);
   const { concurrentDecisionKey, showApproval } = composerDecisionView(composer, composer.selectedTextDecision);
   const { setSelectedTextDecision } = composer;
@@ -298,7 +303,7 @@ export function ConversationComposer({
           }}
         />}
       </div>
-      {submission && <div className="local-agent__queued-input local-agent__submission" role="status" data-submission-phase={submission.phase}>
+      {submission && <div ref={feedbackNode} className="local-agent__queued-input local-agent__submission" role="status" data-submission-phase={submission.phase}>
         <strong>{t(language, submission.phase === 'sending' ? 'agent.composer.sending' : 'agent.composer.accepted')}</strong>
         <span>{submission.text}</span>
       </div>}
@@ -710,7 +715,7 @@ export function ConversationComposer({
                         : t(language, composer.editingMessage ? 'agent.message.regenerate' : 'agent.composer.send')}
                 title={t(language, 'agent.composer.sendEnter')}
                 disabled={!canSend}
-                onClick={() => void submitDraft()}
+                onClick={event => void submitDraft(event?.nativeEvent)}
               >
                 {composer.editingMessage ? t(language, 'agent.message.regenerate') : composer.textDecision ? t(language, 'agent.composer.send') : <AchbitShellIcon name="arrowUp" />}
               </button>}

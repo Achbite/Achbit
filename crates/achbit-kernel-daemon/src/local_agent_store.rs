@@ -5,6 +5,8 @@ use serde_json::{json, Map, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(feature = "debug-control")]
+mod debug_input;
 mod reading_facts;
 mod transcript;
 pub(crate) use reading_facts::{ReadingFactsEncoder, READING_FACTS_V1};

@@ -388,6 +388,16 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
                 .await,
             );
         }
+        if params["kind"] == "session" && params.get("commandId").is_some() {
+            let command = text(&params, "commandId")?.to_string();
+            let reader = state.local_agent.journal.reader.clone();
+            return tokio::task::spawn_blocking(move || {
+                reader.debug_input_trace(&session, &command)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("{}: {}", error.code, error.message));
+        }
         let service = state.session_service.clone();
         return tokio::task::spawn_blocking(move || {
             service.request(

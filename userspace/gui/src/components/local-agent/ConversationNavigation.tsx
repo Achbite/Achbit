@@ -40,6 +40,10 @@ export function ConversationNavigation({ sessionId, entries, viewport, onNavigat
   const spacer = (count: number, key: string) => count > 0 ? <div aria-hidden="true" key={key} style={{ flex: `0 0 ${count * tick}px` }} /> : null;
   useEffect(() => {
     const body = viewport.bodyRef.current;
+    if (body && sessionId) return globalThis.window?.__ACHBIT_DEBUG_UI__?.observeReading?.(sessionId, body, ticksRef.current, viewport.anchors);
+  }, [sessionId, hasRail, viewport.bodyRef, viewport.anchors]);
+  useEffect(() => {
+    const body = viewport.bodyRef.current;
     if (!body) return;
     let frame: number | null = null;
     const update = () => {
@@ -133,7 +137,9 @@ export function ConversationNavigation({ sessionId, entries, viewport, onNavigat
         onMouseEnter={() => setPreview(entry)} onMouseLeave={() => setPreview(null)}
         onFocus={event => { if (paged) setFocusedIndex(index); if (event.currentTarget.matches(':focus-visible')) setPreview(entry); }}
         onBlur={() => { if (paged) setFocusedIndex(null); setPreview(null); }}
-        onClick={() => {
+        onClick={event => {
+          globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.navigation', 'reading.jump', { sessionId, rowKey: entry.key,
+            selectedIndex: index, source: event?.nativeEvent ? (event.nativeEvent.isTrusted ? 'trusted-click' : 'synthetic-click') : 'callback' });
           selectedTick.current = paged && entry.key !== markerKey ? { key: entry.key, index } : null;
           onNavigate(entry);
         }}

@@ -89,6 +89,10 @@ test('only a successful send receipt closes its pre-existing reminders, even aft
   const [{ createLocalAgentStore }, reminders] = await loadGuiModules(t, [
     '/src/state/localAgentStore.ts', '/src/state/unappliedInputReminders.ts']);
   const store = createLocalAgentStore(), sessionId = 'session:send-reminder';
+  const observations = [];
+  const priorWindow = globalThis.window;
+  globalThis.window = { ...priorWindow, __ACHBIT_DEBUG_UI__: { observe: (_component, event, fields) => observations.push({ event, ...fields }) } };
+  t.after(() => { if (priorWindow === undefined) delete globalThis.window; else globalThis.window = priorWindow; });
   let projection = { ...projectSession(emptySessionState(sessionId)), queuedInputs: [input('old')] };
   const original = structuredClone(projection.queuedInputs), notified = [];
   const stop = reminders.subscribeUnappliedInputReminders(sessionId, ids => notified.push(ids)); t.after(stop);
@@ -129,6 +133,13 @@ test('only a successful send receipt closes its pre-existing reminders, even aft
   assert.deepEqual(notified.at(-1), ['old'], 'mounted reminders receive the same close event');
   assert.deepEqual(projection.queuedInputs[0], original[0]);
   assert.equal(store.getState().sessionId, 'session:other');
+  const traced = observations.filter(sample => sample.commandId === reply.commandId);
+  assert.deepEqual(traced.map(sample => [sample.event, sample.phase]), [
+    ['send.command', undefined], ['send.receipt', 'accepted'], ['send.projection', 'inactive'],
+  ]);
+  assert.ok(traced.every(sample => sample.sessionId === sessionId), 'late receipt stays with its originating session');
+  assert.ok(observations.some(sample => sample.event === 'send.transport-failed'));
+  assert.ok(observations.some(sample => sample.event === 'send.receipt' && sample.phase === 'rejected'));
 });
 
 test('reminder storage failure cannot turn an accepted message into a failed submission', async t => {

@@ -1196,8 +1196,12 @@ async function submitNewRun(
     const command: ConversationCommand = type === 'message.submit'
       ? { ...common, type, text, ...(planMode ? { planMode } : {}), ...(queuedMessage ? { runId: activeRun.runId } : {}) }
       : { ...common, type, task: text };
+    if (type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.command',
+      { sessionId, submissionId: retained.submissionId, commandId: command.commandId });
     return await submitCommandAndReconcile(set, get, command);
   } catch (error) {
+    if (type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.failed',
+      { submissionId: retained.submissionId, reason: generation === submissionGeneration ? 'submission-failed' : 'session-changed' });
     if (errorMessage(error).includes('plugin_selection_stale')) {
       void get().refreshPluginCatalog();
     }
@@ -1274,6 +1278,8 @@ async function sendAndReconcile(set: StoreSet, get: StoreGet, command: Conversat
     ? previousProjection.queuedInputs?.filter(input => input.status === 'notApplied').map(input => input.commandId) ?? []
     : [];
   const reply = await submitLocalAgentCommand(command).catch(async error => {
+    if (command.type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.transport-failed',
+      { sessionId: command.sessionId, commandId: command.commandId });
     // This Host error acknowledges a Session edit while reporting a failed save of future defaults.
     if ((command.type === 'session.subagent-settings.set' || command.type === 'session.model-settings.set')
       && error instanceof ConversationRequestError && error.code === 'conversation_defaults_save_failed') {
@@ -1282,6 +1288,8 @@ async function sendAndReconcile(set: StoreSet, get: StoreGet, command: Conversat
     }
     throw error;
   });
+  if (command.type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.receipt',
+    { sessionId: reply.sessionId, commandId: reply.commandId, revision: reply.revision, phase: reply.status });
   const pending = get().messageSubmission;
   if (generation === commandGeneration && pending?.commandId === reply.commandId && pending.sessionId === reply.sessionId) {
     set({ messageSubmission: reply.status === 'rejected' ? null : { ...pending, phase: 'accepted', revision: reply.revision } });
@@ -1309,14 +1317,29 @@ async function sendAndReconcile(set: StoreSet, get: StoreGet, command: Conversat
   const reconcile = async () => {
     if (isSendReceipt && (generation !== commandGeneration || get().sessionId !== command.sessionId)) {
       projectionCache.delete(command.sessionId);
+      globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.projection', {
+        sessionId: reply.sessionId, commandId: reply.commandId, replyRevision: reply.revision, phase: 'inactive' });
       return;
     }
     const refresh = projectionRefreshFlight;
     if (isSendReceipt && refresh?.generation === commandGeneration && refresh.sessionId === command.sessionId && !covered()) await refresh.promise;
     if (!covered()) await reconcileProjectionAfterReply(set, get, command.sessionId, reply.revision, commandGeneration, fullOwner);
+    const diagnostics = globalThis.window?.__ACHBIT_DEBUG_UI__;
+    if (isSendReceipt && diagnostics?.observe) {
+      const state = get();
+      const current = generation === commandGeneration && state.sessionId === command.sessionId;
+      const projection = state.projection;
+      const adopted = current && projection?.sessionId === reply.sessionId && projection.revision >= reply.revision;
+      diagnostics.observe('conversation.composer', 'send.projection', {
+        sessionId: reply.sessionId, commandId: reply.commandId, replyRevision: reply.revision,
+        revision: current ? projection?.revision : undefined, phase: adopted ? 'adopted' : current ? 'uncovered' : 'inactive',
+      });
+    }
   };
   if (isSendReceipt) {
     const publication = reconcile().catch(error => {
+      globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.projection', {
+        sessionId: reply.sessionId, commandId: reply.commandId, replyRevision: reply.revision, phase: 'failed' });
       if (generation === commandGeneration) set({ error: `conversation_projection_reconcile_failed:${errorMessage(error)}`, errorSource: 'projection' });
     }).finally(() => {
       if (acceptedInputs.get(command.sessionId) === publication) acceptedInputs.delete(command.sessionId);

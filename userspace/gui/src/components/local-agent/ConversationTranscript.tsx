@@ -198,6 +198,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
 
   const renderItem = (item: Exclude<ProjectionItem, { type: 'toolGroup' }>): React.ReactNode => item.type === 'message' ? (
         <article
+          data-message-id={item.value.messageId}
           className={`local-agent__message local-agent__message--${item.value.role}`}
         >
           <div className="local-agent__message-content">
@@ -310,6 +311,22 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
   useLayoutEffect(() => { preservePosition.current = viewport.preserveReadingPosition; }, [viewport.preserveReadingPosition]);
   const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), () => preservePosition.current()), [layoutCache, sessionKey]);
   const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
+  const latestUserRow = navigation.at(-1)?.key;
+  useEffect(() => {
+    const diagnostics = globalThis.window?.__ACHBIT_DEBUG_UI__;
+    const body = viewport.bodyRef.current;
+    if (!diagnostics?.observe || !active || !body || !latestUserRow) return;
+    const row = viewport.anchors.read(body).byKey.get(latestUserRow);
+    const article = row?.querySelector<HTMLElement>('article[data-message-id]');
+    if (!row || !article) return;
+    const view = body.getBoundingClientRect();
+    const content = article.getBoundingClientRect();
+    diagnostics.observe('conversation.transcript', 'reading.latest-user-dom', {
+      sessionId: sessionKey, messageId: article.dataset.messageId, rowKey: latestUserRow, sequence: Number(row.dataset.transcriptSequence),
+      inViewport: content.height > 0 && content.bottom > view.top && content.top < view.bottom,
+      documentVisible: document.visibilityState === 'visible',
+    });
+  }, [active, latestUserRow, sessionKey, viewport.anchors, viewport.bodyRef]);
   const eagerRows = useMemo(() => openingRows(rounds, viewport.openingAnchor), [rounds, viewport.openingAnchor]);
   // The scroll body belongs to a parent host node; its ref is attached after
   // child layout effects on a fresh mount (including cached session switches).

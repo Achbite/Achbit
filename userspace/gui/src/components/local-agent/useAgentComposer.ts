@@ -314,7 +314,7 @@ export function useAgentComposer(
     if (menu) focusOpenedPanel(menu, menu.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'), interaction);
   }, [attachmentMenuOpen, interaction]);
 
-  const submitDraft = async () => {
+  const submitDraft = async (input?: Event) => {
     const submittedText = draft;
     if (compositionActiveRef.current || compositionCommitPendingRef.current) return;
     if (!textDecision && !editingMessage && !pendingApproval) {
@@ -365,6 +365,10 @@ export function useAgentComposer(
       selectionEnd: submittedTextarea?.selectionEnd ?? submittedText.length,
       focused: document.activeElement === submittedTextarea,
     };
+    globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.input', {
+      submissionId: submittedComposerState.submissionId, sessionId, source: input?.type ?? 'callback',
+      reason: input ? (input.isTrusted ? 'trusted' : 'synthetic') : 'programmatic',
+    });
     setPluginPickerOpen(false);
     setLatestFollowMode(true);
     pendingSubmissionsRef.current.set(submission.key, submittedComposerState);
@@ -635,7 +639,7 @@ export function useAgentComposer(
       commitPending: compositionCommitPendingRef.current,
     })) return;
     event.preventDefault();
-    void submitDraft();
+    void submitDraft(event.nativeEvent);
   };
 
   const submitPlanDecision = useCallback(async (
