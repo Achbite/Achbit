@@ -32,7 +32,8 @@ import {
   SESSION_PROJECTION_VERSION,
 } from '@achbit/protocol';
 import { getHostConnectionHeaders, getKernelApiBase } from './hostTarget';
-import { isShellActivityResult } from './shellActivityCodec';
+import { isShellActivityResult, isShellResultSummary } from './shellActivityCodec';
+import { archivedMeasurements, deferredShells, HistoryDetail } from './desktopHistory';
 
 interface ApiEnvelope<T> {
   ok: boolean;
@@ -316,6 +317,60 @@ export async function getLocalAgentProjection(
     { signal },
   );
   return decodeProjection(projection, sessionId);
+}
+
+/** Negotiated history is used only by the desktop transcript. Public callers retain complete activities. */
+export async function getDesktopSessionProjection(sessionId: string, signal?: AbortSignal): Promise<SessionProjection> {
+  const base = `${API_BASE}/conversation/sessions/${encodeURIComponent(sessionId)}`;
+  const value = await request<unknown>(`${base}/projection`, { signal,
+    headers: { Accept: 'application/vnd.achbit.desktop-history.v1+json' } });
+  if (!isRecord(value) || value.kind !== 'desktop.history.v1') return decodeProjection(value, sessionId);
+  const raw = value.projection;
+  if (!isRecord(raw) || raw.sessionId !== sessionId || !isNaturalNumber(raw.revision)
+    || !Array.isArray(raw.activities) || !Array.isArray(value.deferredShells)) throw new Error('desktop_history_invalid');
+  const activities = new Map(raw.activities.filter(isRecord).map(a => [a.activityId, a]));
+  const fullProjection = new HistoryDetail(async (signal: AbortSignal) => {
+    const full = await getLocalAgentProjection(sessionId, signal);
+    return new Map(full.activities.map(activity => [activity.activityId, activity]));
+  });
+  for (const ref of value.deferredShells) {
+    if (!isRecord(ref) || !isIdentifier(ref.activityId) || !isPositiveNaturalNumber(ref.sequence) || ref.sequence > raw.revision
+      || !isShellResultSummary(ref.summary)) throw new Error('desktop_shell_reference_invalid');
+    const a = activities.get(ref.activityId);
+    if (!a || a.kind !== 'tool' || a.status !== 'completed' || !isNaturalNumber(a.sequence) || ref.sequence < a.sequence
+      || !isIdentifier(a.callId) || !isIdentifier(a.runId) || !isRecord(a.tool) || !isIdentifier(a.tool.recordId)
+      || !isRecord(a.tool.shell) || 'result' in a.tool.shell || deferredShells.has(a.tool.shell)
+      || ref.summary.environment.executionScope !== a.tool.shell.executionScope
+      || ref.summary.environment.terminal !== a.tool.shell.terminal) throw new Error('desktop_shell_reference_invalid');
+    const identity = { sequence: ref.sequence, runId: a.runId, callId: a.callId, recordId: a.tool.recordId };
+    let output: HistoryDetail<{ stdout: string; stderr: string }> | undefined;
+    deferredShells.set(a.tool.shell, { summary: ref.summary, fullProjection,
+      get output() {
+        return output ??= new HistoryDetail(signal => readDesktopShellOutput(base, sessionId, identity, signal));
+      },
+    });
+  }
+  const projection = decodeProjection(raw, sessionId);
+  const m = value.measurement;
+  if (m !== null && (!isRecord(m) || !isRecord(m.usage) || !isContextUsage(m.usage)
+    || !isNaturalNumber(m.usage.sequence) || m.usage.sequence > projection.revision
+    || !isRecord(m.receipt) || !isPositiveNaturalNumber(m.receipt.sequence) || m.receipt.sequence >= m.usage.sequence
+    || !Array.isArray(m.receipt.partitions) || !contextPartitionsAreValid(m.receipt.partitions)
+    || m.receipt.partitions.some(p => p.tokenSource !== 'sessionEstimated')
+    || m.receipt.partitions.reduce((sum, p) => sum + p.estimatedInputTokens, 0) !== m.usage.inputTokens)) {
+    throw new Error('context_history_usage_mismatch');
+  }
+  archivedMeasurements.set(projection, m as import('@achbit/protocol').TranscriptOverview['measurement']);
+  return projection;
+}
+
+async function readDesktopShellOutput(base: string, sessionId: string,
+  identity: { sequence: number; runId: string; callId: string; recordId: string }, signal: AbortSignal) {
+  const data = await request<unknown>(`${base}/shell-output/read`, { method: 'POST', body: JSON.stringify(identity), signal });
+  if (!isRecord(data) || data.sessionId !== sessionId || data.sequence !== identity.sequence
+    || data.runId !== identity.runId || data.callId !== identity.callId || data.recordId !== identity.recordId
+    || typeof data.stdout !== 'string' || typeof data.stderr !== 'string') throw new Error('shell_output_response_invalid');
+  return { stdout: data.stdout, stderr: data.stderr };
 }
 
 export async function resolveConversationResource(sessionId: string, workspaceId: string, logicalPath: string): Promise<{path: string; kind: 'file' | 'directory'}> {
@@ -1585,7 +1640,7 @@ function isComputerActivity(value: unknown): boolean {
 function isShellActivity(value: unknown, activityStatus: string): boolean {
   const resultValid = isRecord(value) && value.result !== undefined
     ? isShellActivityResult(value.result)
-    : false;
+    : isRecord(value) && deferredShells.has(value);
   const resultMatchesShell = !isRecord(value) || value.result === undefined || (
     isRecord(value.result)
     && isRecord(value.result.environment)

@@ -27,7 +27,7 @@ import type {
 import { SessionActor, humanApprovalRoutes, recoveredOpening } from './actor.js';
 import type { AgentComposition, SessionCapabilities } from './plugins.js';
 import { decodeConversationReadQuery, readConversation, readSessionEvents } from './conversationRead.js';
-import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, projectTranscriptTurn, transcriptPageAt, type TranscriptTurn, providerUsageFromEvents, recoverSession } from './reducer.js';
+import { combineTokenUsage, projectSession, projectSessionHistory, projectResourceTool, projectTranscriptTurn, transcriptPageAt, type TranscriptTurn, type ArchivedReadingFacts, providerUsageFromEvents, recoverSession } from './reducer.js';
 import { projectSessionResources } from './resourceProjection.js';
 import { activeConversationEvents } from './conversationHistory.js';
 import { requiresReadingProjection, selectReadingWindow } from './readingWindow.js';
@@ -64,6 +64,7 @@ export interface SessionServicePort extends ConversationPort {
   createSession: SessionService['createSession'];
   deleteSession: SessionService['deleteSession'];
   snapshot: SessionService['snapshot'];
+  desktopSnapshot?: SessionService['desktopSnapshot'];
   statuses: SessionService['statuses'];
   activity: SessionService['activity'];
   contextComposition: SessionService['contextComposition'];
@@ -96,7 +97,6 @@ type StatusState = { revision: number; lifecycle: RunLifecycleState };
 
 // Retain only public projections for switching between two recently viewed sessions.
 const historyLimit = 2;
-const historyByteBudget = 16 * 1024 * 1024; // shared by the two entries
 const historyIdleMs = 30_000;
 
 export class SessionService implements ConversationPort {
@@ -107,9 +107,9 @@ export class SessionService implements ConversationPort {
   readonly #retirements = new Map<string, Promise<void>>();
   readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #statusStates = new Map<string, StatusState>();
-  readonly #historyReads = new Map<string, { version: string | undefined; result: Promise<SessionProjection> }>();
+  readonly #historyReads = new Map<string, { version: string | undefined; result: Promise<Buffer> }>();
   readonly #historyViews = new Map<string, { version: string; data: Buffer; dependent: boolean; timer: NodeJS.Timeout }>();
-  // Keep the two sides of a page boundary within one byte budget. Only public display data is retained.
+  // Retain the current split turn and its most recent neighbor for cross-page reads.
   #transcriptTurns: Array<{ sessionId: string; tip: string; start: number; end: number; revision: number; data: Buffer }> = [];
   readonly #resourceReads = new Map<string, Promise<SessionResourceProjection>>();
   readonly #deletingSessionIds = new Set<string>();
@@ -264,6 +264,7 @@ export class SessionService implements ConversationPort {
         await this.journal.deleteSession(id);
         this.#statusStates.delete(id);
         this.dropHistory(id);
+        this.forgetTranscriptTurns(id);
         deletedSessionIds.push(id);
       }
       return { deletedSessionIds };
@@ -338,7 +339,28 @@ export class SessionService implements ConversationPort {
   }
 
   async snapshot(sessionId: string): Promise<SessionProjection> {
-    const projection = await this.ownSnapshot(sessionId);
+    const { projection } = await this.ownSnapshot(sessionId);
+    return this.completeSnapshot(sessionId, projection);
+  }
+
+  async desktopSnapshot(sessionId: string) {
+    const own = await this.ownSnapshot(sessionId);
+    const projection = await this.completeSnapshot(sessionId, own.projection);
+    if (!own.reading) return projection;
+    const deferredShells = [];
+    for (const activity of projection.activities) {
+      const sequence = own.reading.shellCompletions.get(activity.activityId);
+      const shell = activity.tool?.shell;
+      if (!sequence || !shell?.result || activity.status !== 'completed') continue;
+      const { stdout, stderr, ...summary } = shell.result;
+      deferredShells.push({ activityId: activity.activityId, sequence, summary });
+      // ownSnapshot returns an independent view. The canonical cache retains both streams.
+      delete shell.result;
+    }
+    return { kind: 'desktop.history.v1' as const, projection, measurement: own.reading.measurement, deferredShells };
+  }
+
+  private async completeSnapshot(sessionId: string, projection: SessionProjection): Promise<SessionProjection> {
     const ownerSessionId = projection.agentContext?.ownerSessionId ?? sessionId;
     const seen = new Set<string>([sessionId]);
     let totalTokenUsage = projection.tokenUsage;
@@ -370,61 +392,58 @@ export class SessionService implements ConversationPort {
     return { ...projection, totalTokenUsage, ...(pendingAgentDecisions.length ? { pendingAgentDecisions } : {}) };
   }
 
-  private async ownSnapshot(sessionId: string): Promise<SessionProjection> {
+  private async ownSnapshot(sessionId: string): Promise<{ projection: SessionProjection; reading?: ArchivedReadingFacts }> {
     if (this.#retirements.has(sessionId)) await this.#retirements.get(sessionId);
     const live = this.#actors.get(sessionId);
-    if (live) return await this.withActor(sessionId, actor => actor.snapshot());
+    if (live) return { projection: await this.withActor(sessionId, actor => actor.snapshot()) };
     const version = await this.journal.historyVersion?.();
     const cached = this.#historyViews.get(sessionId);
     if (cached && cached.version === version) {
       this.#historyViews.delete(sessionId);
       this.#historyViews.set(sessionId, cached);
       cached.timer.refresh();
-      return deserialize(cached.data) as SessionProjection;
+      return deserialize(cached.data);
     }
     if (cached) this.dropHistory(sessionId);
 
     let pending = this.#historyReads.get(sessionId);
     if (!pending || pending.version !== version) {
       const result = readSessionEvents(this.journal, sessionId, true).then(async events => {
-        const projection = projectSessionHistory(sessionId, events);
+        const reading: ArchivedReadingFacts = { measurement: null, shellCompletions: new Map() };
+        const projection = projectSessionHistory(sessionId, events, reading);
+        // Each reader decodes its own view. The cache can retain the very same private bytes.
+        const data = serialize({ projection, reading });
         // A commit during replay must never bind an older projection to a newer
         // version. Ignore a read that another version or disposal superseded.
         if (version !== undefined && await this.journal.historyVersion?.() === version
           && this.#historyReads.get(sessionId)?.result === result && !this.#lifetime.signal.aborted) {
-          this.rememberHistory(sessionId, version, projection);
+          this.rememberHistory(sessionId, version, data, !!projection.agentContext);
         }
-        return projection;
+        return data;
       });
       pending = { version, result };
       this.#historyReads.set(sessionId, pending);
     }
     try {
-      return structuredClone(await pending.result);
+      return deserialize(await pending.result);
     } finally {
       if (this.#historyReads.get(sessionId) === pending) this.#historyReads.delete(sessionId);
     }
   }
 
-  private rememberHistory(id: string, version: string, projection: SessionProjection): void {
-    const data = serialize(projection);
-    if (data.byteLength > historyByteBudget) return;
-    const dependent = !!projection.agentContext;
+  private rememberHistory(id: string, version: string, data: Buffer, dependent: boolean): void {
     this.dropHistory(id);
-    // The output rail reads multiple child histories. Do not let it evict the root
-    // the user is reading. Both entry count and total retained bytes remain bounded.
-    const entries = [...this.#historyViews];
-    let bytes = entries.reduce((sum, [, entry]) => sum + entry.data.byteLength, data.byteLength);
-    while (this.#historyViews.size >= historyLimit || bytes > historyByteBudget) {
-      const child = entries.findIndex(([, entry]) => entry.dependent);
-      if (dependent && child < 0) return;
-      const [removed] = entries.splice(Math.max(0, child), 1);
-      bytes -= removed![1].data.byteLength;
-      this.dropHistory(removed![0]);
+    if (this.#historyViews.size >= historyLimit) {
+      // A child read in the output rail may replace another child, but must preserve retained roots.
+      const oldestFirst = [...this.#historyViews];
+      const victim = oldestFirst.find(([, entry]) => entry.dependent) ?? (dependent ? undefined : oldestFirst[0]);
+      if (!victim) return;
+      this.dropHistory(victim[0]);
     }
     const timer = setTimeout(() => this.dropHistory(id), historyIdleMs);
     timer.unref();
     this.#historyViews.set(id, { version, data, dependent, timer });
+    this.reportReadingCacheUsage();
   }
 
   private dropHistory(id: string): void {
@@ -432,7 +451,28 @@ export class SessionService implements ConversationPort {
     if (cached) {
       clearTimeout(cached.timer);
       this.#historyViews.delete(id);
+      this.reportReadingCacheUsage();
     }
+  }
+
+  private forgetTranscriptTurns(sessionId: string, keepTip?: string): void {
+    const retained = this.#transcriptTurns.filter(turn => turn.sessionId !== sessionId || turn.tip === keepTip);
+    if (retained.length === this.#transcriptTurns.length) return;
+    this.#transcriptTurns = retained;
+    this.reportReadingCacheUsage();
+  }
+
+  private reportReadingCacheUsage(): void {
+    if (!this.observation?.readingCacheChanged) return;
+    let snapshotBytes = 0;
+    for (const { data } of this.#historyViews.values()) snapshotBytes += data.byteLength;
+    const transcriptBytes = this.#transcriptTurns.reduce((sum, turn) => sum + turn.data.byteLength, 0);
+    try {
+      this.observation.readingCacheChanged({
+        snapshotEntries: this.#historyViews.size, snapshotBytes,
+        transcriptTurns: this.#transcriptTurns.length, transcriptBytes, totalBytes: snapshotBytes + transcriptBytes,
+      });
+    } catch { /* A runtime log cannot change the result of a reading request. */ }
   }
 
   private async agentDecisionRoutes(parent: Pick<SessionProjection, 'sessionId' | 'agentContext' | 'agentTasks'>): Promise<PendingAgentDecision[]> {
@@ -591,15 +631,13 @@ export class SessionService implements ConversationPort {
       else throw new Error('conversation_transcript_cut_missing');
       const transcript = transcriptPageAt(turn, query.around);
       if (facts && !this.#lifetime.signal.aborted) {
-        this.#transcriptTurns = this.#transcriptTurns.filter(t => t.sessionId !== facts.sessionId || t.tip === facts.tip);
+        this.forgetTranscriptTurns(facts.sessionId, facts.tip);
         if (transcript.start !== facts.start || transcript.end !== facts.end) {
-          const data = serialize(turn);
-          if (data.byteLength <= historyByteBudget) {
-            const neighbor = this.#transcriptTurns.find(t => (t.sessionId !== facts.sessionId || t.start !== facts.start)
-              && t.data.byteLength + data.byteLength <= historyByteBudget);
-            const entry = { sessionId: facts.sessionId, tip: facts.tip, start: facts.start, end: facts.end, revision: facts.revision, data };
-            this.#transcriptTurns = neighbor ? [entry, neighbor] : [entry];
-          }
+          const neighbor = this.#transcriptTurns.find(t => t.sessionId !== facts.sessionId || t.start !== facts.start);
+          const entry = { sessionId: facts.sessionId, tip: facts.tip, start: facts.start, end: facts.end,
+            revision: facts.revision, data: serialize(turn) };
+          this.#transcriptTurns = neighbor ? [entry, neighbor] : [entry];
+          this.reportReadingCacheUsage();
         }
       } else if (saved && this.#transcriptTurns.includes(saved)) {
         this.#transcriptTurns = [saved, ...this.#transcriptTurns.filter(t => t !== saved)];
@@ -654,7 +692,10 @@ export class SessionService implements ConversationPort {
     for (const timer of this.#idleTimers.values()) clearTimeout(timer);
     this.#idleTimers.clear();
     this.#historyReads.clear();
-    this.#transcriptTurns = [];
+    if (this.#transcriptTurns.length) {
+      this.#transcriptTurns = [];
+      this.reportReadingCacheUsage();
+    }
     for (const id of this.#historyViews.keys()) this.dropHistory(id);
     this.#disposeTask = this.disposeActors(cancelActiveRuns);
     return this.#disposeTask;

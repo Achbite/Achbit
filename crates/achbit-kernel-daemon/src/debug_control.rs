@@ -384,6 +384,7 @@ async fn dispatch(state: AppState, method: &str, mut params: Value) -> Result<Va
                 crate::conversation_api::conversation_projection_get(
                     ReadyState(state),
                     Path(session),
+                    axum::http::HeaderMap::new(),
                 )
                 .await,
             );

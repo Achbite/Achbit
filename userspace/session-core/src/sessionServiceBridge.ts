@@ -22,7 +22,8 @@ import {
   HttpRunPreparationPort,
 } from './local-agent/httpPorts.js';
 import { decodeAgentRecipe } from '@achbit/protocol';
-import { isAbsolute } from 'node:path';
+import { createWriteStream, type WriteStream } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createSessionService, SessionDeletionError, type SessionServiceFactory, type SessionServicePort } from './local-agent/service.js';
 
@@ -56,7 +57,17 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
   const extension = extensionFactory?.(writeFrame);
   const notifications = new SessionNotifications(writeFrame);
   const observers = [notifications, ...(extension?.observation ? [extension.observation] : [])];
+  const logDir = process.env.ACHBIT_LOG_DIR;
+  let readingCacheLog: WriteStream | undefined;
   const observation: SessionObservationSink = {
+    readingCacheChanged(usage) {
+      if (!logDir) return;
+      readingCacheLog ??= createWriteStream(join(logDir, 'session-cache.log'), { flags: 'a', mode: 0o600 })
+        .on('error', error => process.stderr.write(`[session-service] Cache log unavailable: ${error.message}\n`));
+      if (!readingCacheLog.destroyed && !readingCacheLog.writableNeedDrain) {
+        readingCacheLog.write(JSON.stringify({ at: new Date().toISOString(), ...usage }) + '\n');
+      }
+    },
     accept(input) {
       for (const observer of observers) {
         try { observer.accept(input); }
@@ -142,7 +153,11 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
   } finally {
     extension?.dispose();
     await Promise.allSettled(pending);
-    await service.dispose(shutdownRequest?.data.cancelActiveRuns === true);
+    try {
+      await service.dispose(shutdownRequest?.data.cancelActiveRuns === true);
+    } finally {
+      readingCacheLog?.end();
+    }
     await notifications.close();
     await outputTail;
   }
@@ -183,8 +198,11 @@ async function dispatch(
     case 'submit': {
       return await service.submit(decodeCommand(request.data.command));
     }
-    case 'snapshot':
-      return await service.snapshot(requiredString(request.data, 'sessionId'));
+    case 'snapshot': {
+      const id = requiredString(request.data, 'sessionId');
+      return request.data.desktopHistory === true && typeof service.desktopSnapshot === 'function'
+        ? await service.desktopSnapshot(id) : await service.snapshot(id);
+    }
     case 'resourceSnapshot': {
       const recordIds = request.data.recordIds ?? [];
       if (!Array.isArray(recordIds) || !recordIds.every(validId)) throw new Error('session_resource_query_invalid');

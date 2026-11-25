@@ -411,6 +411,9 @@ async fn proxy_api(
     {
         request = request.header(reqwest::header::CONTENT_TYPE, content_type);
     }
+    if let Some(accept) = headers.get(header::ACCEPT) {
+        request = request.header(reqwest::header::ACCEPT, accept);
+    }
     // Bound connection/headers separately: an SSE subscription lives until its owner closes it.
     match tokio::time::timeout(Duration::from_secs(60), request.send()).await {
         Ok(Ok(response)) => proxy_response(response).await,
@@ -528,6 +531,7 @@ fn host_proxy_path_allowed(method: &str, path: &str) -> bool {
         | ("POST", ["api", "conversation", "input-resources", "prepare-image"])
         | ("POST", ["api", "conversation", "sessions", _, "input-resources", _])
         | ("POST", ["api", "conversation", "sessions", _, "changes", "read"])
+        | ("POST", ["api", "conversation", "sessions", _, "shell-output", "read"])
         | ("DELETE", ["api", "conversation", "sessions", _, "directory-indexes", _])
         | ("GET", ["api", "conversation", "sessions", _, "projection"])
         | ("GET", ["api", "conversation", "sessions", _, "context-compositions", _])
@@ -591,6 +595,13 @@ mod tests {
         assert!(message.contains(&url));
         assert!(message.contains(&original_cause), "{message}");
         assert_ne!(message, error.to_string());
+    }
+
+    #[test]
+    fn host_proxy_exposes_owned_shell_output_read_only() {
+        let path = "/api/conversation/sessions/session:one/shell-output/read";
+        assert!(host_proxy_path_allowed("POST", path));
+        assert!(!host_proxy_path_allowed("GET", path));
     }
 
     #[test]
@@ -758,6 +769,7 @@ async fn proxy_response(response: reqwest::Response) -> Response {
         .get(reqwest::header::CACHE_CONTROL)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let vary = response.headers().get(reqwest::header::VARY).cloned();
     let content_type_options = response
         .headers()
         .get("x-content-type-options")
@@ -786,6 +798,12 @@ async fn proxy_response(response: reqwest::Response) -> Response {
     match tokio::time::timeout(Duration::from_secs(60), response.bytes()).await {
         Ok(Ok(bytes)) => {
             let mut builder = Response::builder().status(status);
+            if let Some(vary) = vary {
+                builder = builder.header(header::VARY, vary);
+            }
+            if let Some(cache_control) = cache_control {
+                builder = builder.header(header::CACHE_CONTROL, cache_control);
+            }
             if reading_window {
                 builder = builder.header(READING_WINDOW, "1");
             }

@@ -294,11 +294,23 @@ pub(crate) fn build_app(state: HostState) -> Router {
         )
         .route(
             "/api/conversation/sessions/:session_id/projection",
-            get(conversation_projection_get),
+            get(|state, path, headers| async move {
+                (
+                    [
+                        (axum::http::header::VARY, "Accept"),
+                        (axum::http::header::CACHE_CONTROL, "no-store"),
+                    ],
+                    conversation_projection_get(state, path, headers).await,
+                )
+            }),
         )
         .route(
             "/api/conversation/sessions/:session_id/context-compositions/:provider_request_id",
             get(conversation_context_composition_get),
+        )
+        .route(
+            "/api/conversation/sessions/:session_id/shell-output/read",
+            post(conversation_shell_output_read),
         )
         .route(
             "/api/conversation/sessions/:session_id/changes/read",

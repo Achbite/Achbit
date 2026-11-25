@@ -16,6 +16,7 @@ test('concurrent history views share replay, isolate readers and reread subseque
   assert.equal(reads,1);
   assert.deepEqual(snapshots[0],snapshots[4]);
   snapshots[0].display.creationTitle = 'not canonical';
+  assert.notEqual(snapshots[4].display.creationTitle, 'not canonical', 'coalesced readers own independent nested fields');
   assert.notEqual((await service.snapshot(sessionId)).display.creationTitle,'not canonical');
   assert.equal(reads,2,'a subsequent read must consult the journal again, including malformed history at the same revision');
   await journal.append({type:'message.committed',sessionId,payload:{messageId:'message:changed',role:'user',content:'new journal fact'}});
@@ -130,4 +131,32 @@ test('a write during slow replay cannot bind the previous view to a later journa
   assert.equal((await slow).messages.length, 0);
   assert.equal((await service.snapshot(id)).messages.at(-1).content, 'new committed tail');
   assert.equal(reads, 2);
+});
+
+test('retains large valid histories together and reports their serialized size until release', async t => {
+  const journal = new InMemoryCommandJournal();
+  const large = 'session:large-history', small = 'session:small-history';
+  for (const id of [large, small]) await createSession(journal, id);
+  const length = 17 * 1024 * 1024;
+  await journal.append({ sessionId: large, type: 'message.committed',
+    payload: { role: 'user', messageId: 'message:large', content: 'x'.repeat(length) } });
+  journal.historyVersion = async () => 'same-cut';
+  const reads = [];
+  const read = journal.read.bind(journal);
+  journal.read = async function* (id, ...args) { reads.push(id); yield* read(id, ...args); };
+  const samples = [];
+  const observation = { accept() {}, failed() {}, readingCacheChanged(usage) { samples.push(usage); } };
+  const service = new SessionService(journal, { async create() { assert.fail('unexpected actor'); } },
+    undefined, undefined, undefined, observation);
+  t.after(() => service.dispose());
+  assert.equal((await service.snapshot(large)).messages[0].content.length, length);
+  await service.snapshot(small);
+  assert.equal((await service.snapshot(large)).messages[0].content.length, length);
+  await service.snapshot(small);
+  assert.deepEqual(reads, [large, small]);
+  assert.equal(samples.at(-1).snapshotEntries, 2);
+  assert.ok(samples.at(-1).snapshotBytes >= length);
+  assert.equal(samples.at(-1).totalBytes, samples.at(-1).snapshotBytes);
+  await service.dispose();
+  assert.equal(samples.at(-1).totalBytes, 0);
 });

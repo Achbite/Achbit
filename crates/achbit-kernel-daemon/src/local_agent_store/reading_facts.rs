@@ -2,6 +2,7 @@
 use super::JournalEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use std::io::{self, Write};
 use std::ops::Range;
 
 pub(crate) const READING_FACTS_V1: &str = "application/vnd.achbit.reading-facts-v1+json-seq";
@@ -24,29 +25,47 @@ pub(crate) struct ReadingFactsEncoder {
 #[derive(Deserialize)]
 struct ContextField<'a> {
     #[serde(borrow)]
-    messages: &'a RawValue,
+    messages: Vec<&'a RawValue>,
 }
 
-fn element_ranges(payload: &str) -> Option<(Range<usize>, Vec<Range<usize>>)> {
+fn element_ranges(payload: &str) -> Option<Vec<Range<usize>>> {
     if !payload.trim_start().starts_with('{') {
         return None;
     }
-    let messages = serde_json::from_str::<ContextField>(payload)
-        .ok()?
-        .messages
-        .get();
-    let elements: Vec<&RawValue> = serde_json::from_str(messages).ok()?;
-    let range = |value: &str| {
-        let start = value.as_ptr() as usize - payload.as_ptr() as usize;
-        start..start + value.len()
-    };
-    Some((
-        range(messages),
-        elements
+    let field: ContextField = serde_json::from_str(payload).ok()?;
+    Some(
+        field
+            .messages
             .into_iter()
-            .map(|value| range(value.get()))
+            .map(|element| {
+                let value = element.get();
+                let start = value.as_ptr() as usize - payload.as_ptr() as usize;
+                start..start + value.len()
+            })
             .collect(),
-    ))
+    )
+}
+
+// The payload was validated on read. Only remove whole elements and the comma
+// before the surviving suffix; pass the original JSON fragments to the writer.
+struct OmitMessages<'a> {
+    payload: &'a str,
+    omit: Range<usize>,
+}
+
+impl serde_json::ser::Formatter for OmitMessages<'_> {
+    fn write_raw_fragment<W: ?Sized + Write>(
+        &mut self,
+        writer: &mut W,
+        fragment: &str,
+    ) -> io::Result<()> {
+        if std::ptr::eq(self.payload, fragment) {
+            writer.write_all(&fragment.as_bytes()[..self.omit.start])?;
+            writer.write_all(&fragment.as_bytes()[self.omit.end..])
+        } else {
+            writer.write_all(fragment.as_bytes())
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -61,7 +80,7 @@ struct Prefix<'a> {
 impl ReadingFactsEncoder {
     /// Writes a single logical event, without RS/LF. Only the preceding *context* in this
     /// stream can supply a base, and only whole, byte-identical leading elements are copied.
-    pub(crate) fn write(&mut self, out: &mut Vec<u8>, mut event: Event) -> serde_json::Result<()> {
+    pub(crate) fn write(&mut self, out: &mut Vec<u8>, event: Event) -> serde_json::Result<()> {
         if self
             .previous
             .as_ref()
@@ -73,7 +92,7 @@ impl ReadingFactsEncoder {
             return serde_json::to_writer(out, &event);
         }
         let raw = event.payload.get();
-        let Some((array, elements)) = element_ranges(raw) else {
+        let Some(elements) = element_ranges(raw) else {
             self.previous = None;
             return serde_json::to_writer(out, &event);
         };
@@ -87,32 +106,37 @@ impl ReadingFactsEncoder {
                 })
                 .count()
         });
-        let cut = elements.get(count).map_or(array.end - 1, |r| r.start);
-        // Never inflate a small record. Replace only the original array prefix; all sibling
-        // fields and the suffix (including unknown values, escapes and numeric spellings) survive.
-        let original = if count > 0 && cut - (array.start + 1) > 96 {
-            let mut suffix = String::with_capacity(raw.len() - (cut - array.start - 1));
-            suffix.push_str(&raw[..array.start + 1]);
-            suffix.push_str(&raw[cut..]);
-            let original = std::mem::replace(&mut event.payload, RawValue::from_string(suffix)?);
-            serde_json::to_writer(
-                out,
-                &Prefix {
-                    reading_prefix: 1,
-                    base_sequence: base.as_ref().unwrap().sequence,
-                    prefix_count: count,
-                    event: &event,
+        let omit = (count > 0).then(|| {
+            // JSON arrays may contain space, tab, CR or LF before the first and after the last element.
+            let whitespace = [' ', '\t', '\r', '\n'];
+            let start = raw[..elements[0].start].trim_end_matches(whitespace).len();
+            let end = elements.get(count).map_or_else(
+                || {
+                    let tail = &raw[elements[count - 1].end..];
+                    raw.len() - tail.trim_start_matches(whitespace).len()
                 },
-            )?;
-            original
+                |next| next.start,
+            );
+            start..end
+        });
+        if let (Some(base), Some(omit)) = (&base, omit.filter(|r| r.len() > 96)) {
+            let wrapper = Prefix {
+                reading_prefix: 1,
+                base_sequence: base.sequence,
+                prefix_count: count,
+                event: &event,
+            };
+            wrapper.serialize(&mut serde_json::Serializer::with_formatter(
+                out,
+                OmitMessages { payload: raw, omit },
+            ))?;
         } else {
             serde_json::to_writer(out, &event)?;
-            event.payload
-        };
+        }
         self.previous = Some(ContextBase {
             session_id: event.session_id,
             sequence: event.sequence,
-            payload: original,
+            payload: event.payload,
             elements,
         });
         Ok(())
@@ -124,7 +148,7 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
-    fn write(encoder: &mut ReadingFactsEncoder, id: &str, seq: i64, raw: String) -> Value {
+    fn encode(encoder: &mut ReadingFactsEncoder, id: &str, seq: i64, raw: String) -> String {
         let mut output = Vec::new();
         encoder
             .write(
@@ -142,7 +166,11 @@ mod tests {
                 },
             )
             .unwrap();
-        serde_json::from_slice(&output).unwrap()
+        String::from_utf8(output).unwrap()
+    }
+
+    fn write(encoder: &mut ReadingFactsEncoder, id: &str, seq: i64, raw: String) -> Value {
+        serde_json::from_str(&encode(encoder, id, seq, raw)).unwrap()
     }
 
     #[test]
@@ -184,6 +212,31 @@ mod tests {
             .get("readingPrefix")
             .is_none());
         assert!(write(&mut enc, "other", 4, first)
+            .get("readingPrefix")
+            .is_none());
+    }
+    #[test]
+    fn omission_keeps_the_original_suffix_and_resets_after_a_non_array() {
+        let first = format!(r#""{}""#, "persist ˙".repeat(20));
+        let mut encoder = ReadingFactsEncoder::default();
+        let payload = |remaining: &str| {
+            format!("{{\"messages\": [  \t{first}{remaining} \r\n ], \"extension\":1e+2}}")
+        };
+        let _ = encode(&mut encoder, "s", 1, payload(", 42"));
+        let second = encode(&mut encoder, "s", 2, payload(", \n { \"n\":-0 }"));
+        assert!(second.contains(r#""prefixCount":1"#));
+        assert!(second.contains("{\"messages\": [{ \"n\":-0 } \r\n ], \"extension\":1e+2}"));
+        let shorter = encode(&mut encoder, "s", 3, payload(""));
+        assert!(shorter.contains("{\"messages\": [], \"extension\":1e+2}"));
+
+        let wrong_shape = r#"{"messages":{"embedded":["arbitrary"]}}"#;
+        assert!(encode(&mut encoder, "s", 4, wrong_shape.into()).contains(wrong_shape));
+        assert!(write(&mut encoder, "s", 5, payload(""))
+            .get("readingPrefix")
+            .is_none());
+        let empty = r#"{"messages": []}"#;
+        assert!(encode(&mut encoder, "s", 6, empty.into()).contains(empty));
+        assert!(write(&mut encoder, "s", 7, payload(""))
             .get("readingPrefix")
             .is_none());
     }

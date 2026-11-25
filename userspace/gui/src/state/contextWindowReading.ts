@@ -1,3 +1,4 @@
+import { archivedMeasurements } from '../services/desktopHistory';
 import type { ContextCompositionProjection, ContextUsageProjection, SessionProjection } from '@achbit/protocol';
 
 /** Display data only. Keep the matching breakdown, not the request's messages and tool catalog. */
@@ -23,6 +24,13 @@ export function sessionView(projection: SessionProjection, previous?: CachedSess
     const receipt = projection.contextCompositions.find(item => item.providerRequestId === usage.providerRequestId
       && item.runId === usage.runId && item.purpose === 'agent');
     return { projection, contextWindowReading: { usage, receipt: receipt ? { sequence: receipt.sequence, partitions: receipt.partitions } : null } };
+  }
+  const archived = archivedMeasurements.get(projection);
+  if (archived !== undefined) {
+    const boundary = projection.contextHandoff?.historyThroughSequence ?? 0;
+    const visible = archived && archived.receipt.sequence > boundary && projection.run
+      && reportedWindowRounds(projection).some(round => round.runId === archived.usage.runId);
+    return { projection, contextWindowReading: visible ? archived : null };
   }
   // Keep the original capacity and breakdown together. A follow-up can have a new runId
   // and zero calls, while its predecessor still belongs to the same model context.

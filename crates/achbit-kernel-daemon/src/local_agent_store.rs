@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, RwLock};
 mod debug_input;
 mod permission_replay;
 mod reading_facts;
+mod shell_output;
 mod transcript;
 pub(crate) use reading_facts::{ReadingFactsEncoder, READING_FACTS_V1};
 

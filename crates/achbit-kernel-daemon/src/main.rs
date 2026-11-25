@@ -219,10 +219,12 @@ async fn run() {
         Arc::from(local_agent_api::random_service_token().expect("初始化 Session 服务凭证"));
     let (publish_reader, reader_service) = tokio::sync::watch::channel(None);
     let reader_token = service_token.clone();
+    let session_log_dir = user_directories.log_dir.clone();
     tokio::task::spawn_blocking(move || {
         publish_reader.send_replace(Some(SessionServiceProcess::spawn(
             &format!("http://{addr}"),
             &reader_token,
+            &session_log_dir,
         )));
     });
     let state = HostState {

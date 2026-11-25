@@ -2823,23 +2823,67 @@ fn prepare_session_workdir(
 pub(crate) async fn conversation_projection_get(
     ReadyState(state): ReadyState,
     Path(session_id): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Json<ApiResponse> {
+    let desktop = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|h| h.to_str().ok())
+        == Some("application/vnd.achbit.desktop-history.v1+json");
     match request_service(
         state.session_service,
         "snapshot",
-        json!({ "sessionId": session_id }),
+        json!({ "sessionId": session_id, "desktopHistory": desktop }),
     )
     .await
     {
-        Ok(mut value) => match state
-            .local_agent
-            .journal
-            .project_permissions(&session_id, &mut value)
-        {
-            Ok(()) => ApiResponse::ok(value),
-            Err(error) => ApiResponse::error(error.code, error.message),
-        },
+        Ok(mut value) => {
+            let projection = if desktop && value["kind"] == "desktop.history.v1" {
+                &mut value["projection"]
+            } else {
+                &mut value
+            };
+            match state
+                .local_agent
+                .journal
+                .project_permissions(&session_id, projection)
+            {
+                Ok(()) => ApiResponse::ok(value),
+                Err(error) => ApiResponse::error(error.code, error.message),
+            }
+        }
         Err(error) => session_service_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReadShellOutput {
+    sequence: i64,
+    run_id: String,
+    call_id: String,
+    record_id: String,
+}
+
+pub(crate) async fn conversation_shell_output_read(
+    ReadyState(state): ReadyState,
+    Path(session_id): Path<String>,
+    Json(body): Json<ReadShellOutput>,
+) -> Json<ApiResponse> {
+    let reader = state.local_agent.journal.reader.clone();
+    match tokio::task::spawn_blocking(move || {
+        reader.shell_output(
+            &session_id,
+            body.sequence,
+            &body.run_id,
+            &body.call_id,
+            &body.record_id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(output)) => ApiResponse::ok(output),
+        Ok(Err(error)) => ApiResponse::error(error.code, error.message),
+        Err(error) => ApiResponse::error("session_read_failed", error.to_string()),
     }
 }
 

@@ -1,3 +1,6 @@
+import { completePluginInput, pluginHistorySource } from './activityInput';
+import { useHistoryDetail } from '../components/local-agent/useHistoryDetail';
+import { t } from '../i18n';
 import { watchUserSettings, reportUiPlugins } from '../services/pluginManagement';
 import { useLocalAgentStore } from '../state/localAgentStore';
 import React, {
@@ -162,7 +165,7 @@ export function useUiPlugins() {
 /** Only this mount is replaced. The React owner retains the draft, scroll and conversation. */
 export function UiPluginSlotView({
   slot,
-  input,
+  input: requestedInput,
   children,
   pluginPath,
   onConnectionChanged,
@@ -184,10 +187,22 @@ export function UiPluginSlotView({
   const entry = entries.find(
     (candidate) => candidate.status !== 'disabled' && candidate.manifest?.slots.includes(slot)
       && (!pluginPath || candidate.path === pluginPath)
-      && (slot !== 'tool.result' || (input.kind === 'tool.result' && candidate.manifest.toolId === input.toolId))
-      && (slot !== 'settings.connection.detail' || !candidate.manifest.adapterId || (input.kind === 'settings.connection' && candidate.manifest.adapterId === input.connection.adapterId)),
+      && (slot !== 'tool.result' || (requestedInput.kind === 'tool.result' && candidate.manifest.toolId === requestedInput.toolId))
+      && (slot !== 'settings.connection.detail' || !candidate.manifest.adapterId || (requestedInput.kind === 'settings.connection' && candidate.manifest.adapterId === requestedInput.connection.adapterId)),
   );
-  const renderer = entry?.renderers.get(slot);
+  const installedRenderer = entry?.renderers.get(slot);
+  // Legacy activity renderers can read any completed output synchronously. Share
+  // a single complete snapshot only when such an installed renderer actually mounts.
+  const source = installedRenderer && entry?.path !== 'builtin:regions' ? pluginHistorySource(requestedInput) : undefined;
+  const full = useHistoryDetail(source);
+  const compatible = useMemo(() => {
+    if (!full.value) return { input: requestedInput };
+    try { return { input: completePluginInput(requestedInput, full.value) }; }
+    catch (error) { return { input: requestedInput, error: errorText(error) }; }
+  }, [requestedInput, full.value]);
+  const input = compatible.input;
+  const pendingHistory = source && (!full.value || compatible.error);
+  const renderer = pendingHistory ? undefined : installedRenderer;
   const container = useRef<HTMLDivElement>(null);
   const mounted = useRef<UiPluginView | null>(null);
   const connectionChanged = useRef(onConnectionChanged); connectionChanged.current = onConnectionChanged;
@@ -330,6 +345,12 @@ export function UiPluginSlotView({
     }
   }, [input, entry, context?.runtime]);
 
+  if (pendingHistory) {
+    const error = full.error ?? compatible.error;
+    return <>{children}{Object.values(regions ?? {})}{error && <div role="alert">{error}{' '}
+      <button type="button" onClick={source.retry}>{t(input.locale === 'zh-CN' ? 'zh-CN' : 'en-US', 'achbitGui.statusAction.retry')}</button>
+    </div>}</>;
+  }
   if (!entry) return <>{children}{Object.values(regions ?? {})}</>;
   if (entry.status === 'error')
     return (

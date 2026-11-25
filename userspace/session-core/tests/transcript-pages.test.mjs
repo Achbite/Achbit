@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SessionService } from '../dist/index.js';
 import { selectTranscriptPage } from '../dist/local-agent/transcriptPage.js';
-import { projectTranscriptFacts } from '../dist/local-agent/reducer.js';
+import { projectSessionHistory, projectTranscriptFacts } from '../dist/local-agent/reducer.js';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
-import { actorWith, createSession, emptyKernel, fakeRunPreparation, messageCommand, providerEvent, waitForProjection } from './local-agent-fixtures.mjs';
+import { actorWith, createSession, emptyKernel, fakeRunPreparation, messageCommand, providerEvent, readEvents, waitForProjection } from './local-agent-fixtures.mjs';
 
 test('committed turns, usage partitions and all navigation keys agree with a complete snapshot without opening an execution Actor', async t=>{
   const id='session:paged',j=new InMemoryCommandJournal();await createSession(j,id);
@@ -15,6 +15,29 @@ test('committed turns, usage partitions and all navigation keys agree with a com
   t.after(()=>actor.dispose());
   for(let n=0;n<3;n++){await actor.submit(messageCommand(id,'cmd:'+n,'question '+n));await waitForProjection(actor,p=>p.run?.status==='completed'&&p.messages.filter(m=>m.role==='assistant').length===n+1);}
   const oracle=await actor.snapshot();const service=new SessionService(j,{async create(){assert.fail('history opened execution')}});t.after(()=>service.dispose());
+  // TCR T-027 phase4. The desktop view consumes the same effective replay as the named snapshot.
+  const desktop = await service.desktopSnapshot(id);
+  assert.equal(desktop.kind, 'desktop.history.v1');
+  assert.deepEqual(desktop.projection, await service.snapshot(id));
+  const events = await readEvents(j, id);
+  const starts = events.filter(event => event.type === 'run.started');
+  const last = starts.at(-1);
+  const readingOf = input => {
+    const facts = { measurement: null, shellCompletions: new Map() };
+    projectSessionHistory(id, input, facts);
+    return facts.measurement;
+  };
+  const prefix = events.slice(0, last.sequence - 1);
+  const previous = readingOf(prefix);
+  assert.equal(previous.usage.runId, starts.at(-2).runId);
+  assert.deepEqual(readingOf([...prefix, last]), previous, 'a pending follow-up retains the preceding measurement');
+  const switchModel = { ...last, payload: { ...last.payload, contextStart: {
+    previousProfileId: 'profile:previous', historyThroughSequence: last.sequence - 1 } } };
+  assert.equal(readingOf([...prefix, switchModel]), null, 'a handoff hides measurements before its boundary');
+  const revision = events.at(-1).sequence + 1;
+  const edit = { type: 'conversation.revised', sessionId: id, sequence: revision, eventId: 'edit:last',
+    occurredAt: 'now', payload: { fromSequence: last.sequence, throughSequence: revision - 1 } };
+  assert.deepEqual(readingOf([...events, edit]), previous, 'editing away a later measurement reveals its effective predecessor');
   j.read=async function*(){assert.fail('history enumerated full journal')};
   const pages=[];let around;
   do{const r=await service.read({sessionId:id,view:'transcript',...(around===undefined?{}:{around})});pages.unshift(r.transcript);around=r.transcript.previous;}while(around!==null);
@@ -22,6 +45,7 @@ test('committed turns, usage partitions and all navigation keys agree with a com
   assert.deepEqual(pages.at(-1).current.run,oracle.run);assert.deepEqual(pages[0].navigation.map(n=>n.key),oracle.messages.filter(m=>m.role==='user').map(m=>m.messageId));
   const {overview}=await service.read({sessionId:id,view:'overview'});assert.deepEqual(overview.measurement.usage,oracle.contextUsage);
   assert.deepEqual(overview.measurement.receipt.partitions,oracle.contextCompositions.find(r=>r.providerRequestId===oracle.contextUsage.providerRequestId).partitions);
+  assert.deepEqual(desktop.measurement, overview.measurement);
   assert.deepEqual(overview.totalTokenUsage,oracle.totalTokenUsage);
   const raw=await j.readTranscriptFacts(id);assert.ok(raw.compositions.length>0);assert.ok(raw.compositions.every(r=>!('messages' in r)));
   assert.throws(()=>projectTranscriptFacts(id,{...raw,compositions:[]}),/session_event_sequence_gap/);
@@ -103,4 +127,32 @@ test('a provider output and an interleaved event share a page until their source
   assert.deepEqual(page.timeline, [...provider, interleaved], 'canonical producer order survives a journal inversion');
   assert.deepEqual([page.start, page.end], [1, 134]);
   assert.deepEqual(selectTranscriptPage(groups, turn, 135).timeline, [following]);
+});
+
+test('a multi-page turn larger than 16 MiB is retained for its neighboring page', async t => {
+  const id = 'session:large-transcript', journal = new InMemoryCommandJournal();
+  await createSession(journal, id);
+  const length = 17 * 1024 * 1024;
+  for (let i = 0; i < 28; i++) {
+    await journal.append({ sessionId: id, type: 'message.committed', ...(i ? { runId: 'run:steered' } : {}), payload: {
+      role: 'user', messageId: 'message:' + i, content: i === 0 ? 'x'.repeat(length) : 'row ' + i,
+    } });
+  }
+  const materialized = [];
+  const read = journal.readTranscriptFacts.bind(journal);
+  journal.readTranscriptFacts = async (...args) => {
+    const facts = await read(...args);
+    materialized.push(facts !== null);
+    return facts;
+  };
+  const service = new SessionService(journal, { async create() { assert.fail('unexpected actor'); } });
+  t.after(() => service.dispose());
+  const page = async around => (await service.read({ sessionId: id, view: 'transcript', around })).transcript;
+  const first = await page(1);
+  assert.equal(first.content.messages[0].content.length, length);
+  assert.ok(first.next > first.end);
+  const next = await page(first.next);
+  assert.equal(next.start, first.end + 1);
+  assert.equal(next.content.messages.at(-1).messageId, 'message:27');
+  assert.deepEqual(materialized, [true, false]);
 });

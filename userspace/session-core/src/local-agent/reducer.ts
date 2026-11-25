@@ -201,7 +201,13 @@ export function reduceSession(previous: SessionState, event: SessionEvent): Sess
 
 // These indexes live only for one ordered replay. They select the same facts as
 // incremental reduction without repeatedly scanning all earlier requests/calls.
+export interface ArchivedReadingFacts {
+  measurement: import('@achbit/protocol').TranscriptOverview['measurement'];
+  shellCompletions: Map<string, number>;
+}
+
 interface ReplayIndexes {
+  reading?: ArchivedReadingFacts;
   transcriptCompositions?: ReadonlyMap<string, TranscriptComposition>;
   borrowReceiptMessages: boolean;
   compositions: Map<string, number>;
@@ -367,6 +373,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
     case 'run.started':
       delete next.processWait;
       if (event.payload.contextStart) {
+        const reading = replay?.reading;
+        if (reading?.measurement && reading.measurement.usage.sequence <= event.payload.contextStart.historyThroughSequence) {
+          reading.measurement = null;
+        }
         next.contextHandoff = { ...event.payload.contextStart, runId: event.runId,
           profileId: event.payload.runtimeSnapshot.provider.profileId, status: 'reading' };
         next.contextUsage = null;
@@ -809,6 +819,10 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         ...next.activities[toolActivityId(event.callId)],
         tool,
       };
+      if (replay?.reading && event.payload.record.outcome === 'completed' && tool.recordId
+        && tool.shell?.result && (tool.shell.result.stdout || tool.shell.result.stderr)) {
+        replay.reading.shellCompletions.set(toolActivityId(event.callId), event.sequence);
+      }
       const record = event.payload.record;
       if (next.contextHandoff?.status === 'reading'
         && isHandoffRead(record, next.sessionId, next.contextHandoff.historyThroughSequence)) {
@@ -849,13 +863,13 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
     case 'agent.task.created':
       assertRunningRun(next, event.runId, 'agent_task_run_not_active');
       Object.assign(next, reduceAgentLifetime(next, event));
-      recordAgentActivity(next, event, 'started');
+      recordAgentActivity(writableRecord(next, 'activities'), next.agentTasks, event, 'started');
       break;
     case 'agent.task.started':
     case 'agent.task.completed':
     case 'agent.closed':
       Object.assign(next, reduceAgentLifetime(next, event));
-      if (event.type === 'agent.task.completed') recordAgentActivity(next, event, 'completed');
+      if (event.type === 'agent.task.completed') recordAgentActivity(writableRecord(next, 'activities'), next.agentTasks, event, 'completed');
       break;
     case 'agent.control.completed':
     case 'session.control.completed':
@@ -1193,13 +1207,12 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
           ...receipt,
           partitions: estimatePartitionTokens(receipt.partitions, event.payload.inputTokens),
         };
-        if (turn.purpose === 'agent') next.contextUsage = {
-          ...event.payload,
-          providerRequestId,
-          runId: event.runId,
-          sequence: event.sequence,
-          updatedAt: event.occurredAt,
-        };
+        if (turn.purpose === 'agent') {
+          next.contextUsage = { ...event.payload, providerRequestId, runId: event.runId,
+            sequence: event.sequence, updatedAt: event.occurredAt };
+          if (replay?.reading) replay.reading.measurement = { usage: next.contextUsage,
+            receipt: { sequence: receipt.sequence, partitions: next.contextCompositions[receiptIndex].partitions } };
+        }
       }
       next.tokenUsage = withProviderUsage(next.tokenUsage, event.payload);
       const runUsage = next.tokenUsageHistory[event.runId];
@@ -1326,18 +1339,15 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
   return next;
 }
 
-function recordAgentActivity(state: SessionState,
+function recordAgentActivity(activities: SessionState['activities'], tasks: SessionState['agentTasks'],
   event: Extract<SessionEvent, { type: 'agent.task.created' | 'agent.task.completed' }>,
   phase: 'started' | 'completed'): void {
-  const task = state.agentTasks.find(task => task.taskId === event.payload.taskId)!;
+  const task = tasks.find(task => task.taskId === event.payload.taskId)!;
   const activityId = `agent:${task.taskId}:${phase}`;
-  state.activities = {
-    ...state.activities,
-    [activityId]: {
-      activityId, kind: 'agent', label: task.displayName, runId: event.runId,
-      sequence: event.sequence, status: phase === 'started' ? 'completed' : task.result!.outcome,
-      agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase },
-    },
+  activities[activityId] = {
+    activityId, kind: 'agent', label: task.displayName, runId: event.runId,
+    sequence: event.sequence, status: phase === 'started' ? 'completed' : task.result!.outcome,
+    agent: { taskId: task.taskId, agentSessionId: task.agentSessionId, phase },
   };
 }
 
@@ -1346,11 +1356,11 @@ function recordAgentMessageActivity(state: SessionState,
   const child = state.agentChildren.find(child => child.agentSessionId === event.payload.sourceSessionId);
   if (!child) return; // Parent and peer messages are not child status notifications in this Session.
   const activityId = `agent:message:${event.sequence}`;
-  state.activities = { ...state.activities, [activityId]: {
+  writableRecord(state, 'activities')[activityId] = {
     activityId, kind: 'agent', label: child.displayName, runId: event.runId,
     sequence: event.sequence, status: 'completed',
     agent: { agentSessionId: child.agentSessionId, phase: 'updated' },
-  } };
+  };
 }
 
 
@@ -1359,8 +1369,8 @@ export function recoverSession(sessionId: string, events: readonly SessionEvent[
 }
 
 /** No intermediate state escapes this synchronous read; projectSession copies the public receipts. */
-export function projectSessionHistory(sessionId: string, events: readonly SessionEvent[]): SessionProjection {
-  return projectSession(replaySession(sessionId, events, true));
+export function projectSessionHistory(sessionId: string, events: readonly SessionEvent[], reading?: ArchivedReadingFacts): SessionProjection {
+  return projectSession(replaySession(sessionId, events, true, undefined, undefined, reading));
 }
 
 export function projectTranscriptFacts(sessionId: string, facts: TranscriptFacts, around = facts.end): TranscriptPage {
@@ -1428,7 +1438,7 @@ export function transcriptPageAt(turn: TranscriptTurn, around = turn.range.end):
 }
 
 function replaySession(sessionId: string, events: readonly SessionEvent[], borrowReceiptMessages: boolean,
-  range?: Pick<TranscriptFacts, 'start' | 'end' | 'revision'>, receipts?: ReadonlyMap<string,TranscriptComposition>): SessionState {
+  range?: Pick<TranscriptFacts, 'start' | 'end' | 'revision'>, receipts?: ReadonlyMap<string,TranscriptComposition>, reading?: ArchivedReadingFacts): SessionState {
   let agents: AgentLifetime = { agentTasks: [], agentChildren: [] };
   let expected = 1;
   let previous = 0;
@@ -1445,7 +1455,7 @@ function replaySession(sessionId: string, events: readonly SessionEvent[], borro
   // Archived child identities also label received messages during history-only replay.
   state.agentChildren = agents.agentChildren;
   const active = activeConversationEvents(events);
-  const replay: ReplayIndexes = { transcriptCompositions: receipts, borrowReceiptMessages, compositions: new Map(), attempts: new Map(), calls: [] };
+  const replay: ReplayIndexes = { reading, transcriptCompositions: receipts, borrowReceiptMessages, compositions: new Map(), attempts: new Map(), calls: [] };
   const pageMessages = range ? new Set(active.flatMap(event => event.type === 'message.committed'
     && event.sequence >= range.start && event.sequence <= range.end ? [event.payload.messageId] : [])) : undefined;
   for (const event of active) {
@@ -1459,9 +1469,7 @@ function replaySession(sessionId: string, events: readonly SessionEvent[], borro
       // Lifetime and visible history are different projections of the same fact.
       // Editing may hide an activity without deleting the archived child.
       if (!outside && (event.type === 'agent.task.created' || event.type === 'agent.task.completed')) {
-        const activityState = { ...state, agentTasks: agents.agentTasks };
-        recordAgentActivity(activityState, event, event.type === 'agent.task.created' ? 'started' : 'completed');
-        state = { ...state, activities: activityState.activities };
+        recordAgentActivity(state.activities, agents.agentTasks, event, event.type === 'agent.task.created' ? 'started' : 'completed');
       }
       continue;
     }

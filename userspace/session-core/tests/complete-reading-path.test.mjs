@@ -19,12 +19,12 @@ test('an archived family cannot fit a message-only window: refuse content withou
   journal.readAgentLifecycle=async()=>({...lifecycle,sessionId:'elsewhere'});await assert.rejects(s.read(query),/session_event_identity_mismatch/);
 });
 
-test('a large recent root fits the existing total history budget; a new journal version must still be read', async t=>{
+test('a large root reuses its snapshot until the journal version changes', async t=>{
   const j=new InMemoryCommandJournal();const root='session:recent-root';await createSession(j,root);
   await j.append({type:'message.committed',sessionId:root,payload:{messageId:'big',role:'user',content:'x'.repeat(9*1024*1024)}});
   const s=new SessionService(j,{async create(){throw Error('unexpected_actor')}});t.after(()=>s.dispose());
   const original=j.read.bind(j);let version=1,reads=0;j.historyVersion=async()=>String(version);
   j.read=async function*(id){if(id===root)reads++;yield* original(id)};
-  await s.snapshot(root);await s.snapshot(root);assert.equal(reads,1,'one view within the total history budget');
+  await s.snapshot(root);await s.snapshot(root);assert.equal(reads,1,'the same journal version reuses the retained view');
   version++;await s.snapshot(root);assert.equal(reads,2,'cross-version reuse is forbidden');
 });

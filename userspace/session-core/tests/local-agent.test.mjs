@@ -4706,7 +4706,7 @@ for (const wire of ['ordered', 'aggregate']) test(`hosted search response usage 
     tools: [{ name: 'skill.read', toolBindingRef: 'binding:skill', origin: 'coreBuiltin', availability: 'callable',
       description: 'Read a bundled skill.', possibleEffects: [],
       inputSchema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } } }] });
-  const requests = [], executions = [], input = { name: 'achbit-product' };
+  const requests = [], executions = [], input = { name: 'achbit-documents' };
   const provider = { async *stream(request) {
     requests.push(request);
     if (requests.length === 1) {
@@ -4742,6 +4742,9 @@ for (const wire of ['ordered', 'aggregate']) test(`hosted search response usage 
   const updated = events.findIndex(event => event.type === 'context.updated');
   const state = loopSnapshot(sessionId, events.slice(0, updated + 1)).state;
   assert.equal(state.contextUsage, null, 'hosted response totals do not measure any one context window');
+  const archived = new SessionService(journal, { async create() { assert.fail('desktop reading started an actor'); } });
+  t.after(() => archived.dispose());
+  assert.equal((await archived.desktopSnapshot(sessionId)).measurement, null, 'archived desktop excludes hosted aggregate usage');
   const partitions = state.contextCompositions.find(receipt => receipt.providerRequestId === requests[0].requestId).partitions;
   assert.ok(partitions.length > 0 && partitions.every(part => part.estimatedInputTokens === undefined));
   for (const aggregate of [projection.tokenUsage, ...projection.tokenUsageHistory]) {

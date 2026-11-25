@@ -1,3 +1,4 @@
+import { archivedMeasurements } from '../services/desktopHistory';
 import type { PastedImageInput } from '../services/pastedImage';
 import type { UserSettings, ShellAuthorizationScope, FilesystemReference, GuidanceReference } from '@achbit/protocol';
 import { takeRestoredInterfaceView } from '../services/interfaceReload';
@@ -47,7 +48,7 @@ import {
   watchConversationCatalog,
   getConversationCatalogManagement,
   getPluginCatalog,
-  getLocalAgentProjection,
+  getDesktopSessionProjection,
   resolveConversationFilesystemReferences,
   submitLocalAgentCommand,
   uploadConversationPastedText,
@@ -269,11 +270,11 @@ function readSessionView(sessionId: string, signal?: AbortSignal): Promise<Cache
   const fetchView = async () => {
       checkOwner();
       const observedAt = observationAtRead();
-      let projection = await getLocalAgentProjection(sessionId, signal);
+      let projection = await getDesktopSessionProjection(sessionId, signal);
       checkOwner();
       const observed = store.getState().sessionStatuses[sessionId]?.revision ?? 0;
       if (projection.revision < observed) {
-        projection = await getLocalAgentProjection(sessionId, signal);
+        projection = await getDesktopSessionProjection(sessionId, signal);
         checkOwner();
         if (projection.revision < observed) throw new Error('session_projection_revision_behind');
       }
@@ -1587,7 +1588,7 @@ store.subscribe((state, previous) => {
   // Only a decoded snapshot admitted to this view's cache can authorize a journal lookup.
   const admitted = state.sessionId ? projectionCache.get(state.sessionId) : undefined;
   const p = admitted && admitted.projection === state.projection ? admitted.projection : null;
-  const rounds = p?.run && !p.contextUsage ? reportedWindowRounds(p) : [];
+  const rounds = p?.run && !p.contextUsage && !archivedMeasurements.has(p) ? reportedWindowRounds(p) : [];
   const newest = rounds[0];
   // Only new usage can yield a new reading. Draft deltas, tool progress, and starting
   // a successor with zero reports must neither cancel the lookup nor trigger another scan.

@@ -1,6 +1,4 @@
 const SHELL_ACTIVITY_RESULT_FIELDS = [
-  'stdout',
-  'stderr',
   'exitCode',
   'success',
   'timedOut',
@@ -21,10 +19,17 @@ const SHELL_ENVIRONMENT_FIELDS = [
 ] as const;
 
 export function isShellActivityResult(value: unknown): boolean {
-  return isExactRecord(value, [...SHELL_ACTIVITY_RESULT_FIELDS, 'environment'])
+  return isExactRecord(value, [...SHELL_ACTIVITY_RESULT_FIELDS, 'environment', 'stdout', 'stderr'])
     && typeof value.stdout === 'string'
-    && typeof value.stderr === 'string'
-    && (value.exitCode === null
+    && typeof value.stderr === 'string' && validResultFields(value);
+}
+
+export function isShellResultSummary(value: unknown): value is Omit<import('@achbit/protocol').ShellActivityResultProjection, 'stdout' | 'stderr'> {
+  return isExactRecord(value, [...SHELL_ACTIVITY_RESULT_FIELDS, 'environment']) && validResultFields(value);
+}
+
+function validResultFields(value: Record<string, unknown>) {
+  return (value.exitCode === null
       || typeof value.exitCode === 'number' && Number.isSafeInteger(value.exitCode))
     && typeof value.success === 'boolean'
     && typeof value.timedOut === 'boolean'

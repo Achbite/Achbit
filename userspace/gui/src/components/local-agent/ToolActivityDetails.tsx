@@ -1,3 +1,5 @@
+import { deferredShell } from '../../services/desktopHistory';
+import { useHistoryDetail } from './useHistoryDetail';
 import { ShellLiveOutput, useShellStop } from './ShellCommandProgress';
 import { UiRegion } from '../../ui-plugins/UiRegion';
 import { batchConflictRole, hostedEntryKey, type BatchConflictSummary, type HostedBlock, type HostedDraftGroup } from './conversationItems';
@@ -219,7 +221,10 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
   const tool = activity.tool;
   const shell = tool?.shell;
   const process = tool?.process;
-  const result = shell?.result;
+  const deferred = deferredShell(activity);
+  const detail = useHistoryDetail(expanded ? deferred?.output : undefined);
+  const result = shell?.result ?? deferred?.summary;
+  const streams = shell?.result ?? detail.value;
   const output = activity.liveOutput ?? process?.output;
   const { canStop, stopping, stop, error: stopError } = useShellStop(sessionId, activity);
   const resources = tool?.resources.filter((resource) => !(resource.kind === 'workspacePath'
@@ -388,19 +393,22 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
                 {result.timedOut && <span>{t(language, 'agent.tool.shell.timedOut')}</span>}
                 {result.truncated && <span>{t(language, 'agent.tool.shell.truncated')}</span>}
               </div>
-              {result.stdout && (
+              {streams?.stdout && (
                 <section>
                   <span>{t(language, 'agent.tool.shell.stdout')}</span>
-                  <pre>{result.stdout}</pre>
+                  <pre>{streams.stdout}</pre>
                 </section>
               )}
-              {result.stderr && (
+              {streams?.stderr && (
                 <section>
                   <span>{t(language, 'agent.tool.shell.stderr')}</span>
-                  <pre>{result.stderr}</pre>
+                  <pre>{streams.stderr}</pre>
                 </section>
               )}
-              {!result.stdout && !result.stderr && (
+              {deferred && !streams && (detail.error
+                ? <div role="alert">{detail.error} <button type="button" onClick={deferred.output.retry}>{t(language, 'achbitGui.statusAction.retry')}</button></div>
+                : <small role="status">{t(language, 'agent.tool.detail.loading')}</small>)}
+              {streams && !streams.stdout && !streams.stderr && (
                 <small>{t(language, 'agent.tool.shell.noOutput')}</small>
               )}
             </div>

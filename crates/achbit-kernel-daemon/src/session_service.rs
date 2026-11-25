@@ -5,7 +5,7 @@ use achbit_host_connection::process::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -51,12 +51,17 @@ impl std::fmt::Debug for SessionServiceProcess {
 }
 
 impl SessionServiceProcess {
-    pub(crate) fn spawn(api_base: &str, service_token: &str) -> Result<Self, SessionServiceError> {
+    pub(crate) fn spawn(
+        api_base: &str,
+        service_token: &str,
+        log_dir: &Path,
+    ) -> Result<Self, SessionServiceError> {
         let bridge = resolve_bridge()?;
         let node = resolve_node()?;
         let mut command = Command::new(node);
         command
             .arg(bridge)
+            .env("ACHBIT_LOG_DIR", log_dir)
             .env("ACHBIT_LOCAL_AGENT_API_BASE", api_base)
             .env("ACHBIT_LOCAL_AGENT_TOKEN", service_token)
             .stdin(Stdio::piped())
