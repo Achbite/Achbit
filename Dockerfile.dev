@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # ====================================================================
-# Achbit 开发容器（Dockerfile.dev）
-# 用途：作为 `make shell` 的开发壳子；常驻运行，反复 exec 进入。
-# 包含统一 Kernel 开发工具链：Rust + Node 22 + pnpm + Linux/Windows 交叉编译基础工具。
+# Achbit development container
+# make shell opens a shell in this persistent container.
+# Shared Kernel toolchain for Rust, Node 22, pnpm and Linux/Windows builds.
 # ====================================================================
 
 ARG ACHBIT_RUST_VERSION=1.88
@@ -20,13 +20,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SCCACHE_DIR=/workspace/.build-cache/sccache \
     PATH=/root/.local/share/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# ---- 1. 系统依赖 ----
-# - 基础工具：curl/git/build-essential/pkg-config
-# - Windows 交叉编译基础：gcc-mingw-w64-x86-64 + binutils-mingw-w64
-# - 健康检查辅助：iputils-ping / netcat-openbsd / jq
-# - Tauri thin shell 静态检查/打包准备：WebKitGTK、AppIndicator、SVG、patchelf
-# - sccache：由 build.sh 按需启用，ACHBIT_DISABLE_SCCACHE=1 可关闭
-# 保留 BuildKit cache mount 中的 deb，避免基础镜像的 apt hook 在更新索引时删除下载缓存。
+# System dependencies
+# Base tools: curl, git, build-essential and pkg-config.
+# Windows cross-compilation: MinGW GCC and binutils.
+# Health probes: ping, netcat and jq.
+# Tauri checks and packaging: WebKitGTK, AppIndicator, SVG and patchelf.
+# build.sh enables sccache unless ACHBIT_DISABLE_SCCACHE=1.
+# Keep downloaded packages in the BuildKit cache across apt index updates.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
@@ -71,7 +71,7 @@ RUN set -eux; \
     test -f /opt/achbit-node-win64/node.exe
 
 # ---- 3. pnpm ----
-# 通过 corepack 启用，避免全局 npm install 污染；registry 可覆盖以适配不同网络。
+# Corepack supplies pnpm. Override the registry for the local network.
 ARG ACHBIT_NPM_REGISTRY=https://registry.npmmirror.com
 RUN npm config set registry "${ACHBIT_NPM_REGISTRY}" \
  && env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
@@ -82,8 +82,8 @@ RUN npm config set registry "${ACHBIT_NPM_REGISTRY}" \
         corepack prepare pnpm@9.12.0 --activate \
  && mkdir -p $PNPM_HOME && pnpm --version
 
-# ---- 4. Rust Windows 交叉目标 ----
-# 让 Rust 支持 x86_64-pc-windows-gnu，配合 mingw-w64 工具链产出 Windows 二进制
+# Rust Windows target
+# Pair x86_64-pc-windows-gnu with MinGW to build Windows binaries.
 ARG ACHBIT_RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static
 ARG ACHBIT_RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
 ENV RUSTUP_DIST_SERVER=${ACHBIT_RUSTUP_DIST_SERVER} \
@@ -96,7 +96,7 @@ RUN --mount=type=cache,target=/usr/local/rustup/downloads,sharing=locked \
  && env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
         rustup component add rustfmt clippy
 
-# ---- 5. 入口脚本 ----
+# Container entrypoint
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk openssl osslsigncode
@@ -104,7 +104,7 @@ ENV PNPM_STORE_DIR=/root/.local/share/pnpm/store \
     ACHBIT_WINDOWS_NODE_BIN=/opt/achbit-node-win64/node.exe \
     ACHBIT_NODE_LICENSE=/usr/local/LICENSE
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY scripts/dev-language.sh entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # AppImage distribution for the Tauri updater.
@@ -113,5 +113,5 @@ RUN bash /tmp/setup-appimage-tool.sh && rm /tmp/setup-appimage-tool.sh
 
 WORKDIR /workspace
 
-# 默认前台保活；Makefile 通过 docker exec 进入交互式 bash
+# Keep the container running for interactive docker exec sessions.
 CMD ["/usr/local/bin/entrypoint.sh"]
