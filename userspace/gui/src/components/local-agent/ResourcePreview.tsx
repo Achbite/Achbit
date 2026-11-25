@@ -17,7 +17,7 @@ import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { InterfaceLoadBoundary } from '../shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import { createPortal } from 'react-dom';
-import { useId, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useId, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { revealActiveReaderTab } from './readerTabVisibility';
 import { useConversationHost } from './ConversationHost';
 import type { SourcePosition } from './resourceLinks';
@@ -27,6 +27,7 @@ import {
   type ConversationResourceReadResult,
 } from '../../services/localAgentApi';
 import { documentFormat, imageMediaType, readDocumentText, selectedFilePreview, type DocumentFormat } from './documentResources';
+import { documentImageLoader, ReaderImageScope } from './documentImages';
 import { READER_OPEN_EVENT, readViewState, saveViewState, readReaderViewState, reconcileReaderPages, removeReaderTab, selectReaderTarget, identifyReaderFiles, isReaderFile, type ReaderFileTarget, type ReaderViewState, type ReaderTab, type ResolvedReaderTarget, type ReaderTarget, readerTargetKey as targetKey } from './readerState';
 import { NativeBrowserPreview } from './NativeBrowserPreview';
 import { browserAddressError } from './BrowserChrome';
@@ -672,6 +673,7 @@ function ReaderDocument({
   useEffect(() => { setStartByte(undefined); }, [key]);
   const reference = targetResource(target);
   const referenceId = reference && resourceKey(reference);
+  const loadImage = useMemo(() => documentImageLoader(host, sessionId, target, language), [host, sessionId, target, language]);
   const bodyLinks = useConversationBodyLinks({ sessionId, document: { reference,
     path: isReaderFile(target) ? target.canonicalPath ?? (target.kind === 'file' ? target.path : undefined) : undefined,
   } }, language, setLocationError, true);
@@ -845,7 +847,7 @@ function ReaderDocument({
           </Suspense></InterfaceLoadBoundary>
         ) : state.status === 'document' ? (
           <InterfaceLoadBoundary><Suspense fallback={<p>{t(language, 'agent.resource.reading')}</p>}>
-            <ConversationBodyLinkScope.Provider value={bodyLinks.open}><DocumentPreview
+            <ReaderImageScope.Provider value={loadImage}><ConversationBodyLinkScope.Provider value={bodyLinks.open}><DocumentPreview
               readingKey={key}
               active={active}
               location={target.kind === 'workspace' ? target : undefined}
@@ -854,7 +856,7 @@ function ReaderDocument({
               filename={path}
               language={language}
               actions={actions}
-            /></ConversationBodyLinkScope.Provider>{bodyLinks.selection}
+            /></ConversationBodyLinkScope.Provider></ReaderImageScope.Provider>{bodyLinks.selection}
           </Suspense></InterfaceLoadBoundary>
         ) : (
           <>
