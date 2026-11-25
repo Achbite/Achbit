@@ -6,6 +6,12 @@ The six most recently visited Sessions retain their desktop reading views in mem
 
 While preparing a cold conversation, the desktop shows loading until it has the selected projection and model information. Image attachments already occupy their ordered slots. Visible thumbnails and file details load separately. Child outputs with information still outstanding show a loading status in the output panel. Actual read failures retain their source error.
 
+## Markdown text, footnotes and images
+
+Conversation messages and Markdown files use the same emphasis rules: for example, `**标签：**正文` emphasizes the label and colon, not the following text. Each rendered document owns its footnotes, including links back to repeated citations. A question option keeps its paragraphs and image descriptions readable as text; selecting it still submits the option ID.
+
+In a Markdown file, a relative image path starts in that file’s directory. Images are read through the source Session’s existing workspace or directory grant. Picking a single file does not grant access to its neighbors; an archived document without a directory does not borrow the current workspace. Use an explicit image resource or an HTTP(S) URL in those cases.
+
 ## Folded Shell results
 
 A completed Shell row displays its command and status immediately. Opening the row loads its captured standard output and error by the original completion event and record identity. Reopening the row reuses the loaded text while the reading view is retained. Failed, cancelled and active operations continue to carry their existing diagnostics. A historical edit that removes the original completion also removes its detail from subsequent reads.

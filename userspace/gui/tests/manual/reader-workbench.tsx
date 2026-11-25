@@ -43,7 +43,10 @@ const longCode = 'a'.repeat(4096 - 5 - openingFence.length) + 'BOUNDARYMARKER' +
 const manyCodeLines = Array.from({ length: 1000 }, (_, i) => 'source line ' + i + ' (complete immutable code)').join('\n');
 const copies: string[] = [];
 host.copyText = async value => { copies.push(value); };
+const imageReads: string[] = [];
+const pictureDoc = '首处[^1]、再引[^1]。\n\n![样图](fig%20one.svg)\n\n' + '阅读正文。\n\n'.repeat(170) + '[^1]: 本文注释。';
 const documents = new Map([
+  ['notes/illustrated.md', pictureDoc], ['other/illustrated.md', pictureDoc],
   ['notes/long-code.md', openingFence + longCode + '\n```'],
   ['notes/many-lines.md', openingFence + manyCodeLines + '\n```'],
   ['notes/progressive.md', progressiveSource],
@@ -79,7 +82,14 @@ host.resources = { ...host.resources,
     if (!('workspaceId' in reference)) throw new Error('unknown reference');
     return host.resolveResource(session, reference.workspaceId, reference.logicalPath);
   },
-  async readResourceBlob(_session, reference) {
+  async readResourceBlob(session, reference, format) {
+    if (format === 'image') {
+      if (session !== sessionId || !('workspaceId' in reference) || reference.workspaceId !== 'fixture') throw Error('Image outside test workspace');
+      const width = reference.logicalPath === 'notes/fig one.svg' ? 120 : reference.logicalPath === 'other/fig one.svg' ? 200 : 0;
+      if (!width) throw Error('Unrecognized test image');
+      imageReads.push(reference.logicalPath);
+      return new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="60"><rect width="100%" height="100%" fill="#406e7d"/></svg>`], { type: 'image/svg+xml' });
+    }
     const text = documents.get(reference.logicalPath);
     if (text === undefined) throw new Error('missing ' + reference.logicalPath);
     return new Blob([text], { type: 'text/markdown' });
@@ -120,7 +130,7 @@ saveViewState(sessionId + ':visible', true);
 saveViewState('file-tree', false);
 useLocalAgentStore.setState({ sessionId, runtimeReady: true, profileRead: { phase: 'ready' },
   projection: projectSession(emptySessionState(sessionId)) });
-Object.assign(window, { readerWorkbench: { open: (name: string) => requestReader(sessionId, file(name)), openDiff, progressiveSource, saves, copies, longCode, manyCodeLines, opened, folders, external, watching,
+Object.assign(window, { readerWorkbench: { open: (name: string) => requestReader(sessionId, file(name)), openDiff, progressiveSource, imageReads, saves, copies, longCode, manyCodeLines, opened, folders, external, watching,
   changeDirectory() { treeGeneration++; directoryListeners.forEach(update => update()); },
   directoryMemory: () => ({ reads: treeResources.length, removed: treeResources.filter(item => item.generation < treeGeneration).length,
     retained: treeResources.filter(item => item.generation < treeGeneration && item.ref.deref()).map(item => item.generation) }),

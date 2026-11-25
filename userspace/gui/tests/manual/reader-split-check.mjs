@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { checkMarkdownNavigation } from './markdown-navigation-check.mjs';
 
 export async function checkReaderFileMenu({ navigate, evaluate, until, click, key, record }) {
   // Use a fresh workbench so these external opens do not feed other routing scenarios.
@@ -367,4 +368,5 @@ export async function checkReaderSplit({ navigate, evaluate, cmd, until, frame, 
   const revealed = await evaluate(`(()=>{const r=document.querySelector('${revealedFile}').getBoundingClientRect(),b=document.querySelector('${box}').getBoundingClientRect();return { inView:r.top>=b.top-1 && r.bottom<=b.bottom+1, title:document.querySelector('.reader-tab--active')?.textContent }})()`);
   const finalRows = await rowCount();
   await record('reader-large-tree-viewport-actions', { initial, finalRows, last, revealed }, initial < 100 && finalRows < 100 && last.position === '5000' && last.scrollTop > 0 && revealed.inView && revealed.title.includes('large-04500.md'));
+  await checkMarkdownNavigation({ navigate, evaluate, until, click, record });
 }
