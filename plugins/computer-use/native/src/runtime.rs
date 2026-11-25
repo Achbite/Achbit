@@ -153,7 +153,9 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
             crate::driver::execute(gui, binding, &request["input"])
         };
         let response = match result {
-            Ok(data) => json!({"ok":true,"data":data}),
+            Ok(data) => {
+                json!({"ok":true,"data":crate::observation_output::for_host(data, &request["input"], &gui.instance)})
+            }
             Err(message) => {
                 let sck = crate::sharing::take_failure();
                 let recovery = if sck.is_some()

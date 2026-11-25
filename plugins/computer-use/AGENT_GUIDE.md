@@ -12,6 +12,8 @@ Every external desktop call through `computer.control` follows Kernel permission
 
 A successful action returns the next observation. `dispatched=true` means input was sent, not that application work finished. If `observationError` is present, observe again; never repeat input solely to obtain a screenshot. An accessibility action error leaves its effect unconfirmed, so inspect before deciding the next action. Preserve transport and archive errors without replaying the action. Observation completeness and read errors describe the available evidence.
 
+A native observation with `observationView.truncated` is an inline sample, not the complete interface. Prefer visible actionable controls, keep the original `elementId` and use the returned screenshot. `accessibility.complete` reports native traversal, not sample coverage. If finer detail matters, read a bounded part of `observationView.fullOutput.path` under normal file permissions. An archived ID still requires that exact, fresh observation. An archive error does not undo dispatched input.
+
 After a helper update or the user's **Continue in this window** decision, old target handles may be invalid: observe again or open a new preview. Do not replay earlier input to restore the target.
 
 User image attachments, GUI observations and explicitly reopened images enter one successful logical model request; retries retain the same images. Other tool images remain in the current visual selection until that selection changes. Use `session.read` with `view=images` and exact `imageIds` to reopen archived images for a request or comparison; `imageIds=[]` clears the selection. Image input requires a vision-capable model.

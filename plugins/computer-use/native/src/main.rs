@@ -3,6 +3,8 @@
 mod driver;
 #[cfg(target_os = "macos")]
 mod indicator;
+#[cfg(any(windows, target_os = "macos", test))]
+mod observation_output;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod protocol;
 #[cfg(target_os = "macos")]
