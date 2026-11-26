@@ -310,13 +310,14 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.authorityId !== event.payload.authorityId);
       break;
     case 'approval.reviewed': {
-      if (!next.pendingApprovals.some(item => item.approvalId === event.payload.approvalId && item.callId === event.callId)) throw new Error('approval_review_request_missing');
+      const pending = next.pendingApprovals.find(item => item.approvalId === event.payload.approvalId && item.callId === event.callId);
+      if (!pending) throw new Error('approval_review_request_missing');
       const review = { decision: event.payload.decision, reason: event.payload.reason };
       const activityId = approvalActivityId(event.payload.approvalId);
       const activity = next.activities[activityId];
       // A first malformed reply gets one format correction. Keep its diagnostic on the
       // activity; only the final verdict belongs in the pending decision shown to people.
-      if (event.payload.error?.code !== 'approval_review_invalid' || activity.approvalReview) {
+      if (pending.preview.reviewPolicy?.subject === 'subagentCapacity' || event.payload.error?.code !== 'approval_review_invalid' || activity.approvalReview) {
         next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
           ? { ...item, preview: { ...item.preview, review } } : item);
       }
@@ -1936,10 +1937,7 @@ function providerToolGroup(
   callIds: readonly string[],
   index: ReturnType<typeof timelineIndexes>,
 ): Extract<SessionProjection['timeline'][number], { kind: 'toolGroup' }> | undefined {
-  const activities = callIds.flatMap(callId => {
-    const activity = index.calls.get(callId);
-    return activity ? [...index.approvals.get(callId) ?? [], activity] : [];
-  });
+  const activities = callIds.flatMap(callId => callActivities(index, callId));
   if (!activities.length) return undefined;
   return {
     kind: 'toolGroup', timelineId: `provider-turn:${turn.providerRequestId}:tools`,
@@ -1947,6 +1945,13 @@ function providerToolGroup(
     providerRequestId: turn.providerRequestId,
     activityIds: activities.map(activity => activity.activityId),
   };
+}
+
+// A Session-owned dispatch can have an approval without a Kernel tool activity.
+function callActivities(index: ReturnType<typeof timelineIndexes>, callId: string): ActivityProjection[] {
+  const approvals = index.approvals.get(callId) ?? [];
+  const call = index.calls.get(callId);
+  return call ? [...approvals, call] : approvals;
 }
 
 function projectOrderedProviderTurnTimeline(
@@ -2029,8 +2034,7 @@ function projectOrderedProviderTurnTimeline(
           });
           break;
         }
-        const activity = index.calls.get(block.callId);
-        if (activity) groupedActivities.push(...index.approvals.get(block.callId) ?? [], activity);
+        groupedActivities.push(...callActivities(index, block.callId));
         break;
       }
     }

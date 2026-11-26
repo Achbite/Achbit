@@ -6,6 +6,7 @@ import type { LoopSnapshot } from './loop.js';
 import { LoopFailure } from './loopFailure.js';
 import { requestResourceBindings, validLogicalPath } from './workspaceBindings.js';
 import { createProviderToolCodec, encodeProviderMessage, encodeWorkspaceIdentity, providerFilesystemReferences, providerMessageCodecsByCallId, providerWorkspaceBindings } from './providerToolCodec.js';
+import { sharedCodingToolView } from './codingTools.js';
 import { estimateContextInput } from './contextBudget.js';
 import { reviewInputs } from './reviewInputs.js';
 
@@ -32,6 +33,7 @@ export function approvalNeedsAgentReview(events: readonly SessionEvent[], approv
   const reviews = events.filter((event): event is Extract<SessionEvent, { type: 'approval.reviewed' }> =>
     event.type === 'approval.reviewed' && event.runId === approval.runId && event.callId === approval.callId
     && event.payload.approvalId === approval.approvalId);
+  if (approval.preview.reviewPolicy?.subject === 'subagentCapacity') return reviews.length === 0;
   return reviews.length === 0 || reviews.length === 1 && reviews[0]!.payload.error?.code === 'approval_review_invalid';
 }
 
@@ -81,8 +83,10 @@ export function prepareApprovalReview(snapshot: LoopSnapshot, runtime: RunRuntim
     throw new LoopFailure(code, message, diagnostics);
   }
   const workspaceBindings = requestResourceBindings(run.workspaceBindings, snapshot.events);
-  const toolCodec = createProviderToolCodec(approvalReadTools(runtime.tools, snapshot.state.sessionId, workspaceBindings.length > 0),
-    [], runtime.providerToolAliases, workspaceBindings);
+  const scopedTools = approvalReadTools(runtime.tools, snapshot.state.sessionId, workspaceBindings.length > 0);
+  const shared = runtime.coreToolInterface === 'shared';
+  const toolCodec = createProviderToolCodec(shared ? sharedCodingToolView(scopedTools) : scopedTools,
+    [], runtime.providerToolAliases, workspaceBindings, undefined, false, shared);
   const handles = toolCodec.workspaceHandleById;
   const activePlan = snapshot.state.plans.find(plan => plan.planId === snapshot.state.activePlanRef?.planId
     && plan.revision === snapshot.state.activePlanRef?.revision);

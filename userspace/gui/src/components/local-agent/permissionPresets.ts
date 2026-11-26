@@ -1,4 +1,4 @@
-import type { UserSettings } from '@achbit/protocol';
+import { DELEGATED_APPROVAL_PRESET, type UserSettings } from '@achbit/protocol';
 
 /** UI shortcuts over existing permission facts; workflow and command rules stay independent. */
 export const PERMISSION_PRESETS = [
@@ -6,10 +6,7 @@ export const PERMISSION_PRESETS = [
     'agent.permissions.shell': 'ask', 'agent.permissions.shellAccess': 'workspace',
     'agent.permissions.networkRead': 'ask', 'agent.permissions.external': 'ask',
   } },
-  { id: 'review', label: 'agent.permission.review', help: 'agent.permission.preset.reviewHelp', patches: {
-    'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'workspace',
-    'agent.permissions.networkRead': 'allow', 'agent.permissions.external': 'review',
-  } },
+  { id: 'review', label: 'agent.permission.review', help: 'agent.permission.preset.reviewHelp', patches: DELEGATED_APPROVAL_PRESET },
   { id: 'full', label: 'agent.permission.fullAccess', help: 'agent.permission.preset.fullHelp', patches: {
     'agent.permissions.shell': 'allow', 'agent.permissions.shellAccess': 'full',
     'agent.permissions.networkRead': 'allow', 'agent.permissions.external': 'allow',

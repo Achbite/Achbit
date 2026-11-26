@@ -45,13 +45,13 @@ import {
   KERNEL_REPLY_VERSION,
   LOCAL_AGENT_PROTOCOL_VERSION,
 } from '@achbit/protocol';
-import { createProviderToolAliases } from './providerToolCodec.js';
+import { createProviderToolAliases, aliasesForNewCoreInterface } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
 import { readJournalSequence, READING_FACTS_V1, type JournalPermissions, type JournalPublication } from './journalSequence.js';
 import { checkCompleteHistory, projectionEventBatch } from './conversationRead.js';
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
-import { environmentInstruction } from './sessionEnvironment.js';
+import { decodeSessionEnvironment } from './sessionEnvironment.js';
 import { USER_SYSTEM_PROMPT_ID } from './coreInstructions.js';
 import type { ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import {
@@ -576,7 +576,9 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
   }
 
   async prepare(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime> {
-    const { previousProviderToolAliases, ...kernelRequest } = request;
+    const { previousProviderToolAliases, existingPresentation, ...kernelRequest } = request;
+    const shared = !existingPresentation || existingPresentation.coreToolInterface === 'shared';
+    const coding = existingPresentation ? existingPresentation.codingTools === true : this.#codingTools;
     const value = await this.json('/api/local-agent/runtime/prepare-run', {
       method: 'POST',
       body: JSON.stringify(kernelRequest),
@@ -654,11 +656,18 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           .filter((tool) => tool.availability === 'callable')
           .map((tool) => tool.name),
         ...(toolSelection?.controls ?? sessionControlToolDefinitions().map(tool => tool.name)),
-      ], previousProviderToolAliases, this.#codingTools);
+      ], existingPresentation ? previousProviderToolAliases : aliasesForNewCoreInterface(previousProviderToolAliases),
+        shared ? 'shared' : coding);
+      const { data: environment } = decodeSessionEnvironment(value.environment);
+      const userPrompt = userSystemPromptContribution(value.userSystemPrompt);
+      const instructions = existingPresentation
+        ? existingPresentation.instructions.filter(item => item.id !== 'achbit.project-instructions')
+        : [...this.#instructions, ...userPrompt, ...(this.#environmentInstructions?.(environment) ?? [])];
       return {
         runtimeSnapshot: Object.freeze({
           ...(value.mode ? { mode: value.mode as 'minimal' | 'full' } : {}),
-          ...(this.#codingTools ? { codingTools: true as const } : {}),
+          ...(shared ? { coreToolInterface: 'shared' as const } : {}),
+          ...(coding ? { codingTools: true as const } : {}),
           contextManagement: decodeContextManagementSettings(value.contextManagement),
           ...(subagentSettings ? { subagentSettings } : {}),
           agentCapabilities,
@@ -671,14 +680,9 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           ...(approvalReviewer ? { approvalReviewer } : {}),
           ...(approvalReviewerError ? { approvalReviewerError: structuredClone(approvalReviewerError) } : {}),
           webSearch,
-          environment: value.environment as JsonObject,
+          environment,
           permissions: pluginConfig.permissions,
-          instructions: [...runtimeInstructions([
-            ...this.#instructions, environmentInstruction(value.environment),
-            ...userSystemPromptContribution(value.userSystemPrompt),
-            ...projectInstructionContributions(value.projectInstructions, this.#codingTools),
-            ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
-          ])],
+          instructions: [...runtimeInstructions([...instructions, ...projectInstructionContributions(value.projectInstructions, shared || coding)])],
           tools,
           toolPromptContributions: toolPromptContributions as PreparedToolPromptContribution[],
           providerToolAliases,

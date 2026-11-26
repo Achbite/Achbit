@@ -1,4 +1,7 @@
-use crate::invocation_types::KernelToolKind;
+use crate::invocation_types::{
+    KernelToolKind, MAX_CANONICAL_INVOCATION_BYTES, MAX_EDITS, MAX_ORDINARY_STRING_BYTES,
+    MAX_TERMINAL_STDIN_BYTES,
+};
 use serde_json::Value;
 
 pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
@@ -43,7 +46,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                     "minLength": 1,
                     "description": "Workspace-relative or absolute file path. External files require permission."
                 },
-                "content": { "type": "string" },
+                "content": { "type": "string", "description": format!("The normalized call, including its content, is limited to {MAX_CANONICAL_INVOCATION_BYTES} bytes.") },
                 "executable": {
                     "type": "boolean",
                     "description": "Optional executable state. New files default to false; existing files preserve their mode when omitted."
@@ -59,8 +62,8 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 "edits": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 128,
-                    "description": "Group non-overlapping changes to this file in one call.",
+                    "maxItems": MAX_EDITS,
+                    "description": format!("Group non-overlapping changes to this file in one call. Each oldText/newText is limited to {MAX_ORDINARY_STRING_BYTES} UTF-8 bytes; the normalized call to {MAX_CANONICAL_INVOCATION_BYTES} bytes."),
                     "items": {
                         "type": "object",
                         "required": ["oldText", "newText"],
@@ -89,7 +92,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
         }),
         KernelToolKind::ProcessPowerShell => {
             let mut schema = provider_schema_for_tool(KernelToolKind::ProcessShell);
-            schema["properties"]["command"]["description"] = serde_json::json!("PowerShell script with newlines. Use literal single-quoted strings or here-strings. Native programs expose $LASTEXITCODE; preserve it explicitly when later commands print diagnostics. PowerShell 5.1 does not support && or ||.");
+            schema["properties"]["command"]["description"] = serde_json::json!(format!("PowerShell script with newlines, at most {MAX_ORDINARY_STRING_BYTES} UTF-8 bytes. Use literal single-quoted strings or here-strings. Native programs expose $LASTEXITCODE; preserve it explicitly when later commands print diagnostics. PowerShell 5.1 does not support && or ||."));
             schema
         }
         KernelToolKind::ProcessShell => serde_json::json!({
@@ -99,8 +102,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                 "command": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 16384,
-                    "description": "Bash script. Each call starts at the selected workspace root. In the sandbox, HOME is the session home directory; TMPDIR is removed after this call. Use an explicit template for temporary files, e.g. mktemp -d \"$TMPDIR/build.XXXXXX\". Preserve the target command's exit status through pipelines and trailing diagnostics."
+                    "description": format!("Bash script, at most {MAX_ORDINARY_STRING_BYTES} UTF-8 bytes. Each call starts at the selected workspace root. In the sandbox, HOME is the session home directory; TMPDIR is removed after this call. Use an explicit template for temporary files, e.g. mktemp -d \"$TMPDIR/build.XXXXXX\". Preserve the target command's exit status through pipelines and trailing diagnostics.")
                 },
                 "requestNetworkPermission": {
                     "type": "string", "minLength": 1, "maxLength": 1024,
@@ -134,8 +136,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                     "properties": {
                         "stdin": {
                             "type": "string",
-                            "maxLength": 65536,
-                            "description": "Exact bounded input written once to a temporary PTY. Include commands that terminate the interactive program and shell."
+                            "description": format!("Exact input written once to a temporary PTY, at most {MAX_TERMINAL_STDIN_BYTES} UTF-8 bytes. Include commands that terminate the interactive program and shell.")
                         }
                     },
                     "additionalProperties": false,

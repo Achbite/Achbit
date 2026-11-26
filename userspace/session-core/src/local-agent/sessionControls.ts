@@ -256,10 +256,11 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
       required: ['action', ...required], properties: { action: { type: 'string', const: action }, ...properties } },
   });
   const id = { type: 'string', minLength: 1 };
+  const requestCapacity = { ...id, maxLength: 1024, description: 'If this dispatch exceeds subagent capacity, explain why waiting or reusing a member will not suffice. Approval covers this dispatch only.' };
   return [
     operation('models', 'Discover available operations and model profiles.'),
     ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Permissions and configuration inherit from the parent. Select a template using the returned fields. model-services.md in productDocsPath has examples.', {
-      task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
+      requestCapacity, task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
       preset: { type: options.fullConfiguration ? ['string','null'] : 'string', enum: [...(options.presetIds ?? ['analysis', 'collaboration']), ...(options.fullConfiguration ? [null] : [])], description: 'Select an available template. In full configuration, null creates a fresh instance from inherited components, without a template.' },
       ...(options.fullConfiguration && options.coordinator !== false ? {
         peerGroup: {type:'string',pattern:teamKeyPattern,description:'Optional direct-peer group for sibling workers created in this root run. Both peers must have team messaging and the same group. Does not include their assistants.'},
@@ -297,7 +298,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
     ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Independent sends and ordinary tools may share a turn. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
     ...(delegation && options.coordinator !== false && options.canSpawn !== false ? [
       operation('assign', 'Coordinator only: asynchronously assign a new task to an idle retained agent, preserving its Session, model and configuration. Use send for an active task.',
-        { agentId: id, task: { ...id, description: 'Necessary context, scope and expected evidence for the new task.' } }, ['agentId', 'task']),
+        { agentId: id, requestCapacity, task: { ...id, description: 'Necessary context, scope and expected evidence for the new task.' } }, ['agentId', 'task']),
     ] : []),
     ...(delegation ? [
       operation('compact', 'Request child context compaction at its next safe model boundary, or before its next task if idle. Does not start work or interrupt tools.',
@@ -466,14 +467,21 @@ export function decodeSessionControlCall(
   };
 }
 
-function decodeAgentOperation(input: JsonObject): AgentOperation {
+function capacityReason(input: JsonObject): {requestCapacity?: string} {
+  if (input.requestCapacity === undefined) return {};
+  const reason = requiredText(input.requestCapacity, 'requestCapacity');
+  if (reason.length > 1024) throw new SessionControlError('agent_capacity_reason_invalid', 'Capacity reason exceeds 1024 characters.', '$.requestCapacity');
+  return {requestCapacity: reason};
+}
+
+export function decodeAgentOperation(input: JsonObject): AgentOperation {
   switch (input.action) {
     case 'models':
       assertExactKeys(input, ['action']);
       return { action: 'models' };
     case 'spawn': {
-      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope'],
-        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope']);
+      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'requestCapacity', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope'],
+        ['requestCapacity', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope']);
       if (input.preset !== undefined && input.preset !== null) requiredText(input.preset, 'preset');
       if (input.capabilities !== undefined && ((!input.capabilities || typeof input.capabilities !== 'object' || Array.isArray(input.capabilities))
         || Object.entries(input.capabilities).some(([key, value]) => !['messaging', 'continuation', 'delegation'].includes(key)
@@ -497,7 +505,7 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'fileScope']
         .filter(key => input[key] !== undefined).map(key => [key, input[key]])));
       return { action: input.action, task: requiredText(input.task, 'task'), name: requiredText(input.name, 'name'), delivery: input.delivery,
-        ...components,
+        ...components, ...capacityReason(input),
         ...(input.preset !== undefined ? { preset: input.preset as string | null } : {}),
         ...(input.peerGroup !== undefined ? {peerGroup:teamKey(input.peerGroup)} : {}),
         ...(input.helpers !== undefined ? {helpers:decodeAgentHelpers(input.helpers)} : {}),
@@ -516,8 +524,8 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       return { action: 'compact', agentId: requiredIdentifier(input.agentId, 'agentId'),
         ...(input.focus !== undefined ? { focus: requiredText(input.focus, 'focus') } : {}) };
     case 'assign':
-      assertExactKeys(input, ['action', 'agentId', 'task']);
-      return { action: 'assign', agentId: requiredIdentifier(input.agentId, 'agentId'), task: requiredText(input.task, 'task') };
+      assertExactKeys(input, ['action', 'agentId', 'task', 'requestCapacity'], ['requestCapacity']);
+      return { action: 'assign', agentId: requiredIdentifier(input.agentId, 'agentId'), task: requiredText(input.task, 'task'), ...capacityReason(input) };
     case 'wait': {
       assertExactKeys(input, ['action', 'taskIds'], ['taskIds']);
       if (input.taskIds === undefined) return { action: 'wait' };

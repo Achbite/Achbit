@@ -5,6 +5,7 @@ import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent }
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
 import { admitModelView } from './modelView.js';
+import { capacityTicket, type CapacityCall } from './agentCapacity.js';
 import { approvalNeedsAgentReview } from './approvalReview.js';
 import { controlWait, pendingWakeups } from './sessionWake.js';
 import { requestResourceBindings } from './workspaceBindings.js';
@@ -218,6 +219,52 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
     case 'wake.triggered': {
       const pending = pendingWakeups(events, event.runId).get(event.payload.scheduleId);
       if (!pending || event.type === 'wake.triggered' && event.payload.text !== pending.payload.text) throw new Error('schedule_not_pending');
+      break;
+    }
+    case 'agent.task.created':
+    case 'agent.capacity.settled': {
+      const call = events.find((e): e is CapacityCall => e.type === 'agent.control.completed'
+        && e.runId === event.runId && e.callId === event.callId);
+      const ticket = call && capacityTicket(call.payload.result);
+      if (!ticket) {
+        if (event.type === 'agent.capacity.settled') throw new Error('agent_capacity_ticket_missing');
+        break; // Ordinary dispatches use the original reservation path.
+      }
+      const decision = events.find(e => e.type === 'approval.resolved' && e.runId === event.runId && e.callId === event.callId
+        && e.payload.approvalId === ticket.approvalId);
+      const authorized = decision?.type === 'approval.resolved' && decision.payload.decision === 'allow' && !decision.payload.authorizationScope;
+      const created = events.find(e => e.type === 'agent.task.created' && e.runId === event.runId && e.callId === event.callId);
+      if (events.some(e => e.type === 'agent.capacity.settled' && e.runId === event.runId && e.callId === event.callId)) {
+        throw new Error('agent_capacity_already_settled');
+      }
+      if (event.type === 'agent.task.created') {
+        if (!authorized || created || call.payload.operation.task !== event.payload.text
+          || (call.payload.operation.action === 'spawn' ? (!event.payload.createsAgent || call.payload.operation.name !== event.payload.displayName
+            || call.payload.operation.delivery !== event.payload.delivery) : (event.payload.createsAgent || call.payload.operation.agentId !== event.payload.agentSessionId))) {
+          throw new Error('agent_capacity_dispatch_mismatch');
+        }
+      } else {
+        const task = created?.type === 'agent.task.created' && state.agentTasks.find(t => t.taskId === created.payload.taskId);
+        const { result } = event.payload;
+        const released = !!state.runRuntimeReleases[event.runId];
+        const valid = result.executed === false ? !(task && task.childRunId) && (
+          result.status === 'denied' ? decision?.type === 'approval.resolved' && decision.payload.decision === 'deny'
+            : result.status === 'cancelled' ? released && state.pendingRunSettlements[event.runId]?.outcome === 'cancelled'
+              : result.status === 'notStarted' && (authorized || released))
+          : authorized && task && task.childRunId && result.taskId === task.taskId && result.agentId === task.agentSessionId;
+        if (ticket.approvalId !== event.payload.approvalId || !valid) throw new Error('agent_capacity_result_mismatch');
+      }
+      break;
+    }
+    case 'approval.reviewed': {
+      const gate = state.pendingApprovals.find(item => item.approvalId === event.payload.approvalId && item.callId === event.callId);
+      if (gate?.preview.reviewPolicy?.subject !== 'subagentCapacity') break;
+      const call = events.find((e): e is CapacityCall => e.type === 'agent.control.completed' && e.runId === event.runId && e.callId === event.callId);
+      const turn = state.providerTurns[event.payload.providerRequestId];
+      if (!call || capacityTicket(call.payload.result)?.reviewRequestId !== event.payload.providerRequestId || gate.preview.review
+        || (event.payload.error ? event.payload.decision !== 'ask' : turn?.purpose !== 'approvalReview' || turn.outcome !== 'completed')) {
+        throw new Error('agent_capacity_review_mismatch');
+      }
       break;
     }
     case 'approval.resolved':

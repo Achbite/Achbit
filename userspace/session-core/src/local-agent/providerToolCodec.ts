@@ -13,7 +13,7 @@ import type {
 import { SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
 import type { SessionReadScope } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
-import { codingToolNames, codingToolView, decodeCodingRead, encodeCodingRead } from './codingTools.js';
+import { codingToolNames, codingToolView, sharedCodingToolView, decodeCodingRead, encodeCodingRead } from './codingTools.js';
 
 const PROVIDER_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const CANONICAL_TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/u;
@@ -38,6 +38,7 @@ export const CORE_TOOL_ORDER = [
 
 export interface ProviderToolCodec {
   readonly codingTools?: boolean;
+  readonly sharedCoreTools?: boolean;
   readonly sessionReadScope?: SessionReadScope;
   definitions: readonly ProviderToolDefinition[];
   kernelDefinitions: readonly ProviderToolDefinition[];
@@ -52,6 +53,7 @@ export interface ProviderToolCodec {
 
 interface ProviderMessageToolCodec {
   readonly codingTools?: boolean;
+  readonly sharedCoreTools?: boolean;
   /** A rejected model name is replay data, never an executable alias. */
   rejectedWireName?: string;
   wireByCanonical: ReadonlyMap<string, string>;
@@ -60,10 +62,18 @@ interface ProviderMessageToolCodec {
   workspaceToolNames: ReadonlySet<string>;
 }
 
+const reservedCoreWires = new Set(codingToolNames.values());
+
+/** At a NEW run boundary only, retire conflicting legacy names. Old calls keep their own codec. */
+export function aliasesForNewCoreInterface(previous: readonly ProviderToolAlias[] = []): ProviderToolAlias[] {
+  return previous.filter(({ canonicalName, wireName }) => codingToolNames.has(canonicalName)
+    ? codingToolNames.get(canonicalName) === wireName : !reservedCoreWires.has(wireName));
+}
+
 export function createProviderToolAliases(
   canonicalNames: readonly string[],
   previous: readonly ProviderToolAlias[] = [],
-  codingTools = false,
+  codingTools: boolean | 'shared' = false,
 ): ProviderToolAlias[] {
   const names = [...new Set(canonicalNames)]
     .sort((left, right) => left.localeCompare(right, 'en'));
@@ -97,7 +107,8 @@ export function createProviderToolAliases(
   return [...retained, ...names.filter(name => !previousNames.has(name)).map((canonicalName) => {
     const base = bases.get(canonicalName)!;
     const collides = (baseGroups.get(base)?.length ?? 0) > 1 && !(codingTools && codingToolNames.has(canonicalName));
-    const needsSuffix = collides || base.length > 64 || seenWireNames.has(base);
+    const needsSuffix = collides || base.length > 64 || seenWireNames.has(base)
+      || codingTools === 'shared' && reservedCoreWires.has(base) && !codingToolNames.has(canonicalName);
     const wireName = needsSuffix
       ? `${base.slice(0, 64 - HASH_SUFFIX_LENGTH - 1)}_${shortNameHash(canonicalName)}`
       : base;
@@ -138,6 +149,9 @@ export function providerWireName(
 /** One binding-to-model projection for all contexts; optional plugins retain their own definitions. */
 export function providerToolView(tools: readonly PreparedToolDescriptor[], runtime: RunRuntimeSnapshot,
   bindings: readonly WorkspaceBindingDisplay[], directories?: readonly WorkspaceBindingDisplay[]): readonly PreparedToolDescriptor[] {
+  if (runtime.coreToolInterface === 'shared') {
+    return sharedCodingToolView(hostShellToolView(tools, runtime, bindings, directories, true));
+  }
   const selection = runtime.toolSelection;
   const compact = runtime.codingTools === true && selection?.plugins === false && selection.controls?.length === 0
     && selection.kernel?.every(name => codingToolNames.has(name)) === true;
@@ -186,7 +200,7 @@ export function hostShellToolView(
       else description = resourceHandles.length
         ? `Run ${shell} as the host user in project and session directories. File references (${resourceHandles.join(', ')}) retain their own permissions.`
         : `Run ${shell} as the host user in the selected workspace.`;
-      if (tool.name === 'bash' && isRecord(properties.command)) properties.command.description = host
+      if (runtime.coreToolInterface !== 'shared' && tool.name === 'bash' && isRecord(properties.command)) properties.command.description = host
         ? 'Bash script; preserve the target exit status.'
         : 'Bash script. Sandbox HOME is session-local; TMPDIR lasts one call. Preserve the target exit status.';
       if (isRecord(properties.timeout)) properties.timeout.description = 'Seconds; omit for no time limit.';
@@ -205,13 +219,14 @@ export function createProviderToolCodec(
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   sessionReadScope?: SessionReadScope,
   codingTools = false,
+  sharedCoreTools = false,
 ): ProviderToolCodec {
   const workspaceToolNames = new Set(runtimeTools
     .filter(isWorkspaceScopedTool)
     .map((tool) => tool.name));
   const callableKernel = runtimeTools.filter((tool) => tool.availability === 'callable');
   const byName = new Map(callableKernel.map((tool) => [tool.name, tool]));
-  const order: readonly string[] = codingTools ? [...codingToolNames.keys(), ...CORE_TOOL_ORDER] : CORE_TOOL_ORDER;
+  const order: readonly string[] = sharedCoreTools || codingTools ? [...codingToolNames.keys(), ...CORE_TOOL_ORDER] : CORE_TOOL_ORDER;
   const core = callableKernel.filter((tool) => tool.origin === 'coreBuiltin')
     .sort((left, right) => {
       const position = (name: string) => {
@@ -307,7 +322,7 @@ export function createProviderToolCodec(
   }));
   return Object.freeze({
     definitions: encodedFor(canonical),
-    codingTools,
+    codingTools, sharedCoreTools,
     kernelDefinitions: encodedFor(kernel),
     controlDefinitions: encodedFor(control),
     canonicalByWire,
@@ -355,12 +370,28 @@ export function providerFilesystemReferences(
   }));
 }
 
+export class UndeclaredReadField extends LoopFailure {
+  constructor(readonly field: string) {
+    super('tool_input_invalid', `Undeclared read field: ${field}.`);
+  }
+}
+
 export function decodeProviderToolInput(
   codec: ProviderToolCodec,
   canonicalName: string,
   input: JsonObject,
 ): JsonObject {
-  const decoded = codec.codingTools && canonicalName === 'fs.read' ? decodeCodingRead(structuredClone(input)) : structuredClone(input);
+  if (codec.sharedCoreTools && canonicalName === 'fs.read') {
+    const wire = codec.wireByCanonical.get(canonicalName);
+    const schema = codec.definitions.find(tool => tool.name === wire)?.inputSchema;
+    if (schema?.additionalProperties === false && isRecord(schema.properties)) {
+      const fields = schema.properties;
+      const unknown = Object.keys(input).find(key => key !== 'workspaceId' && !Object.hasOwn(fields, key));
+      if (unknown !== undefined) throw new UndeclaredReadField(unknown);
+    }
+  }
+  const decoded = (codec.sharedCoreTools || codec.codingTools) && canonicalName === 'fs.read'
+    ? decodeCodingRead(structuredClone(input), codec.sharedCoreTools) : structuredClone(input);
   if (canonicalName === 'session.read' && codec.sessionReadScope?.historyThroughSequence !== undefined
     && decoded.sessionId === codec.sessionReadScope.currentId && !['images', 'resources'].includes(String(decoded.view))) {
     decoded.throughSequence = codec.sessionReadScope.historyThroughSequence;
@@ -439,7 +470,9 @@ export function providerMessageCodecsByCallId(
         workspaceHandleById.set(binding.itemId, handle);
       });
       const codec = {
-        codingTools: runtime.codingTools === true,
+        // The old short result formatter must not discard fields from shared-budget calls.
+        codingTools: runtime.codingTools === true && runtime.coreToolInterface !== 'shared',
+        sharedCoreTools: runtime.coreToolInterface === 'shared',
         wireByCanonical: new Map(runtime.providerToolAliases.map((alias) => [alias.canonicalName, alias.wireName])),
         workspaceIdByHandle, workspaceHandleById,
         workspaceToolNames: new Set(runtime.tools.filter(isWorkspaceScopedTool).map((tool) => tool.name)),
@@ -568,7 +601,8 @@ function encodeProviderToolInput(
   canonicalName: string,
   input: JsonObject,
 ): JsonObject {
-  const encoded = codec.codingTools && canonicalName === 'fs.read' ? encodeCodingRead(structuredClone(input)) : structuredClone(input);
+  const encoded = (codec.sharedCoreTools || codec.codingTools) && canonicalName === 'fs.read'
+    ? encodeCodingRead(structuredClone(input), codec.sharedCoreTools) : structuredClone(input);
   if (codec.workspaceToolNames.has(canonicalName)) {
     return encodeWorkspaceIdentity(codec, encoded);
   }

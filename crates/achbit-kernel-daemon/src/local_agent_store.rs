@@ -2038,6 +2038,7 @@ fn validate_new_event(
         "agent.task.started",
         "agent.task.completed",
         "agent.closed",
+        "agent.capacity.settled",
         "agent.control.completed",
         "session.control.completed",
         "wake.scheduled",
@@ -2105,6 +2106,7 @@ fn validate_new_event(
             | "session.plugins.activated"
             | "artifacts.presented"
             | "agent.task.created"
+            | "agent.capacity.settled"
             | "agent.control.completed"
             | "session.control.completed"
     );
@@ -2252,6 +2254,17 @@ fn validate_new_event(
                 "agentSessionId",
                 required_string(payload, "agentSessionId")?,
             )?;
+        }
+        "agent.capacity.settled" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["approvalId", "result"], &[])?;
+            validate_id("approvalId", required_string(payload, "approvalId")?)?;
+            if !payload["result"].is_object() {
+                return Err(LocalAgentStoreError::new(
+                    "agent_capacity_result_invalid",
+                    "Invalid subagent capacity result.",
+                ));
+            }
         }
         "agent.control.completed" | "session.control.completed" => {
             let payload = &event["payload"];
@@ -5598,6 +5611,7 @@ fn validate_run_runtime_snapshot(
             "agentToolsEnabled",
             "planMode",
             "toolSelection",
+            "coreToolInterface",
             "codingTools",
             "mode",
             "subagentSettings",
@@ -5608,6 +5622,15 @@ fn validate_run_runtime_snapshot(
     }
     if let Some(settings) = value.get("subagentSettings") {
         validate_subagent_settings(settings)?;
+    }
+    if value
+        .get("coreToolInterface")
+        .is_some_and(|interface| interface != "shared")
+    {
+        return Err(LocalAgentStoreError::new(
+            "core_tool_interface_invalid",
+            "Invalid captured core tool interface.",
+        ));
     }
     if value
         .get("codingTools")
@@ -8003,6 +8026,16 @@ mod tests {
             events[1]["payload"]["runtimeSnapshot"]["toolSelection"],
             selection
         );
+    }
+
+    #[test]
+    fn shared_core_interface_is_optional_and_validated_on_replay() {
+        let mut runtime = runtime_snapshot();
+        assert!(validate_run_runtime_snapshot(&runtime).is_ok());
+        runtime["coreToolInterface"] = json!("shared");
+        assert!(validate_run_runtime_snapshot(&runtime).is_ok());
+        runtime["coreToolInterface"] = json!("unknown");
+        assert!(validate_run_runtime_snapshot(&runtime).is_err());
     }
 
     #[test]

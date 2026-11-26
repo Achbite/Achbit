@@ -186,7 +186,7 @@ export type AgentOperation =
   | { action: 'models' }
   | { action: 'spawn'; preset?: string | null; peerGroup?: string; helpers?: AgentHelperSpec[];
       fileScope?: AgentRecipe['fileScope']; capabilities?: Partial<AgentCapabilities>;
-      task: string; name: string; delivery: 'wait' | 'async';
+      task: string; name: string; delivery: 'wait' | 'async'; requestCapacity?: string;
       profileId?: string; reasoningEffort?: LlmReasoningEffort;
       loop?: Partial<Pick<AgentConfiguration, 'controls' | 'compaction'>>;
       runner?: AgentContributionSelection;
@@ -197,7 +197,7 @@ export type AgentOperation =
       context?: AgentContributionSelection; permissions?: UserSettings }
   | { action: 'send'; agentId: string; text: string }
   | { action: 'compact'; agentId: string; focus?: string }
-  | { action: 'assign'; agentId: string; task: string }
+  | { action: 'assign'; agentId: string; task: string; requestCapacity?: string }
   | { action: 'wait'; taskIds?: string[] }
   | { action: 'cancel'; taskId: string }
   | { action: 'close'; agentId: string };
@@ -1049,6 +1049,7 @@ export type SessionEvent =
   | (SessionEventBase & { type: 'agent.task.started'; runId: string; payload: { taskId: string; childRunId: string } })
   | (SessionEventBase & { type: 'agent.task.completed'; runId: string; payload: { taskId: string; result: AgentTaskResult } })
   | (SessionEventBase & { type: 'agent.closed'; payload: { agentSessionId: string } })
+  | (SessionEventBase & { type: 'agent.capacity.settled'; runId: string; callId: string; payload: { approvalId: string; result: JsonObject } })
   | (SessionEventBase & { type: 'agent.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
   | (SessionEventBase & { type: 'agent.message.received'; runId: string; payload: { sourceSessionId: string; text: string } })
   | (SessionEventBase & { type: 'session.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
@@ -2211,7 +2212,9 @@ export interface RunRuntimeSnapshot {
   subagentSettings?: AgentSettings;
   /** Captured at run preparation, independent of later Session selections. */
   mode?: SessionMode;
-  /** Model-facing coding interface selected by the Session context contribution. */
+  /** Captured presentation of newly prepared runs; absent in pre-unification snapshots. */
+  coreToolInterface?: 'shared';
+  /** Legacy coding context/turn behavior. Not the source of a new run's tool window. */
   codingTools?: true;
   /** Explicit confirmation requested for this run only. */
   planMode?: 'manual';
@@ -2251,6 +2254,8 @@ export type PreparedRequestToolView = Pick<RunRuntimeSnapshot,
 export interface PrepareRunRuntimeRequest {
   /** Session-owned wire names; consumed by the preparation adapter, never sent to Kernel. */
   previousProviderToolAliases?: readonly ProviderToolAlias[];
+  /** Same-run activation, rebind or recovery keeps captured instructions and encoding. Never sent to Kernel. */
+  existingPresentation?: Pick<RunRuntimeSnapshot, 'coreToolInterface' | 'codingTools' | 'instructions'>;
   rebindHost?: { commandId: string; expectedBinding: HostWindowBinding; hostBinding: HostWindowBinding };
   /** Refresh previously selected sources; disabled/removed sources withdraw at this request boundary. */
   refreshPlugins?: boolean;

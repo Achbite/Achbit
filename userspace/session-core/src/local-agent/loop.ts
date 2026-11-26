@@ -21,6 +21,7 @@ import { waitForRetryAt } from './providerAttempts.js';
 import { modelContextEvents } from './modelContext.js';
 import { stageForRequest } from './sessionCapabilities.js';
 import { consumeProvider } from './loopProvider.js';
+import { capacityTicket, CapacityStartUnknown } from './agentCapacity.js';
 import { TruncatedToolOutput } from './truncatedOutput.js';
 export type { LoopSnapshot } from './loopTypes.js';
 export type { LoopCommand } from './loopTypes.js';
@@ -59,22 +60,18 @@ export async function runAgentLoop(
         message: `Provider request ${interrupted.providerRequestId} has a composed context and no recorded completion.`,
       },
     };
-    await commit([
-      providerTurnTerminalEvent(
-        snapshot.state.sessionId,
-        runId,
-        interrupted,
-        providerRuntimeForPurpose(runRuntimeSnapshot(snapshot, runId), interrupted.purpose).providerRuntimeRef,
-        settlement,
-      ),
-      {
-        type: 'run.finishing',
-        sessionId: snapshot.state.sessionId,
-        runId,
-        payload: settlement,
-      },
-    ]);
-    return finishingResult(runId, settlement);
+    const turn = providerTurnTerminalEvent(snapshot.state.sessionId, runId, interrupted,
+      providerRuntimeForPurpose(runRuntimeSnapshot(snapshot, runId), interrupted.purpose).providerRuntimeRef, settlement);
+    // Only this exact tool-free request can end indeterminately without making the original dispatch unknown.
+    // advanceCapacity will ask a human on the same gate; do not resend the review or disturb Kernel recovery.
+    if (interrupted.purpose === 'approvalReview' && interrupted.responseConstraint === 'answerOnly' && !interrupted.tools.length
+      && snapshot.events.some(e => e.type === 'agent.control.completed' && e.runId === runId
+        && capacityTicket(e.payload.result)?.reviewRequestId === interrupted.providerRequestId)) {
+      await commit(turn);
+    } else {
+      await commit([turn, { type: 'run.finishing', sessionId: snapshot.state.sessionId, runId, payload: settlement }]);
+      return finishingResult(runId, settlement);
+    }
   }
   let runtime = runRuntimeSnapshot(snapshot, runId);
   let lastRetainedCatalog: string | undefined;
@@ -316,15 +313,10 @@ export async function runAgentLoop(
     ) {
       return { status: 'suspended', runId };
     }
-    const failure = localAgentError(error);
+    const failure: RunSettlement = { outcome: error instanceof CapacityStartUnknown ? 'indeterminate' : 'failed', error: localAgentError(error) };
     if (!hasSettlement(snapshot.events, runId)) {
-      await commit({
-        type: 'run.finishing',
-        sessionId: snapshot.state.sessionId,
-        runId,
-        payload: { outcome: 'failed', error: failure },
-      });
+      await commit({ type: 'run.finishing', sessionId: snapshot.state.sessionId, runId, payload: failure });
     }
-    return finishingResult(runId, { outcome: 'failed', error: failure });
+    return finishingResult(runId, failure);
   }
 }

@@ -105,6 +105,7 @@ run_cli_e2e() {
     dev_printf '[test] Local Agent runtime and shared projection shells\n' '[test] 本地 Agent 真实链路与共享投影壳\n'
   fi
   python3 -I -S ./scripts/tests/tool-input-cli-e2e.py
+  python3 -I -S ./scripts/tests/shared-coding-cli.py
   python3 -I -S ./scripts/tests/provider-retry-cli.py
   python3 -I -S ./scripts/tests/host-update-cli.py
   python3 -I -S ./scripts/tests/host-restart-cli.py
@@ -114,6 +115,7 @@ run_cli_e2e() {
   run_workspace_shell
   python3 -I -S ./scripts/tests/managed-process-cli.py
   python3 -I -S ./scripts/tests/subagent-cli.py
+  python3 -I -S ./scripts/tests/subagent-capacity-cli.py
   python3 -I -S ./scripts/tests/conversation-storage.py
   python3 -I -S ./scripts/tests/large-journal-cli.py
 }

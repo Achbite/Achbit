@@ -100,7 +100,7 @@ export async function startSessionServiceBridge(extensionFactory?: (send: (value
         composition: {
           provider, kernel,
           runPreparation: new HttpRunPreparationPort({
-            apiBase, serviceToken, stableCoreInstructions: corePromptInstructions(!codingTools), promptContributions, codingTools,
+            apiBase, serviceToken, stableCoreInstructions: corePromptInstructions(false), promptContributions, codingTools,
             environmentInstructions,
           }),
           async dispose() {},

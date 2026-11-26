@@ -1,5 +1,6 @@
 import { permissionPolicyConstraints, type AgentRecipe, type PluginUri } from '@achbit/protocol';
 import { SESSION_DIAGNOSTICS_URI } from './sessionReading.js';
+import { capturedPresentation } from './codingPrompt.js';
 import { LoopFailure } from './loopFailure.js';
 import type { PluginActivationInput } from './plugins.js';
 
@@ -38,6 +39,7 @@ export function preparePluginActivation(input: PluginActivationInput) {
     environment: runtime.environment,
     ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
     previousProviderToolAliases: runtime.providerToolAliases,
+    existingPresentation: capturedPresentation(runtime),
     pluginSelections: uris.map(uri => ({ selectionId: nextId('plugin-selection'), uri: uri as PluginUri, label: uri.slice(0, 160) })),
   });
 }

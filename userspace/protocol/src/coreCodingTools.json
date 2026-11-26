@@ -1,0 +1,7 @@
+[
+  ["fs.read", "read"],
+  ["bash", "bash"],
+  ["powershell", "powershell"],
+  ["fs.edit", "edit"],
+  ["fs.write", "write"]
+]

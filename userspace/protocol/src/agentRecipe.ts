@@ -2,6 +2,10 @@ import { decodeAgentConfiguration, decodeAgentContribution, type AgentConfigurat
 import { isLlmReasoningEffort, type LlmReasoningEffort } from './llm.js';
 import { validatePermissionPatches } from './permissions.js';
 import type { UserSettings } from './userSettings.js';
+import coreCodingTools from './coreCodingTools.json' with { type: 'json' };
+
+/** Shared ordered manifest: Kernel identity and model name. Only the selected Shell is callable. */
+export const CORE_CODING_TOOLS: ReadonlyMap<string, string> = new Map(coreCodingTools.map(([kernel, wire]) => [kernel, wire]));
 
 /** Task-owned selection. Omitted groups inherit; [] installs no tools in that group. */
 export interface AgentToolSelection {

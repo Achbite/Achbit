@@ -241,12 +241,18 @@ impl AgentRecipe {
     pub fn with_mode(mut self, mode: &str) -> Self {
         if mode == "minimal" {
             // The Kernel advertises only the Shell selected for the execution environment.
-            let coding = ["fs.read", "bash", "powershell", "fs.edit", "fs.write"];
+            static CODING: std::sync::LazyLock<Vec<[String; 2]>> = std::sync::LazyLock::new(|| {
+                serde_json::from_str(include_str!(
+                    "../../../userspace/protocol/src/coreCodingTools.json"
+                ))
+                .expect("valid built-in core tool manifest")
+            });
             self.tools.kernel = Some(
-                coding
-                    .into_iter()
+                CODING
+                    .iter()
+                    .map(|[name, _]| name)
                     .filter(|name| self.tools.allows_kernel(name))
-                    .map(String::from)
+                    .cloned()
                     .collect(),
             );
             self.tools.controls = Some(vec![]);

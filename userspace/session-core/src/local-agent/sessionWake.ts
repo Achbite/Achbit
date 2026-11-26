@@ -1,4 +1,5 @@
 import type { JsonObject, SessionEvent } from '@achbit/protocol';
+import { capacityTicket, settledCapacityCall, type CapacityCall } from './agentCapacity.js';
 
 /** Stored with the accepted control result, never sent to the model. */
 export interface ControlWait {
@@ -24,9 +25,19 @@ export function controlWait(result: JsonObject): ControlWait | undefined {
 /** A later request consumes the wait; reload resumes only an unconsumed control. */
 export function pendingControlWait(events: readonly SessionEvent[], runId: string): WaitingControl | undefined {
   let pending: WaitingControl | undefined;
+  const deferred = new Map<string, CapacityCall>();
   for (const event of events) {
     if (!('runId' in event) || event.runId !== runId) continue;
-    if ((event.type === 'session.control.completed' || event.type === 'agent.control.completed') && controlWait(event.payload.result)) {
+    if (event.type === 'agent.control.completed' && capacityTicket(event.payload.result)) {
+      deferred.set(event.callId, event);
+    } else if (event.type === 'agent.capacity.settled') {
+      const original = deferred.get(event.callId);
+      if (original) {
+        const resolved = settledCapacityCall(original, event);
+        if (controlWait(resolved.payload.result)) pending = resolved;
+        deferred.delete(event.callId);
+      }
+    } else if ((event.type === 'session.control.completed' || event.type === 'agent.control.completed') && controlWait(event.payload.result)) {
       pending = event;
     } else if (event.type === 'context.composed' && event.payload.purpose === 'agent'
       && pending && (event.payload.modelView?.throughSequence ?? event.sequence) >= pending.sequence

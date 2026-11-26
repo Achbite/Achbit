@@ -155,6 +155,8 @@ class ProviderHandler(fixture.MockProviderHandler):
                 content = message["content"]
                 require(LONG_INPUT not in content, "原文被重复塞入 Provider 文本")
                 schema = next(tool["function"]["parameters"] for tool in body["tools"] if tool["function"]["name"] == names["read"])
+                require(names['read'] == 'read' and schema['properties']['maxBytes']['maximum'] == 1048576
+                        and 'offset' in schema['properties'] and 'startLine' not in schema['properties'], 'Full 四件套未保留共享行字段或 Kernel 字节预算')
                 require("nextByte" in schema["properties"]["startByte"]["description"], "读取工具缺少字节续页合同")
                 references = json.loads(content[content.index("[{\"referenceId\""):])
                 reference = next(item for item in references if item.get("source") == "pastedText")
@@ -163,7 +165,7 @@ class ProviderHandler(fixture.MockProviderHandler):
             elif ordinal == 11:
                 page = results["read-pasted"]
                 require(0 < page["nextByte"] == len(page["content"].encode()), "续页游标与返回的原文边界不符")
-                self._send_tool_calls([("read-rest", names["read"], {**self.provider_state.pasted_reference, "startByte": page["nextByte"], "maxLines": 5000})])
+                self._send_tool_calls([("read-rest", names["read"], {**self.provider_state.pasted_reference, "startByte": page["nextByte"], "limit": 5000})])
             elif ordinal == 12:
                 require(results["read-pasted"]["content"] + results["read-rest"] == LONG_INPUT, "两页未精确恢复粘贴原文")
                 self._send_text("pasted-text-cli-complete")

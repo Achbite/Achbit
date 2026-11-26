@@ -22,6 +22,8 @@ import { scheduledContextCompaction, pendingContextCompaction } from './compacti
 import { modelContextEvents } from './modelContext.js';
 import { boundaryCompactionEvent, performContextCompaction } from './loopContext.js';
 import { reviewPendingPlan } from './loopTools.js';
+import { CapacityNeeded } from './agentCapacity.js';
+import { pendingCapacityApprovals, advanceCapacity } from './capacityApproval.js';
 import { pendingControlWait, controlWait, inputAfter, pendingWakeups } from './sessionWake.js';
 
 export async function settleProviderTurn(
@@ -87,7 +89,8 @@ export async function settleProviderTurn(
     case 'agent': {
       const fact = await agentControlFact(deps, snapshot.state.sessionId, runId, runtime, turn,
         receipt.modelView!.throughSequence, signal);
-      await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
+      await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts,
+        ...pendingCapacityApprovals([fact])]);
       break;
     }
     case 'artifactPresent': {
@@ -331,7 +334,7 @@ export async function settleProviderTurn(
         runId,
         turn.completion,
       ));
-      events.push(...completionDerivedFacts);
+      events.push(...completionDerivedFacts, ...pendingCapacityApprovals(callFacts));
       await commit(events);
       break;
     }
@@ -363,6 +366,9 @@ export async function prepareControlTurn(
       payload: { reason: 'plan', detail: plan.title } });
     return { status: 'waiting', runId, reason: 'plan', planId: plan.planId };
   }
+  const capacity = await advanceCapacity(snapshot, deps, runId, signal);
+  if ('status' in capacity) return capacity;
+  snapshot = capacity;
   const waiting = pendingControlWait(snapshot.events, runId);
   if (waiting) {
     const wait = controlWait(waiting.payload.result)!;
@@ -420,6 +426,14 @@ async function agentControlFact(
       payload: { providerCallId: call.providerCallId, operation: { ...call.operation },
         result: waits ? { ...result, wait: { afterSequence } } : result } };
   } catch (error) {
+    signal.throwIfAborted();
+    if (error instanceof CapacityNeeded) {
+      return { type: 'agent.control.completed', sessionId, runId, callId: call.callId,
+        payload: { providerCallId: call.providerCallId, operation: { ...call.operation }, result: {
+          status: 'capacityRequested', executed: false, approvalId: deps.nextId('approval'), afterSequence,
+          capacity: error.quote, ...(error.delegated ? { reviewRequestId: deps.nextId('provider-request') } : {}),
+        } } };
+    }
     return controlRejectionFact(sessionId, runId, { callId: call.callId,
       providerCallId: call.providerCallId, toolName: SESSION_CONTROL_AGENT,
       input: { ...call.operation }, error: localAgentError(error) });

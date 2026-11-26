@@ -127,7 +127,7 @@ export async function reviewPendingPlan(deps: AgentLoopDeps, plan: NonNullable<S
 }
 
 /** A manual decision or permission change retires only this execution review. */
-function createApprovalReviewScope(deps: AgentLoopDeps, approvalId: string, permissions: string, signal: AbortSignal) {
+export function createApprovalReviewScope(deps: AgentLoopDeps, approvalId: string, permissions: string, signal: AbortSignal) {
   const controller = new AbortController(), observer = new AbortController();
   const obsolete = new LoopFailure('approval_review_obsolete', '审批已由人工决定或权限变更替代。', {
     source: 'session', phase: 'approvalReview', category: 'cancelled', retryable: false, causes: [],
@@ -350,7 +350,8 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
 /** Called in the Actor's commit transaction, after Provider and Kernel reconciliation. */
 export function interruptedApprovalReviews(snapshot: LoopSnapshot, runId: string, nextId: AgentLoopDeps['nextId']): NewSessionEvent[] {
   const reason = '自动审查已中断，未形成最终意见。请决定是否执行原操作。';
-  return snapshot.state.pendingApprovals.filter(approval => approval.runId === runId && approvalNeedsAgentReview(snapshot.events, approval))
+  return snapshot.state.pendingApprovals.filter(approval => approval.runId === runId
+    && approval.preview.reviewPolicy?.subject !== 'subagentCapacity' && approvalNeedsAgentReview(snapshot.events, approval))
     .map(({ approvalId, callId }) => ({ type: 'approval.reviewed', sessionId: snapshot.state.sessionId, runId, callId,
       // Like a preparation error, this local review has an identity but no Provider context, attempt, or turn.
       payload: { approvalId, providerRequestId: nextId('provider-request'), decision: 'ask', reason,

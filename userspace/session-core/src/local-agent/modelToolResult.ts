@@ -41,7 +41,8 @@ export function rejectionContent(error: LocalAgentError & { issues?: ToolInputIs
     const issues = (error.issues ?? []).filter(issue => issue.message !== error.message)
       .map(issue => `${issue.path}: ${issue.message}`);
     const message = kind === 'indeterminate' ? `Execution outcome unknown. ${error.message}` : error.message;
-    return [message, ...issues].join('\n');
+    const capacity = error.diagnostics?.causes.filter(cause => cause.kind === 'subagentCapacity').map(cause => cause.message) ?? [];
+    return [message, ...issues, ...capacity].join('\n');
   }
   const fields = kind === 'input' ? { status: 'inputRejected', executed: false }
     : kind === 'control' ? { accepted: false, executed: false } : { status: 'indeterminate' };

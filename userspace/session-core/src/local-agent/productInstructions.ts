@@ -1,7 +1,8 @@
 import type { JsonObject, SessionEvent } from '@achbit/protocol';
 import type { SessionProductComponent } from './sessionConfiguration.js';
 
-import { decodeSessionEnvironment } from './sessionEnvironment.js';
+import { decodeSessionEnvironment, environmentInstruction } from './sessionEnvironment.js';
+import { replyFormatInstruction } from './coreInstructions.js';
 import type { ToolGuidanceContributor } from './toolPromptContributions.js';
 
 /** The documentation index is shared; product operations adds detail at the relevant entries. */
@@ -84,5 +85,7 @@ Keep simple explanations inline. Routine source references can be file links wit
 Prefer a Markdown table when comparing items across the same fields. Use prose or a short list when clearer.
 Standalone components can be previewed interactively within a reply. Frontend Design covers the design, and interactive-previews.md under Product guides describes the format.` },
   { id: 'achbit.product-operations', enabledByDefault: true, environmentInstructions: productDocumentation, toolGuidance: productShellGuidance },
+  replyFormatInstruction,
+  { id: 'achbit.session-environment', environmentInstructions: environment => [environmentInstruction(environment)] },
   { id: 'achbit.conversation-title', enabledByDefault: true },
 ];

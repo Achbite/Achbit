@@ -51,6 +51,7 @@ import { activeSessionControls, RESPONSE_PHASE_INSTRUCTION } from './sessionCont
 import { applyToolGuidance, hostedToolGuidance, type ToolGuidanceContributor } from './toolPromptContributions.js';
 import { visualContextMessages } from './visualContext.js';
 import { controlWait, type WaitingControl } from './sessionWake.js';
+import { settledCapacityCall, type CapacitySettlement } from './agentCapacity.js';
 
 
 export interface PreparedProviderRequest {
@@ -138,6 +139,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     input.workspaceBindings,
     readScope,
     input.runtime.codingTools,
+    input.runtime.coreToolInterface === 'shared',
   );
   // Replay this request's immutable journal view once for history and receipt composition.
   const journalView = journalModelViews(modelViewEvents);
@@ -170,7 +172,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const controlAliases = new Map(controlTools.map(tool => [tool.name, toolCodec.wireByCanonical.get(tool.name)!]));
   const policy = workspacePermissionInstruction(input.runtime, runtimeTools, controlAliases);
   const primaryId = input.workspaceBindings[0]?.workspaceId;
-  const coding = input.runtime.codingTools ? {
+  const coding = input.runtime.coreToolInterface === 'shared' || input.runtime.codingTools ? {
     cwd: toolCodec.workspaceToolNames.size ? primaryWorkingDirectory(input.runtime, primaryId) : undefined,
   } : undefined;
   // Older snapshots contain policy text from preparation. Its only live owner is the current stage.
@@ -303,7 +305,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
 /** Keep the codec's original handle numbers when omitting facts already given or owned by the Host. */
 function visibleWorkspaceHandles(bindings: readonly WorkspaceBindingDisplay[], runtime?: RunRuntimeSnapshot, describedPrimary?: string) {
   const handles = providerWorkspaceBindings(bindings);
-  if (!runtime?.codingTools) return handles;
+  if (!runtime || (!runtime.codingTools && runtime.coreToolInterface !== 'shared')) return handles;
   return handles.flatMap((handle, index) => {
     const id = bindings[index]!.workspaceId;
     if (index === 0 && id === describedPrimary) return [];
@@ -318,7 +320,7 @@ export function messagesFromJournal(
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   modelViewEvents: readonly SessionEvent[] = events,
   includeReviewEvidence = false,
-  callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools'>>,
+  callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools' | 'sharedCoreTools'>>,
   resourceGuidance: ReadonlyMap<string, string> = new Map(),
   fixed = journalModelViews(modelViewEvents),
 ): ContextMessageContribution[] {
@@ -399,17 +401,20 @@ export function messagesFromJournal(
     ? [[event.payload.interactionId, event] as const] : []));
   const agentTasks = new Map(modelViewEvents.flatMap(event => event.type === 'agent.task.created'
     ? [[event.payload.taskId, event.payload] as const] : []));
+  const capacityResults = new Map<string, CapacitySettlement>(events.flatMap(event =>
+    event.type === 'agent.capacity.settled' ? [[event.callId, event] as const] : []));
   const controlResults = new Map(modelViewEvents.flatMap(event => {
     if (event.type !== 'agent.control.completed' && event.type !== 'session.control.completed') return [];
     const firstView = fixed.contributions.get(`agent-control:${event.callId}`);
     return [[event.callId, firstView
       ? { result: JSON.parse(firstView.message.content) as JsonObject, sourceSequence: firstView.sourceSequence }
-      : controlResultForModel(event, events)] as const];
+      : controlResultForModel(event.type === 'agent.control.completed' && capacityResults.has(event.callId)
+        ? settledCapacityCall(event, capacityResults.get(event.callId)!) : event, events)] as const];
   }));
   const returnedAgentResults = new Set(modelViewEvents.flatMap(event => event.type === 'agent.control.completed'
     && event.payload.operation.action === 'spawn' && event.payload.operation.delivery === 'wait'
-    && typeof event.payload.result.taskId === 'string' && typeof controlResults.get(event.callId)?.result.outcome === 'string'
-    ? [event.payload.result.taskId] : []));
+    && typeof controlResults.get(event.callId)?.result.taskId === 'string' && typeof controlResults.get(event.callId)?.result.outcome === 'string'
+    ? [controlResults.get(event.callId)!.result.taskId] : []));
   const responses = new Map(events.flatMap(event => event.type === 'interaction.resolved'
     ? [[event.payload.commandId, event.payload] as const] : []));
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
@@ -495,7 +500,7 @@ export function messagesFromJournal(
         messages.push({
           contributionId: `workspace-snapshot:${event.payload.messageId}`, contributionKind: 'workspaceBindings',
           label: '本轮目录与资源引用', message: { role: 'system',
-            content: runtime?.codingTools ? `Current workspace handles: ${JSON.stringify(currentHandles)}`
+            content: runtime?.coreToolInterface === 'shared' || runtime?.codingTools ? `Current workspace handles: ${JSON.stringify(currentHandles)}`
               : `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(currentHandles)}` },
         });
       }
@@ -687,7 +692,8 @@ export function messagesFromJournal(
         sourceSequence: view.sourceSequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           ...(event.type === 'agent.control.completed' && event.payload.operation.action === 'send' && view.result.status === 'indeterminate'
-            ? { toolOutcome: 'indeterminate' as const } : {}),
+            ? { toolOutcome: 'indeterminate' as const } : capacityResults.has(event.callId) && view.result.executed === false
+              ? { toolOutcome: view.result.status === 'denied' ? 'denied' as const : view.result.status === 'cancelled' ? 'cancelled' as const : 'notExecuted' as const } : {}),
           content: JSON.stringify(view.result) },
       });
     } else if (event.type === 'agent.task.completed') {
@@ -905,7 +911,7 @@ export function messagesFromJournal(
     const ids = event.payload.toolCallInputs?.map(call => call.callId)
       ?? event.payload.orderedOutputBlocks?.flatMap(block => 'callId' in block ? [block.callId] : [])
       ?? event.payload.orderedCallIds;
-    if (!ids.some(id => callCodecs?.get(id)?.codingTools)) continue;
+    if (!ids.some(id => callCodecs?.get(id)?.sharedCoreTools || callCodecs?.get(id)?.codingTools)) continue;
     const order = new Map(ids.map((id, index) => [id, index]));
     const positions = messages.flatMap((item, index) => item.message.role === 'tool'
       && order.has(item.message.toolCallId ?? '') ? [index] : []);

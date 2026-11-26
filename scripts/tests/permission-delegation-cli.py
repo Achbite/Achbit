@@ -28,7 +28,7 @@ def execution_review_request(body, *, decision_only=False):
     if body.get('model') != 'mock-reviewer':
         return False
     names = sorted(tool['function']['name'] for tool in body.get('tools', []))
-    require(names == ([] if decision_only else ['fs_read', 'session_read']),
+    require(names == ([] if decision_only else ['read', 'session_read']),
             f'Unexpected execution reviewer tool authority: {names}')
     if decision_only:
         response_format = body.get('response_format', {})

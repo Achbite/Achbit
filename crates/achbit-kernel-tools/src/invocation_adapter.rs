@@ -200,25 +200,32 @@ impl InvocationNormalizationError {
         // Keep all descriptor issues on a rejected input; serde reports only its first error.
         let mut issues = Vec::new();
         describe_input_issues(schema, input, "$", &mut issues);
-        if issues.is_empty() {
-            let (field, rule, expected) = match self {
-                Self::Validation(ToolValidationError::EmptyField { field }) => {
-                    (*field, "nonEmptyText", None)
-                }
-                Self::Validation(ToolValidationError::FieldTooLarge {
-                    field,
-                    maximum_bytes,
-                }) => (*field, "maxBytes", Some(Value::from(*maximum_bytes))),
-                Self::Validation(ToolValidationError::InvalidValue { field, .. }) => {
-                    (*field, "canonicalInput", None)
-                }
-                Self::InvalidArguments { .. } => ("", "canonicalInput", None),
-            };
-            let path = match field {
-                "" | "canonicalInvocation" => "$".to_string(),
-                "edits.oldText" | "edits.newText" => "$.edits".to_string(),
-                field => format!("$.{field}"),
-            };
+        let (semantic, prefix) = match self {
+            Self::Validation(ToolValidationError::EditItem { index, source }) => {
+                (Some(source.as_ref()), format!("$.edits[{index}]"))
+            }
+            Self::Validation(error) => (Some(error), "$".into()),
+            Self::InvalidArguments { .. } => (None, "$".into()),
+        };
+        let (field, rule, expected) = match semantic {
+            Some(ToolValidationError::EmptyField { field }) => (*field, "nonEmptyText", None),
+            Some(ToolValidationError::FieldTooLarge {
+                field,
+                maximum_bytes,
+            }) => (*field, "maxBytes", Some(Value::from(*maximum_bytes))),
+            Some(ToolValidationError::InvalidValue { field, .. }) => {
+                (*field, "canonicalInput", None)
+            }
+            _ => ("", "canonicalInput", None),
+        };
+        let path = match field {
+            "" | "canonicalInvocation" => prefix,
+            field => format!("{prefix}.{field}"),
+        };
+        // In particular retain a normalized item's byte error for accepted compatibility input shapes.
+        if issues.is_empty()
+            || (rule == "maxBytes" && !issues.iter().any(|issue| issue.path == path))
+        {
             issues.push(ToolInputIssue::new(path, rule, self.to_string(), expected));
         }
         issues

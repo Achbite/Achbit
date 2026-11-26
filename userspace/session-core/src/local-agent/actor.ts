@@ -1,5 +1,6 @@
 import { RunTiming } from './runTiming.js';
 import { recipeForMode } from './sessionMode.js';
+import { capturedPresentation } from './codingPrompt.js';
 import type { SessionMode } from '@achbit/protocol';
 import { providerNeedsContinuation, type ProviderContinuation } from '@achbit/protocol';
 import { sameModelContext } from './modelContext.js';
@@ -22,6 +23,8 @@ import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
 import { linkedReaderUris } from './pluginActivation.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
+import { capacityTicket, terminalCapacityEvents, type CapacityReservation } from './agentCapacity.js';
+import { reviewInputs } from './reviewInputs.js';
 import { appendResourceBindings, directoryBindingEvents, validLogicalPath } from './workspaceBindings.js';
 import type {
   AssistantDraftProjection,
@@ -183,6 +186,20 @@ export class SessionActor {
     });
   }
 
+  /** Root human inputs for an independently prepared family-capacity review, never injected into the child conversation. */
+  async capacityEvidence(runId: string) {
+    const snapshot = await this.loadSnapshot();
+    if (snapshot.state.agentContext || snapshot.state.run?.runId !== runId || isTerminal(snapshot.state.run.status)) throw new LoopFailure('capacity_review_owner_changed', 'The original root run is not active.');
+    return reviewInputs(snapshot, runId).map(({messageId,content}) => ({messageId,content}));
+  }
+
+  async capacityReservation(runId: string, taskId: string): Promise<CapacityReservation | undefined> {
+    const { events } = await this.loadSnapshot();
+    const reservation = events.find(e => e.type === 'agent.task.created' && e.runId === runId && e.payload.taskId === taskId);
+    if (reservation?.type === 'agent.task.created' && events.some(e => e.type === 'agent.control.completed'
+      && e.runId === runId && e.callId === reservation.callId && capacityTicket(e.payload.result))) return reservation;
+  }
+
   async agentCapabilities(runId: string): Promise<import('@achbit/protocol').AgentCapabilities> {
     const runtime = (await this.loadSnapshot()).state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
@@ -250,11 +267,12 @@ export class SessionActor {
   }
 
   /** Coordination reads never construct transcript, activity or file-change projections. */
-  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@achbit/protocol').JsonObject }> {
+  async agentSnapshot(): Promise<Pick<SessionProjection, 'sessionId' | 'recipe' | 'subagentSettings' | 'agentContext' | 'agentTasks' | 'agentChildren' | 'run'> & { environment?: import('@achbit/protocol').JsonObject; permissions: import('@achbit/protocol').UserSettings }> {
     const state = (await this.loadSnapshot()).state;
     return structuredClone({ sessionId: state.sessionId, recipe: state.recipe,
       subagentSettings: state.run ? state.runRuntimeSnapshots[state.run.runId]?.subagentSettings : undefined, agentContext: state.agentContext,
       agentTasks: state.agentTasks, agentChildren: state.agentChildren, run: state.run,
+      permissions: state.publishedPermissions ?? { ...(state.run ? state.runRuntimeSnapshots[state.run.runId]?.permissions : {}), ...state.permissionOverrides },
       environment: state.run ? state.runRuntimeSnapshots[state.run.runId]?.environment : undefined });
   }
 
@@ -658,6 +676,7 @@ export class SessionActor {
         ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
         ...recoveryPluginSelection(snapshot, command.runId, runtime),
         previousProviderToolAliases: (snapshot.state.runToolViews[command.runId] ?? runtime).providerToolAliases,
+        existingPresentation: capturedPresentation(runtime),
         rebindHost: { commandId: command.commandId, expectedBinding: command.expectedHostBinding, hostBinding: command.hostBinding },
       });
     } catch (error) {
@@ -1592,6 +1611,7 @@ export class SessionActor {
                 selectionId: this.#nextId('plugin-selection'), uri, label: uri.slice(0, 160),
               })) } : {}),
               previousProviderToolAliases: activeView.providerToolAliases,
+              existingPresentation: capturedPresentation(runtime),
               refreshPlugins: !captured.queued.some(input => input.pluginSelections.length),
             }) : undefined;
           signal.throwIfAborted();
@@ -1693,7 +1713,7 @@ export class SessionActor {
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
     const cleanup = await Promise.allSettled([
       this.closeProcesses(),
-      this.#agents?.cancel(runId) ?? Promise.resolve(),
+      this.#agents?.cancel(runId, this) ?? Promise.resolve(),
       runtime && !snapshot.state.runRuntimeReleases[runId] ? this.#composition.runPreparation.release({
         sessionId: this.sessionId, runId, kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef,
       }) : Promise.resolve(),
@@ -1715,6 +1735,7 @@ export class SessionActor {
         profileId: runtime.provider.profileId,
         environment: runtime.environment,
         restoreEnvironment: true,
+        existingPresentation: capturedPresentation(runtime),
         ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
         ...recoveryPluginSelection(snapshot, runId, runtime),
         previousProviderToolAliases: (snapshot.state.runToolViews[runId] ?? runtime).providerToolAliases,
@@ -1865,7 +1886,7 @@ export class SessionActor {
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
     if (snapshot.state.runRuntimeReleases[runId]) {
       const tools = await terminalToolEvents(snapshot, runId, this.#composition.kernel, settlement);
-      await this.appendLifecycleEvents([...tools, {
+      await this.appendLifecycleEvents([...tools, ...terminalCapacityEvents(snapshot.events, runId, settlement), {
         type: 'run.settled',
         sessionId: this.sessionId,
         runId,
@@ -1876,7 +1897,7 @@ export class SessionActor {
     let released;
     try {
       const cleanup = await Promise.allSettled([
-        this.#agents?.cancel(runId) ?? Promise.resolve(),
+        this.#agents?.cancel(runId, this) ?? Promise.resolve(),
         this.#composition.runPreparation.release({ sessionId: this.sessionId, runId,
           kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef }),
       ]);
@@ -1920,11 +1941,12 @@ export class SessionActor {
         },
       },
     ]);
+    const releasedSnapshot = await this.loadSnapshot();
     const tools = await terminalToolEvents(
-      await this.loadSnapshot(), runId, this.#composition.kernel, settlement,
+      releasedSnapshot, runId, this.#composition.kernel, settlement,
     );
     await this.appendLifecycleEvents([
-      ...tools,
+      ...tools, ...terminalCapacityEvents(releasedSnapshot.events, runId, settlement),
       {
         type: 'run.settled',
         sessionId: this.sessionId,

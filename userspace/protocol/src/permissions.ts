@@ -1,6 +1,12 @@
 import type { UserSettings, UserSettingValue } from './userSettings.js';
 
 export type ShellApprovalMode = 'ask' | 'review' | 'allow';
+
+/** The existing Review for me preset; a single unrelated 'review' field is not this selection. */
+export const DELEGATED_APPROVAL_PRESET = Object.freeze({
+  'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'workspace',
+  'agent.permissions.networkRead': 'allow', 'agent.permissions.external': 'review',
+} as const);
 const SHELL_AUTHORIZATION_SCOPE_PAIRS = [
   ['runCommand', 'sessionCommand'], ['runHostShell', 'sessionHostShell'],
   ['runNetwork', 'sessionNetwork'], ['runContainer', 'sessionContainer'], ['runFiles', 'sessionFiles'],

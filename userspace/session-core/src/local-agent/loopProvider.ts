@@ -16,7 +16,7 @@ import { LoopFailure, ProviderReportedFailure } from './loopFailure.js';
 import { TruncatedCallCollector } from './truncatedOutput.js';
 import { throwIfAborted, isRecord } from './loopFacts.js';
 import { hasHostedSearchSteps } from './contextBudget.js';
-import { decodeProviderToolInput } from './providerToolCodec.js';
+import { decodeProviderToolInput, UndeclaredReadField } from './providerToolCodec.js';
 import type { ProviderToolCodec } from './providerToolCodec.js';
 import type { SessionCapabilities } from './plugins.js';
 import { PlanPreviewBuffer } from './planPreview.js';
@@ -27,10 +27,10 @@ import { APPROVAL_HISTORY_VIEWS } from './approvalReview.js';
 import { sessionReadAllowed } from './sessionReading.js';
 import { providerTextStreamId } from './streamIdentity.js';
 
-export async function consumeTextProvider(request: ProviderRequest, deps: AgentLoopDeps, signal: AbortSignal) {
+export async function consumeTextProvider(request: ProviderRequest, deps: AgentLoopDeps, signal: AbortSignal, retryTransport = true) {
   return withProviderAttempts(request, deps, signal, (attempt, onCompleted, onEvent) => (
     consumeTextAttempt(attempt, deps, signal, onCompleted, onEvent)
-  ));
+  ), retryTransport);
 }
 
 async function consumeTextAttempt(
@@ -980,7 +980,9 @@ function decodeProviderOutputBlock(
           error: {
             code: error.code,
             message: error.message,
-            issues: [{ path: '$.workspace', rule: 'workspace_binding', message: error.message }],
+            issues: [error instanceof UndeclaredReadField
+              ? { path: `$.${error.field}`, rule: 'additionalProperties', message: error.message }
+              : { path: '$.workspace', rule: 'workspace_binding', message: error.message }],
           },
         };
       }
