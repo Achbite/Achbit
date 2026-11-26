@@ -5,7 +5,7 @@ import { isLlmReasoningEffort } from '@achbit/protocol';
 import { isProcessActivity } from '@achbit/protocol';
 import { isShellAuthorizationScope } from '@achbit/protocol';
 import { validatePermissionPatches } from '@achbit/protocol';
-import { isLocalAgentErrorValue } from '@achbit/protocol';
+import { isErrorDiagnostics, isLocalAgentErrorValue } from '@achbit/protocol';
 import { decodeAgentContext, decodeAgentRecipe, decodeAgentSettings, teamKeyPattern } from '@achbit/protocol';
 import type {
   AssistantDraftBlockProjection,
@@ -1582,8 +1582,10 @@ function isLiveToolOutput(value: unknown): boolean {
 
 function isInputRejection(value: unknown): boolean {
   return isExactRecord(value, ['code', 'message', 'issues'], ['diagnostics'])
-    && isLocalAgentError({ code: value.code, message: value.message,
-      ...(value.diagnostics === undefined ? {} : { diagnostics: value.diagnostics }) })
+    // A rejected argument's description can quote any JSON key, including NUL.
+    // It is recorded prose, not an identifier or a new request to execute.
+    && isNonEmptyText(value.code) && !value.code.includes('\0') && isNonEmptyText(value.message)
+    && (value.diagnostics === undefined || isErrorDiagnostics(value.diagnostics))
     && Array.isArray(value.issues) && value.issues.length > 0
     && value.issues.every((issue) => isExactRecord(issue, ['path', 'rule', 'message'], ['expected'])
       && isNonEmptyText(issue.path) && isNonEmptyText(issue.rule) && isNonEmptyText(issue.message));

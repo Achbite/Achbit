@@ -22,6 +22,9 @@ import { resourceFilename } from './resourceLinks';
 import { useConversationRowState } from './ConversationVirtualRow';
 import { ComputerActivity, computerActivitySummary } from './ComputerActivity';
 
+// Keep quoted, otherwise invisible NULs legible without changing the rejection record.
+const rejectionText = (text: string) => text.replaceAll('\0', '\\u0000');
+
 function shellWriteScopeLabel(language: UiLanguage, writeScope: string): string {
   const key = `agent.tool.shell.writeScope.${writeScope}`;
   const label = t(language, key);
@@ -339,11 +342,11 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
           {activity.notExecuted && <p role="status">{notExecutedStatus(activity, language)}</p>}
           {activity.inputRejection && (
             <div className="local-agent__input-rejection">
-              <p><code>{activity.inputRejection.code}</code>: <span title={activity.inputRejection.message}>{localizedError(language, activity.inputRejection.message, activity.inputRejection.code)}</span></p>
+              <p><code>{activity.inputRejection.code}</code>: <span title={rejectionText(activity.inputRejection.message)}>{rejectionText(localizedError(language, activity.inputRejection.message, activity.inputRejection.code))}</span></p>
               {activity.inputRejection.issues.map((issue, index) => (
                 <div key={`${issue.path}:${issue.rule}:${index}`}>
-                  <code>{issue.path} · {issue.rule}</code>
-                  {issue.message !== activity.inputRejection!.message && <span>{issue.message}</span>}
+                  <code>{rejectionText(issue.path)} · {issue.rule}</code>
+                  {issue.message !== activity.inputRejection!.message && <span>{rejectionText(issue.message)}</span>}
                   {issue.expected !== undefined && <code>{JSON.stringify(issue.expected)}</code>}
                 </div>
               ))}
