@@ -20,7 +20,8 @@ export async function checkCompletionWindow({ navigateEntry, evaluate, cmd, clic
 }
 
 // Cross the production settings navigation and measure the active pane, not the window width.
-export async function checkSettingsPages({ navigate, evaluate, cmd, click, until, frame, record }) {
+export async function checkSettingsPages(controls) {
+  const { navigate, evaluate, cmd, click, until, frame, record } = controls;
   const pages = ['general', 'gui', 'agent', 'environment', 'permissions', 'llm', 'plugins', 'about'];
   for (const [mode, viewport, language, font] of [['light',1120,'zh-CN','normal'], ['dark',620,'en-US','large']]) {
     await cmd('Emulation.setDeviceMetricsOverride', { width: viewport, height: 780, deviceScaleFactor: 1, mobile: false });
@@ -40,8 +41,66 @@ export async function checkSettingsPages({ navigate, evaluate, cmd, click, until
         const {data} = await cmd('Page.captureScreenshot',{format:'png',clip:box});
         actual.uniformSelection = await evaluate(`(async()=>{const img=new Image();img.src='data:image/png;base64,${data}';await img.decode();const c=document.createElement('canvas');c.width=img.width;c.height=1;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);const pixel=x=>ctx.getImageData(x,0,1,1).data.join(',');const selected=document.querySelector('${nav}'),other=document.querySelector('.settings-nav-item:not([aria-current])');return pixel(2)===pixel(img.width-6) && getComputedStyle(selected).backgroundColor!==getComputedStyle(other).backgroundColor})()`);
       }
-      await record(`settings-${page}-${mode}`,actual,actual.uniformSelection!==false && !!actual.title && actual.navSelected==='page' && actual.visiblePages===1 && actual.actions>0 && actual.overflow<=1 && actual.navOverflow<=1 && !actual.outside.length && !actual.alerts.length);
+      const choices = {gui: '.settings-theme-card', plugins: '.plugin-manager__nav button'}[page];
+      if (choices) actual.sameSelection = await evaluate(`(async()=>{const a=document.querySelector('${choices}[aria-pressed=true]'),b=document.querySelector('${nav}');
+        await Promise.all([a,b].flatMap(el=>el.getAnimations().map(t=>t.finished)));return getComputedStyle(a).backgroundColor===getComputedStyle(b).backgroundColor})()`);
+      await record(`settings-${page}-${mode}`,actual,actual.sameSelection!==false && actual.uniformSelection!==false && !!actual.title && actual.navSelected==='page' && actual.visiblePages===1 && actual.actions>0 && actual.overflow<=1 && actual.navOverflow<=1 && !actual.outside.length && !actual.alerts.length);
+      if (page === 'llm') await checkModelSourceSelection(controls, mode, nav);
     }
   }
   await cmd('Emulation.setDeviceMetricsOverride', { width:1200, height:900, deviceScaleFactor:1, mobile:false });
+}
+
+async function checkModelSourceSelection({ evaluate, cmd, click, key, until, frame, record }, mode, nav) {
+  const catalog = '[data-ui-action="settings.model-picker.catalog"]', custom = '[data-ui-action="settings.model-picker.custom"]';
+  const option = '.model-picker-list [role=option]', reduced = {name:'prefers-reduced-motion',value:'reduce'};
+  await cmd('Emulation.setEmulatedMedia', {features:[reduced]});
+  try {
+    await click('#setting-page-llm .model-connection-open'); await until('document.querySelector(".model-heading.model-divider button")');
+    await click('.model-heading.model-divider button'); await until(`document.querySelectorAll('${option}').length===2`);
+    // Sample empty insets on the actual painted control. A bottom or side accent fails even when the computed fill matches.
+    const surface = async (selected, other) => {
+      const state = await evaluate(`(() => {const el=document.querySelector('${selected}'), s=getComputedStyle(el), r=el.getBoundingClientRect();
+        return {selected:el.getAttribute('aria-pressed'),other:document.querySelector('${other}').getAttribute('aria-pressed'),
+          fill:s.backgroundColor,otherFill:getComputedStyle(document.querySelector('${other}')).backgroundColor,navFill:getComputedStyle(document.querySelector('${nav}')).backgroundColor,
+          radius:parseFloat(s.borderRadius),padding:[parseFloat(s.paddingLeft),parseFloat(s.paddingRight)],
+          clip:{x:Math.ceil(r.left),y:Math.ceil(r.top),width:Math.floor(r.right)-Math.ceil(r.left),height:Math.floor(r.bottom)-Math.ceil(r.top),scale:1}}})()`);
+      const {data} = await cmd('Page.captureScreenshot',{format:'png',clip:state.clip});
+      state.flat = await evaluate(`(async()=>{const image=new Image();image.src='data:image/png;base64,${data}';await image.decode();
+        const c=document.createElement('canvas'), w=c.width=image.width,h=c.height=image.height,ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const painted=ctx.getImageData(0,0,w,h).data;
+        ctx.fillStyle=${JSON.stringify(state.fill)};ctx.fillRect(0,0,1,1);const expected=ctx.getImageData(0,0,1,1).data;
+        const matches=(x,y)=>expected.every((v,i)=>painted[(y*w+x)*4+i]===v), inset=Math.ceil(${state.radius})+1;
+        // Check the straight portions of all four painted edges, excluding only their rounded corners.
+        for(let x=inset;x<w-inset;x++) if(![0,1,h-2,h-1].every(y=>matches(x,y)))return false;
+        for(let y=inset;y<h-inset;y++) if(![0,1,2,w-3,w-2,w-1].every(x=>matches(x,y)))return false;
+        // Probe inside the padding, not at its boundary where the keyboard underline ends.
+        return [Math.floor(${state.padding[0]}/2),w-1-Math.floor(${state.padding[1]}/2)].every(x=>matches(x,h-3))})()`);
+      return state;
+    };
+    const correct = s => s.selected==='true' && s.other==='false' && s.fill!==s.otherFill && s.fill===s.navFill && s.flat;
+    await click(catalog); const initial = await surface(catalog, custom); // includes the selected-hover state
+    await click(option); await key('End');
+    const row = await evaluate(`(()=>{const el=document.querySelector('${option}[aria-selected=true]');return {name:el.querySelector('code').textContent,
+      focused:document.activeElement===el,checked:getComputedStyle(el.querySelector('.model-picker-candidate__check')).visibility==='visible',
+      fill:getComputedStyle(el).backgroundColor}})()`);
+    await record('model-source-catalog-'+mode,{initial,row},correct(initial) && row.focused && row.checked && row.fill===initial.fill && row.name==='reference-large');
+    await click(catalog); await key('Tab'); await key('Enter');
+    const switched = await surface(custom,catalog), keyboard = await evaluate(`document.activeElement===document.querySelector('${custom}') && document.activeElement.matches(':focus-visible') && !!document.querySelector('.model-picker-body.model-services:not([hidden])')`);
+    await record('model-source-custom-'+mode,{switched,keyboard},correct(switched) && keyboard);
+    if (mode==='light') {
+      await cmd('Emulation.setEmulatedMedia',{features:[reduced,{name:'forced-colors',value:'active'}]}); await frame();
+      const contrast = await evaluate(`(()=>{const el=document.querySelector('${custom}'),s=getComputedStyle(el),other=getComputedStyle(document.querySelector('${catalog}'));
+        return {active:matchMedia('(forced-colors:active)').matches,fill:s.backgroundColor,otherFill:other.backgroundColor,ink:s.color,navFill:getComputedStyle(document.querySelector('${nav}')).backgroundColor,focus:s.outlineStyle,width:s.outlineWidth}})()`);
+      await record('model-source-forced-colors',contrast,contrast.active && contrast.fill===contrast.navFill && contrast.fill!==contrast.otherFill && contrast.ink!==contrast.fill && contrast.focus!=='none' && parseFloat(contrast.width)>0);
+    } else {
+      await cmd('Emulation.setDeviceMetricsOverride',{width:320,height:780,deviceScaleFactor:1,mobile:false}); await frame();
+      const narrow=await evaluate(`(() => {const group=document.querySelector('.model-picker-tabs'),box=group.getBoundingClientRect();
+        return [...group.querySelectorAll('button')].map(b=>{const r=b.getBoundingClientRect();return {label:b.innerText,
+          inside:r.left>=box.left && r.right<=Math.min(box.right,innerWidth),hit:b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};});})()`);
+      await record('model-source-narrow-large-type',narrow,narrow.length===2 && narrow.every(b=>b.inside && b.hit));
+      await cmd('Emulation.setDeviceMetricsOverride',{width:620,height:780,deviceScaleFactor:1,mobile:false}); await frame();
+    }
+    await key('Escape'); await until('!document.querySelector(".model-picker-backdrop[open]")');
+  } finally { await cmd('Emulation.setEmulatedMedia',{features:[]}); }
 }

@@ -21,6 +21,8 @@ const query = new URLSearchParams(location.search);
 const largeMarket = query.has('largeMarket');
 const fullSettings = query.has('fullSettings');
 const sampleConnection = { id: 'fixture:local', name: 'Local reference connection', adapterId: 'custom', billingMode: 'metered', credentialKind: 'apiKey', authStatus: 'ready', baseUrl: 'https://example.invalid/v1' };
+const modelTemplates = ['Reference Small', 'Reference Large'].map(name => ({ name, model: name.toLowerCase().replace(' ', '-'),
+  kind: 'openaiCompatible', providerFlavor: 'openai', enabled: true, contextWindowTokens: 128000, maxOutputTokens: 8192 }));
 const echoManifest = { id: 'Echo Demonstration', kind: 'guidance', path: '/fixture/installed/echo' };
 const inventory = [{ id: echoManifest.id, kind: 'ui', path: '/fixture/other' }];
 if (largeMarket) inventory.push({ id: 'quiet-theme', kind: 'ui', path: '/fixture/plugin' });
@@ -80,7 +82,7 @@ window.fetch = async (input, init) => {
     marketplace.requests++;
     return marketplace.requests === 1 ? new Response(null, { status: 503 }) : Response.json(marketplaceIndex);
   }
-  if (path === '/api/llm/connections') return Response.json({ ok: true, data: { connections: [sampleConnection], adapters: [{ id: 'custom', name: 'Fixture', protocols: ['openaiCompatible'], billingModes: ['metered'], authMethods: ['apiKey'], models: [], source: 'builtin' }] } });
+  if (path === '/api/llm/connections') return Response.json({ ok: true, data: { connections: [sampleConnection], adapters: [{ id: 'custom', name: 'Fixture', protocols: ['openaiCompatible'], billingModes: ['metered'], authMethods: ['apiKey'], models: modelTemplates, source: 'builtin' }] } });
   if (path === '/api/llm/profiles') return Response.json({ ok: true, data: { connections: [sampleConnection], profiles: [], defaultProfileId: null } });
   if (path === '/api/llm/usage') {
     const query = JSON.parse(String(init?.body));
@@ -244,7 +246,7 @@ function Fixture() {
 const root = createRoot(document.getElementById('root')!);
 if (fullSettings) {
   // Load the same chrome aliases/focus policy used around the production SettingsCenter.
-  void Promise.all([import('../../src/achbit-gui/achbitGui.css'), import('../../src/components/shared/focus.css')]).then(() => {
+  void Promise.all([import('../../src/achbit-gui/achbitGui.css'), import('../../src/achbit-gui/styles/achbitShell.css'), import('../../src/components/shared/focus.css')]).then(() => {
     document.documentElement.dataset.theme = query.get('theme') === 'dark' ? 'dark' : 'light';
     document.documentElement.style.setProperty('--ac-ui-font-scale', query.get('font') === 'large' ? String(18 / 14) : '1');
     root.render(<SettingsCenter apiStatus="connected" serverVersion="preview" />);

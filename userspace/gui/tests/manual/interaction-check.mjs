@@ -10,6 +10,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { checkReaderFileMenu, checkReaderSplit } from './reader-split-check.mjs';
 import { checkComposerOverlays } from './composer-overlay-check.mjs';
+import { checkViewportFollow } from './viewport-follow-check.mjs';
 import { checkComposerPluginMentions } from './composer-plugin-mentions-check.mjs';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
 import { checkRichFormatBoundaries } from './rich-format-boundary-check.mjs';
@@ -117,6 +118,7 @@ try {
     return result.result.value;
   };
   const controls = { navigate, evaluate, cmd, until, frame, frameContent, click, key, record };
+  await checkViewportFollow(controls);
   await checkFileAttachmentCards(controls);
   if (process.argv.includes('--composer-checks')) {
     await checkComposerOverlays(controls);
@@ -124,7 +126,7 @@ try {
   } else await fullSuite();
   async function fullSuite() {
   await checkCompletionWindow({ navigateEntry, evaluate, cmd, click, until, key, record });
-  await checkSettingsPages({ navigate, evaluate, cmd, click, until, frame, record });
+  await checkSettingsPages(controls);
   await checkComposerPluginMentions({ navigate, evaluate, cmd, frame, click, key, type, record });
   await checkReaderFileMenu({ navigate, evaluate, until, click, key, record });
   await checkReaderSplit({ navigate, evaluate, cmd, until, frame, click, record });

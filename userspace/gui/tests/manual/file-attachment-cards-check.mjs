@@ -36,8 +36,20 @@ export async function checkFileAttachmentCards({ navigate, evaluate, cmd, until,
       if (mode==='draft' && setting==='reader') {
         await hit(dialog+' button[aria-busy]'); await until('attachmentFixture.savedImages.at(-1)===true');
         await hit(dialog+' .conversation-image-review__zoom button:nth-of-type(2)'); assert.notEqual(await texts(zoom),before);
-        await record('in-place-image-lightbox',{bounds:box,savedOriginal:true},true);
+        const closePosition = () => evaluate(`(() => {
+          const el=document.querySelector('${dialog} .conversation-image-review__close'), bar=el.closest('.conversation-image-review__toolbar');
+          const r=el.getBoundingClientRect(), b=bar.getBoundingClientRect(), save=bar.querySelector('button[aria-busy]').getBoundingClientRect();
+          return {width:innerWidth, rightGap:b.right-r.right, sameRow:r.top<save.bottom && r.bottom>save.top, afterSave:r.left>=save.right,
+            hittable:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};
+        })()`);
+        const atRight = p => Math.abs(p.rightGap)<=1 && p.sameRow && p.afterSave && p.hittable;
+        const wide = await closePosition();
+        await record('in-place-image-lightbox',{bounds:box,savedOriginal:true,close:wide},atRight(wide));
+        await cmd('Emulation.setDeviceMetricsOverride',{width:390,height:720,deviceScaleFactor:1,mobile:false}); await frame();
+        const narrow = await closePosition();
+        await record('image-lightbox-narrow-close',{close:narrow},atRight(narrow));
         await hit(dialog+' .conversation-image-review__close');
+        await cmd('Emulation.setDeviceMetricsOverride',{width:1350,height:900,deviceScaleFactor:1,mobile:false}); await frame();
       } else await key('Escape');
       assert.equal(await visible(dialog),false); assert.equal(await visible('.local-agent__reader'),false);
     }

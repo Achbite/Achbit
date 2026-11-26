@@ -3,7 +3,11 @@ export async function checkMarkdownNavigation({ navigate, evaluate, until, click
   await navigate('messages', { 'markdown-notes': '1' });
   const second = '[data-message-id="message:3"]';
   const citation = second + ' sup:nth-of-type(2) a[data-footnote-ref]';
-  await until(`document.querySelector('${second} .conversation-markdown[aria-busy="false"]') && document.querySelector('${citation}')`);
+  // The long message can finish parsing one frame before its viewport follows the tail.
+  // Send one real click only after the intended citation is actually under its coordinates.
+  await until(`(() => { const a=document.querySelector('${citation}');
+    if (!a?.closest('.conversation-markdown[aria-busy="false"]')) return false;
+    const r=a.getBoundingClientRect();return a.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)); })()`);
   await click(citation);
   const forward = await evaluate(`(() => {const target=document.querySelector(':target'); return {owner:target?.closest('[data-message-id]')?.dataset.messageId,text:target?.textContent};})()`);
   await click(second + ' a[data-footnote-backref]:last-child');
