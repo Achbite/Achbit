@@ -1,3 +1,4 @@
+import { pdfDocumentAssets } from '../../vite.pdf';
 import { markdownAliases } from '../../vite.markdown';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -6,9 +7,10 @@ export default defineConfig({
   root: fileURLToPath(new URL('../..', import.meta.url)),
   base: './',
   resolve: { alias: markdownAliases },
-  plugins: [react()],
+  plugins: [react(), pdfDocumentAssets()],
   build: { outDir: '../../.task-artifacts/manual-preview', emptyOutDir: true,
     rollupOptions: { input: {
+      completion: fileURLToPath(new URL('../../completion.html', import.meta.url)),
       typography: fileURLToPath(new URL('./typography.html', import.meta.url)),
       uiComponents: fileURLToPath(new URL('./ui-components.html', import.meta.url)),
       sessionHandoff: fileURLToPath(new URL('./session-handoff.html', import.meta.url)),

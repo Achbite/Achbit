@@ -1,6 +1,9 @@
 import readme from '../../../../README.md?raw';
 import development from '../../../../docs/development.md?raw';
 import React from 'react';
+import { changeOverlaySession } from './changeOverlaySession';
+import { attachmentWorkbench } from './attachmentWorkbench';
+import { InteractionPreview } from './InteractionPreview';
 import { emptySessionState, projectSession } from '../../../session-core/src/local-agent/reducer';
 import { createRoot } from 'react-dom/client';
 import AchbitWorkbenchLayout from '../../src/achbit-gui/layout/AchbitWorkbenchLayout';
@@ -14,7 +17,8 @@ import '../../src/achbit-gui/styles/achbitDesignTokens.css';
 import '../../src/theme/paletteBase.css';
 import '../../src/achbit-gui/achbitGui.css';
 
-const sessionId = 'session:reader-workbench';
+const cards = new URLSearchParams(location.search).get('attachmentCards');
+const sessionId = cards ? `session:attachment-workbench:${cards}` : 'session:reader-workbench';
 const file = (name: string) => ({ kind: 'file' as const, path: '/fixture/' + name });
 const host = useConversationHost();
 const opened: string[] = [];
@@ -125,11 +129,15 @@ host.locatePath = async path => { folders.push(path); };
 host.selectedFilePath = async path => path;
 host.readLocalFile = async path => new Blob(['# ' + path], { type: 'text/plain' });
 host.openFile = async path => { opened.push(path); };
+const overlayCase = new URLSearchParams(location.search).get('changeOverlay');
+const InputPolicy = overlayCase || cards ? InteractionPreview : React.Fragment;
+if (overlayCase === 'split') saveViewState('panel-width', 62);
 saveViewState(sessionId + ':selection', file('Agent.md'));
-saveViewState(sessionId + ':visible', true);
+saveViewState(sessionId + ':visible', !cards && overlayCase !== 'wide');
 saveViewState('file-tree', false);
 useLocalAgentStore.setState({ sessionId, runtimeReady: true, profileRead: { phase: 'ready' },
-  projection: projectSession(emptySessionState(sessionId)) });
+  projection: overlayCase ? changeOverlaySession(projectSession(emptySessionState(sessionId)), host) : projectSession(emptySessionState(sessionId)) });
+if (cards) attachmentWorkbench(host, sessionId, cards);
 Object.assign(window, { readerWorkbench: { open: (name: string) => requestReader(sessionId, file(name)), openDiff, progressiveSource, imageReads, saves, copies, longCode, manyCodeLines, opened, folders, external, watching,
   changeDirectory() { treeGeneration++; directoryListeners.forEach(update => update()); },
   directoryMemory: () => ({ reads: treeResources.length, removed: treeResources.filter(item => item.generation < treeGeneration).length,
@@ -138,7 +146,7 @@ Object.assign(window, { readerWorkbench: { open: (name: string) => requestReader
 installPaletteDefaults();
 
 createRoot(document.getElementById('root')!).render(
-  <UiPluginsProvider><ConversationDisplayProvider>
+  <InputPolicy><UiPluginsProvider><ConversationDisplayProvider>
     <AchbitWorkbenchLayout apiStatus="checking" />
-  </ConversationDisplayProvider></UiPluginsProvider>,
+  </ConversationDisplayProvider></UiPluginsProvider></InputPolicy>,
 );

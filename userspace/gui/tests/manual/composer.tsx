@@ -156,7 +156,7 @@ function Preview() {
     });
   }
   const composer = useAgentComposer('zh-CN', () => {});
-  const input = <ConversationComposer language="zh-CN" composer={composer} uiActionError={null}
+  const input = <ConversationComposer onOpenAttachment={async source => setResult(JSON.stringify(source))} language="zh-CN" composer={composer} uiActionError={null}
     onDismissUiActionError={() => {}} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} />;
   if (firstMessage) return <main className="local-agent local-agent--workbench local-agent--empty" style={{ height: '100dvh' }}>
     {input}<output id="mention-sends">{JSON.stringify(sends)}</output>
