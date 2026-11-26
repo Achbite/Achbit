@@ -27,7 +27,9 @@ test('open viewers retain fit, zoom, close and native dismissal for intrinsic an
     const element = { close: () => calls.push('close') };
     dialog.props.ref.current = element;
     const button = label => findReactElement(dialog, node => node.type === 'button' && label.test(node.props['aria-label'] ?? node.props.children));
-    assert.equal(button(/^(Fit to window|适应窗口)$/).props['aria-pressed'], true);
+    const fit = [...html.matchAll(/<button\b([^>]*)>(?:Fit to window|适应窗口)<\/button>/gu)];
+    assert.equal(fit.length, 1, 'one native fit action');
+    assert.match(fit[0][1], /\baria-pressed="true"/u);
     for (const label of [/^(Zoom in|放大图片)$/, /^(Zoom out|缩小图片)$/]) assert.equal(button(label).props.disabled, true);
     dialog.props.onClick({ target: {}, currentTarget: element });
     assert.deepEqual(calls, [], 'content clicks do not dismiss');

@@ -1,6 +1,6 @@
 import { showContentDialog } from '../shared/interactionFocus';
 import { ContentImageSave } from './ContentImageSave';
-import { CloseButton } from '../../ui-components';
+import { Button, CloseButton } from '../../ui-components';
 import { readContentImage, type ContentImage } from './contentImage';
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { t } from '../../i18n';
@@ -99,7 +99,7 @@ export function ImageReviewDialog({ lightbox, open, source, alt, intrinsicSize, 
           <output aria-label={t(language, 'content.image.zoom')}>{scale === null ? '—' : `${Math.round(scale * 100)}%`}</output>
           <button type="button" aria-label={t(language, 'content.image.zoomIn')} title={t(language, 'content.image.zoomIn')}
             disabled={scale === null || scale >= maxScale} onClick={() => changeZoom(1.25)}>+</button>
-          <button type="button" aria-pressed={zoom === null} onClick={resetFit}>{t(language, 'content.image.fit')}</button>
+          <Button aria-pressed={zoom === null} onClick={resetFit}>{t(language, 'content.image.fit')}</Button>
         </div>
         {lightbox ? <CloseButton className="conversation-image-review__close" aria-label={t(language, 'content.image.close')} onClick={() => dialog.current?.close()} />
           : <button type="button" className="conversation-image-review__close" aria-label={t(language, 'content.image.close')} onClick={() => dialog.current?.close()}>

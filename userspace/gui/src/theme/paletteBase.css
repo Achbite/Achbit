@@ -9,7 +9,7 @@
   --ac-surface-raised: var(--bg-elevated);
   --ac-surface-hover: color-mix(in srgb, var(--text-main) 7%, transparent);
   --ac-surface-active: color-mix(in srgb, var(--text-main) 12%, transparent);
-  --ac-selection: color-mix(in srgb, var(--ac-surface-active) 70%, var(--ac-surface));
+  --ac-selection: var(--ac-surface-active);
   --ac-border: var(--line);
   --ac-border-strong: var(--line-strong);
   --ac-foreground: var(--text-main);

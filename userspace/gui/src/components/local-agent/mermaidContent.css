@@ -1,7 +1,8 @@
 .conversation-markdown .conversation-diagram { position: relative; min-width: 0; max-width: 100%; margin-inline: 0; overflow: visible; }
 .conversation-diagram__actions { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: flex-end; gap: 3px; width: fit-content; margin-left: auto; background: var(--ac-surface); border-radius: 18px; }
 .conversation-diagram__actions .reader-icon-button { display: grid; place-items: center; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 0; border-radius: 50%; color: var(--ac-muted); background: transparent; cursor: pointer; }
-.conversation-diagram__actions .reader-icon-button:is(:hover:enabled,[aria-expanded=true],[aria-pressed=true]) { color: var(--ac-foreground); background: var(--ac-surface-hover); }
+.conversation-diagram__actions .reader-icon-button:where(:hover:enabled,[aria-expanded=true]) { color: var(--ac-foreground); background: var(--ac-surface-hover); }
+.conversation-diagram__actions .reader-icon-button[aria-pressed=true] { background: var(--ac-selection); color: var(--ac-foreground-strong); }
 .conversation-diagram__actions .reader-icon-button:disabled { opacity: .45; cursor: default; }
 .conversation-diagram__actions svg { width: 16px; height: 16px; }
 .conversation-diagram__actions [data-ui-icon=check] { color: var(--ac-success); }

@@ -75,10 +75,10 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
     </DisclosureSummary>
     <div className="settings-palette__toolbar">
       <div className="settings-palette__tabs" role="group" aria-label={t(language, 'settings.palette.editTheme')}>
-        {(['light', 'dark'] as const).map((value) => <button key={value} type="button"
+        {(['light', 'dark'] as const).map((value) => <Button key={value} size="compact"
           aria-pressed={theme === value} onClick={() => setTheme(value)} disabled={saving}>
           {t(language, `settings.palette.${value}`)}
-        </button>)}
+        </Button>)}
       </div>
     </div>
     {values && <>

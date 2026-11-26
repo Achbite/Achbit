@@ -72,9 +72,7 @@
 .model-usage-view [data-series="unknown"] { --series-color: var(--ac-faint); }
 .model-usage-view [data-series="output"] { --series-color: var(--ac-usage-output); }
 .model-chart-swatch { width: 9px; height: 9px; flex: none; border-radius: 2px; background: var(--series-color); }
-.model-segments { display: flex; background: var(--ac-surface-subtle); border: 1px solid var(--line); border-radius: 7px; padding: 2px; }
-.model-segments button { border: 0; background: transparent; }
-.model-segments button[aria-pressed=true] { background: var(--ac-surface-raised); box-shadow: var(--ac-shadow-small); }
+.model-segments { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--ac-font-caption); }
 .model-chart-region { position: relative; margin-top: 24px; }
 .model-chart { height: 240px; position: relative; padding: 0 0 24px 48px; }
 .model-chart-grid { position: absolute; inset: 0 0 24px; display: flex; flex-direction: column; justify-content: space-between; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--text-muted); font-size: var(--ac-font-caption, 12px); font-variant-numeric: tabular-nums; }
@@ -112,7 +110,6 @@
 
 .model-connection-entry, .model-mode-switch { display: flex; flex-wrap: wrap; gap: 8px; }
 .model-mode-switch { margin: 0 0 18px; }
-.model-services .model-mode-switch button[aria-pressed="true"] { background: var(--ac-surface-hover); color: var(--ac-foreground-strong); font-weight: 600; }
 .model-connection-hint { color: var(--text-muted); font-size: 12px; line-height: 1.6; margin: 12px 0; }
 @container (max-width: 560px) { .model-heading, .model-filters, .model-breadcrumb { flex-wrap: wrap; } .model-form-grid { min-width: 0; } }
 .model-services :is(.model-subheading, .model-coverage, .model-connection-hint, .model-heading > span, .model-breadcrumb, .model-connection-row small, .model-quota small, .model-usage-totals small) { font-size: var(--ac-font-caption); color: var(--ac-muted); }

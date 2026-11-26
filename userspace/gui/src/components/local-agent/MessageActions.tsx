@@ -39,7 +39,7 @@ export function MessageActions({ message, language, copied, busy, canEdit, onCop
     </button>}
     {message.role === 'assistant' && (['up', 'down'] as const).map((feedback) => {
       const label = t(language, feedback === 'up' ? 'agent.message.helpful' : 'agent.message.notHelpful');
-      return <button {...identity.action('feedback', 'click', { feedback })} key={feedback} type="button" className={message.feedback === feedback ? 'is-selected' : ''}
+      return <button {...identity.action('feedback', 'click', { feedback })} key={feedback} type="button"
         aria-pressed={message.feedback === feedback} aria-label={label} title={label} disabled={busy}
         onClick={() => onFeedback(message.feedback === feedback ? null : feedback)}>
         <AchbitShellIcon name={feedback === 'up' ? 'thumbUp' : 'thumbDown'} />

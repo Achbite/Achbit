@@ -128,8 +128,8 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
   return <>
     <div className="model-heading"><h2>{current?.name ?? (mode === 'subscription' ? text('添加 Coding Plan', 'Add Coding Plan') : text('添加 API 连接', 'Add API connection'))}</h2></div>
     {!current && onMode && <div className="model-mode-switch" role="group" aria-label={text('接入方式', 'Connection type')}>
-      <button type="button" aria-pressed={mode === 'metered'} onClick={() => onMode('metered')}>{text('API / 本地模型', 'API / local model')}</button>
-      <button type="button" aria-pressed={mode === 'subscription'} onClick={() => onMode('subscription')}>Coding Plan</button>
+      <Button aria-pressed={mode === 'metered'} onClick={() => onMode('metered')}>{text('API / 本地模型', 'API / local model')}</Button>
+      <Button aria-pressed={mode === 'subscription'} onClick={() => onMode('subscription')}>Coding Plan</Button>
     </div>}
     <form className="model-connection-form" onSubmit={e => { e.preventDefault(); void save(); }}>
       <fieldset disabled={busy}>
