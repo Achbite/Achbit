@@ -1,4 +1,4 @@
-// Only mounted, visible image controls may start a resource read. Scroll and unmount remove pending work.
+// Only mounted, visible thumbnail controls may start a resource read. Scroll and unmount remove pending work.
 const pendingPreviews = new Map<Element, () => Promise<void>>();
 const visiblePreviews = new Set<Element>();
 let previewObserver: IntersectionObserver | undefined;

@@ -32,6 +32,8 @@ import { ConversationLayoutCache, ConversationVirtualizer } from './conversation
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
 import { MessageAttachments } from './MessageAttachments';
+import { retainedAttachment } from './attachmentPreview';
+import type { OpenAttachment } from './fileOpening';
 import { RunFailureDetails, StoppedRunStatus, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
 import { UiEventStack } from './UiEventStack';
 import { InteractionCard } from './InteractionCard';
@@ -72,6 +74,7 @@ interface ConversationTranscriptProps {
   draftItems: AssistantDraftItem[];
   presentation: PresentedCommittedContent;
   viewport: ConversationViewport['reading'];
+  openAttachment: OpenAttachment;
   openWorkspaceResource: (workspaceId: string, logicalPath: string, position?: SourcePosition) => Promise<void>;
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   unappliedRecovery?: UnappliedRecovery;
@@ -99,7 +102,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
   draftItems,
   presentation,
   viewport,
-  openWorkspaceResource,
+  openWorkspaceResource, openAttachment,
   setUiActionError,
   canEditMessage = false,
   unappliedRecovery,
@@ -219,7 +222,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
             {item.value.filesystemReferences.length > 0 && (
               <MessageAttachments sessionId={sessionKey} references={item.value.filesystemReferences} language={language}
                 identity={reference => referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
-                onOpen={openWorkspaceResource} onError={setUiActionError} />
+                onOpen={ref => openAttachment(retainedAttachment(sessionKey, ref), ref.kind, ref.mediaType)} onError={setUiActionError} />
             )}
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
@@ -406,7 +409,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
       {runView && <RunFailureDetails key={runView.run?.runId} projection={runView} language={language} onError={setUiActionError} />}
       {runView && <UnappliedInputs key={`unapplied:${runView.sessionId}`} sessionId={runView.sessionId} inputs={runView.queuedInputs} language={language} recovery={unappliedRecovery}
         copiedId={copiedMessageId} onCopy={(id, text) => void copyMessage(id, text)}
-        onOpenReference={reference => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }} />}
+        onOpenReference={reference => { void openAttachment(retainedAttachment(runView.sessionId, reference), reference.kind, reference.mediaType).catch(reason => setUiActionError(String(reason))); }} />}
       <div ref={active ? messageEndRef : undefined} />
     </div>
     </PreviewArtifactsScope.Provider></ConversationBodyLinkScope.Provider>

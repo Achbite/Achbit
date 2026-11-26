@@ -424,7 +424,9 @@ test('transcript scopes rich text by canonical row and opens repeated attachment
       presentation: { content: () => createElement(MarkdownContent, null, source) },
       viewport: { bodyRef: { current: null }, transcriptRef: { current: null }, messageEndRef: { current: null }, followingLatest: true,
         setLatestFollowMode() {}, preserveReadingPosition() {}, scrollToAnchor() {} },
-      openWorkspaceResource: async (...args) => opened.push(args), setUiActionError() {},
+      openWorkspaceResource: assert.fail,
+      openAttachment: async (ref, kind, media) => { assert.equal(ref.sessionId, 'session:source'); assert.equal(kind, 'file');
+        assert.equal(media, 'text/plain'); opened.push([ref.workspaceId, ref.logicalPath]); }, setUiActionError: assert.fail,
     });
     return tree;
   }
@@ -437,7 +439,12 @@ test('transcript scopes rich text by canonical row and opens repeated attachment
   const attachments = findReactElement(round.props.rows[0].content(), node => node.type === MessageAttachments);
   const attachmentTree = MessageAttachments(attachments.props);
   for (const reference of [...references].reverse()) {
-    const button = findReactElement(attachmentTree, node => node.props['data-ui-action'] === 'conversation.references.open'
+    const card = findReactElement(attachmentTree, node => node.props.attachmentId === reference.referenceId);
+    let surface;
+    function CardProbe() { surface = card.type(card.props); return surface; }
+    const rendered = renderToStaticMarkup(createElement(CardProbe));
+    assert.match(rendered, /<button[^>]*data-ui-action="conversation.references.open"/);
+    const button = findReactElement(surface, node => node.props['data-ui-action'] === 'conversation.references.open'
       && JSON.parse(node.props['data-ui-target']).referenceId === reference.referenceId);
     assert.deepEqual(JSON.parse(button.props['data-ui-target']), { sessionId: 'session:source', messageId: message.messageId, referenceId: reference.referenceId });
     button.props.onClick();

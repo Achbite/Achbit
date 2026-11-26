@@ -1776,8 +1776,8 @@
       }
     },
     "gui.defaultFileOpen": {
-      "label": "文本文件默认打开方式",
-      "description": "",
+      "label": "文件默认打开方式",
+      "description": "用于文本链接和文件附件，包括 HTML 和 PDF。图片在当前窗口放大，文件夹在系统文件管理器中打开。",
       "options": {
         "reader": "Achbit Reader",
         "vscode": "Visual Studio Code"

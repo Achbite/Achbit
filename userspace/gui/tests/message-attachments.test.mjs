@@ -92,7 +92,7 @@ test('compact sent attachments keep localized annotation labels, original file a
   for (const language of ['zh-CN', 'en-US']) {
     const tree = MessageAttachments({ sessionId: 'session:one', references: refs, language,
       identity: reference => ({ 'data-ui-action': 'conversation.references.open', 'data-ui-target': reference.referenceId }),
-      onOpen: async (...args) => { opened.push(args); }, onError: error => errors.push(error) });
+      onOpen: async ref => { assert.ok(refs.includes(ref)); opened.push([ref.workspaceId, ref.logicalPath]); }, onError: error => errors.push(error) });
     const preview = findReactElement(tree, node => node.props.reference === note);
     assert.equal(preview.props.label, language === 'zh-CN' ? '标注 1' : 'Annotation 1');
     const viewer = capture(preview.type, preview.props);
@@ -104,8 +104,8 @@ test('compact sent attachments keep localized annotation labels, original file a
     assert.doesNotMatch(html, /<textarea|commentary/);
     assert.match(html, /Notes.txt/);
     assert.match(html, /TXT/);
-    await findReactElement(tree, node => node.props['data-ui-target'] === directory.referenceId).props.onClick();
-    await findReactElement(tree, node => node.props['data-ui-target'] === file.referenceId).props.onClick();
+    await findReactElement(tree, node => node.props.openIdentity?.['data-ui-target'] === directory.referenceId).props.onClick();
+    await findReactElement(tree, node => node.props.openIdentity?.['data-ui-target'] === file.referenceId).props.onClick();
   }
   assert.deepEqual(opened, [['project:one', 'docs'], ['input:note', 'note.txt'], ['project:one', 'docs'], ['input:note', 'note.txt']]);
   assert.deepEqual(errors, []);

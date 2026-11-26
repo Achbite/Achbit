@@ -2,7 +2,10 @@ import { fileLinkLocation, type SourcePosition } from './resourceLinks';
 
 export type DocumentFormat = 'html' | 'pdf' | 'markdown';
 
-export function documentFormat(path: string): DocumentFormat | null {
+export function documentFormat(path: string, mediaType?: string): DocumentFormat | null {
+  if (mediaType === 'application/pdf') return 'pdf';
+  if (mediaType === 'text/html') return 'html';
+  if (mediaType === 'text/markdown') return 'markdown';
   const suffix = path.split('.').at(-1)?.toLowerCase();
   if (suffix === 'html' || suffix === 'htm') return 'html';
   if (suffix === 'md' || suffix === 'markdown') return 'markdown';
@@ -19,7 +22,7 @@ export function imageMediaType(path: string): string | null {
 export async function selectedFilePreview(path: string, blob: Blob) {
   const imageType = imageMediaType(path);
   if (imageType) return { status: 'document' as const, format: 'image' as const, blob: blob.slice(0, blob.size, imageType) };
-  const format = documentFormat(path);
+  const format = documentFormat(path, blob.type);
   if (format === 'pdf' && await blob.slice(0, 5).text() !== '%PDF-') throw new Error('document_invalid_pdf');
   if (format) return { status: 'document' as const, format, blob };
   return { status: 'source' as const, content: await readDocumentText(blob) };

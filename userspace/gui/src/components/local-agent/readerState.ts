@@ -6,7 +6,7 @@ import type { NativePage } from '../../services/nativeBrowser';
 export type AgentReaderTarget = { kind: 'agent'; parentSessionId: string; agentSessionId?: string; entryId?: string };
 export type ReaderFileTarget = (({ kind: 'workspace'; workspaceId: string; logicalPath: string } & SourcePosition)
   | { kind: 'resource'; resource: ResourceReference; name: string }
-  | { kind: 'file'; path: string }) & { canonicalPath?: string; sourceSessionId?: string };
+  | { kind: 'file'; path: string }) & { canonicalPath?: string; sourceSessionId?: string; mediaType?: string };
 export type ReaderTarget = ReaderFileTarget | ({ kind: 'diff'; file: ChangedFile }
   | { kind: 'artifact'; artifact: ArtifactProjection; interactive?: boolean }
   | AgentReaderTarget) & { sourceSessionId?: string }
@@ -101,7 +101,7 @@ export async function identifyReaderFiles(sessionId: string, target: ReaderFileT
   return { located, restored };
 }
 
-export function selectReaderTarget(state: ReaderViewState, sessionId: string, target: ResolvedReaderTarget,
+export function selectReaderTarget(state: ReaderViewState, sessionId: string | null, target: ResolvedReaderTarget,
   activate = true, restored?: Map<ReaderTarget, ReaderFileTarget>): ReaderViewState {
   const key = readerTargetKey(target);
   const before = state.sessionId === sessionId ? state.tabs : [];

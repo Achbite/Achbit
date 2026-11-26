@@ -731,7 +731,7 @@ test('runtime file visibility is a searchable shared GUI preference and failed s
   initial.effectiveSettings = useSettingsStore.getState().effectiveSettings;
   const html = renderToStaticMarkup(createElement(GuiSettingsSection, { category: 'general', apiStatus: 'ready' }));
   assert.match(html, /aria-label="Show runtime files"[^>]*checked=""/);
-  assert.match(html, /aria-label="Open text files with"/, 'the destination page retains its complete settings');
+  assert.match(html, /aria-label="Open files with"/, 'the destination page retains its complete settings');
   for (const [language, label] of [['zh-CN', '显示运行环境文件'], ['en-US', 'Show runtime files']]) {
     const search = settingsSearchDefinitions(language, 'macos').find(item => item.id === key);
     assert.equal(search.category, 'general');

@@ -74,11 +74,14 @@ test('transcript boundary follows the actual input through accessories, resizing
   assert.equal(fixture.properties.size, 0, 'unmount releases its owned CSS geometry');
 });
 
-test('a footer notice, populated dock and its open list reserve their real bounds; an empty dock is transparent', async t => {
+test('only in-flow footer rows reserve reading space; hovering, pinning or expanding the list leaves its boundary unchanged', async t => {
   const { observeConversationComposerBoundary } = await loadGuiModule(t, '/src/components/local-agent/conversationComposerBoundary.ts');
   const f = boundaryFixture(t);
-  let filled = false, visible = false;
-  const list = { getBoundingClientRect: () => ({ top: 388, height: visible ? 126 : 0, width: 400 }) };
+  const previousStyle = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = row => ({ position: row.position ?? 'static' });
+  t.after(() => { if (previousStyle) globalThis.getComputedStyle = previousStyle; else delete globalThis.getComputedStyle; });
+  let filled = false, listHeight = 0;
+  const list = { getBoundingClientRect: () => ({ top: 514 - listHeight, height: listHeight, width: 400 }) };
   const dock = { get childElementCount() { return Number(filled); },
     getBoundingClientRect: () => ({ top: 508, height: 32, width: 640 }),
     querySelector: () => filled ? list : null };
@@ -92,9 +95,18 @@ test('a footer notice, populated dock and its open list reserve their real bound
   assert.equal(f.value(), '2px', 'the input is not the reading edge when a notice precedes it');
   f.shell.children.shift(); filled = true; f.mutations[0].callback();
   assert.equal(f.value(), '8px', 'a dock can gain a real control without resizing its slot');
-  assert.ok(f.observers[0].nodes.includes(list));
-  visible = true; f.observers[0].callback(); assert.equal(f.value(), '-112px', 'a floating list can rise above the footer grid row');
-  visible = false; f.observers[0].callback(); assert.equal(f.value(), '8px');
+  const writes = f.writes;
+  for (listHeight of [126, 240, 126, 0]) {
+    f.observers[0].callback();
+    assert.equal(f.value(), '8px', 'the list can cover text but cannot resize it');
+  }
+  assert.equal(f.writes, writes);
+  assert.ok(!f.observers[0].nodes.includes(list), 'popup size is owned by the popup, not the transcript');
+  for (const position of ['absolute', 'fixed']) {
+    f.shell.children.unshift({ ...list, position }); listHeight = 200;
+    f.mutations[0].callback(); assert.equal(f.value(), '8px', 'a direct floating child is not a footer row either');
+    f.shell.children.shift();
+  }
   filled = false; f.mutations[0].callback(); assert.equal(f.value(), '40px');
   assert.ok(!f.observers[0].nodes.includes(list));
   stop(); assert.equal(f.mutations[0].disconnected, true);

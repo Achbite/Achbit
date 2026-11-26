@@ -23,7 +23,7 @@ async function boundPickedDocument(host: ConversationHost, session: string, path
 }
 
 /** Resolve within the displayed file's original Session and resource grant. Never call the physical file picker reader from Markdown. */
-export function documentImageLoader(host: ConversationHost, session: string, target: DocumentTarget, language: UiLanguage): ConversationHost['loadImage'] {
+export function documentImageLoader(host: ConversationHost, session: string | null, target: DocumentTarget, language: UiLanguage): ConversationHost['loadImage'] {
   let origin: ResourceReference | undefined = target.kind === 'workspace' ? { workspaceId: target.workspaceId, logicalPath: target.logicalPath }
     : target.kind === 'resource' ? target.resource : undefined;
   const unavailable = () => new Error(language === 'zh-CN' ? '相对图片需要位于文档获准读取的目录中。' : 'A relative image must be inside a directory this document can read.');
@@ -34,6 +34,7 @@ export function documentImageLoader(host: ConversationHost, session: string, tar
     let relative: string;
     try { relative = decodeURIComponent(source.split(/[?#]/u, 1)[0]); } catch { throw unavailable(); }
     if (!relative || /^(?:\/|[a-z][a-z\d+.-]*:)|[\\\u0000-\u001f]/iu.test(relative)) throw unavailable();
+    if (!session) throw unavailable();
     if (!origin && target.kind === 'file') origin = await boundPickedDocument(host, session, target.canonicalPath ?? target.path, signal);
     if (!origin?.logicalPath || 'change' in origin) throw unavailable();
     const parts = origin.logicalPath.split('/').slice(0, -1);

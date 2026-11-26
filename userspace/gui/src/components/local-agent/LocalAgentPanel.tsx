@@ -112,7 +112,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const automaticReview = automaticApproval || automaticPlan ? <ComposerDecisionPanels language={language} composer={{
     ...composer, pendingApproval: automaticApproval, pendingPlan: automaticPlan, pendingInteraction: null, pendingScopeAddition: null,
   }} /> : null;
-  const resourcePreview = useResourcePreview(sessionId, readerNavigation);
+  const resourcePreview = useResourcePreview(sessionId, readerNavigation, sessionId ? undefined : composer.conversationKey);
+  const readerAvailable = !!sessionId || resourcePreview.tabs.length > 0;
   const activeReader = resourcePreview.tabs.find(tab => tab.id === resourcePreview.activeId)?.target;
   const activeAgent = resourcePreview.visible && activeReader?.kind === 'agent' ? activeReader : null;
   const [readerHeader, setReaderHeader] = useState<HTMLDivElement | null>(null);
@@ -129,13 +130,13 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           kind: 'conversationHeader', sessionId, title,
           project: activeProject ? { id: activeProject.id, title: activeProject.title } : null,
           reader: { visible: resourcePreview.visible, expanded: resourcePreview.expanded,
-            treeVisible: resourcePreview.treeVisible, canOpen: !!sessionId },
+            treeVisible: resourcePreview.treeVisible, canOpen: readerAvailable },
         }} debugActions={{
-          toggleReader: { unavailableReason: sessionId ? null : 'reader_session_required' },
+          toggleReader: { unavailableReason: readerAvailable ? null : 'reader_session_required' },
           toggleReaderExpanded: { unavailableReason: resourcePreview.visible ? null : 'reader_not_visible' },
           toggleTree: { unavailableReason: null },
         }} actions={{
-          toggleReader: () => { if (sessionId) resourcePreview.toggle(); },
+          toggleReader: () => { if (readerAvailable) resourcePreview.toggle(); },
           toggleReaderExpanded: () => { if (resourcePreview.visible) resourcePreview.expand(); },
           toggleTree: resourcePreview.toggleTree,
         }} regions={{ heading: <div className="local-agent__header-conversation">
@@ -149,7 +150,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         </div>, reader: <div className="local-agent__header-preview">
           {resourcePreview.visible && <div className="reader-header-tabs" ref={setReaderHeader} />}
           <div className="local-agent__header-actions">
-          <ReaderControls sessionId={sessionId} language={language} preview={resourcePreview} disabled={!sessionId} />
+          <ReaderControls sessionId={sessionId} language={language} preview={resourcePreview} disabled={!readerAvailable} />
           </div>
         </div> }} />
       </header>
@@ -175,6 +176,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           presentation={presentation}
           viewport={viewport.reading}
           openWorkspaceResource={resourcePreview.openWorkspaceResource}
+          openAttachment={resourcePreview.openAttachment}
           setUiActionError={setUiActionError}
           canEditMessage={composer.canEditMessage}
           onEditMessage={composer.beginMessageEdit}
@@ -213,6 +215,10 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         conversationBodyRef={bodyRef}
         readerExpanded={resourcePreview.visible}
         onEditBrowserReview={resourcePreview.editBrowserReview}
+        onOpenAttachment={async (...args) => {
+          try { setUiActionError(null); await resourcePreview.openAttachment(...args); }
+          catch (reason) { setUiActionError(reason instanceof Error ? reason.message : String(reason)); }
+        }}
         changeBar={showChangeBar && <FileChanges key={`${sessionId}:${projection.run!.runId}`} activities={roundChangeActivities(projection, projection.run!.runId)} compact />}
         language={language}
         composer={composer}

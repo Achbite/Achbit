@@ -20,6 +20,7 @@ import { createPortal } from 'react-dom';
 import { useId, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { revealActiveReaderTab } from './readerTabVisibility';
 import { useConversationHost } from './ConversationHost';
+import { openFilesystemAttachment, type OpenAttachment } from './fileOpening';
 import type { SourcePosition } from './resourceLinks';
 import { localizedError, t, type UiLanguage } from '../../i18n';
 import {
@@ -95,11 +96,11 @@ function tabName(tab: ReaderTab, language: UiLanguage): string {
 }
 
 /** View state owns open tabs; a collapsed panel keeps their content and native pages mounted. */
-export function useResourcePreview(sessionId: string | null, navigation?: ReaderNavigation) {
+export function useResourcePreview(sessionId: string | null, navigation?: ReaderNavigation, draftKey?: string) {
   const host = useConversationHost();
   const language = useUiLanguage();
   const [state, setState] = useState<ReaderViewState>(() => readReaderViewState(sessionId));
-  useInterfaceReloadView('reader', { ...state, tabs: state.tabs.map(tab => tab.page ? { ...tab, target: { kind: 'browser', previewId: tab.page.previewId } } : tab) });
+  useInterfaceReloadView('reader', { ...state, draftKey, tabs: state.tabs.map(tab => tab.page ? { ...tab, target: { kind: 'browser', previewId: tab.page.previewId } } : tab) });
   const [treeVisible, setTreeVisible] = useState(() => readViewState('file-tree', true));
   const [width, setWidth] = useState(() => readViewState<number>('panel-width', PANE_GEOMETRY.preview.initial));
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +110,17 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   stateRef.current = state;
   const openSequence = useRef(0);
   const openLifetime = useRef({});
-  useLayoutEffect(() => () => { openLifetime.current = {}; }, [sessionId]);
+  const lastDraft = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (sessionId) lastDraft.current = undefined;
+    else if (lastDraft.current !== draftKey) {
+      lastDraft.current = draftKey;
+      const saved = restoredInterfaceView<(ReaderViewState & { draftKey?: string }) | null>('reader', null);
+      setState(saved && saved.sessionId === null && saved.draftKey === draftKey
+        ? takeRestoredInterfaceView('reader', saved) : readReaderViewState(null));
+    }
+    return () => { openLifetime.current = {}; };
+  }, [sessionId, draftKey]);
   const currentSession = useRef(sessionId);
   currentSession.current = sessionId;
   const live =
@@ -118,14 +129,17 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
       : { sessionId, tabs: [], activeId: null, visible: false, expanded: false };
   const selectTarget = useCallback(
     (target: ResolvedReaderTarget, activate = true, restored?: Map<ReaderTarget, ReaderFileTarget>) => {
-      if (!sessionId) return;
+      if (!sessionId && target.kind !== 'file') return;
       setState(old => selectReaderTarget(old, sessionId, target, activate, restored));
       if (activate) setError(null);
     },
     [sessionId],
   );
   const openTarget = useCallback((target: ReaderTarget) => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      if (target.kind === 'file' && !target.sourceSessionId) selectTarget(target);
+      return;
+    }
     const sequence = ++openSequence.current;
     const lifetime = openLifetime.current;
     if (isReaderFile(target)) {
@@ -188,7 +202,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     openSequence.current++;
     const { target, visible, expanded } = request.location;
     if (target) selectTarget(target);
-    else saveViewState(sessionId + ':selection', null);
+    else if (sessionId) saveViewState(sessionId + ':selection', null);
     setState(old => ({ ...old, sessionId, activeId: target ? old.activeId : null, visible, expanded }));
   }, [request, sessionId, selectTarget]);
   const selectedTarget = live.tabs.find(tab => tab.id === live.activeId)?.target ?? null;
@@ -240,13 +254,21 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     if (!sessionId) return;
     await openBoundResource(host, sessionId, workspaceId, logicalPath, position, () => currentSession.current === sessionId, openTarget);
   }, [host, sessionId, openTarget]);
+  const openAttachment: OpenAttachment = useCallback(async (source, kind, mediaType) => {
+    const lifetime = openLifetime.current, sequence = ++openSequence.current;
+    const current = () => openLifetime.current === lifetime && currentSession.current === sessionId && openSequence.current === sequence;
+    if (!('path' in source) && source.sessionId !== sessionId) throw new Error('conversation_session_changed');
+    try { await openFilesystemAttachment(host, source, kind, openTarget, current, mediaType); }
+    catch (reason) { if (current()) throw reason; }
+  }, [host, openTarget, sessionId]);
   const removeTab = (id: string, selectRemaining = false) => {
     openLifetime.current = {};
     navigation?.onTabClosed(sessionId, id);
     bindings.current.delete(id);
     setState((old) => {
       const next = removeReaderTab(old, id, selectRemaining);
-      saveViewState(
+      if (!sessionId && !next.tabs.length) return readReaderViewState(null);
+      if (sessionId) saveViewState(
         sessionId + ':selection',
         next.tabs.find(tab => tab.id === next.activeId)?.target ?? null,
       );
@@ -254,11 +276,10 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     });
   };
   const closeTab = async (id: string) => {
-    if (!sessionId) return;
     const tab = live.tabs.find((tab) => tab.id === id);
     const active = live.activeId === id, sequence = openSequence.current;
     try {
-      if (tab?.target.kind === 'browser') {
+      if (tab?.target.kind === 'browser' && sessionId) {
         const binding = bindings.current.get(id) ?? await nativeHostBinding();
         if (!binding) throw new Error('Native browser requires the desktop GUI Host.');
         await nativeBrowserCommand({ ...binding, sessionId }, { action: 'close', previewId: tab.target.previewId });
@@ -286,7 +307,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
   const selectTab = (id: string) => {
     openSequence.current++;
     setState((old) => {
-      saveViewState(
+      if (sessionId) saveViewState(
         sessionId + ':selection',
         old.tabs.find((tab) => tab.id === id)?.target ?? null,
       );
@@ -305,6 +326,7 @@ export function useResourcePreview(sessionId: string | null, navigation?: Reader
     error,
     openTarget,
     openWorkspaceResource,
+    openAttachment,
     closeTab,
     removeTab,
     ready,
@@ -410,7 +432,7 @@ export function ResourcePreview({
               </div>
             ))}
           </div>
-          <button
+          {preview.sessionId && <button
             className="reader-icon-button"
             type="button"
             onClick={preview.newPage}
@@ -418,7 +440,7 @@ export function ResourcePreview({
             title={chinese ? '打开预览' : 'Open preview'}
           >
             <AchbitShellIcon name="plus" />
-          </button>
+          </button>}
           <div className="reader-tabs__actions">
             <UiRegion slot="reader.toolbar" data={readerData} actions={readerActions}>
               {ready && <ReaderFileActions sessionId={activeSessionId} target={activeTarget} language={language} />}
@@ -472,11 +494,11 @@ export function ResourcePreview({
               ) : tab.target.kind === 'artifact' && tab.target.interactive && preview.sessionId ? (
                 <ArtifactInteractivePreview sessionId={sourceSessionId(tab.target)!} artifact={tab.target.artifact} />
               ) : (
-                preview.sessionId && (
+                (preview.sessionId || tab.target.kind === 'file') && (
                   <ReaderDocument
                     active={preview.visible && preview.activeId === tab.id}
                     key={tab.target.kind === 'workspace' ? `${tab.id}:${tab.target.line ?? ''}:${tab.target.column ?? ''}` : tab.id}
-                    sessionId={sourceSessionId(tab.target)!}
+                    sessionId={sourceSessionId(tab.target)}
                     target={tab.target as Exclude<ReaderTarget, { kind: 'browser' | 'diff' | 'agent' }>}
                     language={language}
                     openTarget={target => openFileTarget(sourceSessionId(tab.target), target)}
@@ -516,7 +538,7 @@ export function ReaderControls({ sessionId, language, preview, disabled }: {
   const expandLabel = preview.expanded ? (chinese ? '返回并排' : 'Restore split view') : (chinese ? '铺满工作区' : 'Expand preview');
   const sidebarLabel = t(language, 'agent.resource.preview');
   return <>
-    {preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" {...identity.action('toggle-tree', 'click')} className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><AchbitShellIcon name="folder" /></button>}
+    {sessionId && preview.visible && preview.tabs.find(tab => tab.id === preview.activeId)?.target.kind !== 'agent' && <button type="button" {...identity.action('toggle-tree', 'click')} className="reader-icon-button" aria-label={chinese ? '文件树' : 'File tree'} title={chinese ? '文件树' : 'File tree'} aria-pressed={preview.treeVisible} onClick={preview.toggleTree}><AchbitShellIcon name="folder" /></button>}
     {preview.visible && <button type="button" {...identity.action('toggle-expanded', 'click')} className="reader-icon-button" onClick={preview.expand} aria-label={expandLabel} title={expandLabel}>
       <AchbitShellIcon name={preview.expanded ? 'collapse' : 'expand'} />
     </button>}
@@ -648,7 +670,7 @@ function ReaderDocument({
   openTarget,
 }: {
   active: boolean;
-  sessionId: string;
+  sessionId: string | null;
   target: Exclude<ReaderTarget, { kind: 'browser' | 'diff' | 'agent' }>;
   language: UiLanguage;
   openTarget(target: ReaderTarget): void;
@@ -674,14 +696,21 @@ function ReaderDocument({
   const reference = targetResource(target);
   const referenceId = reference && resourceKey(reference);
   const loadImage = useMemo(() => documentImageLoader(host, sessionId, target, language), [host, sessionId, target, language]);
-  const bodyLinks = useConversationBodyLinks({ sessionId, document: { reference,
+  const bodyLinks = useConversationBodyLinks(sessionId ? { sessionId, document: { reference,
     path: isReaderFile(target) ? target.canonicalPath ?? (target.kind === 'file' ? target.path : undefined) : undefined,
-  } }, language, setLocationError, true);
+  } } : null, language, setLocationError, true);
+  const openDraftLink: typeof bodyLinks.open = event => {
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    const href = (event.target as Element).closest('a')?.getAttribute('href') ?? '';
+    if (/^https?:\/\//iu.test(href)) return host.openExternalLink(href).catch(reason => setLocationError(String(reason)));
+    setLocationError(chinese ? '草稿附件只允许读取所选文件。' : 'This draft attachment grants access only to the selected file.');
+  };
   const [watchError, setWatchError] = useState('');
   const [watchReady, setWatchReady] = useState(false);
   const [watchAttempt, setWatchAttempt] = useState(0);
   useEffect(() => {
-    if (!reference) return;
+    if (!reference || !sessionId) return;
     const controller = new AbortController();
     setWatchReady(false);
     setState({ status: 'loading' });
@@ -710,6 +739,7 @@ function ReaderDocument({
         if (!controller.signal.aborted) setState(result);
         return;
       }
+      if (!sessionId) throw new Error('conversation_session_required');
       if (target.kind === 'artifact') {
         const a = target.artifact,
           blob = await readConversationArtifact(sessionId, a.artifactId, controller.signal);
@@ -731,8 +761,8 @@ function ReaderDocument({
         if (!controller.signal.aborted) setState({ status: 'document', blob, format });
         return;
       }
-      const format = startByte === undefined && sourceLine === undefined ? documentFormat(path) : null;
-      if (startByte === undefined && imageMediaType(path)) {
+      const format = startByte === undefined && sourceLine === undefined ? documentFormat(path, target.mediaType) : null;
+      if (startByte === undefined && (target.mediaType?.startsWith('image/') || imageMediaType(path))) {
         const blob = await host.resources.readResourceBlob(sessionId, reference!, 'image', controller.signal);
         if (!controller.signal.aborted) setState({ status: 'document', blob, format: 'image' });
       } else if (format) {
@@ -755,6 +785,7 @@ function ReaderDocument({
   const resolve = async () => {
     if (target.kind === 'file') return target.path;
     if (target.kind === 'artifact') return target.artifact.logicalPath ?? target.artifact.uri ?? target.artifact.artifactId;
+    if (!sessionId) throw new Error('conversation_session_required');
     return (await host.resources.resolveResourceReference(sessionId, reference!)).path;
   };
   const actions = <>
@@ -793,7 +824,7 @@ function ReaderDocument({
             )}
           </div>
         </details>
-        {target.kind !== 'artifact' && hasNativeBrowser() && /\.html?$/i.test(path) && (
+        {sessionId && target.kind !== 'artifact' && hasNativeBrowser() && /\.html?$/i.test(path) && (
           <button
             className="settings-button"
             onClick={() =>
@@ -847,7 +878,7 @@ function ReaderDocument({
           </Suspense></InterfaceLoadBoundary>
         ) : state.status === 'document' ? (
           <InterfaceLoadBoundary><Suspense fallback={<p>{t(language, 'agent.resource.reading')}</p>}>
-            <ReaderImageScope.Provider value={loadImage}><ConversationBodyLinkScope.Provider value={bodyLinks.open}><DocumentPreview
+            <ReaderImageScope.Provider value={loadImage}><ConversationBodyLinkScope.Provider value={sessionId ? bodyLinks.open : openDraftLink}><DocumentPreview
               readingKey={key}
               active={active}
               location={target.kind === 'workspace' ? target : undefined}

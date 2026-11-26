@@ -19,7 +19,6 @@ export function observeConversationComposerBoundary(shell: HTMLElement, viewport
   if (!viewport || !surface) return () => {};
   const property = '--conversation-composer-overlap';
   const dock = shell.querySelector<HTMLElement>(':scope > .conversation-change-dock');
-  let dockList: HTMLElement | null = null;
   let connected = false;
   const update = () => {
     const ready = surface.isConnected !== false && viewport.isConnected !== false && viewport.clientHeight > 0;
@@ -30,25 +29,19 @@ export function observeConversationComposerBoundary(shell: HTMLElement, viewport
       const input = surface.querySelector?.<HTMLTextAreaElement>(':scope > textarea');
       if (input) resizeComposerTextarea(input);
     }
-    const nextList = dock?.querySelector<HTMLElement>('.conversation-change-list') ?? null;
-    if (nextList !== dockList) {
-      if (dockList) resize.unobserve(dockList);
-      dockList = nextList;
-      if (dockList) resize.observe(dockList);
-    }
     let overlap = 0;
     if (ready) {
       const bottom = viewport.getBoundingClientRect().bottom;
       overlap = Math.max(0, surface.getBoundingClientRect().top - bottom);
-      const reserve = (row: Element) => {
-        const rect = row.getBoundingClientRect();
-        if (rect.height > 0 && rect.width > 0) overlap = Math.min(overlap, rect.top - bottom);
-      };
+      // Only in-flow footer rows own reading space. A popup may cover the
+      // transcript; its position, scrolling and async content must not resize it.
       for (const row of shell.children) {
         if (row === dock && !dock.childElementCount) continue; // transparent spacer
-        reserve(row);
+        const { position } = getComputedStyle(row);
+        if (position === 'absolute' || position === 'fixed') continue;
+        const rect = row.getBoundingClientRect();
+        if (rect.height > 0 && rect.width > 0) overlap = Math.min(overlap, rect.top - bottom);
       }
-      if (dockList) reserve(dockList); // an open absolute list can extend above the grid row
     }
     const value = `${overlap}px`;
     if (viewport.style.getPropertyValue(property) !== value) viewport.style.setProperty(property, value);

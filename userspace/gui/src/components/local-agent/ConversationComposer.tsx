@@ -19,6 +19,10 @@ import { DismissibleError } from './DismissibleError';
 import { HostRebind } from './HostRebind';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { ComposerImageAttachment } from './ComposerImageAttachment';
+import { FileAttachmentCard } from './FileAttachmentCard';
+import { attachmentName, attachmentPath, retainedAttachment, type AttachmentSource } from './attachmentPreview';
+import { imageMediaType } from './documentResources';
+import type { OpenAttachment } from './fileOpening';
 import { QueuedInputPreview } from './QueuedInputPreview';
 import { observeConversationComposerBoundary, resizeComposerTextarea } from './conversationComposerBoundary';
 import { composerDecisionView } from './composerDecisions';
@@ -34,6 +38,7 @@ interface ConversationComposerProps {
   uiActionError: string | null;
   onDismissUiActionError(): void;
   onEditBrowserReview(review: BrowserAnnotationDraft): void;
+  onOpenAttachment: OpenAttachment;
 }
 
 export function ConversationComposer({
@@ -44,7 +49,7 @@ export function ConversationComposer({
   composer,
   uiActionError,
   onDismissUiActionError,
-  onEditBrowserReview,
+  onEditBrowserReview, onOpenAttachment,
 }: ConversationComposerProps) {
   const identity = useUiOwner('composer.controls', undefined, { conversationKey: composer.conversationKey });
   const [childInline, setChildInline] = useState(false);
@@ -210,6 +215,20 @@ export function ConversationComposer({
   useLayoutEffect(() => setReaderAttachmentsOpen(false), [readerInputCollapsed, composer.conversationKey, hasDraftAttachments]);
   useDismissibleLayer({ open: readerAttachmentsOpen, roots: [attachmentRail, attachmentSummary], trigger: attachmentSummary,
     onDismiss: () => setReaderAttachmentsOpen(false) });
+  const attachmentCard = (id: string, name: string, kind: 'file' | 'directory', source: AttachmentSource,
+    onRemove: () => void, mediaType?: string, byteLength?: number) => {
+    const image = kind === 'file' && (mediaType?.startsWith('image/') || imageMediaType(attachmentPath(source)));
+    const openIdentity = identity.action(image ? 'open-image' : 'open-attachment', 'click', { attachmentId: id });
+    const removeIdentity = identity.action(image ? 'remove-image' : 'remove-attachment', 'click', { attachmentId: id });
+    const open = () => {
+      setReaderAttachmentsOpen(false);
+      void onOpenAttachment(source, kind, mediaType);
+    };
+    return image ? <ComposerImageAttachment key={id} attachmentId={id} name={name} source={source} language={language}
+      openIdentity={openIdentity} removeIdentity={removeIdentity} onRemove={onRemove} />
+      : <FileAttachmentCard key={id} attachmentId={id} name={name} source={source} kind={kind} mediaType={mediaType} byteLength={byteLength}
+        language={language} openIdentity={openIdentity} removeIdentity={removeIdentity} onClick={open} onRemove={onRemove} />;
+  };
   const current = projection;
   const currentRequest = projection?.contextCompositions.filter((item)=>item.runId===projection.run?.runId).at(-1);
   const readyPlugins = new Set(currentRequest?.tools.filter((tool)=>tool.availability==='callable').map((tool)=>tool.pluginUri));
@@ -496,55 +515,16 @@ export function ConversationComposer({
                 ><AchbitShellIcon name="close" size={14} /></button>
               </span>
             ))}
-            {composer.recoveredContent.filesystemReferences.map(reference => reference.kind === 'file' && reference.mediaType.startsWith('image/')
-              ? <ComposerImageAttachment key={reference.referenceId} attachmentId={reference.referenceId} name={reference.displayName}
-                  source={{ sessionId: projection?.sessionId ?? null, workspaceId: reference.workspaceId, logicalPath: reference.logicalPath }} language={language}
-                  openIdentity={identity.action('open-image', 'click', { attachmentId: reference.referenceId })}
-                  removeIdentity={identity.action('remove-image', 'click', { attachmentId: reference.referenceId })}
-                  onRemove={() => composer.removeRecoveredReference(reference.referenceId)} />
-              : <span key={reference.referenceId} data-attachment-id={reference.referenceId}>
-              <AchbitShellIcon name={reference.kind === 'directory' ? 'folder' : 'file'} />
-              <span className="local-agent__attachment-name" title={reference.logicalPath}>{reference.displayName}</span>
-              <IconButton size="compact" icon="close" aria-label={t(language, 'agent.attachment.remove', { name: reference.displayName })}
-                onClick={() => composer.removeRecoveredReference(reference.referenceId)} />
-            </span>)}
+            {composer.recoveredContent.filesystemReferences.map(ref => attachmentCard(ref.referenceId, ref.displayName, ref.kind,
+              retainedAttachment(projection?.sessionId ?? null, ref), () => composer.removeRecoveredReference(ref.referenceId), ref.mediaType, ref.byteLength))}
             {composer.recoveredContent.guidanceReferences.map(reference => <span key={reference.referenceId} data-attachment-id={reference.referenceId}>
               <AchbitShellIcon name="extension" /><span className="local-agent__attachment-name">{reference.label}</span>
               <IconButton size="compact" icon="close" aria-label={t(language, 'agent.attachment.remove', { name: reference.label })}
                 onClick={() => composer.removeRecoveredGuidance(reference.referenceId)} />
             </span>)}
-            {pendingFilesystemPaths.filter(reference => !composer.pastedTexts.some(paste => paste.browserReview?.screenshot === reference.path)).map(reference => (
-              reference.kind === 'file' && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(reference.path)
-              ? <ComposerImageAttachment key={`${reference.kind}:${reference.path}`} attachmentId={`${reference.kind}:${reference.path}`}
-                  name={filesystemPathDisplayName(reference.path)} source={{ path: reference.path }} language={language}
-                  openIdentity={identity.action('open-image', 'click', { attachmentId: `${reference.kind}:${reference.path}` })}
-                  removeIdentity={identity.action('remove-image', 'click', { attachmentId: `${reference.kind}:${reference.path}` })}
-                  onRemove={() => setPendingFilesystemPaths(current => current.filter(item => item.path !== reference.path || item.kind !== reference.kind))} />
-              : <span
-                className={reference.kind === 'directory'
-                  ? 'local-agent__draft-directory'
-                  : undefined}
-                key={`${reference.kind}:${reference.path}`}
-                data-attachment-id={`${reference.kind}:${reference.path}`}
-              >
-                <AchbitShellIcon name={reference.kind === 'directory'
-                  ? 'folder'
-                  : 'artifact'} />
-                <span className="local-agent__attachment-name" title={reference.path}>
-                  {reference.kind === 'directory' ? `${t(language, 'agent.attachment.folder')} · ` : ''}
-                  {filesystemPathDisplayName(reference.path)}
-                </span>
-                <button
-                  type="button"
-                  aria-label={t(language, 'agent.attachment.remove', {
-                    name: filesystemPathDisplayName(reference.path),
-                  })}
-                  onClick={() => setPendingFilesystemPaths((current) => current.filter((item) => (
-                    item.path !== reference.path || item.kind !== reference.kind
-                  )))}
-                ><AchbitShellIcon name="close" size={14} /></button>
-              </span>
-            ))}
+            {pendingFilesystemPaths.filter(ref => !annotations.some(note => note.browserReview?.screenshot === ref.path)).map(ref =>
+              attachmentCard(`${ref.kind}:${ref.path}`, attachmentName(ref.path), ref.kind, { path: ref.path },
+                () => setPendingFilesystemPaths(current => current.filter(item => item.path !== ref.path || item.kind !== ref.kind))))}
           </div>
         )}
         {composer.textDecision && <span className="local-agent__decision-input-mark" aria-hidden="true"><AchbitShellIcon name="compose" size={16} /></span>}
@@ -732,9 +712,4 @@ export function ConversationComposer({
       )}
     </footer></UiRegion>
   );
-}
-
-function filesystemPathDisplayName(absolutePath: string): string {
-  const normalized = absolutePath.replace(/[\\/]+$/u, '');
-  return normalized.split(/[\\/]/u).at(-1) || absolutePath;
 }

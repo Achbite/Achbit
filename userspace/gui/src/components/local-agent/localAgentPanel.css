@@ -162,7 +162,7 @@
   overflow-anchor: none;
 }
 
-/* Extend through empty accessory space; stop before a notice, change list or input. */
+/* Read through empty accessory space; only persistent footer rows bound the transcript. */
 .local-agent:not(.local-agent--empty):not(.local-agent--expanded) .local-agent__body {
   height: calc(100% + var(--conversation-composer-overlap, 0px));
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
@@ -2556,6 +2556,7 @@
   /* Keep view and remove independently reachable even for a tiny icon. */
   min-width: calc(2 * var(--ac-control-size-compact));
 }
+.local-agent__image-attachment[data-file-backed] { display: grid; place-items: center; width: var(--attachment-thumbnail-width); height: var(--attachment-thumbnail-height); }
 .local-agent__image-attachment > .local-agent__image-attachment-remove {
   position: absolute;
   inset-block-start: 0;

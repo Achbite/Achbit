@@ -223,7 +223,7 @@
 .reader-external-open summary:hover,.reader-external-open[open] summary { background:var(--ac-surface-hover); color:var(--ac-foreground); }
 .reader-external-open summary::-webkit-details-marker { display:none; }
 .reader-external-open svg { width:14px; height:14px; }
-.reader-external-open [role=menu] { position:absolute; right:0; top:calc(100% + 6px); z-index:30; min-width:170px; padding:5px; border:1px solid var(--ac-border); border-radius:9px; background:var(--ac-surface-raised); box-shadow:0 5px 20px color-mix(in srgb,var(--ac-shadow-color) 12%,transparent); }
+.reader-external-open [role=menu] { position:absolute; right:0; top:calc(100% + 6px); z-index:30; min-width:170px; padding:5px; border:1px solid var(--ac-border); border-radius:var(--ac-radius-control); background:var(--ac-surface-raised); box-shadow:var(--ac-shadow-panel); }
 .reader-external-open button { display:block; width:100%; border:0; background:transparent; color:inherit; font:inherit; text-align:left; padding:8px; border-radius:5px; cursor:pointer; }
 .reader-external-open button:hover { background:var(--ac-surface-hover); }
 .reader-external-open button:disabled { opacity:.4; cursor:default; }
