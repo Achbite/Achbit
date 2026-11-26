@@ -49,6 +49,7 @@ export function hasDesktopNotifications(): boolean {
 }
 
 export interface CompletionReminder {
+  appearance?: string;
   foregroundSound: boolean;
   sessionId: string;
   title: string;

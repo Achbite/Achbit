@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { runInNewContext } from 'node:vm';
-import { loadGuiModule } from './gui-projection-contract.mjs';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { findReactElement, loadGuiModule } from './gui-projection-contract.mjs';
 
 const settled = (sessionId, eventSequence, outcome = 'completed', runId = 'run-1') => ({
   type: 'settled', sessionId, runId, eventSequence, outcome,
@@ -86,38 +85,36 @@ test('background conversation changes refresh immediately without visibility tim
   stop(); assert.equal(signal.aborted, true);
 });
 
-test('the completion reminder names and opens the exact task, retaining bridge failures', async () => {
-  const html = await readFile(new URL('../public/completion.html', import.meta.url), 'utf8');
-  assert.match(html, /<span id="id"><\/span>/, 'the card reserves a place for the task identity');
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+test('the completion reminder names and opens the exact task, retaining bridge failures', async t => {
+  const { completionActions, CompletionReminderView, readCompletionNotice } = await loadGuiModule(t, '/src/achbit-gui/CompletionReminderCard.tsx');
+  const previous = globalThis.window;
+  t.after(() => { if (previous === undefined) delete globalThis.window; else globalThis.window = previous; });
   const sessionId = 'session:0123456789abcdef0123456789abcdef';
   const body = '长标题 <script>literal content</script>';
-  const nodes = Object.fromEntries(['title', 'body', 'id', 'open', 'dismiss', 'error'].map(id => [id, {
-    textContent: '', title: '', hidden: false, setAttribute(name, value) { this[name] = value; },
-  }]));
-  const calls = [], listeners = {};
-  const context = { URLSearchParams, location: { search: '?' + new URLSearchParams({ session: sessionId,
-    title: '任务已完成', body, open: '查看会话', dismiss: '关闭提醒' }) },
-    document: { getElementById: id => nodes[id], addEventListener: (name, callback) => { listeners[name] = callback; } },
-    window: { __TAURI__: { core: { invoke: async (command, args) => { calls.push({ command, args }); } } } },
-  };
-  runInNewContext(script, context);
-  assert.equal(nodes.title.textContent, '任务已完成');
-  assert.equal(nodes.body.textContent, body, 'task titles are text, not HTML');
-  assert.equal(nodes.body.title, body);
-  assert.equal(nodes.id.textContent, sessionId);
-  assert.equal(nodes.id.title, sessionId, 'the full identity stays accessible when visually truncated');
-  await nodes.open.onclick();
+  const calls = [];
+  globalThis.window = { __TAURI__: { core: { invoke: async (command, args) => { calls.push({ command, args }); } } } };
+  let notice = readCompletionNotice(new URLSearchParams({ session: sessionId, title: '任务已完成', body, open: '查看会话', dismiss: '关闭提醒' }));
+  let error = ''; const actions = completionActions(sessionId, message => { error = message; });
+  const tree = () => CompletionReminderView({ notice, actions, error });
+  const part = id => findReactElement(tree(), e => e.props.id === id).props;
+  assert.equal(part('title').children, '任务已完成');
+  assert.equal(part('body').children, body);
+  assert.equal(part('body').title, body);
+  assert.match(renderToStaticMarkup(tree()), /&lt;script&gt;literal content&lt;\/script&gt;/, 'task titles are text, not HTML');
+  assert.equal(part('id').children, sessionId);
+  assert.equal(part('id').title, sessionId, 'the full identity stays accessible when visually truncated');
+  assert.equal(part('open')['aria-label'], '查看会话'); assert.equal(part('dismiss')['aria-label'], '关闭提醒');
+  await part('open').onClick();
   assert.equal(calls[0].command, 'achbit_open_completion');
   assert.equal(calls[0].args.sessionId, sessionId);
-  await nodes.dismiss.onclick();
+  await part('dismiss').onClick();
   assert.equal(calls[1].command, 'achbit_dismiss_completion');
-  listeners.keydown({ key: 'Escape' });
+  actions.escape({ key: 'Escape' });
   assert.equal(calls[2].command, 'achbit_dismiss_completion');
-  context.window.__TAURI__.core.invoke = async () => { throw new Error('original_bridge_failure'); };
-  await nodes.open.onclick();
-  assert.match(nodes.error.textContent, /original_bridge_failure/);
-  context.location.search = '';
-  runInNewContext(script, { ...context });
-  assert.equal(nodes.id.hidden, true, 'a missing identity is not fabricated');
+  globalThis.window.__TAURI__.core.invoke = async () => { throw new Error('original_bridge_failure'); };
+  await part('open').onClick();
+  assert.equal(part('error').role, 'alert'); assert.match(part('error').children, /original_bridge_failure/);
+  notice = readCompletionNotice(new URLSearchParams());
+  assert.equal(part('id').hidden, true, 'a missing identity is not fabricated');
+  assert.equal(part('open').disabled, true);
 });

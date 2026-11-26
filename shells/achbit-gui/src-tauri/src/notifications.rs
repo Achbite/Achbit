@@ -16,6 +16,8 @@ pub struct Reminder {
     dismiss_label: String,
     #[serde(default)]
     foreground_sound: bool,
+    #[serde(default)]
+    appearance: Option<String>,
 }
 
 fn is_foreground(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -53,6 +55,9 @@ fn reminder_url(reminder: &Reminder) -> Result<tauri::Url, String> {
         ("open", &reminder.open_label),
         ("dismiss", &reminder.dismiss_label),
     ]);
+    if let Some(appearance) = &reminder.appearance {
+        url.query_pairs_mut().append_pair("appearance", appearance);
+    }
     Ok(url)
 }
 
@@ -191,6 +196,7 @@ mod tests {
             open_label: "查看会话".into(),
             dismiss_label: "关闭提醒".into(),
             foreground_sound: false,
+            appearance: Some("{\"dark\":true}".into()),
         };
         let url = reminder_url(&reminder).unwrap();
         #[cfg(windows)]
@@ -211,6 +217,7 @@ mod tests {
         assert_eq!(query["body"], reminder.body);
         assert_eq!(query["open"], reminder.open_label);
         assert_eq!(query["dismiss"], reminder.dismiss_label);
+        assert_eq!(query["appearance"], reminder.appearance.unwrap());
         assert!(url.fragment().is_none());
     }
 
