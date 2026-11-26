@@ -6,6 +6,8 @@ import { readPosition } from '../../state/readingPosition';
 import { ConversationAnchors, firstReadingAnchor } from './conversationAnchors';
 
 const LATEST_TOLERANCE = 2;
+const scrollRange = (body: HTMLElement) => Math.max(0, body.scrollHeight - body.clientHeight);
+const tailDistance = (body: HTMLElement) => Math.max(0, scrollRange(body) - Math.max(0, body.scrollTop));
 function rowSequence(node: HTMLElement | undefined) {
   const value = node?.closest<HTMLElement>('[data-transcript-sequence]')?.dataset.transcriptSequence;
   return value === undefined ? undefined : Number(value);
@@ -40,6 +42,7 @@ export function useConversationViewport({
   timelineExtentKey,
 }: ConversationViewportInput) {
   const [followingLatest, setFollowingLatest] = useState(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -57,6 +60,11 @@ export function useConversationViewport({
   }
   const surface = !!projection && projection.sessionId === sessionId;
   const followingLatestRef = useRef(true);
+  const upwardGestureTop = useRef<number | null>(null);
+  const measureJump = useCallback(() => {
+    const body = bodyRef.current;
+    setShowJumpToLatest(!followingLatestRef.current && !!body && body.clientHeight > 0 && tailDistance(body) > LATEST_TOLERANCE);
+  }, []);
   // Every programmatic write records its actual, browser-clamped position.
   const observedScrollTopRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
@@ -91,7 +99,8 @@ export function useConversationViewport({
     const target = Math.max(0, Math.min(top, body.scrollHeight - body.clientHeight));
     if (Math.abs(body.scrollTop - target) > 0.5) body.scrollTop = target;
     observedScrollTopRef.current = body.scrollTop;
-  }, []);
+    if (!followingLatestRef.current) measureJump();
+  }, [measureJump]);
   const restorePosition = useCallback((saved: SessionViewport) => {
     const body = bodyRef.current;
     if (!body) return;
@@ -107,9 +116,11 @@ export function useConversationViewport({
     }
   }, [anchors, writeScrollTop, rememberAnchor]);
   const applyLatestFollowMode = useCallback((following: boolean) => {
+    upwardGestureTop.current = null;
     followingLatestRef.current = following;
     setFollowingLatest(following);
-  }, []);
+    measureJump();
+  }, [measureJump]);
 
   const setLatestFollowMode = useCallback((following: boolean) => {
     placedFor.current = null;
@@ -127,6 +138,24 @@ export function useConversationViewport({
         rowSequence(anchors.read(bodyRef.current!).byKey.get(position.anchor.key)));
     }
   }, [applyLatestFollowMode, capturePosition, rememberAnchor, anchors]);
+
+  const resumeAtTail = useCallback(() => {
+    const body = bodyRef.current;
+    if (followingLatestRef.current || !body || body.clientHeight <= 0 || tailDistance(body) > LATEST_TOLERANCE) return false;
+    // Preserve a deliberately addressed row through temporary scroll clamping.
+    // An outer reader gesture releases it; a transcript that fits has no history below.
+    if (placedFor.current !== null && scrollRange(body) > LATEST_TOLERANCE) return false;
+    setLatestFollowMode(true);
+    return true;
+  }, [setLatestFollowMode]);
+
+  const readerLeftTail = useCallback(() => {
+    const body = bodyRef.current, start = upwardGestureTop.current;
+    if (start === null || !body || tailDistance(body) <= LATEST_TOLERANCE
+      || Math.min(start, scrollRange(body)) - body.scrollTop <= 0.5) return false;
+    setLatestFollowMode(false);
+    return true;
+  }, [setLatestFollowMode]);
 
   const anchorDisclosure = useCallback((node: HTMLElement) => {
     const body = bodyRef.current;
@@ -152,10 +181,14 @@ export function useConversationViewport({
   const sampleReaderPosition = useCallback(() => {
     const body = bodyRef.current;
     const activeSessionId = activeViewRef.current;
+    // Check the actual end before the unchanged-position fast path: the browser
+    // can clamp exactly to the new maximum without another scroll event.
+    if (readerLeftTail() || resumeAtTail()) return true;
     // During process restoration the new WebView can clamp and scroll while rows mount.
     // Reader input releases this anchor. Ordinary detached scrolling keeps its native momentum.
     if (placedFor.current === activeSessionId || !body || !activeSessionId || followingLatestRef.current || pendingViewportRestoreRef.current !== null) return false;
-    const floor = Math.max(0, body.scrollHeight - body.clientHeight);
+    measureJump();
+    const floor = scrollRange(body);
     const expectedTop = Math.min(observedScrollTopRef.current, floor);
     if (Math.abs(body.scrollTop - expectedTop) <= 0.5) {
       observedScrollTopRef.current = body.scrollTop;
@@ -164,17 +197,21 @@ export function useConversationViewport({
     const following = floor - body.scrollTop <= LATEST_TOLERANCE;
     setLatestFollowMode(following);
     return true;
-  }, [setLatestFollowMode]);
+  }, [setLatestFollowMode, readerLeftTail, resumeAtTail, measureJump]);
 
   const placeFollowing = useCallback(() => {
     const body = bodyRef.current;
-    if (body) writeScrollTop(body.scrollHeight);
-  }, [writeScrollTop]);
+    if (!body || readerLeftTail()) return;
+    if (tailDistance(body) > LATEST_TOLERANCE) upwardGestureTop.current = null;
+    writeScrollTop(body.scrollHeight);
+  }, [writeScrollTop, readerLeftTail]);
 
   // Layout observers, including virtual rows, share this one position owner.
   // Ordinary React renders do not restore a previously saved reading position.
   const preserveReadingPosition = useCallback(() => {
-    if (placedFor.current && placedFor.current === activeViewRef.current && pendingViewportRestoreRef.current === null) {
+    if (activeViewRef.current !== sessionId || pendingViewportRestoreRef.current !== null) return;
+    if (resumeAtTail()) return;
+    if (placedFor.current && placedFor.current === activeViewRef.current) {
       const saved = sessionViewportsRef.current.get(placedFor.current);
       if (saved) restorePosition(saved);
       return;
@@ -188,9 +225,9 @@ export function useConversationViewport({
         return;
       }
       const saved = activeViewRef.current ? sessionViewportsRef.current.get(activeViewRef.current) : undefined;
-      if (saved?.mode === 'detached') restorePosition(saved);
+      if (saved?.mode === 'detached') { restorePosition(saved); resumeAtTail(); }
     });
-  }, [placeFollowing, restorePosition, sampleReaderPosition, sessionId]);
+  }, [placeFollowing, restorePosition, resumeAtTail, sampleReaderPosition, sessionId]);
   const scheduleScrollToLatest = useCallback(() => {
     if (followingLatestRef.current && pendingViewportRestoreRef.current === null) preserveReadingPosition();
   }, [preserveReadingPosition]);
@@ -232,13 +269,13 @@ export function useConversationViewport({
     pendingViewportRestoreRef.current = null;
     anchors.invalidate();
     if (following) placeFollowing();
-    else restorePosition(saved!);
-  }, [sessionId, surface, applyLatestFollowMode, anchors, restorePosition, placeFollowing]);
+    else { restorePosition(saved!); resumeAtTail(); }
+  }, [sessionId, surface, applyLatestFollowMode, anchors, restorePosition, placeFollowing, resumeAtTail]);
 
   // New output follows the tail only while the reader is following.
   useLayoutEffect(() => {
-    if (followingLatestRef.current && pendingViewportRestoreRef.current === null) placeFollowing();
-  }, [projection, assistantDraftLayoutKey, presentationLayoutKey, followingLatest, placeFollowing, timelineExtentKey]);
+    if (surface && pendingViewportRestoreRef.current === null && (followingLatestRef.current || resumeAtTail())) placeFollowing();
+  }, [projection, surface, assistantDraftLayoutKey, presentationLayoutKey, followingLatest, placeFollowing, resumeAtTail, timelineExtentKey]);
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -311,10 +348,21 @@ export function useConversationViewport({
   const beginReading = () => {
     const body = bodyRef.current;
     if (!body || !followingLatestRef.current || pendingViewportRestoreRef.current !== null
-      || body.scrollHeight <= body.clientHeight || (body.scrollTop <= 0 && observedScrollTopRef.current <= 0)) return;
-    // A passive wheel listener may run after the compositor has already reached zero.
-    // The last position we wrote still proves this was an upward reading gesture.
-    setLatestFollowMode(false);
+      || scrollRange(body) <= LATEST_TOLERANCE) return;
+    // Intent alone cannot create a bookmark. Passive input may arrive before or
+    // after the compositor moves; compare its position to the last real tail.
+    upwardGestureTop.current = Math.min(scrollRange(body), Math.max(body.scrollTop, observedScrollTopRef.current));
+    readerLeftTail();
+  };
+
+  const readerGesture = (direction: number) => {
+    placedFor.current = null;
+    if (direction < 0) beginReading();
+    else if (direction > 0) {
+      upwardGestureTop.current = null;
+      // Pushing against the bottom need not generate a scroll event.
+      resumeAtTail();
+    }
   };
 
   function finishTouch() {
@@ -325,17 +373,14 @@ export function useConversationViewport({
     onWheel: (event) => {
       if (event.defaultPrevented || event.ctrlKey) return;
       if (!event.deltaY || innerConsumesScroll(event.target, event.deltaY)) return;
-      placedFor.current = null;
-      if (event.deltaY < 0) beginReading();
+      readerGesture(event.deltaY);
     },
-    onTouchStart: (event) => { placedFor.current = null; touchYRef.current = event.touches.length === 1 ? event.touches[0].clientY : null; },
+    onTouchStart: (event) => { touchYRef.current = event.touches.length === 1 ? event.touches[0].clientY : null; },
     onTouchMove: (event) => {
       const y = event.touches.length === 1 ? event.touches[0].clientY : null;
       if (!event.defaultPrevented && y !== null && touchYRef.current !== null) {
         const direction = Math.sign(touchYRef.current - y);
-        if (!innerConsumesScroll(event.target, direction)) {
-          if (direction < 0) beginReading();
-        }
+        if (direction && !innerConsumesScroll(event.target, direction)) readerGesture(direction);
       }
       touchYRef.current = y;
     },
@@ -348,9 +393,8 @@ export function useConversationViewport({
       else if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) direction = -1;
       else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) direction = 1;
       else return;
-      placedFor.current = null;
-      if (innerConsumesScroll(event.target, direction)) return;
-      if (direction < 0 && (event.key !== ' ' || event.target === event.currentTarget)) beginReading();
+      if (innerConsumesScroll(event.target, direction) || (event.key === ' ' && event.target !== event.currentTarget)) return;
+      readerGesture(direction);
     },
     onPointerDown: (event) => {
       if (event.target === event.currentTarget && event.pointerType === 'mouse' && event.button === 0) {
@@ -368,6 +412,7 @@ export function useConversationViewport({
           if (body.scrollTop < previous) beginReading();
         }
       }
+      if (readerLeftTail()) return;
       if (followingLatestRef.current) scheduleScrollToLatest();
       else if (placedFor.current === activeViewRef.current) preserveReadingPosition();
       else sampleReaderPosition();
@@ -380,7 +425,7 @@ export function useConversationViewport({
     bodyRef, transcriptRef, messageEndRef, anchors, followingLatest, openingAnchor,
     setLatestFollowMode, anchorDisclosure, scrollToLatest, scrollToAnchor, preserveReadingPosition,
   }), [anchors, followingLatest, openingAnchor, setLatestFollowMode, anchorDisclosure, scrollToLatest, scrollToAnchor, preserveReadingPosition]);
-  return { ...reading, reading, bodyHandlers, showJumpToLatest: !followingLatest };
+  return { ...reading, reading, bodyHandlers, showJumpToLatest: surface && showJumpToLatest };
 }
 
 export type ConversationViewport = ReturnType<typeof useConversationViewport>;
