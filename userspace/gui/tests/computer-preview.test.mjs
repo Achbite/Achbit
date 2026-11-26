@@ -20,6 +20,10 @@ test('preview keeps an unchanged target frame but never carries it across target
   assert.equal(acceptPreview(active, { state: 'active', target: { ...target, generation: 4 } }).frame, undefined);
   assert.equal(acceptPreview(active, { state: 'active', target: { ...target, windowId: 48 } }).frame, undefined);
   assert.equal(acceptPreview(active, { state: 'inactive', reason: 'closed' }).frame, undefined);
+  const semantic = { state: 'accessibility', target: { windowId: 47, observationId: 'ax-1', app: 'Editor' } };
+  const card = acceptPreview(active, semantic);
+  assert.equal(card.frame, undefined); assert.equal(card.pointer, undefined); assert.equal(card.target, semantic.target);
+  assert.equal(card.target.generation, undefined, 'no synthetic sharing generation for a semantic window');
   assert.equal(acceptPreview(active, { state: 'active', target, frameError: 'capture failed' }).frame, undefined);
   assert.equal(acceptPreview(active, { state: 'active', target, pointer: { x: 0.4, y: 0.2, pulse: false, sharing: { state: 'stopped' } } }).pointer, undefined);
 });
