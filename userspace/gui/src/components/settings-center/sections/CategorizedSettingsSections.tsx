@@ -1,3 +1,4 @@
+import { Button } from '../../../ui-components';
 import CommandRuleSettings from './CommandRuleSettings';
 import { requestInterfaceReload } from '../../../services/interfaceReload';
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
@@ -27,20 +28,12 @@ interface RuntimeProps {
 }
 
 const APPEARANCE_KEYS = ['gui.colorTheme', 'gui.accentColor'] as const;
-const GENERAL_KEYS = [
-  'workbench.language',
-  'gui.navigationDensity',
-  'gui.showContextRail',
-  'gui.showReasoning',
-  'gui.autoUpdate',
-  'workbench.preventIdleSleep',
-  'gui.completionSound.foreground',
-  'gui.usageWidget.enabled',
-  'gui.usageWidget.visibility',
-  'gui.usageWidget.currency',
-  'gui.defaultFileOpen',
-  'gui.showRuntimeFiles',
-] as const;
+const GENERAL_GROUPS = [
+  { name: 'workspace', keys: ['workbench.language', 'gui.navigationDensity', 'gui.showContextRail', 'gui.showReasoning'] },
+  { name: 'background', keys: ['gui.autoUpdate', 'workbench.preventIdleSleep', 'gui.completionSound.foreground'] },
+  { name: 'usage', keys: ['gui.usageWidget.enabled', 'gui.usageWidget.visibility', 'gui.usageWidget.currency'] },
+  { name: 'files', keys: ['gui.defaultFileOpen', 'gui.showRuntimeFiles'] },
+];
 const CONTEXT_MANAGEMENT_KEYS = ['agent.contextManagement.enabled', 'agent.contextManagement.thresholdTokens'] as const;
 const AGENT_INSTRUCTION_KEYS = ['agent.systemPrompt'] as const;
 const AGENT_RESPONSE_KEYS = ['agent.responseLanguage'] as const;
@@ -78,7 +71,7 @@ function definitionsFor(
 export function settingsSearchDefinitions(language: ReturnType<typeof normalizeUiLanguage>, os: unknown) {
   const available = [...guiDefinitions(), ...agentSettingDefinitions()];
   const groups = {
-    general: GENERAL_KEYS,
+    general: GENERAL_GROUPS.flatMap(group => group.keys),
     gui: APPEARANCE_KEYS,
     agent: [...AGENT_RESPONSE_KEYS, ...CONTEXT_MANAGEMENT_KEYS, ...AGENT_INSTRUCTION_KEYS, ...AGENT_WORKFLOW_KEYS],
     environment: os === 'windows' ? AGENT_SHELL_KEYS : [],
@@ -113,7 +106,8 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
     [language],
   );
   const preferences = useMemo(
-    () => definitionsFor(category === 'general' ? GENERAL_KEYS : [], guiDefinitions(), language),
+    () => category === 'general' ? GENERAL_GROUPS.map(group => ({ name: group.name,
+      fields: definitionsFor(group.keys, guiDefinitions(), language) })).filter(group => group.fields.length > 0) : [],
     [category, language],
   );
   const onChange = (key: string, value: UserSettingValue) => {
@@ -123,18 +117,19 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
   const updateAction = updatePhase === 'waiting' ? 'installNow'
     : ['preparing', 'installing'].includes(updatePhase) ? 'installing'
       : updateBusy ? updatePhase : 'check';
-  const reloadAction = <button type="button" className="settings-button" onClick={() => requestInterfaceReload()}>
+  const reloadAction = <Button variant="secondary" onClick={() => requestInterfaceReload()}>
     {language === 'zh-CN' ? '重新加载界面' : 'Reload interface'}
-  </button>;
+  </Button>;
 
   return (
     <div>
       <h2 className="settings-title">{category === 'general' ? (language === 'zh-CN' ? '通用' : 'General') : category === 'about' ? (language === 'zh-CN' ? '关于 Achbit' : 'About Achbit') : t(language, 'settings.gui.title')}</h2>
       {category === 'appearance' && <GuiAppearanceSettings definitions={appearance} language={language} />}
-      {preferences.length > 0 && (
-        <div className="settings-card">
-          <div className="settings-card__body">
-            {preferences.map((definition) => (
+      {preferences.map(group => (
+        <section key={group.name} className="settings-group">
+          <h3 className="settings-card__title">{t(language, `settings.group.${group.name}`)}</h3>
+          <div className="settings-card settings-card__body">
+            {group.fields.map((definition) => (
               <SettingsField
                 key={definition.key}
                 definition={definition}
@@ -145,10 +140,10 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
                 onChange={onChange}
               />
             ))}
-            {category === 'general' && <CompletionSoundSettings language={language} />}
+            {group.name === 'background' && <CompletionSoundSettings language={language} />}
           </div>
-        </div>
-      )}
+        </section>
+      ))}
       {category === 'about' && (
         <div className="settings-card settings-runtime-card">
           <h3 className="settings-card__title">{t(language, 'settings.runtime.title')}</h3>
@@ -167,7 +162,7 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
           </table>
           <div className="settings-card__body">
             <div className="settings-actions">
-              {update.phase !== 'disabled' && <button type="button" className="settings-button"
+              {update.phase !== 'disabled' && <Button variant={update.phase === 'waiting' ? 'primary' : 'secondary'}
                 disabled={updateBusy}
                 onClick={() => {
                   setUpdateError(null);
@@ -176,7 +171,7 @@ export const GuiSettingsSection: React.FC<RuntimeProps> = ({
                   });
                 }}>
                 {t(language, `productUpdate.${updateAction}`, { version: update.version ?? '' })}
-              </button>}
+              </Button>}
               {canQuitAchbit() ? <div className="settings-actions settings-runtime-action-pair">
                 {reloadAction}
                 <QuitAchbitAction language={language} />
@@ -265,7 +260,8 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
   return (
     <div>
       <h2 className="settings-title">{t(language, category === 'services' ? 'settings.agent.webTools' : `settings.nav.${category}`)}</h2>
-      {category === 'agent' && renderCard(null, [...response, ...contextManagement, ...instructions])}
+      {category === 'agent' && renderCard(null, response)}
+      {category === 'agent' && renderCard(t(language, 'settings.group.context'), [...contextManagement, ...instructions])}
       {category === 'agent' && renderCard(t(language, 'agent.permission.workflow'), workflow)}
       {category === 'environment' && environment?.os === 'windows' && renderCard(null, shellSettings)}
       {category === 'environment' && <WorkspaceSandboxSettings chinese={chinese} />}
@@ -276,11 +272,11 @@ export const AgentSettingsSection: React.FC<AgentSettingsSectionProps> = ({ cate
             <div className="settings-field__main">
               <div className="settings-field__label">{chinese ? '开发工具' : 'Developer tools'}</div>
             </div>
-            <button className="settings-button" disabled={loading} onClick={() => void patchUserSetting('agent.environmentRevision', Number(effectiveSettings['agent.environmentRevision'] ?? 0) + 1)}>{chinese ? '刷新环境' : 'Refresh environment'}</button>
+            <Button variant="secondary" disabled={loading} onClick={() => void patchUserSetting('agent.environmentRevision', Number(effectiveSettings['agent.environmentRevision'] ?? 0) + 1)}>{chinese ? '刷新环境' : 'Refresh environment'}</Button>
           </div>
           {environment && <div className="settings-field__description">
             <p>{String(environment.os)} · {String(environment.arch)} · {shellName ?? '—'}</p>
-            <p style={{ overflowWrap: 'anywhere' }}>{shell?.executable || (chinese ? '未找到所选 Shell' : 'Selected shell not found')}</p>
+            <p className="settings-system-path">{shell?.executable || (chinese ? '未找到所选 Shell' : 'Selected shell not found')}</p>
             <p>{chinese ? '可用开发命令' : 'Developer commands'}: {commands.join(' · ') || '—'}</p>
           </div>}
         </div>

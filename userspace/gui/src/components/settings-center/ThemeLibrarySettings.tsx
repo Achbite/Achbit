@@ -4,7 +4,7 @@ import { useSettingsStore } from '../../state/settingsStore';
 import { normalizeGuiAccentColor, type GuiResolvedTheme } from '../../theme/achbitGuiTheme';
 import { PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, paletteColor } from '../../theme/palette';
 import { THEME_LIBRARY_SETTING, applyThemePalette, builtinThemes, decodeThemeLibrary, importTheme, selectedThemeId, themeOverrides, type ThemeDocument, type SavedTheme } from '../../theme/themeLibrary';
-import { DisclosureSummary, ModalDialog } from '../../ui-components';
+import { Button, DisclosureSummary, ModalDialog } from '../../ui-components';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import ThemePicker, { ThemeBadge } from './ThemePicker';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from './settingsSearch';
@@ -120,8 +120,8 @@ export default function ThemeLibrarySettings({ language }: { language: UiLanguag
         </div>}
         {(importError || error) && <p className="settings-error" role="alert">{importError || error}</p>}
         <div className="appearance-config-box__actions">
-          <button type="button" className="settings-button" disabled={busy} onClick={() => { setImporting(false); setError(null); }}>{t(language, 'settings.themes.cancel')}</button>
-          <button type="button" className="settings-button settings-button--primary" disabled={busy || !pending} onClick={() => void add()}>{t(language, 'settings.themes.add')}</button>
+          <Button disabled={busy} onClick={() => { setImporting(false); setError(null); }}>{t(language, 'settings.themes.cancel')}</Button>
+          <Button variant="primary" disabled={busy || !pending} onClick={() => void add()}>{t(language, 'settings.themes.add')}</Button>
         </div>
       </div>
     </ModalDialog>}

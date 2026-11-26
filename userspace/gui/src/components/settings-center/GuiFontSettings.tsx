@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { DEFAULT_USER_SETTINGS, type UserSettings } from '@achbit/protocol';
-import { DisclosureSummary, NativeSelect } from '../../ui-components';
+import { Button, DisclosureSummary, NativeSelect } from '../../ui-components';
 import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import { t, type UiLanguage } from '../../i18n';
 import { useSettingsStore } from '../../state/settingsStore';
@@ -115,8 +115,8 @@ export default function GuiFontSettings({ language }: { language: UiLanguage }) 
         </div>
       </details>
       {textChanges.length > 0 && <div className="appearance-config-box__actions">
-        <button type="button" className="settings-button settings-button--primary" disabled={loading || saving || !preview}
-          onClick={() => void save(Object.fromEntries(textChanges.map(key => [key, values[key]])))}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
+        <Button variant="primary" disabled={loading || saving || !preview}
+          onClick={() => void save(Object.fromEntries(textChanges.map(key => [key, values[key]])))}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</Button>
       </div>}
       {error && <p className="settings-error" role="alert">{error}</p>}
     </div>

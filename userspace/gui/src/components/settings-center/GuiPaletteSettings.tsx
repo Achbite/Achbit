@@ -7,7 +7,7 @@ import {
   PALETTE_FIELDS, PALETTE_SETTING, decodePaletteOverrides, isPaletteColor,
   paletteColor, paletteToken, type PaletteOverrides,
 } from '../../theme/palette';
-import { DisclosureSummary, UiIcon } from '../../ui-components';
+import { Button, DisclosureSummary, UiIcon } from '../../ui-components';
 import { reconcileSettingDraft, reconcileJsonSettingDraft } from './settingDraft';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from './settingsSearch';
 
@@ -111,10 +111,10 @@ export default function GuiPaletteSettings({ language }: { language: UiLanguage 
         })}
       </div>
       {dirty && <div className="settings-palette__actions">
-        <button type="button" className="settings-button" disabled={disabled || !dirty}
-          onClick={() => { setDraft({ saved: encoded, text: encoded }); setError(null); }}>{t(language, 'settings.edit.discard')}</button>
-        <button type="button" className="settings-button settings-button--primary" disabled={disabled || !dirty}
-          onClick={() => void save(draft.text)}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
+        <Button disabled={disabled || !dirty}
+          onClick={() => { setDraft({ saved: encoded, text: encoded }); setError(null); }}>{t(language, 'settings.edit.discard')}</Button>
+        <Button variant="primary" disabled={disabled || !dirty}
+          onClick={() => void save(draft.text)}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</Button>
       </div>}
     </>}
     {(configError || error) && <p className="settings-error" role="alert">{configError || error}</p>}

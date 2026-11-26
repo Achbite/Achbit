@@ -1,4 +1,4 @@
-import { DisclosureSummary, NativeSelect } from '../../../ui-components';
+import { Button, DisclosureSummary, NativeSelect } from '../../../ui-components';
 import { useState } from 'react';
 import { decodeShellCommandRules } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../../i18n';
@@ -33,7 +33,7 @@ export default function CommandRuleSettings({ language }: { language: UiLanguage
       <NativeSelect disabled={busy} aria-label={t(language, 'settings.commandRules.title')} value={rule.decision} onChange={event => void update(index, event.target.value as 'ask' | 'allow' | 'deny')}>
         {(['ask', 'allow', 'deny'] as const).map(mode => <option key={mode} value={mode}>{t(language, `agent.permission.${mode}`)}</option>)}
       </NativeSelect>
-      <button type="button" disabled={busy} onClick={() => void update(index)}>{t(language, 'settings.commandRules.remove')}</button>
+      <Button variant="danger" disabled={busy} onClick={() => void update(index)}>{t(language, 'settings.commandRules.remove')}</Button>
     </div>)}
     {error && <p role="alert">{error}</p>}
   </div>;

@@ -2,7 +2,7 @@ import React, { useId, useState } from 'react';
 import { t, type UiLanguage } from '../../../i18n';
 import { useSettingsStore } from '../../../state/settingsStore';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
-import { ModalDialog } from '../../../ui-components';
+import { Button, ModalDialog } from '../../../ui-components';
 import { useSettingsHelp } from '../SettingsHelp';
 import { useSettingsSearchEntries, useSettingsSearchTarget } from '../settingsSearch';
 
@@ -48,8 +48,8 @@ export default function CommandDenylistSettings({ language, setting = 'commandDe
       {help}
       <div className="settings-field__main"><span className="settings-field__label">{title}</span></div>
       <div className="settings-field__control">
-        <button type="button" className="settings-button" disabled={loading || savedText === null}
-          onClick={() => { setError(null); setDraft(savedText); }}>{t(language, `${messages}.edit`)}</button>
+        <Button variant="secondary" disabled={loading || savedText === null}
+          onClick={() => { setError(null); setDraft(savedText); }}>{t(language, `${messages}.edit`)}</Button>
         {configurationError && <p className="settings-error" role="alert">{configurationError}</p>}
       </div>
     </div>
@@ -62,10 +62,10 @@ export default function CommandDenylistSettings({ language, setting = 'commandDe
           spellCheck={false} disabled={saving} onChange={(event) => { setDraft(event.target.value); setError(null); }} />
         {error && <p className="settings-error" role="alert">{error}</p>}
         <div className="settings-actions">
-          <button type="button" className="settings-button" disabled={saving} onClick={close}>{t(language, 'agent.session.cancel')}</button>
-          <button type="submit" className="settings-button settings-button--primary" disabled={saving || draft === savedText}>
+          <Button disabled={saving} onClick={close}>{t(language, 'agent.session.cancel')}</Button>
+          <Button type="submit" variant="primary" disabled={saving || draft === savedText}>
             {t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}
-          </button>
+          </Button>
         </div>
       </form>
     </ModalDialog>}

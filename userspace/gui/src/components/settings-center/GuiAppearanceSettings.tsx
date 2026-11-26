@@ -1,3 +1,4 @@
+import { Button } from '../../ui-components';
 import AppearanceConfiguration from './AppearanceConfiguration';
 import { PALETTE_SETTING, decodePaletteOverrides, paletteToken } from '../../theme/palette';
 import GuiPaletteSettings from './GuiPaletteSettings';
@@ -96,9 +97,8 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
               aria-label={themeDefinition.label}
             >
               {GUI_THEME_PREFERENCES.map((value) => (
-                <button
+                <Button
                   className="settings-theme-card"
-                  type="button"
                   data-theme-choice={value}
                   aria-pressed={theme === value}
                   disabled={themeDisabled}
@@ -109,7 +109,7 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
                     <span className="settings-selection-check" aria-hidden="true"><AchbitShellIcon name="check" size={14} /></span>
                     {optionLabel(themeDefinition, value)}
                   </span>
-                </button>
+                </Button>
               ))}
             </div>
           </section>
@@ -123,9 +123,8 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
               aria-label={accentDefinition.label}
             >
               {GUI_ACCENT_COLORS.map((value) => (
-                <button
+                <Button
                   className="settings-accent-option"
-                  type="button"
                   aria-pressed={accent === value}
                   disabled={accentDisabled}
                   key={value}
@@ -137,7 +136,7 @@ const GuiAppearanceSettings: React.FC<GuiAppearanceSettingsProps> = ({
                   />
                   <span>{optionLabel(accentDefinition, value)}</span>
                   <span className="settings-accent-check" aria-hidden="true"><AchbitShellIcon name="check" size={14} /></span>
-                </button>
+                </Button>
               ))}
             </div>
           </section>

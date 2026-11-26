@@ -3,7 +3,7 @@ import GitHubPluginAccount from './GitHubPluginAccount';
 import { manageLocalPlugin } from '../../../services/pluginManagement';
 import { watchServicePlugins, type ServicePluginStatus } from '../../../services/servicePlugins';
 import { openExternalUrl } from '../../../services/runtimeAdapter';
-import { Button, DisclosureSummary, ModalDialog, ToggleSwitch } from '../../../ui-components';
+import { Button, DisclosureSummary, IconButton, ModalDialog, ToggleSwitch } from '../../../ui-components';
 import { localizePlugin, uiPluginText } from '../../../pluginLocalization';
 import { useUiLanguage } from '../../../useUiLanguage';
 import { useSettingsSearchEntries } from '../settingsSearch';
@@ -335,15 +335,14 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
         <div>
           <h2 className="settings-title">{chinese ? '插件' : 'Plugins'}</h2>
         </div>
-        {tab !== 'discover' && <button
-          className="settings-button plugin-manager__add"
+        {tab !== 'discover' && <Button variant="secondary" className="plugin-manager__add"
           ref={addButton}
           disabled={busy}
           onClick={() => { setUpdating(null); setChoosing(true); }}
         >
           <AchbitShellIcon name="plus" />
           {chinese ? '添加…' : 'Add…'}
-        </button>}
+        </Button>}
       </header>
       <div className="plugin-manager__toolbar">
         <div className="plugin-manager__nav" role="group" aria-label={t(language, 'settings.plugins.market.sections')}>
@@ -367,17 +366,14 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
               onChange={(event) => setView({ tab, search: event.target.value })}
             />
           </label>
-          <button
-            className="reader-icon-button"
+          <IconButton icon="refresh"
             title={t(language, 'settings.plugins.refresh')}
             aria-label={t(language, 'settings.plugins.refresh')}
             onClick={() => {
               setRevision((value) => value + 1);
               ui.refresh?.();
             }}
-          >
-            <AchbitShellIcon name="refresh" />
-          </button>
+          />
         </div>}
       </div>
       <PluginMarketplace active={tab === 'discover'} language={language} onInstalled={() => void refreshInstallation()} onManage={path => {
@@ -591,20 +587,18 @@ export default function PluginsSection({ view, setView }: { view: PluginsView; s
               </p>
             )}
             <div className="settings-actions">
-              <button
-                className="settings-button"
+              <Button
                 disabled={busy}
                 onClick={() => { setCandidate(null); setUpdating(null); }}
               >
                 {t(language, 'settings.plugins.cancel')}
-              </button>
-              <button
-                className="settings-button settings-button--primary"
+              </Button>
+              <Button variant="primary"
                 disabled={busy}
                 onClick={() => void add()}
               >
                 {updating ? (chinese ? '更新' : 'Update') : t(language, 'settings.plugins.addEnable')}
-              </button>
+              </Button>
             </div>
           </section>
         </ModalDialog>

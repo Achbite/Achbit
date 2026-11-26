@@ -52,8 +52,12 @@
   padding: 0;
   color: var(--ac-muted);
 }
-.ac-icon-button[aria-pressed='true'] { color: var(--ac-success); background: var(--ac-success-soft); }
-.ac-icon-button[aria-pressed='true']:is(:hover, :focus-visible):not(:disabled) { color: var(--ac-success); background: color-mix(in srgb, var(--ac-success) 16%, var(--ac-surface-raised)); }
+/* A toggle selects a value; success belongs to the operation that completed. */
+.ac-button[data-variant='ghost'][aria-pressed='true'] { color: var(--ac-foreground-strong); background: var(--ac-selection); box-shadow: inset 0 -2px var(--ac-accent); }
+.ac-button[data-variant='ghost'][aria-pressed='true']:hover:not(:disabled) { background: var(--ac-surface-hover); }
+.ac-button:focus-visible:not(:disabled) { text-decoration: underline; text-underline-offset: .2em; }
+.ac-icon-button:focus-visible:not(:disabled) { box-shadow: inset 0 -2px currentColor; }
+@media (forced-colors: active) { .ac-button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; } .ac-button[aria-pressed='true'] { border-bottom: 2px solid SelectedItem; } }
 .ac-icon-button > svg { width: var(--ac-button-glyph); height: var(--ac-button-glyph); flex: none; }
 .ac-panel-header { display: flex; align-items: center; justify-content: space-between; gap: var(--ac-panel-header-gap, 8px); min-width: 0; }
 .ac-panel-header > :is(h1, h2, h3, strong, span) { min-width: 0; }

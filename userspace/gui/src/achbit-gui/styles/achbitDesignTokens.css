@@ -43,6 +43,9 @@
   --ac-font-reading-size: var(--ac-font-body);
   --ac-font-code-size: 12px;
   --ac-font-title: calc(16px * var(--ac-ui-font-scale, 1));
+  --ac-font-page-title: calc(24px * var(--ac-ui-font-scale, 1));
+  /* A scrim signals modal input. Elevation alone never blocks the underlying view. */
+  --ac-modal-scrim: color-mix(in srgb, var(--ac-shadow-color) 26%, transparent);
   --ac-line-tight: 1.35;
   --ac-line-compact: 1.45;
   --ac-line-body: 1.6;
