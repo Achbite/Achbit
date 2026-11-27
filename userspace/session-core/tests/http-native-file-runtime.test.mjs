@@ -404,6 +404,23 @@ test('invalid HTTP user system prompt preserves the decoder error and releases t
   assert.equal(fixture.releases.length, 3);
 });
 
+test('project scope guidance follows context mode, not the shared tool interface; refresh keeps recorded wording', async t => {
+  const content = 'Use the nested configuration.';
+  for (const minimal of [false, true]) {
+    const fixture = await httpPreparation(t, [], minimal);
+    fixture.useProjectInstructions([{ path: '/project/nested/AGENTS.md', text: content }]);
+    const { runtimeSnapshot: runtime } = await fixture.port.prepare(fixture.request);
+    assert.equal(runtime.coreToolInterface, 'shared');
+    const project = runtime.instructions.find(item => item.id === 'achbit.project-instructions');
+    assert.ok(project.text.includes(content));
+    assert.equal(project.text.includes('More specific instructions take precedence'), !minimal);
+    const captured = runtime.instructions.map(item => item === project ? { ...item, text: 'Previously captured project wording.' } : item);
+    const { runtimeSnapshot: refreshed } = await fixture.port.prepare({ ...fixture.request, refreshPlugins: true,
+      existingPresentation: { coreToolInterface: 'shared', codingTools: runtime.codingTools, instructions: captured } });
+    assert.deepEqual(refreshed.instructions, captured);
+  }
+});
+
 test('invalid project instruction wire entries reject and release the prepared runtime', async t => {
   const fixture = await httpPreparation(t);
   const invalid = [null, {}, [{ path: '/project/AGENTS.md' }], [{ path: '', text: 'Instructions' }],

@@ -660,9 +660,10 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         shared ? 'shared' : coding);
       const { data: environment } = decodeSessionEnvironment(value.environment);
       const userPrompt = userSystemPromptContribution(value.userSystemPrompt);
-      const instructions = existingPresentation
-        ? existingPresentation.instructions.filter(item => item.id !== 'achbit.project-instructions')
-        : [...this.#instructions, ...userPrompt, ...(this.#environmentInstructions?.(environment) ?? [])];
+      // Validate Kernel sources on every response. Only a new run composes their wording.
+      const project = projectInstructionContributions(value.projectInstructions, coding);
+      const instructions = existingPresentation?.instructions
+        ?? [...this.#instructions, ...userPrompt, ...(this.#environmentInstructions?.(environment) ?? []), ...project];
       return {
         runtimeSnapshot: Object.freeze({
           ...(value.mode ? { mode: value.mode as 'minimal' | 'full' } : {}),
@@ -682,7 +683,7 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           webSearch,
           environment,
           permissions: pluginConfig.permissions,
-          instructions: [...runtimeInstructions([...instructions, ...projectInstructionContributions(value.projectInstructions, shared || coding)])],
+          instructions: [...runtimeInstructions(instructions)],
           tools,
           toolPromptContributions: toolPromptContributions as PreparedToolPromptContribution[],
           providerToolAliases,

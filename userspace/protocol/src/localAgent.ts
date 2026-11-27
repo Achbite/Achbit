@@ -2263,6 +2263,8 @@ export interface PrepareRunRuntimeRequest {
   refreshPlugins?: boolean;
   /** Ordered directories for this request. [] withdraws every project; omission keeps the prior view. */
   workspaceBindingIds?: readonly string[];
+  /** Configured source folders at run start. Directory attachments are addressable but do not supply project instructions. */
+  projectInstructionBindingIds?: readonly string[];
   environment?: JsonObject;
   hostBinding?: { hostInstanceId: string; windowLabel: string };
   restoreEnvironment?: boolean;

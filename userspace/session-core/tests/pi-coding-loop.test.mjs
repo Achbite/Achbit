@@ -109,6 +109,36 @@ test('coding prompt uses PI section order and actual declarations without produc
   assert.ok(receipt.messages.every(message => message.contributionId));
 });
 
+for (const mode of ['minimal', 'full']) test(`attachments supplement the default working directory (${mode})`, async () => {
+  const runId = 'run:addresses', sessionId = 'session:addresses';
+  const runtime = runtimeSnapshot(runId, { tools, permissions });
+  runtime.coreToolInterface = 'shared';
+  if (mode === 'minimal') runtime.codingTools = true;
+  const scratch = { workspaceId: 'scratch', displayName: 'Host-managed directory' };
+  const repo = { workspaceId: 'reference', displayName: 'Reference repo' };
+  runtime.environment.sessionWorkdirId = scratch.workspaceId;
+  runtime.environment.primaryWorkspaceDirectory = { workspaceId: workspaceBinding.workspaceId, path: '/default/project' };
+  const file = { workspaceId: 'file-only', displayName: 'notes.txt' };
+  const bindings = [workspaceBinding, scratch, repo];
+  const references = [{ ...repo, referenceId: 'ref:dir', kind: 'directory', logicalPath: '.' },
+    { ...file, referenceId: 'ref:file', kind: 'file', logicalPath: 'notes.txt', mediaType: 'text/plain', byteLength: 5 }];
+  const events = [{ type: 'run.started', sequence: 1, runId, sessionId,
+    payload: { inputMessageId: 'initial', runtimeSnapshot: runtime, workspaceBindings: bindings.slice(0, 2) } },
+    { type: 'message.committed', sequence: 2, runId, sessionId,
+      payload: { messageId: 'addition', role: 'user', content: 'Use these for comparison.', filesystemReferences: references } }];
+  const { request } = await buildAgentProviderRequest({ sessionId, runId, runtime, events, workspaceBindings: [...bindings, file],
+    directoryBindings: bindings, providerRequestId: 'req:addresses', responseConstraint: 'normal' });
+  const text = request.messages.map(m => m.content).join('\n');
+  assert.ok(text.includes('<cwd>\n/default/project\n</cwd>'));
+  assert.doesNotMatch(text, /Host-managed directory|attached project|every project call/iu);
+  const supplied = request.messages.find(m => m.role === 'user').content;
+  assert.match(supplied, /do not change the (?:default )?working directory/iu);
+  assert.match(supplied, /"workspace":"workspace3","path":"\."/u);
+  assert.match(supplied, /"workspace":"workspace4","path":"notes\.txt"/u);
+  assert.match(request.tools.find(t => t.inputSchema.properties?.workspace).inputSchema.properties.workspace.description,
+    /default working directory.*primary|primary.*default working directory/iu);
+});
+
 for (const mode of ['coding', 'full']) test(`file path guidance and original NotFound reach the model in ${mode} context`, async t => {
   const path = 'assets/missing.tres', error = { code: 'fs_read_metadata_failed', message: 'Cannot inspect assets/missing.tres' };
   const output = { stage: 'metadata', details: { path, ioKind: 'NotFound', osCode: 2 } };

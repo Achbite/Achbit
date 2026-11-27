@@ -196,7 +196,7 @@ export function hostShellToolView(
     let description = host ? `Run ${shell} from the selected workspace. ${access}${discovery}` : tool.description;
     if (compact) {
       // Scope comes from the resolved route; discovery is already in the callable-tool rules.
-      if (!host) description = `Run ${shell} in the workspace sandbox. Project writes need authorized output paths; the session directory is writable.`;
+      if (!host) description = `Run ${shell} in the workspace sandbox. Project writes need authorized output paths; session scratch space is writable.`;
       else description = resourceHandles.length
         ? `Run ${shell} as the host user in project and session directories. File references (${resourceHandles.join(', ')}) retain their own permissions.`
         : `Run ${shell} as the host user in the selected workspace.`;
@@ -556,7 +556,7 @@ function providerWorkspaceSchema(toolName: string, schema: JsonObject): JsonObje
   copy.properties.workspace = {
     type: 'string',
     minLength: 1,
-    description: 'Workspace handle. Defaults to primary on every call.',
+    description: 'Omit for the default working directory (primary). Select another handle only for this call.',
   };
   return copy;
 }

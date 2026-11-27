@@ -485,29 +485,26 @@ impl LocalAgentRuntime {
             facts.remove("primaryWorkspaceDirectory");
             facts.remove("sessionWorkdirId");
             let catalog = &gui.conversation_catalog;
-            let bindings = catalog
-                .session(&request.session_id)
-                .map_or(&[][..], |session| session.workspace_bindings.as_slice());
-            // Full context exposes an explicitly bound native directory. Only coding
-            // context also describes an implicit session workdir.
-            let workdir = if coding_context {
-                catalog.session_workdir(&request.session_id)
-            } else {
-                None
-            };
-            if let Some(implicit) = workdir.filter(|dir| {
-                !bindings
-                    .iter()
-                    .any(|binding| binding.workspace_id == dir.workspace_id)
+            // The tool codec defaults to the first captured directory. Neither the
+            // presentation mode nor an attachment display name chooses the cwd.
+            let ids = request.workspace_binding_ids.as_deref().unwrap_or_default();
+            if let Some(workdir) = catalog.session_workdir(&request.session_id).filter(|dir| {
+                ids.contains(&dir.workspace_id)
+                    && !request
+                        .project_instruction_binding_ids
+                        .contains(&dir.workspace_id)
             }) {
-                environment["sessionWorkdirId"] = json!(implicit.workspace_id);
+                environment["sessionWorkdirId"] = json!(workdir.workspace_id);
             }
-            let primary = bindings
+            if let Some(workspace) = ids
                 .first()
-                .and_then(|binding| catalog.workspace(&binding.workspace_id))
-                .or(workdir);
-            if let Some(workspace) =
-                primary.filter(|_| environment["executionTarget"]["kind"] == "native")
+                .and_then(|id| catalog.workspace(id))
+                .filter(|w| {
+                    environment["executionTarget"]["kind"] == "native"
+                        && (w.owner_session_id.is_none()
+                            || (w.session_workdir
+                                && w.owner_session_id.as_deref() == Some(&request.session_id)))
+                })
             {
                 let path = achbit_kernel_runtime::file_access::process_visible_path(
                     std::path::Path::new(&workspace.canonical_root),
@@ -540,11 +537,27 @@ impl LocalAgentRuntime {
         drop(_transition);
         // A supplied empty binding list withdraws every project. An omitted list keeps the
         // last captured directories (e.g. a prepare retry without a changed workspace view).
+        let mut instruction_roots = Vec::new();
         let bound_project_roots = match &request.workspace_binding_ids {
-            Some(ids) => self
-                .kernel
-                .project_instruction_roots(ids)
-                .map_err(RunPreparationError::from)?,
+            Some(ids) => {
+                let mut roots = Vec::new();
+                for (id, path) in self
+                    .kernel
+                    .bound_project_roots(ids)
+                    .map_err(RunPreparationError::from)?
+                {
+                    if previous.is_none()
+                        && request
+                            .project_instruction_binding_ids
+                            .iter()
+                            .any(|source| source == id)
+                    {
+                        instruction_roots.push(path.clone());
+                    }
+                    roots.push(path);
+                }
+                roots
+            }
             None => previous
                 .as_ref()
                 .map(|view| view.bound_project_roots.clone())
@@ -731,7 +744,7 @@ impl LocalAgentRuntime {
             previous.response.get("projectInstructions").cloned()
         } else {
             Some(json!(crate::project_instructions::read_projects(
-                &bound_project_roots
+                &instruction_roots
             )
             .map_err(|message| RunPreparationError::new(
                 "project_instructions_read_failed",
@@ -1285,6 +1298,8 @@ pub(crate) struct PrepareRunRuntimeRequest {
     run_id: String,
     #[serde(default)]
     workspace_binding_ids: Option<Vec<String>>,
+    #[serde(default)]
+    project_instruction_binding_ids: Vec<String>,
     profile_id: Option<String>,
     reasoning_effort_override: Option<String>,
     environment: Option<Value>,

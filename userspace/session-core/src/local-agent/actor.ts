@@ -1096,6 +1096,7 @@ export class SessionActor {
       sessionId: this.sessionId,
       runId,
       workspaceBindingIds: runWorkspaceBindings.map(binding => binding.workspaceId),
+      projectInstructionBindingIds: before.state.creationWorkspaceBindings.map(binding => binding.workspaceId),
       previousProviderToolAliases: previousView?.providerToolAliases,
       ...(readerSelections.length ? {
         inheritedPluginSelections: readerSelections.map(uri => ({

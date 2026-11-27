@@ -563,10 +563,34 @@ fn user_system_prompt_is_frozen_across_plugin_refresh_and_scoped_to_top_level_ru
 fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
     let fixture = Fixture::new();
     let project = fixture.project("workspace:instructions", "project");
+    let second = fixture.project("workspace:docs", "other-source");
+    let reference = fixture.project("workspace:reference", "attached-repo");
+    let scratch = fixture.project("workspace:scratch", "session-files");
+    {
+        let mut gui = fixture.gui.lock().unwrap();
+        let managed = gui.conversation_catalog.workspaces.last_mut().unwrap();
+        managed.owner_session_id = Some("session:parent".into());
+        managed.session_workdir = true;
+    }
     let source = project.join("AGENTS.md");
     std::fs::write(&source, "Original project rules\n").unwrap();
+    std::fs::write(second.join("Agents.md"), "Second configured source").unwrap();
+    std::fs::write(reference.join("AGENTS.md"), "Reference material only").unwrap();
+    std::fs::write(scratch.join("AGENTS.md"), "Private session files").unwrap();
     let mut request = Fixture::request("parent", false);
-    request.workspace_binding_ids = Some(vec!["workspace:instructions".into()]);
+    request.workspace_binding_ids = Some(
+        [
+            "workspace:instructions",
+            "workspace:docs",
+            "workspace:scratch",
+            "workspace:reference",
+        ]
+        .map(String::from)
+        .to_vec(),
+    );
+    request.project_instruction_binding_ids = ["workspace:instructions", "workspace:docs"]
+        .map(String::from)
+        .to_vec();
     let original = fixture
         .runtime
         .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
@@ -578,6 +602,24 @@ fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
         .find(|item| item["path"].as_str() == source.to_str())
         .unwrap();
     assert_eq!(original_source["text"], "Original project rules\n");
+    let texts: Vec<_> = original["projectInstructions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["text"].as_str().unwrap())
+        .collect();
+    assert!(texts.contains(&"Second configured source"));
+    assert!(
+        !texts.contains(&"Reference material only") && !texts.contains(&"Private session files")
+    );
+    assert_eq!(
+        original["environment"]["primaryWorkspaceDirectory"],
+        json!({"workspaceId":"workspace:instructions", "path":project})
+    );
+    assert_eq!(
+        original["environment"]["sessionWorkdirId"],
+        "workspace:scratch"
+    );
 
     // A real new MCP view must not reread instructions, even when the file is now invalid.
     std::fs::write(&source, [0xff]).unwrap();
@@ -608,6 +650,7 @@ fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
     let mut request = Fixture::request("parent", false);
     request.run_id = "run:next".into();
     request.workspace_binding_ids = Some(vec!["workspace:instructions".into()]);
+    request.project_instruction_binding_ids = vec!["workspace:instructions".into()];
     let next = fixture
         .runtime
         .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
@@ -625,6 +668,33 @@ fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
             "session:parent",
             "run:next",
             next["kernelCatalogSnapshotRef"].as_str().unwrap(),
+        ))
+        .unwrap();
+
+    // With no configured source, the managed default remains a real cwd, not a
+    // source of project rules. Neither an attachment nor the old cwd takes over.
+    let mut unconfigured = Fixture::request("parent", false);
+    unconfigured.run_id = "run:unconfigured".into();
+    unconfigured.environment = Some(next["environment"].clone());
+    unconfigured.workspace_binding_ids = Some(vec![
+        "workspace:scratch".into(),
+        "workspace:reference".into(),
+    ]);
+    let view = fixture
+        .runtime
+        .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), unconfigured)
+        .unwrap();
+    assert_eq!(
+        view["environment"]["primaryWorkspaceDirectory"],
+        json!({"workspaceId":"workspace:scratch", "path":scratch})
+    );
+    assert_eq!(view["projectInstructions"], json!([]));
+    fixture
+        .runtime
+        .release_run_runtime(ReleaseToolCatalogRequest::new(
+            "session:parent",
+            "run:unconfigured",
+            view["kernelCatalogSnapshotRef"].as_str().unwrap(),
         ))
         .unwrap();
 }
@@ -649,6 +719,7 @@ fn project_instructions_read_failure_releases_locks_before_creating_mcp_resource
     .unwrap();
     let mut request = Fixture::request("parent", true);
     request.workspace_binding_ids = Some(vec!["workspace:instructions".into()]);
+    request.project_instruction_binding_ids = vec!["workspace:instructions".into()];
     let runtime = fixture.runtime.clone();
     let gui = fixture.gui.clone();
     let preparing = std::thread::spawn(move || {
@@ -698,6 +769,7 @@ fn project_instructions_read_failure_releases_locks_before_creating_mcp_resource
     std::fs::write(&source, "Fixed rules").unwrap();
     let mut retry = Fixture::request("parent", false);
     retry.workspace_binding_ids = Some(vec!["workspace:instructions".into()]);
+    retry.project_instruction_binding_ids = vec!["workspace:instructions".into()];
     let prepared = fixture
         .runtime
         .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), retry)

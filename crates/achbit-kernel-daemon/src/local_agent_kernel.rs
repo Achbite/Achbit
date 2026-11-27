@@ -1578,17 +1578,17 @@ impl LocalAgentKernel {
         Ok(prepared)
     }
 
-    /// Uploaded snapshots and private workdirs are not project instruction roots.
-    /// Resolve addresses without reading an excluded resource or borrowing its owner.
-    pub(crate) fn project_instruction_roots(
+    /// Keep binding identities so instruction discovery can distinguish source folders
+    /// from supplementary directories on the same request. Exclude private resources.
+    pub(crate) fn bound_project_roots<'a>(
         &self,
-        workspace_ids: &[String],
-    ) -> Result<Vec<PathBuf>, LocalAgentKernelError> {
+        workspace_ids: &'a [String],
+    ) -> Result<Vec<(&'a str, PathBuf)>, LocalAgentKernelError> {
         let mut roots = Vec::new();
         for workspace_id in workspace_ids {
             let workspace = self.resolver.resolve(workspace_id)?;
             if matches!(workspace.access, WorkspaceAccess::Project) {
-                roots.push(PathBuf::from(workspace.root));
+                roots.push((workspace_id.as_str(), PathBuf::from(workspace.root)));
             }
         }
         Ok(roots)

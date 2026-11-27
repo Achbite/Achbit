@@ -1,7 +1,7 @@
 import type { PreparedToolDescriptor, RunRuntimeSnapshot } from '@achbit/protocol';
 import { codingToolInstruction, codingToolNames } from './codingTools.js';
 import { USER_SYSTEM_PROMPT_ID } from './coreInstructions.js';
-import { environmentInstruction, primaryWorkingDirectory } from './sessionEnvironment.js';
+import { environmentInstruction } from './sessionEnvironment.js';
 
 /** An in-flight run is not reconfigured using the next-run defaults. */
 export function capturedPresentation({ coreToolInterface, codingTools, instructions }: RunRuntimeSnapshot) {
@@ -10,7 +10,7 @@ export function capturedPresentation({ coreToolInterface, codingTools, instructi
 
 /** One ordered composition path: shared sections plus capability-owned insertions. */
 export function codingPromptInstructions(runtime: RunRuntimeSnapshot, tools: readonly PreparedToolDescriptor[],
-  aliases: ReadonlyMap<string, string>, primaryId?: string): RunRuntimeSnapshot['instructions'] {
+  aliases: ReadonlyMap<string, string>, cwd?: string): RunRuntimeSnapshot['instructions'] {
   const shared = runtime.coreToolInterface === 'shared';
   const expanded = !shared && !runtime.codingTools;
   const section = (name: string, text: string) => ({ id: `achbit.coding.${name}`, text: `<${name}>\n${text}\n</${name}>` });
@@ -35,9 +35,7 @@ export function codingPromptInstructions(runtime: RunRuntimeSnapshot, tools: rea
   const project = runtime.instructions.find(item => item.id === 'achbit.project-instructions');
   if (project) instructions.push(section('project_context', project.text));
   // Skill locations and extension guidance stay with their originating messages/results and declarations.
-  const cwd = primaryWorkingDirectory(runtime, primaryId);
-  if (cwd && tools.some(tool => tool.availability === 'callable' && tool.origin === 'coreBuiltin' && codingToolNames.has(tool.name))) {
-    instructions.push(section('cwd', cwd.replace(/\\/gu, '/')));
-  }
+  // A project discussion has a default location even when the stage has no file tools.
+  if (cwd) instructions.push(section('cwd', runtime.environment.os === 'windows' ? cwd.replace(/\\/gu, '/') : cwd));
   return instructions;
 }

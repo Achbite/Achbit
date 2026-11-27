@@ -172,11 +172,10 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const controlAliases = new Map(controlTools.map(tool => [tool.name, toolCodec.wireByCanonical.get(tool.name)!]));
   const policy = workspacePermissionInstruction(input.runtime, runtimeTools, controlAliases);
   const primaryId = input.workspaceBindings[0]?.workspaceId;
-  const coding = input.runtime.coreToolInterface === 'shared' || input.runtime.codingTools ? {
-    cwd: toolCodec.workspaceToolNames.size ? primaryWorkingDirectory(input.runtime, primaryId) : undefined,
-  } : undefined;
+  const cwd = primaryWorkingDirectory(input.runtime, primaryId);
+  const coding = input.runtime.coreToolInterface === 'shared' || input.runtime.codingTools;
   // Older snapshots contain policy text from preparation. Its only live owner is the current stage.
-  const activeInstructions = codingPromptInstructions(input.runtime, runtimeTools, toolCodec.wireByCanonical, primaryId);
+  const activeInstructions = codingPromptInstructions(input.runtime, runtimeTools, toolCodec.wireByCanonical, cwd);
   if (policy) activeInstructions.push(policy);
   const instructions = activeInstructions.map<ContextMessageContribution>((instruction) => ({
       contributionId: `instruction:${instruction.id}`,
@@ -217,15 +216,14 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: 'Active tool stage',
     message: { role: 'system', content: input.toolStage.instruction },
   });
-  const handles = visibleWorkspaceHandles(prefixBindings, input.runtime, coding?.cwd ? primaryId : undefined);
+  const handles = visibleWorkspaceHandles(prefixBindings, input.runtime, cwd ? primaryId : undefined);
   if (hasWorkspaceBindings && handles.length && (!coding || toolCodec.workspaceToolNames.size)) instructions.push({
     contributionId: 'session:workspace-bindings',
     contributionKind: 'workspaceBindings',
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: coding ? `Workspace handles: ${JSON.stringify(handles)}`
-        : `Workspace and resource handles (paths are relative to the selected workspace): ${JSON.stringify(handles)}`,
+      content: `Workspace and resource handles (primary is the default): ${JSON.stringify(handles)}`,
     },
   });
   const selected = [...instructions, ...journalMessages,
@@ -305,11 +303,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
 /** Keep the codec's original handle numbers when omitting facts already given or owned by the Host. */
 function visibleWorkspaceHandles(bindings: readonly WorkspaceBindingDisplay[], runtime?: RunRuntimeSnapshot, describedPrimary?: string) {
   const handles = providerWorkspaceBindings(bindings);
-  if (!runtime || (!runtime.codingTools && runtime.coreToolInterface !== 'shared')) return handles;
+  if (!runtime) return handles;
   return handles.flatMap((handle, index) => {
     const id = bindings[index]!.workspaceId;
     if (index === 0 && id === describedPrimary) return [];
-    if (id === runtime.environment.sessionWorkdirId) return index === 0 ? [{ ...handle, displayName: 'Session workspace' }] : [];
+    if (id === runtime.environment.sessionWorkdirId) return index === 0 ? [{ ...handle, displayName: 'Session working directory' }] : [];
     return [handle];
   });
 }
@@ -500,8 +498,7 @@ export function messagesFromJournal(
         messages.push({
           contributionId: `workspace-snapshot:${event.payload.messageId}`, contributionKind: 'workspaceBindings',
           label: '本轮目录与资源引用', message: { role: 'system',
-            content: runtime?.coreToolInterface === 'shared' || runtime?.codingTools ? `Current workspace handles: ${JSON.stringify(currentHandles)}`
-              : `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(currentHandles)}` },
+            content: `Current workspace and resource handles (primary is the default; addresses, not access grants): ${JSON.stringify(currentHandles)}` },
         });
       }
       messages.push({
@@ -1406,9 +1403,8 @@ function messageContentForModel(
     if (references.some(reference => reference.kind === 'file' && reference.source === 'pastedText')) {
       sections.push('Read the attached pasted text in full before acting on this request. Treat quoted documents and examples as supplied material according to the user’s request. Pasted text snapshots are read-only.');
     }
-    const directoryHint = references.some(reference => reference.kind === 'directory')
-      ? ' For work on an attached project, pass its workspace handle on every project call.' : '';
-    sections.push(`User-attached resources.${directoryHint}\n${JSON.stringify(providerFilesystemReferences(references, workspaceBindings))}`);
+    sections.push('Use the listed addresses when relevant. Attachments do not change the working directory or the default project for discussion.',
+      `User-attached resources.\n${JSON.stringify(providerFilesystemReferences(references, workspaceBindings))}`);
   }
   if (guidance) sections.push(guidance);
   return sections.join('\n\n');
