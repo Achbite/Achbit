@@ -21,6 +21,57 @@ export async function checkSendEcho({ navigate, evaluate, until, frame, click, k
     await record(label, info, info.same && info.count===1 && !info.local && info.anchor===info.id && info.inView);
     assert.ok(info.same && info.inView);
   };
+  await open('folders');
+  const picker = async () => {
+    await click('[data-ui-action="composer.controls.attachments"]');
+    await click('[data-ui-action="composer.controls.choose-files"]');
+    await until('document.querySelector(".ws-open-dialog__entry-action")');
+  };
+  const box = name => `.ws-open-dialog__entry input[aria-label="${name}"]`;
+  const attach = '.ws-open-dialog__btn--primary';
+  await picker();
+  assert.ok(await evaluate(q(box('source.v2')) + ' !== null'), 'folders must be selectable without entering them');
+  await click(box('source.v2')); await click(box('资料 甲'));
+  await click(box('source.v2')); await key(' ', 'Space'); // re-add using the focused checkbox
+  await click(attach);
+  const storedPaths = `JSON.parse(sessionStorage.getItem('achbit:composer:session:folder-picker')).filesystemPaths`;
+  const folders = ['资料 甲', 'source.v2'].map(name => ({ path: '/fixture/' + name, kind: 'directory' }));
+  assert.deepEqual(await evaluate(storedPaths), folders, 'one confirmation appends both directory references in selection order');
+  await picker(); await click(box('资料 甲')); await click(attach);
+  assert.deepEqual(await evaluate(storedPaths), folders, 'selecting an attached directory again must not duplicate it');
+  await picker(); await click(box('one.bin')); await key('Escape');
+  assert.deepEqual(await evaluate(storedPaths), folders, 'cancelling does not change the draft');
+  await picker(); await click(box('one.bin')); await click(box('two.bin')); await click(attach);
+  const expected = [...folders, ...['one.bin', 'two.bin'].map(name => ({ path: '/fixture/' + name, kind: 'file' }))];
+  assert.deepEqual(await evaluate(storedPaths), expected, 'ordinary multi-file selection still works');
+  // The desktop adapter test and Rust tests own the OS result. Here drive that result through the real composer.
+  const nativePick = async selection => {
+    await evaluate(`window.__TAURI__ = {core:{invoke:async (name, {options}) => {
+      if (name !== 'achbit_pick_path' || options.kind !== 'path' || !options.multiple) throw Error('wrong attachment dialog');
+      return ${JSON.stringify(selection)};
+    }}}; window.__ACHBIT_BROWSER_PREVIEW__ = false;`);
+    await click('[data-ui-action="composer.controls.attachments"]'); await click('[data-ui-action="composer.controls.choose-files"]');
+    await frame();
+  };
+  const extra = Array.from({length: 4}, (_, i) => ({path: '/fixture/extra-' + i, kind: 'directory'}));
+  await nativePick([extra[0], expected[2]]);
+  assert.match(await evaluate(q('.local-agent__error-content') + '.textContent'), /分两次选择/);
+  assert.deepEqual(await evaluate(storedPaths), expected, 'mixed picker result adds nothing');
+  await nativePick(extra);
+  expected.push(...extra);
+  assert.deepEqual(await evaluate(storedPaths), expected, 'one native result may fill the remaining four slots with directories');
+  await nativePick([{path:'/fixture/overflow',kind:'directory'}]);
+  assert.match(await evaluate(q('.local-agent__error-content') + '.textContent'), /8/);
+  assert.deepEqual(await evaluate(storedPaths), expected, 'ninth reference cannot partially change the draft');
+  await nativePick(null);
+  assert.deepEqual(await evaluate(storedPaths), expected);
+  await evaluate('delete window.__TAURI__;');
+  await submit('引用所选目录与文件'); await until(`${f}.command()`);
+  const sentRefs = await evaluate(`${f}.command().filesystemReferences.map(({displayName,kind,logicalPath})=>({displayName,kind,logicalPath}))`);
+  assert.deepEqual(sentRefs, expected.map(({path, kind}) => ({ displayName: path.split('/').at(-1), kind, logicalPath: kind === 'directory' ? '.' : path.split('/').at(-1) })));
+  await record('folder-multiselect-to-message', sentRefs, true);
+  await evaluate(`${f}.reply()`);
+
   const firstText = '请把刚才讨论的修改整理成三点。';
   await open('new'); await submit(firstText);
   await until(q(local)); await holdNode();

@@ -70,6 +70,37 @@ fn describe_selection(path: PathBuf) -> Result<PathSelection, String> {
     Ok(PathSelection { path, kind })
 }
 
+fn describe_paths(paths: Vec<PathBuf>) -> Result<Vec<PathSelection>, String> {
+    let selections = paths
+        .into_iter()
+        .map(describe_selection)
+        .collect::<Result<Vec<_>, _>>()?;
+    if selections.is_empty() {
+        return Err("native_dialog_selected_path_missing".into());
+    }
+    Ok(selections)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_dialog_returns_multiple_directory_references_in_selection_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = [temp.path().join("source.v2"), temp.path().join("资料 甲")];
+        for path in &paths {
+            std::fs::create_dir(path).unwrap();
+        }
+        let selected = describe_paths(paths.to_vec()).unwrap();
+        assert_eq!(selected.len(), 2);
+        for (item, path) in selected.iter().zip(&paths) {
+            assert_eq!(item.kind, "directory");
+            assert_eq!(std::path::Path::new(&item.path), path);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn achbit_pick_path(
     window: tauri::Window,
@@ -92,19 +123,7 @@ pub async fn achbit_pick_path(
         receiver
             .recv()
             .map_err(|error| error.to_string())??
-            .map(|paths| {
-                let selections = paths
-                    .into_iter()
-                    .map(describe_selection)
-                    .collect::<Result<Vec<_>, _>>()?;
-                if selections.is_empty() {
-                    return Err("native_dialog_selected_path_missing".into());
-                }
-                if selections.len() > 1 && selections.iter().any(|item| item.kind == "directory") {
-                    return Err("Select multiple files or one folder.".into());
-                }
-                Ok(selections)
-            })
+            .map(describe_paths)
             .transpose()
     })
     .await

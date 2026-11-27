@@ -68,13 +68,15 @@ impl IFileDialogEvents_Impl for SelectionEvents_Impl {
     fn OnSelectionChange(&self, dialog: Ref<'_, IFileDialog>) -> windows::core::Result<()> {
         if let Some(dialog) = dialog.as_ref() {
             unsafe {
-                let has_path = dialog
-                    .GetCurrentSelection()
-                    .and_then(|item| item_path(&item))
-                    .is_ok();
+                // Enable the custom button from the same multi-selection it confirms.
+                let has_paths = dialog
+                    .cast::<IFileOpenDialog>()?
+                    .GetSelectedItems()
+                    .and_then(|items| items.GetCount())
+                    .is_ok_and(|count| count > 0);
                 dialog.cast::<IFileDialogCustomize>()?.SetControlState(
                     SELECT_ITEM,
-                    if has_path {
+                    if has_paths {
                         CDCS_VISIBLE | CDCS_ENABLED
                     } else {
                         CDCS_VISIBLE

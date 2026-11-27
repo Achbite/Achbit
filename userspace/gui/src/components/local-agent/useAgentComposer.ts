@@ -667,7 +667,7 @@ export function useAgentComposer(
     setAttachmentDialogOpen(false);
     try {
       const unique = selections.filter((item, index) => selections.findIndex(other => other.path === item.path && other.kind === item.kind) === index);
-      if (unique.length > 1 && unique.some(item => item.kind === 'directory')) throw new Error(language === 'zh-CN' ? '请选择多个文件或一个文件夹。' : 'Select multiple files or one folder.');
+      if (unique.some(item => item.kind !== unique[0].kind)) throw new Error(t(language, 'agent.attachment.error.mixedSelection'));
       const additions = unique.filter(item => !pendingFilesystemPaths.some(current => current.path === item.path && current.kind === item.kind));
       if (recoveredContent.filesystemReferences.length + pendingFilesystemPaths.length + pastedTexts.length + pastedImages.length + additions.length > 8) {
         throw new Error(t(language, 'agent.attachment.error.maxFiles'));

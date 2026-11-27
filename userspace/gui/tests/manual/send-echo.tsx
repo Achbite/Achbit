@@ -17,7 +17,7 @@ import '../../src/achbit-gui/achbitGui.css';
 const scenario = new URLSearchParams(location.search).get('scene');
 // This case starts with an empty draft, not attachments saved by another fixture in the same tab.
 if (scenario === 'new') sessionStorage.removeItem('achbit:composer:new:independent');
-const id = 'session:echo', other = 'session:other', epoch = '2026-01-01T00:00:00Z';
+const id = scenario === 'folders' ? 'session:folder-picker' : 'session:echo', other = 'session:other', epoch = '2026-01-01T00:00:00Z';
 const profile = { id: 'profile:echo', connectionId: 'connection:fixture', name: 'Fixture', model: 'fixture',
   providerFlavor: 'openai', kind: 'responses', thinking: 'disabled', enabled: true } as const;
 const settings = { ...DEFAULT_USER_SETTINGS, 'workbench.language': 'zh-CN' };
@@ -48,6 +48,19 @@ let pending: { command: Extract<ConversationCommand, {type: 'message.submit'}>; 
 const ok = (data: unknown) => Response.json({ ok: true, data });
 window.fetch = async (input, init) => {
   const path = new URL(input instanceof Request ? input.url : String(input), location.href).pathname;
+  if (scenario === 'folders') {
+    const root = '/fixture';
+    if (path === '/api/fs/initial-locations') return ok({ platform: 'linux', locations: [{ kind: 'home', label: 'Fixture', absolutePath: root }] });
+    if (path === '/api/fs/browse') return ok({ absolutePath: root, parentPath: '/', entries: ['source.v2', '资料 甲', 'one.bin', 'two.bin'].map((name, index) => ({
+      name, type: index < 2 ? 'directory' : 'file', absolutePath: `${root}/${name}`, hidden: false, isCodeWorkspace: false,
+    })) });
+    if (path.endsWith('/filesystem-references/resolve')) {
+      const { references } = JSON.parse(String(init?.body)) as { references: { path: string; kind: 'directory' | 'file' }[] };
+      return ok(references.map(({path, kind}, index) => ({ referenceId: `ref:${index}`, workspaceId: `workspace:${index}`,
+        kind, logicalPath: kind === 'directory' ? '.' : path.split('/').at(-1), displayName: path.split('/').at(-1),
+        ...(kind === 'file' ? { mediaType: 'application/octet-stream', byteLength: 0 } : {}) })));
+    }
+  }
   if (path.endsWith('/sessions') && init?.method === 'POST') { await createGate.promise; created = true; return ok(p); }
   if (path.endsWith('/commands')) {
     const command = JSON.parse(String(init?.body)) as ConversationCommand;

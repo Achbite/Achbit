@@ -138,6 +138,8 @@ Summary/tools views include input rejections and permission-review decisions. Us
 
 ## Attachments, file links and notices
 
+In the composer, choose **Files and folders** to attach several folders in one selection. Select files separately if you want both kinds in the same message. Each folder counts as one of the eight attachments; its contents are not uploaded.
+
 File and folder attachments have separate open and remove controls. Click a folder to open that directory in the system file manager. Click an image to enlarge it over the current conversation; Escape closes it without opening a Reader tab or editor. Other files, including HTML and PDF, follow **Settings → General → Open files with** (Reader or VS Code). In Reader, ordinary HTML is read-only and PDFs support paging. Previewing a draft attachment does not send it or create a Session.
 
 A submitted directory becomes a workspace binding when consumed; a file attachment identifies only that file. Neither grants writes or binds the file's parent directory. Local references point to original files; pasted text and archived artifacts are snapshots. Supplemental input reaches the current task after the applicable request/tool boundary.
