@@ -86,7 +86,7 @@ Endpoint references (checked 2026-10-23): [GLM](https://docs.bigmodel.cn/cn/codi
 
 ## Context management
 
-- `/focus <task>` summarizes previous work before continuing. A failed summary does not replace history; compaction cannot execute tools.
+- `/focus <topic>` summarizes earlier work around the focus you give. To continue without a summary, just send a message. A failed summary does not replace history; compaction cannot execute tools.
 - Settings → Agent behavior: `agent.contextManagement.enabled` defaults to off; `agent.contextManagement.thresholdTokens` defaults to `500000`. The threshold measures estimated next input, not cumulative billing tokens.
 - Automatic checks occur at task boundaries, not on every turn past the soft threshold. Capacity-pressure compaction still applies when automatic management is off and reserves output space.
 - Compaction changes the context prefix and may reduce cache reuse. Original history remains queryable through `session.read`. Ollama currently cannot use the retained-tool-definition summary path.

@@ -18,6 +18,23 @@ test('plan mode off keeps Plan out of the assembled instructions', () => {
   assert.doesNotMatch(policy.text, /Plan/);
 });
 
+test('a confirmed follow-up is actionable in full mode without relaxing other limits', () => {
+  const runtime = { permissions: settings('allow') };
+  const full = workspacePermissionInstruction(runtime, tools, interactionControl).text;
+  assert.match(full, /review without editing/i);
+  assert.match(full, /explicitly confirms a proposed fix, apply that fix in the same conversation/i);
+  assert.match(full, /other constraints and tool permissions/i);
+  for (const [run, view, controls] of [
+    [{ ...runtime, codingTools: true }, tools, new Map()],
+    [{ ...runtime, planMode: 'manual' }, tools, planControl],
+    [{ permissions: settings('review') }, tools, planControl],
+    [{ permissions: settings('plan') }, tools, planControl],
+    [runtime, [{ possibleEffects: ['workspaceRead'] }], interactionControl],
+  ]) {
+    assert.doesNotMatch(workspacePermissionInstruction(run, view, controls)?.text ?? '', /apply that fix/i);
+  }
+});
+
 test('plan mode off with delegated engineering adds no instructions at all', () => {
   const policy = workspacePermissionInstruction(
     { permissions: settings('allow', 'delegate'), planMode: undefined }, tools, new Map());

@@ -980,14 +980,14 @@ export class SessionActor {
     const journalCommand = continuation?.command ?? edit?.command ?? command;
     const manualPlan = command.type === 'message.submit' && command.planMode === 'manual';
     if (manualPlan && !submittedText.trim()) {
-      return await this.recordRejection(journalCommand, 'plan_task_empty', '/plan 后必须提供任务正文。');
+      return await this.recordRejection(journalCommand, 'plan_task_empty', '/plan 后请说明需要制定计划的工作。');
     }
     if (!continuation && !submittedText.trim() && (command.type === 'context.focus' || !command.filesystemReferences?.length)) {
       if (command.type === 'context.focus') {
         return await this.recordRejection(
           command,
           'context_focus_task_empty',
-          '/focus 后必须提供新的任务正文。',
+          '/focus 后请说明接下来要关注什么。',
         );
       }
       return await this.recordRejection(journalCommand, 'message_empty', '用户消息不能为空。');
@@ -1020,13 +1020,13 @@ export class SessionActor {
       if (manualPlan) {
         return await this.commitCommandWithinWrite(command, [], {
           ...acceptedReply(command), status: 'rejected',
-          error: { code: 'plan_run_active', message: '请在当前任务结束后用 /plan 发起新任务。' },
+          error: { code: 'plan_run_active', message: '本轮仍在进行；如需先制定计划，请在本轮结束后使用 /plan。' },
         });
       }
       if (command.type === 'context.focus') {
         return await this.commitCommandWithinWrite(command, [], {
           ...acceptedReply(command), status: 'rejected',
-          error: { code: 'context_focus_run_active', message: '当前任务仍在运行；普通补充消息可以排队，/focus 请在本轮结束后使用。' },
+          error: { code: 'context_focus_run_active', message: '本轮仍在进行；普通消息可以排队。如需压缩上下文，请在本轮结束后使用 /focus。' },
         });
       }
       const runtime = current.state.runRuntimeSnapshots[run.runId];

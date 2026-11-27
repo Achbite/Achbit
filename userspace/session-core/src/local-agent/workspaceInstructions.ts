@@ -1,4 +1,4 @@
-import type { PreparedToolDescriptor, RunRuntimeSnapshot, UserSettings } from '@achbit/protocol';
+import type { PreparedToolDescriptor, RunRuntimeSnapshot } from '@achbit/protocol';
 import { SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH } from '@achbit/protocol';
 
 /** Only the actual stage can contribute Plan and interaction routes. */
@@ -13,10 +13,11 @@ export function workspacePermissionInstruction(
   const manual = runtime.planMode === 'manual';
   if (permissions['agent.permissions.workspaceMutation'] === 'allow' && !manual && !interaction
     && permissions['agent.permissions.engineeringDecisions'] === 'delegate') return;
-  return { id: 'achbit.workspace-autonomy', text: permissionText(permissions, interaction, plan, manual, canMutate) };
+  return { id: 'achbit.workspace-autonomy', text: permissionText(runtime, interaction, plan, manual, canMutate) };
 }
 
-function permissionText(settings: UserSettings, interactionRequest: string | null, planPublish: string | null, requestedPlan: boolean, canMutate: boolean): string {
+function permissionText(runtime: RunRuntimeSnapshot, interactionRequest: string | null, planPublish: string | null, requestedPlan: boolean, canMutate: boolean): string {
+  const settings = runtime.permissions;
   const engineering = settings['agent.permissions.engineeringDecisions'] === 'delegate'
     ? "Engineering decisions are delegated. Choose the smallest sound approach within the user's scope."
     : 'Decide routine implementation details. When viable engineering routes materially differ in scope, public contracts or cost, explain the trade-off and let the user choose before proceeding with that route.';
@@ -29,10 +30,11 @@ function permissionText(settings: UserSettings, interactionRequest: string | nul
   const workspaceAutonomyInstruction = requestedPlan
     ? 'Work within the confirmed project scope.'
     : settings['agent.permissions.workspaceMutation'] === 'allow'
-    ? "Work within the bound workspaces and the user's authorized scope."
+    ? "Work within the bound workspaces and the user's authorized scope." + (runtime.codingTools ? '' :
+      ' Respect a request to review without editing. If a later message explicitly confirms a proposed fix, apply that fix in the same conversation. Keep other constraints and tool permissions in force.')
     : !planPublish ? 'Work within confirmed scope.'
     : settings['agent.permissions.workspaceMutation'] === 'review'
       ? `Submit a Plan with ${planPublish} for project changes outside confirmed scope. An independent Plan reviewer decides the proposed scope; you do not approve your own Plan. Reuse confirmed scope and submit again only when new or expanded authorization is needed. Project reads need no Plan.`
     : `Investigate as needed and propose a clearly scoped change. Before making project changes outside confirmed scope, call ${planPublish} and wait for confirmation. Then carry out related work within that scope autonomously, including delegated parent scope, without seeking approval again for ordinary implementation details. Request additional scope only when needed. Project reads need no Plan.`;
-  return `${workspaceAutonomyInstruction}\nFile and shell paths resolve from the workspace selected for that call. Use explicit workspace handles for cross-workspace operations. File attachments identify individual files; they do not bind parent directories or grant writes.\nFile access, Shell networking and Host execution have separate scopes. Use the current tool's permission fields for the needed targets and reasons.${planRule}\nDistinguish missing dependencies from denied access in the current execution environment. Before handing authorized work back to the user, check the available permission and environment routes and ask for the specific missing scope or decision. Do not widen access or retry a denied operation without authorization.\n${engineering}${questions}`;
+  return `${workspaceAutonomyInstruction}\nA workspace handle selects an address, not permission. Attaching a file does not bind its parent directory or grant writes.\nFile access, Shell networking and Host execution have separate scopes. Use the current tool's permission fields for the needed targets and reasons.${planRule}\nDistinguish missing dependencies from denied access in the current execution environment. Before handing authorized work back to the user, check the available permission and environment routes and ask for the specific missing scope or decision. Do not widen access or retry a denied operation without authorization.\n${engineering}${questions}`;
 }
