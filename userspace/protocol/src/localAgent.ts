@@ -1324,6 +1324,26 @@ export type SessionEvent =
       payload: { record: ToolExecutionRecord };
     })
   | (SessionEventBase & {
+      type: 'session.plugins.requested';
+      runId: string;
+      callId: string;
+      /** Ordered directory bindings captured for preparation, not every addressable file reference. */
+      payload: { providerRequestId: string; providerCallId: string; pluginUris: string[]; workspaceBindingIds: string[] };
+    })
+  | (SessionEventBase & {
+      type: 'session.plugins.preparing';
+      runId: string;
+      callId: string;
+      /** Beyond this point a missing receipt cannot prove non-execution. */
+      payload: Record<string, never>;
+    })
+  | (SessionEventBase & {
+      type: 'session.plugins.failed';
+      runId: string;
+      callId: string;
+      payload: { outcome: 'failed' | 'notExecuted' | 'indeterminate'; error: LocalAgentError };
+    })
+  | (SessionEventBase & {
       type: 'session.plugins.activated';
       runId: string;
       callId: string;

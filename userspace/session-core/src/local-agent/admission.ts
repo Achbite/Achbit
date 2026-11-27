@@ -1,6 +1,6 @@
 import { decodeAgentCapabilities, decodeAgentSettings, decodeContextManagementSettings, isManagedProcessSnapshot } from '@achbit/protocol';
 import { isSessionAuthorizationScope } from '@achbit/protocol';
-import { SESSION_EVENT_VERSION } from '@achbit/protocol';
+import { isLocalAgentErrorValue, SESSION_CONTROL_PLUGIN_ACTIVATE, SESSION_EVENT_VERSION } from '@achbit/protocol';
 import type { CommandReply, ConversationCommand, NewSessionEvent, SessionEvent } from '@achbit/protocol';
 import { loopSnapshot, pendingToolRequests, type LoopSnapshot } from './loop.js';
 import { reduceSession } from './reducer.js';
@@ -9,6 +9,8 @@ import { capacityTicket, type CapacityCall } from './agentCapacity.js';
 import { approvalNeedsAgentReview } from './approvalReview.js';
 import { controlWait, pendingWakeups } from './sessionWake.js';
 import { requestResourceBindings } from './workspaceBindings.js';
+import { reduceWorkspaceBindings, type WorkspaceState } from './resourceProjection.js';
+import { decodeSessionControlCall } from './sessionControls.js';
 
 /** New writes are admitted here; replay preserves already-recorded failure facts. */
 export function admitSessionEvents(
@@ -18,8 +20,8 @@ export function admitSessionEvents(
 ): void {
   if (command) admitCommandBatch(command.input, events, command.reply);
   let snapshot = current;
-  for (const event of events) {
-    admitEvent(snapshot, event);
+  for (const [index, event] of events.entries()) {
+    admitEvent(snapshot, event, events, index);
     const candidate = {
       ...event, schemaVersion: SESSION_EVENT_VERSION,
       eventId: 'admission', sequence: snapshot.state.revision + 1,
@@ -74,7 +76,88 @@ function admitCommandBatch(command: ConversationCommand, events: readonly NewSes
     || todos.length !== 0) throw new Error('plan_command_event_batch_invalid');
 }
 
-function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
+// The receipt's addressable bindings include files. Preparation receives only the directories
+// the run owned when that receipt was written, even after a later workspace edit.
+function activationDirectoryIds(events: readonly SessionEvent[], through: number): string[] {
+  let workspace: WorkspaceState = { creationWorkspaceBindings: [], sessionDirectoryIndexes: [], workspaceBindings: [] };
+  let directories: WorkspaceState['workspaceBindings'] = [];
+  for (const event of events) {
+    if (event.sequence > through) break;
+    if (event.type === 'run.started') directories = event.payload.workspaceBindings;
+    if (event.type === 'session.created' || event.type === 'session.workspaces.updated'
+      || event.type === 'session.directory-index.attached' || event.type === 'session.directory-index.detached') {
+      workspace = reduceWorkspaceBindings(workspace, event);
+      directories = workspace.workspaceBindings;
+    }
+  }
+  return directories.map(binding => binding.workspaceId);
+}
+
+function admitActivationRequest({ state, events }: LoopSnapshot,
+  event: Extract<NewSessionEvent, { type: 'session.plugins.requested' | 'session.plugins.activated' }>, batch: readonly NewSessionEvent[], index: number): void {
+  const { providerCallId, pluginUris } = event.payload;
+  const receipt = state.contextCompositions.find(item => item.runId === event.runId && !state.providerTurns[item.providerRequestId]);
+  const runtime = state.runRuntimeSnapshots[event.runId];
+  const view = state.runToolViews[event.runId] ?? runtime;
+  const offered = receipt?.tools.find(tool => tool.canonicalName === SESSION_CONTROL_PLUGIN_ACTIVATE);
+  if (!receipt || receipt.purpose !== 'agent' || receipt.responseConstraint !== 'normal'
+    || event.type === 'session.plugins.requested' && (event.payload.providerRequestId !== receipt.providerRequestId
+      || receipt.kernelCatalogSnapshotRef !== view.kernelCatalogSnapshotRef)
+    || runtime.mode === 'minimal' || runtime.toolSelection?.plugins === false
+    || runtime.toolSelection?.controls && !runtime.toolSelection.controls.includes(SESSION_CONTROL_PLUGIN_ACTIVATE)
+    || !offered || offered.origin !== 'sessionControl' || offered.availability !== 'callable' || offered.itemId !== offered.canonicalName
+    || !view.providerToolAliases.some(alias => alias.canonicalName === offered.canonicalName && alias.wireName === offered.wireName)) {
+    throw new Error('plugin_activation_source_missing');
+  }
+  if (event.type === 'session.plugins.requested'
+    && JSON.stringify(event.payload.workspaceBindingIds) !== JSON.stringify(activationDirectoryIds(events, receipt.sequence))) {
+    throw new Error('plugin_activation_directory_mismatch');
+  }
+  decodeSessionControlCall(event.callId, SESSION_CONTROL_PLUGIN_ACTIVATE, { pluginUris });
+  // Registration and the completed provider reply are one append. A declared name or an
+  // ordered logical ID alone is not evidence that the provider requested these URIs.
+  const completion = batch.find((fact, i) => i > index && fact.type === 'provider.turn.settled' && fact.runId === event.runId
+    && fact.payload.providerRequestId === receipt.providerRequestId);
+  if (completion?.type !== 'provider.turn.settled' || completion.payload.outcome !== 'completed' || completion.payload.purpose !== 'agent') {
+    throw new Error('plugin_activation_turn_missing');
+  }
+  const turn = completion.payload;
+  const calls = turn.toolCallInputs?.map(call => ({ ...call, wireName: undefined })) ?? turn.orderedOutputBlocks?.flatMap(block =>
+    block.kind === 'toolCall' || block.kind === 'toolCallRejected' ? [{ callId: block.callId, providerCallId: block.providerCallId,
+      toolName: block.toolName, wireName: block.item.name, arguments: block.item.arguments, error: block.kind === 'toolCallRejected' ? block.error : undefined }] : []);
+  const source = calls?.find(call => call.callId === event.callId);
+  if (!calls || !source || event.type === 'session.plugins.activated' && calls.length !== 1
+    || source.error || source.toolName !== offered.canonicalName || source.providerCallId !== providerCallId
+    || source.wireName !== undefined && source.wireName !== offered.wireName || typeof source.arguments !== 'string'
+    || new Set(calls.map(call => call.callId)).size !== calls.length || new Set(calls.map(call => call.providerCallId)).size !== calls.length
+    || calls.some(call => !call.callId || !call.providerCallId || call.providerCallId === call.callId)) throw new Error('plugin_activation_call_mismatch');
+  const nativeCalls = new Map(turn.providerReplay?.content.filter(block => block.type === 'tool_use').map(block => [block.id, block]));
+  const native = nativeCalls.get(providerCallId);
+  const input = JSON.stringify({ pluginUris });
+  let original: unknown;
+  try { original = JSON.parse(source.arguments); } catch { throw new Error('plugin_activation_input_mismatch'); }
+  if (JSON.stringify(original) !== input
+    || turn.providerReplay && (native?.name !== offered.wireName || JSON.stringify(native.input) !== input)) throw new Error('plugin_activation_input_mismatch');
+  const kernelRequests = new Set(batch.flatMap(fact => fact.type === 'tool.requested' && fact.runId === event.runId ? [fact.callId] : []));
+  // Hosted capabilities share the request receipt, not the local function-call namespace.
+  const localFunctions = receipt.tools.filter(tool => tool.origin !== 'providerHosted');
+  const declarations = new Map(localFunctions.map(tool => [tool.canonicalName, tool]));
+  for (const call of calls) {
+    if (call === source) continue;
+    const wire = call.wireName ?? nativeCalls.get(call.providerCallId)?.name;
+    if (call.error?.code === 'provider_tool_alias_unknown') {
+      if (localFunctions.some(tool => tool.wireName === (wire ?? call.toolName))) throw new Error('plugin_activation_batch_invalid');
+      continue;
+    }
+    const tool = declarations.get(call.toolName);
+    if (!tool || !['coreBuiltin', 'extension'].includes(tool.origin) || tool.availability !== 'callable'
+      || wire !== undefined && wire !== tool.wireName || !call.error && !kernelRequests.has(call.callId)) {
+      throw new Error('plugin_activation_batch_invalid');
+    }
+  }
+}
+
+function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent, batch: readonly NewSessionEvent[], index: number): void {
   const { state, events } = snapshot;
   if (event.sessionId !== state.sessionId) throw new Error('session_event_identity_mismatch');
   const runId = 'runId' in event ? event.runId : undefined;
@@ -166,10 +249,38 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
           }
         }
       }
-    case 'session.plugins.activated':
     case 'artifacts.presented':
       if (!pendingProvider) throw new Error('provider_turn_composition_missing');
       break;
+    case 'session.plugins.requested':
+      admitActivationRequest(snapshot, event, batch, index);
+      break;
+    case 'session.plugins.preparing':
+    case 'session.plugins.failed': {
+      const slot = state.pendingPluginActivation;
+      if (!slot || slot.runId !== event.runId || slot.callId !== event.callId
+        || !state.providerTurns[slot.providerRequestId]?.orderedCallIds?.includes(slot.callId)) throw new Error('plugin_activation_request_missing');
+      if (event.type === 'session.plugins.preparing') {
+        if (pendingProvider || pendingToolRequests(events, event.runId).length) throw new Error('plugin_activation_siblings_pending');
+      } else if (!isLocalAgentErrorValue(event.payload.error)
+        || !state.runRuntimeReleases[event.runId] && !['running', 'waiting'].includes(state.run!.status)) throw new Error('plugin_activation_failure_invalid');
+      break;
+    }
+    case 'session.plugins.activated': {
+      const legacy = !state.pendingPluginActivation;
+      if (legacy) {
+        // Legacy writers put provider settlement between the success and its prepared view.
+        if (!pendingProvider) throw new Error('provider_turn_composition_missing');
+        admitActivationRequest(snapshot, event, batch, index);
+      }
+      const publication = legacy ? batch.find((fact, i) => i > index && fact.type === 'run.tools.prepared' && fact.runId === event.runId) : batch[index + 1];
+      if (!legacy && pendingProvider || state.run?.status !== 'running' || publication?.type !== 'run.tools.prepared'
+        || publication.runId !== event.runId || publication.payload.toolView.kernelCatalogSnapshotRef !== event.payload.kernelCatalogSnapshotRef
+        || event.payload.pluginUris.some(uri => !publication.payload.toolView.selectedPlugins.plugins.some(plugin => plugin.uri === uri))) {
+        throw new Error('plugin_activation_publication_mismatch');
+      }
+      break;
+    }
     case 'todo.updated': {
       if (event.callId) {
         if (!pendingProvider) throw new Error('provider_turn_composition_missing');
@@ -310,9 +421,11 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     }
     case 'run.tools.prepared':
+      if (state.pendingPluginActivation) throw new Error('plugin_activation_pending');
       if (pendingProvider) throw new Error('provider_turn_still_active');
       break;
     case 'context.composed': {
+      if (state.pendingPluginActivation && event.payload.purpose !== 'approvalReview') throw new Error('plugin_activation_pending');
       if (pendingProvider) throw new Error('provider_turn_still_active');
       admitModelView(event.payload, events);
       if (state.contextHandoff?.status === 'reading' && event.payload.purpose !== 'approvalReview'
@@ -362,7 +475,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
         && state.runRuntimeSnapshots[event.runId].webSearch.owner !== 'providerHosted') throw new Error('provider_hosted_search_owner_mismatch');
       break;
     case 'run.finishing': {
-      if (pendingProvider) throw new Error('run_finishing_state_invalid');
+      if (pendingProvider || state.pendingPluginActivation && event.payload.outcome === 'completed') throw new Error('run_finishing_state_invalid');
       const finalMessageId = 'finalMessageId' in event.payload ? event.payload.finalMessageId : undefined;
       if (finalMessageId
         && !state.messages.some((message) => message.role === 'assistant' && message.runId === runId
@@ -413,6 +526,7 @@ function admitEvent(snapshot: LoopSnapshot, event: NewSessionEvent): void {
       break;
     }
     case 'run.settled':
+      if (state.pendingPluginActivation) throw new Error('run_plugin_activation_result_missing');
       if (pendingToolRequests(events, event.runId).length) throw new Error('run_tool_result_missing');
       break;
   }

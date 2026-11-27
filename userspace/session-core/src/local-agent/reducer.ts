@@ -83,6 +83,8 @@ export interface SessionState {
   tokenUsageHistory: Record<string, SessionProjection['tokenUsageHistory'][number]>;
   runRuntimeSnapshots: Record<string, RunRuntimeSnapshot>;
   runToolViews: Record<string, PreparedRequestToolView>;
+  pendingPluginActivation?: Extract<SessionEvent, { type: 'session.plugins.requested' }>['payload']
+    & { runId: string; callId: string; phase: 'requested' | 'preparing' };
   pendingRunSettlements: Record<string, RunSettlement>;
   runRuntimeReleases: Record<
     string,
@@ -885,11 +887,60 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('agent_message_run_not_active');
       recordAgentMessageActivity(next, event);
       break;
-    case 'session.plugins.activated':
+    case 'session.plugins.requested': {
       assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
+      if (next.pendingPluginActivation) throw new Error('plugin_activation_already_pending');
+      const activityId = pluginActivationActivityId(event.callId);
+      if (next.activities[toolActivityId(event.callId)]) throw new Error('provider_call_fact_duplicate');
       recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
         SESSION_CONTROL_PLUGIN_ACTIVATE, event.sequence);
+      next.pendingPluginActivation = { ...structuredClone(event.payload), runId: event.runId, callId: event.callId, phase: 'requested' };
+      // Display the Session operation and its targets, never a fabricated Kernel execution record.
+      writableRecord(next, 'activities')[activityId] = { activityId, kind: 'tool', status: 'requested',
+        label: SESSION_CONTROL_PLUGIN_ACTIVATE, runId: event.runId, callId: event.callId, sequence: event.sequence,
+        tool: { operation: SESSION_CONTROL_PLUGIN_ACTIVATE, resources: event.payload.pluginUris.map(label => ({ kind: 'logicalTarget', label })) } };
       break;
+    }
+    case 'session.plugins.preparing':
+    case 'session.plugins.failed': {
+      const slot = next.pendingPluginActivation;
+      // A transcript page may omit the parent request. It is a read, never a scheduling input.
+      if (!slot && replay?.transcriptCompositions) break;
+      if (!slot || slot.callId !== event.callId || slot.runId !== event.runId) throw new Error('plugin_activation_request_missing');
+      if (event.type === 'session.plugins.preparing') {
+        assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
+        if (slot.phase !== 'requested') throw new Error('plugin_activation_already_preparing');
+        next.pendingPluginActivation = { ...slot, phase: 'preparing' };
+        settleActivity(next, pluginActivationActivityId(event.callId), 'active');
+      } else {
+        const { outcome, error } = event.payload;
+        if (slot.phase === 'requested' ? outcome !== 'notExecuted' : outcome !== 'failed' && outcome !== 'indeterminate') {
+          throw new Error('plugin_activation_outcome_mismatch');
+        }
+        const id = pluginActivationActivityId(event.callId);
+        const activity = next.activities[id];
+        writableRecord(next, 'activities')[id] = { ...activity, status: outcome === 'notExecuted' ? 'cancelled' : outcome,
+          tool: { ...activity.tool!, error: structuredClone(error) } };
+        delete next.pendingPluginActivation;
+      }
+      break;
+    }
+    case 'session.plugins.activated': {
+      const slot = next.pendingPluginActivation;
+      if (slot) {
+        if (slot.phase !== 'preparing' || slot.runId !== event.runId || slot.callId !== event.callId
+          || slot.providerCallId !== event.payload.providerCallId
+          || JSON.stringify(slot.pluginUris) !== JSON.stringify(event.payload.pluginUris)) throw new Error('plugin_activation_result_mismatch');
+        settleActivity(next, pluginActivationActivityId(event.callId), 'completed');
+        delete next.pendingPluginActivation;
+      } else {
+        // Standalone historical activations registered their provider call on success.
+        assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
+        recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
+          SESSION_CONTROL_PLUGIN_ACTIVATE, event.sequence);
+      }
+      break;
+    }
     case 'session.control.rejected':
       writableRecord(next, 'activities');
       assertRunningRun(next, event.runId, 'session_control_rejection_run_not_active');
@@ -2674,6 +2725,7 @@ export function artifactsFromRecord(record: ToolExecutionRecord): ArtifactProjec
 
 function runActivityId(runId: string): string { return `run:${runId}`; }
 function toolActivityId(callId: string): string { return `tool:${callId}`; }
+function pluginActivationActivityId(callId: string): string { return `plugin-activation:${callId}`; }
 function approvalActivityId(approvalId: string): string { return `approval:${approvalId}`; }
 function interactionActivityId(interactionId: string): string { return `interaction:${interactionId}`; }
 function planActivityId(planId: string, revision: number): string {

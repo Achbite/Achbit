@@ -2379,6 +2379,9 @@
             "process.updated",
             "process.wait.changed",
             "tool.completed",
+            "session.plugins.requested",
+            "session.plugins.preparing",
+            "session.plugins.failed",
             "session.plugins.activated",
             "agent.task.created",
             "agent.task.started",
@@ -3298,6 +3301,30 @@
               }
             }
           }
+        },
+        {
+          "if": {"properties": {"type": {"const": "session.plugins.requested"}}},
+          "then": {"required": ["runId", "callId"], "properties": {"payload": {
+            "type": "object", "additionalProperties": false,
+            "required": ["providerRequestId", "providerCallId", "pluginUris", "workspaceBindingIds"],
+            "properties": {
+              "providerRequestId": {"$ref": "#/$defs/Id"}, "providerCallId": {"$ref": "#/$defs/Id"},
+              "pluginUris": {"type": "array", "minItems": 1, "uniqueItems": true,
+                "items": {"type": "string", "pattern": "^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"}},
+              "workspaceBindingIds": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/Id"}}
+            }
+          }}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "session.plugins.preparing"}}},
+          "then": {"required": ["runId", "callId"], "properties": {"payload": {"type": "object", "additionalProperties": false}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "session.plugins.failed"}}},
+          "then": {"required": ["runId", "callId"], "properties": {"payload": {
+            "type": "object", "additionalProperties": false, "required": ["outcome", "error"],
+            "properties": {"outcome": {"enum": ["failed", "notExecuted", "indeterminate"]}, "error": {"$ref": "#/$defs/LocalAgentError"}}
+          }}}
         },
         {
           "if": {"properties": {"type": {"const": "session.plugins.activated"}}},
