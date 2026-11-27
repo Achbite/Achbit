@@ -19,7 +19,7 @@ export function useConversationRowState<T>(key: string, initial: T): [T, React.D
   return [value, update];
 }
 
-export function ConversationVirtualRow({ rowKey, sequence, virtualizer, virtualize = true, hidden = false, eager = false, live = false, children }: {
+export function ConversationVirtualRow({ rowKey, sequence, virtualizer, virtualize = true, hidden = false, eager = false, live = false, transient = false, children }: {
   rowKey: string;
   sequence?: number;
   virtualize?: boolean;
@@ -27,6 +27,7 @@ export function ConversationVirtualRow({ rowKey, sequence, virtualizer, virtuali
   hidden?: boolean;
   eager?: boolean;
   live?: boolean;
+  transient?: boolean;
   children(): React.ReactNode;
 }) {
   const node = useRef<HTMLDivElement>(null);
@@ -39,7 +40,7 @@ export function ConversationVirtualRow({ rowKey, sequence, virtualizer, virtuali
   const retain = useCallback(() => virtualizer.retainPreview(rowKey), [virtualizer, rowKey]);
   useLayoutEffect(() => virtualize && !hidden ? virtualizer.register(rowKey, node.current!, setVisible) : undefined, [virtualize, virtualizer, rowKey, hidden]);
   useLayoutEffect(() => { if (virtualize && !hidden) virtualizer.measure(node.current!); }, [virtualize, hidden, virtualizer, rowKey, rendered]);
-  return <div ref={node} className="conversation-virtual-row" data-conversation-anchor={rowKey} data-transcript-sequence={sequence}
+  return <div ref={node} className="conversation-virtual-row" data-conversation-anchor={transient ? undefined : rowKey} data-transcript-sequence={sequence}
     data-virtual-rendered={rendered} hidden={hidden}
     style={!hidden && !rendered ? { height: layout.height ?? 120 } : undefined}>
     {rendered && <RowState.Provider value={layout.state}><RetainPreview.Provider value={retain}>{children()}</RetainPreview.Provider></RowState.Provider>}

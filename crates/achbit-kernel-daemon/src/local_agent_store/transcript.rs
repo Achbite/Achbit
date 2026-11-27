@@ -30,6 +30,9 @@ const TRANSCRIPT_EVENTS_SQL: &str = "WITH selected AS (
     UNION ALL SELECT sequence FROM session_events WHERE session_id=?1 AND (sequence<?2 OR sequence>?3)
     AND (event_type IN ('session.created','conversation.revised','agent.task.created','agent.task.started','agent.task.completed','agent.closed','message.feedback.updated')
       OR event_type LIKE 'plan.%'
+      OR (sequence<?2 AND event_type='input.accepted' AND json_extract(payload_json,'$.messageId') IN (
+          SELECT json_extract(m.payload_json,'$.messageId') FROM session_events m WHERE m.session_id=?1
+          AND m.sequence BETWEEN ?2 AND ?3 AND m.event_type='message.committed' AND json_extract(m.payload_json,'$.role')='user'))
       OR (sequence<?2 AND event_type='run.settled' AND run_id IN (SELECT value FROM json_each(?5)))
       OR (sequence<?2 AND event_type IN ('session.workspaces.updated','session.directory-index.attached','session.directory-index.detached','session.model-settings.updated','session.subagent-settings.updated','session.mode.updated'))))
  SELECT e.sequence,e.event_id,e.event_type,e.occurred_at,e.run_id,e.call_id,
@@ -336,6 +339,37 @@ mod tests {
             .map(|e| e.sequence)
             .collect();
         assert_eq!(prior, [4, 6]);
+    }
+
+    #[test]
+    fn turn_boundary_includes_only_the_matching_prior_acceptance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same.sqlite");
+        let id = "session:same";
+        let journal = LocalAgentJournal::open(&path).unwrap();
+        journal
+            .create_session(id, "Same", &json!([]), None, None)
+            .unwrap();
+        for mid in ["first", "second"] {
+            journal.append(&json!({"type":"input.accepted","sessionId":id,"payload":{"messageId":mid,"commandId":format!("send:{mid}"),"text":"same"}})).unwrap();
+            journal.append(&json!({"type":"message.committed","sessionId":id,"payload":{"messageId":mid,"role":"user","content":"same"}})).unwrap();
+        }
+        let facts = SessionCatalogReader::open(&path)
+            .unwrap()
+            .transcript_facts(id, None, None)
+            .unwrap()
+            .unwrap();
+        let prior: Vec<_> = facts
+            .events
+            .iter()
+            .filter(|e| e.event_type == "input.accepted")
+            .collect();
+        assert_eq!(prior.len(), 1);
+        assert_eq!(prior[0].sequence, facts.start - 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(prior[0].payload.get()).unwrap()["commandId"],
+            "send:second"
+        );
     }
 
     #[test]

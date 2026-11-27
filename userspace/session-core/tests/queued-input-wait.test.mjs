@@ -80,6 +80,10 @@ test('queued input arriving during preparation wakes a later session.wait withou
   assert.equal(continued.value.messages.filter(message => message.role === 'user' && message.content === supplement).length, 1);
   const final = await waitForProjection(actor, snapshot => snapshot.run?.status === 'completed');
   assert.equal(final.queuedInputs.filter(input => input.status === 'queued').length, 0);
+  // TCR: T-031-UI_System-20261126/message-send-implementation. Identity survives queue consumption.
+  assert.equal(final.messages.find(message => message.messageId === queued.payload.messageId).commandId, 'command:supplement');
+  assert.equal(final.messages.find(message => message.role === 'user').commandId, 'command:start');
+  assert.ok(continued.value.messages.every(message => !('commandId' in message)), 'display attribution is not model input');
   const completedEvents = await readEvents(journal, sessionId);
   assert.equal(completedEvents.filter(event => event.type === 'input.accepted' && event.payload.commandId === 'command:supplement').length, 1);
   assert.equal(requests.length, 3, 'consumed input must not create another model request');

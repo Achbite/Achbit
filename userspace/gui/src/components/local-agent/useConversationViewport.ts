@@ -27,6 +27,7 @@ interface ConversationViewportInput {
   createdAt?: string;
   rememberAnchor?(sessionId: string, anchor: { key: string; offset: number } | null, sequence?: number): void;
   presentationLayoutKey: string;
+  localTail?: string;
   assistantDraftLayoutKey: string;
   timelineExtentKey: string;
 }
@@ -39,6 +40,7 @@ export function useConversationViewport({
   rememberAnchor,
   presentationLayoutKey,
   assistantDraftLayoutKey,
+  localTail,
   timelineExtentKey,
 }: ConversationViewportInput) {
   const [followingLatest, setFollowingLatest] = useState(true);
@@ -274,8 +276,9 @@ export function useConversationViewport({
 
   // New output follows the tail only while the reader is following.
   useLayoutEffect(() => {
-    if (surface && pendingViewportRestoreRef.current === null && (followingLatestRef.current || resumeAtTail())) placeFollowing();
-  }, [projection, surface, assistantDraftLayoutKey, presentationLayoutKey, followingLatest, placeFollowing, resumeAtTail, timelineExtentKey]);
+    if ((surface || (!sessionId && localTail)) && pendingViewportRestoreRef.current === null
+      && (followingLatestRef.current || resumeAtTail())) placeFollowing();
+  }, [projection, surface, sessionId, localTail, assistantDraftLayoutKey, presentationLayoutKey, followingLatest, placeFollowing, resumeAtTail, timelineExtentKey]);
 
   useEffect(() => {
     const body = bodyRef.current;

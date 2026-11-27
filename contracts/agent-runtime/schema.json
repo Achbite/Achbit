@@ -1973,6 +1973,7 @@
       ],
       "properties": {
         "messageId": {"$ref": "#/$defs/Id"},
+        "commandId": {"$ref": "#/$defs/Id"},
         "runId": {"$ref": "#/$defs/Id"},
         "providerRequestId": {"$ref": "#/$defs/Id"},
         "role": {"enum": ["user", "assistant", "tool", "system"]},
@@ -1993,6 +1994,7 @@
         }
       },
       "allOf": [
+        {"if": {"required": ["commandId"]}, "then": {"properties": {"role": {"const": "user"}}}},
         {
           "if": {"properties": {"role": {"const": "assistant"}}},
           "then": {"required": ["runId", "providerRequestId"]},

@@ -862,10 +862,11 @@ function isProjectionMessage(value: unknown): value is ProjectionMessage {
   if (!isExactRecord(value, [
     'messageId', 'role', 'content', 'filesystemReferences',
     'pluginSelections', 'feedback', 'sequence', 'createdAt',
-  ], ['runId', 'providerRequestId', 'replyToInteraction', 'guidanceReferences', 'sourceReferences', 'displayContent'])) return false;
+  ], ['commandId', 'runId', 'providerRequestId', 'replyToInteraction', 'guidanceReferences', 'sourceReferences', 'displayContent'])) return false;
   const hasRunId = value.runId !== undefined;
   const hasProviderRequestId = value.providerRequestId !== undefined;
   return isIdentifier(value.messageId)
+    && (value.commandId === undefined || value.role === 'user' && isIdentifier(value.commandId))
     && (value.replyToInteraction === undefined || value.role === 'user'
       && isExactRecord(value.replyToInteraction, ['interactionId', 'prompt'])
       && isIdentifier(value.replyToInteraction.interactionId) && isNonEmptyText(value.replyToInteraction.prompt))

@@ -809,6 +809,10 @@ impl SessionProjection {
                     .as_deref()
                     .is_some_and(|feedback| !matches!(feedback, "up" | "down"))
                 || message.feedback.is_some() && message.role != "assistant"
+                || message
+                    .command_id
+                    .as_deref()
+                    .is_some_and(|id| message.role != "user" || id.is_empty() || id.trim() != id)
                 || message.reply_to_interaction.as_ref().is_some_and(|reply| {
                     message.role != "user"
                         || reply.interaction_id.is_empty()
@@ -1657,6 +1661,7 @@ pub struct WorkspaceBindingDisplay {
 pub struct ProjectionMessage {
     pub guidance_references: Option<Vec<GuidanceReference>>,
     pub message_id: String,
+    pub command_id: Option<String>,
     pub run_id: Option<String>,
     pub provider_request_id: Option<String>,
     pub role: String,
@@ -3298,6 +3303,21 @@ mod tests {
         assert!(
             matches!(err, crate::KernelClientError::Api(code) if code == "session_projection_identity_mismatch")
         );
+    }
+
+    #[test]
+    fn committed_input_command_is_optional_and_user_scoped() {
+        let mut value = projection_value();
+        let decode =
+            |data: &Value| crate::decode_projection(json!({"ok": true, "data": data}), None);
+        assert!(decode(&value).unwrap().messages[0].command_id.is_none());
+        value["messages"][0]["commandId"] = json!("command:first");
+        assert_eq!(
+            decode(&value).unwrap().messages[0].command_id.as_deref(),
+            Some("command:first")
+        );
+        value["messages"][1]["commandId"] = json!("command:first");
+        assert!(decode(&value).is_err());
     }
 
     fn projection_value() -> Value {

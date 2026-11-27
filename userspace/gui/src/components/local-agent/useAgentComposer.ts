@@ -333,8 +333,8 @@ export function useAgentComposer(
         return;
       }
     }
-    if (!canSend) return;
     const submittedComposerKey = activeComposerStateKeyRef.current;
+    if (!canSend || pendingSubmissionsRef.current.has(submittedComposerKey)) return;
     const submission = { key: submittedComposerKey };
     const onSessionCreated = (createdSessionId: string) => {
       const previousKey = submission.key;

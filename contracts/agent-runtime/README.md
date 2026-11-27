@@ -14,6 +14,8 @@ This directory contains the current local Agent Runtime machine contracts. It ha
 
 `schema.json` defines the current wire schema between UI, CLI, TUI, Host, Session, and Kernel. SQL constrains each store's persistence boundary; it does not replace the wire schema or authorize inferring facts across owners.
 
+A committed user `ProjectionMessage` carries `commandId` when Session can join its `messageId` to the effective `input.accepted` fact. A queued input retains its original command identity when consumed. A message without an originating input fact omits this field. This applies to full snapshots and transcript readers, not to submitted commands, receipts, persisted events or Provider input. Strict projection consumers must update together.
+
 Provider wire policy follows the captured protocol/provider/model route, independently of the Session context strategy. The coding tool codec owns coding-only truncation feedback; no context-selection flag enters the Provider request. A failed Agent `provider.turn.settled` may carry `toolCallInputs` only for `provider_output_truncated`; every input must be rejected. Raw arguments and native call IDs are retained for error feedback, not admitted for execution. Session preserves the failed attempt/turn and may compose a new request. No completed outcome, Kernel request or side effect is inferred from partial output.
 
 `ModelMessage.toolOutcome` carries an actual terminal tool fact separately from its text, including denied, input-rejected, not-executed and indeterminate outcomes. Protocol adapters do not infer status by parsing result text; Anthropic maps known non-completed outcomes to `tool_result.is_error`.

@@ -12,12 +12,12 @@ export function QueuedInputPreview({ sessionId, input, language }: {
   const identity = useUiOwner('composer.queued-input', undefined, { sessionId, commandId: input.commandId });
   const [open, setOpen] = useState(false);
   const titleId = useId();
+  const previewId = useId();
   const close = () => setOpen(false);
-  return <div className="local-agent__queued-input" role="status">
-    <strong>{t(language, 'agent.queued.waiting')}</strong>
+  return <div className="local-agent__queued-input" role="status" aria-label={t(language, 'agent.queued.waiting')}>
     <Button {...identity.action('open', 'click')} className="local-agent__queued-preview" size="compact" aria-haspopup="dialog"
-      aria-label={t(language, 'agent.queued.view')} title={t(language, 'agent.queued.view')} onClick={() => setOpen(true)}>
-      <span>{input.text}{input.filesystemReferences.length ? ` · ${input.filesystemReferences.map(item => item.displayName).join(', ')}` : ''}</span>
+      aria-label={t(language, 'agent.queued.view')} aria-describedby={previewId} title={t(language, 'agent.queued.view')} onClick={() => setOpen(true)}>
+      <span id={previewId}>{input.text}{input.filesystemReferences.length ? ` · ${input.filesystemReferences.map(item => item.displayName).join(', ')}` : ''}</span>
     </Button>
     {open && <ModalDialog className="conversation-viewer-dialog conversation-queued-dialog" aria-labelledby={titleId} onClose={close}>
       <PanelHeader className="conversation-queued-dialog__header">

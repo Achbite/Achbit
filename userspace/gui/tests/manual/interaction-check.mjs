@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { checkReaderFileMenu, checkReaderSplit } from './reader-split-check.mjs';
 import { checkComposerOverlays } from './composer-overlay-check.mjs';
 import { checkViewportFollow } from './viewport-follow-check.mjs';
+import { checkSendEcho } from './send-echo-check.mjs';
 import { checkComposerPluginMentions } from './composer-plugin-mentions-check.mjs';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
 import { checkRichFormatBoundaries } from './rich-format-boundary-check.mjs';
@@ -274,6 +275,7 @@ try {
   await checkPreviewLayout({ navigate, evaluate, cmd, until, frame, click, key, record });
   await checkRichFormatBoundaries({ navigate, evaluate, cmd, until, frame, record });
   }
+  await checkSendEcho({ ...controls, type });
   assert.ok(results.every(result => result.pass), 'see the retained browser result for failed invariants');
   await call('Browser.close');
 } finally {

@@ -62,16 +62,6 @@ export function ConversationComposer({
       ? observeConversationComposerBoundary(shell, conversationBodyRef?.current?.parentElement ?? null, showingShellWait, childInline)
       : undefined;
   }, [conversationBodyRef, showingShellWait, childInline]);
-  const submission = useLocalAgentStore(state => {
-    const receipt = state.messageSubmission;
-    return receipt && receipt.sessionId === state.sessionId && (receipt.revision === undefined
-      || (state.projection?.revision ?? 0) < receipt.revision) ? receipt : null;
-  });
-  const feedbackNode = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (submission && feedbackNode.current) globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.(
-      'conversation.composer', 'send.feedback-dom', { sessionId: submission.sessionId, commandId: submission.commandId, phase: submission.phase });
-  }, [submission]);
   const connections = useLocalAgentStore(state => state.connections);
   const { concurrentDecisionKey, showApproval } = composerDecisionView(composer, composer.selectedTextDecision);
   const { setSelectedTextDecision } = composer;
@@ -322,10 +312,6 @@ export function ConversationComposer({
           }}
         />}
       </div>
-      {submission && <div ref={feedbackNode} className="local-agent__queued-input local-agent__submission" role="status" data-submission-phase={submission.phase}>
-        <strong>{t(language, submission.phase === 'sending' ? 'agent.composer.sending' : 'agent.composer.accepted')}</strong>
-        <span>{submission.text}</span>
-      </div>}
       {current?.queuedInputs.filter(input => input.status === 'queued').map(input => <QueuedInputPreview
         key={input.commandId} sessionId={current!.sessionId} input={input} language={language} />)}
       {showChildDecisions && Boolean(current?.pendingAgentDecisions?.length) && <AgentPlanReview

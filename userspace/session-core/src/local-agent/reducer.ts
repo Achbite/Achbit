@@ -437,6 +437,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         if (acceptedInput) delete next.acceptedInputs[acceptedInput[0]];
         const common = {
           messageId: event.payload.messageId,
+          ...(event.payload.role === 'user' && acceptedInput ? { commandId: acceptedInput[0] } : {}),
           content: event.payload.content,
           ...(event.payload.guidanceReferences?.length ? {guidanceReferences:structuredClone(event.payload.guidanceReferences)} : {}),
           filesystemReferences: (event.payload.filesystemReferences ?? []).map((reference) => ({

@@ -2234,8 +2234,6 @@
 .local-agent__failed-draft pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }
 .local-agent__failed-draft small { display: block; color: var(--ac-muted); margin-top: 5px; }
 .local-agent__queued-input { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; box-sizing: border-box; padding: 6px 12px; color: var(--ac-muted); }
-.local-agent__submission > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.local-agent__queued-input > strong { flex: none; white-space: nowrap; font-size: var(--ac-font-caption); }
 .local-agent__queued-preview { flex: 1; min-width: 0; justify-content: flex-start; }
 .local-agent__queued-preview > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-width: 0; max-height: 3em; line-height: 1.5; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
 .conversation-queued-dialog__header { flex: none; padding: 12px 18px; border-bottom: 1px solid var(--ac-border); }

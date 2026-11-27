@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useSettingsStore } from '../../state/settingsStore';
+import { stillLocal } from '../../state/localInputs';
 import useAppStatusStore from '../../state/appStatusStore';
 import { usePresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -51,6 +52,9 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const projection = useLocalAgentStore((state) => state.projection);
   const current = projection;
   const content = projection;
+  const submissions = useLocalAgentStore(state => state.localInputs);
+  const localInputs = useMemo(() => stillLocal(submissions, projection).filter(input => input.sessionId === sessionId),
+    [submissions, projection, sessionId]);
   const rememberAnchor = useLocalAgentStore(state => state.rememberReadingAnchor);
   const loading = useLocalAgentStore((state) => state.loading);
   const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
@@ -87,7 +91,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const timelineExtentKey = useMemo(() => content?.timeline.map((item) => (
     item.kind === 'toolGroup' ? `${item.timelineId}:${item.activityIds.length}` : item.timelineId
   )).join('|') ?? '', [content?.timeline]);
-  const hasConversationContent = conversationItems.length > 0
+  const hasConversationContent = localInputs.length > 0 || conversationItems.length > 0
     || Boolean(assistantDraft)
     || Boolean(projection?.pendingInteraction)
     || Boolean(projection?.pendingApproval)
@@ -101,6 +105,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     projection: content,
     createdAt: activeSummary?.createdAt, rememberAnchor, presentationLayoutKey: presentation.layoutKey,
     assistantDraftLayoutKey,
+    localTail: localInputs.at(-1)?.commandId,
     timelineExtentKey,
   });
   const { bodyRef, showJumpToLatest, scrollToLatest } = viewport;
@@ -160,7 +165,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     <AgentNavigationScope sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={current?.agentTasks} pendingDecisions={current?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent || (sessionId && (loading || !projection)) ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
-      <ConversationBodies sessionId={sessionId} createdAt={activeSummary?.createdAt} projection={projection} viewport={viewport}>
+      <ConversationBodies sessionId={sessionId} createdAt={activeSummary?.createdAt} projection={projection} viewport={viewport} draftCommand={localInputs[0]?.commandId}>
         <ConversationTranscript
           layoutCache={conversationLayouts.current}
           displaySettledRunIds={display.displaySettledRunIds}
@@ -172,6 +177,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           activeProject={activeProject}
           hasConversationContent={hasConversationContent}
           conversationItems={conversationItems}
+          localInputs={localInputs}
           draftItems={draftItems}
           presentation={presentation}
           viewport={viewport.reading}

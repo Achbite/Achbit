@@ -1,5 +1,7 @@
 import { CONTROL_TURN_ISSUE, type ActivityProjection, type AssistantDraftBlockProjection, type SessionProjection, type TranscriptContent } from '@achbit/protocol';
 
+import type { LocalInput } from '../../state/localInputs';
+
 export interface BatchConflictSummary { providerRequestId: string; sources: number; peers: number }
 
 export function batchConflictRole(activity: ActivityProjection): 'source' | 'peer' | undefined {
@@ -198,8 +200,22 @@ function requiredProjectionValue<Value>(
   return value;
 }
 
-export type ConversationRow = { key: string; item?: ProjectionItem; draft?: AssistantDraftItem };
+export type ConversationRow = { key: string; item?: ProjectionItem; draft?: AssistantDraftItem; local?: LocalInput };
 export interface ConversationRound { key: string; runId: string; rows: ConversationRow[] }
+
+/** React mount identity is not the canonical reading anchor or the persisted message identity. */
+export function rowMountKey(row: ConversationRow) {
+  const command = row.local?.commandId ?? (row.item?.type === 'message' && row.item.value.role === 'user' ? row.item.value.commandId : undefined);
+  return command ? JSON.stringify(['input', command]) : JSON.stringify(['row', row.key]);
+}
+
+export function appendLocalInputs(rounds: ConversationRound[], inputs: readonly LocalInput[]): ConversationRound[] {
+  if (!inputs.length) return rounds;
+  const rows = inputs.map(local => ({ key: local.commandId, local }));
+  const last = rounds.at(-1);
+  return last?.runId === '' ? [...rounds.slice(0, -1), { ...last, rows: [...last.rows, ...rows] }]
+    : [...rounds, { key: rows[0]!.key, runId: '', rows }];
+}
 
 // A settled snapshot may be revisited many times. Keys, ordering and indexes belong
 // to this exact immutable item list; live draft rows are never cached here.

@@ -1414,6 +1414,8 @@ export interface SourceReferences {
 
 interface ProjectionMessageBase {
   messageId: string;
+  /** User inputs only: the input.accepted command joined to this committed message by messageId. */
+  commandId?: string;
   content: string;
   /** Session-derived citation display. Original Provider text remains in content. */
   displayContent?: string;
