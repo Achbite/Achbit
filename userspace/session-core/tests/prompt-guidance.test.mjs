@@ -170,6 +170,11 @@ test('minimal and full requests keep selected delivery guidance and actual alias
   assert.match(full.messages.map(message => message.content).join('\n'), /review as clickable links.*outputs table/u);
   assert.match(full.tools.find(tool => tool.name === 'deliver_review').description, /returned references as clickable Markdown links/u);
   assert.equal(full.tools.some(tool => tool.name === 'artifact.present'), false);
+  for (const name of ['deliver_review', 'plugin_activate']) {
+    assert.match(full.tools.find(tool => tool.name === name).description, /only tool call in (?:this|the) response/iu);
+    assert.match(full.tools.find(tool => tool.name === name).description, /outside (?:any|a) parallel batch/iu);
+  }
+  assert.doesNotMatch(minimal.messages.map(message => message.content).join('\n'), /only tool call in (?:this|the) response/iu);
 });
 
 test('file and managed execution guidance follows the available capabilities', () => {

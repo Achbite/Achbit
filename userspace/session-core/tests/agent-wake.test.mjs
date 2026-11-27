@@ -743,6 +743,11 @@ test('plugin activation mixed with discovery and a read rejects the entire batch
   assert.equal(executions, 0);
   const events = await readEvents(fixture.journal, ownerId);
   assert.equal(events.some(event => ['tool.requested', 'agent.control.completed', 'session.plugins.activated'].includes(event.type)), false);
+  const [sent, feedback] = fixture.requests.get(ownerId);
+  const alias = sent.tools.find(tool => tool.name === 'plugin_activate').name;
+  const source = feedback.messages.find(message => message.role === 'tool' && message.providerCallId === 'exclusive:plugin');
+  assert.ok(JSON.parse(source.content).error.message.includes(`Send ${alias} as the only tool call`),
+    'the correction uses the callable alias from the rejected request, not an internal control ID');
 });
 
 test('a session control mixed with child creation is rejected before either operation starts', async t => {

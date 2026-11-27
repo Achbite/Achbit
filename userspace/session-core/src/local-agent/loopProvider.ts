@@ -1,6 +1,5 @@
 import {
-  SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLUGIN_ACTIVATE,
-  SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_SESSION, SESSION_CONTROL_AGENT,
+  SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_AGENT,
   SESSION_CONTROL_TODO_UPDATE, CONTROL_TURN_ISSUE, decodeProviderNativeReplay,
 } from '@achbit/protocol';
 import type {
@@ -20,7 +19,7 @@ import { decodeProviderToolInput, UndeclaredReadField } from './providerToolCode
 import type { ProviderToolCodec } from './providerToolCodec.js';
 import type { SessionCapabilities } from './plugins.js';
 import { PlanPreviewBuffer } from './planPreview.js';
-import { agentTurnPolicy, SessionControlError } from './sessionControls.js';
+import { agentTurnPolicy, SessionControlError, soloControls } from './sessionControls.js';
 import type { SessionControlCall } from './sessionControls.js';
 import { installedControls } from './loopCapabilities.js';
 import { APPROVAL_HISTORY_VIEWS } from './approvalReview.js';
@@ -453,9 +452,7 @@ async function consumeProviderOutput(
   // Batch policy is a property of this request's control binding, never of an undeclared wire spelling.
   const controlBlocks = inputBlocks.filter(isDeclaredControl);
   const exclusiveCalls = controlBlocks.filter((block) => (
-    block.name === SESSION_CONTROL_INTERACTION_REQUEST || block.name === SESSION_CONTROL_PLAN_PUBLISH
-      || block.name === SESSION_CONTROL_PLUGIN_ACTIVATE || block.name === SESSION_CONTROL_ARTIFACT_PRESENT
-      || block.name === SESSION_CONTROL_SESSION
+    soloControls.has(block.name)
       || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall'
         || agentTurnPolicy(block.input) === 'exclusive')
   ));
@@ -485,7 +482,9 @@ async function consumeProviderOutput(
             error = { code: cause.code, message: cause.message, issues: cause.issues };
           }
         }
-        const message = `${conflict.reason}. Conflict source: ${sources}. ${source ? 'This call caused the conflict' : 'This call was rejected with the batch'}. No calls in this batch were executed.`;
+        const correction = source && !error && exclusiveCalls.length
+          ? ` Send ${block.item.name} as the only tool call in a new response if still needed.` : '';
+        const message = `${conflict.reason}. Conflict source: ${sources}. ${source ? 'This call caused the conflict' : 'This call was rejected with the batch'}. No calls in this batch were executed.${correction}`;
         const role = { path: '$', rule: source ? CONTROL_TURN_ISSUE.source : CONTROL_TURN_ISSUE.peer, message };
         // An independently invalid sibling was not rejected *because of* this conflict.
         blocks[index] = { outputIndex: block.outputIndex, item: block.item, kind: 'toolCallRejected',

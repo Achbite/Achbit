@@ -312,11 +312,17 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
   ];
 }
 
+// The declaration and pre-dispatch gate share this policy. `agent` has per-action rules instead.
+export const soloControls: ReadonlySet<string> = new Set([
+  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_PLUGIN_ACTIVATE,
+  SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH,
+]);
+
 export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, canDelegate = true): readonly ProviderToolDefinition[] {
-  return [
+  const definitions: ProviderToolDefinition[] = [
     {
       name: SESSION_CONTROL_SESSION,
-      description: 'Schedule a follow-up or wait for input in this task. Call action=describe for the exact operations. A statement about later work does not schedule it. Submit alone.',
+      description: 'Schedule a follow-up or wait in this task; action=describe lists operations. A statement about later work does not schedule it.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1 },
       } },
@@ -334,7 +340,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_ARTIFACT_PRESENT,
-      description: 'Register requested results and review materials in the outputs table using artifactIds returned by tools or resource preparation. Use the returned references as clickable Markdown links in the final reply. Writing or archiving a file alone does not deliver it. Re-prepare changed files and reuse deliveryId to update. Keep temporary scripts, logs and observation images intermediate unless selected for review. Presentation does not load pixels into model context. Submit alone.',
+      description: 'Register requested results and review materials in the outputs table by returned artifactId. Use returned references as clickable Markdown links in the reply. Writing or archiving a file alone does not deliver it. Re-prepare changed files and reuse deliveryId. Keep scripts, logs and images intermediate unless selected for review. Presentation does not load pixels into model context.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['items'], properties: {
         items: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
           required: ['artifactId', 'label'], properties: {
@@ -344,7 +350,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Activate exact discovered URIs. The result lists prepared capabilities; call only names declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate. Submit alone.',
+      description: 'Activate exact discovered URIs. The result lists prepared capabilities; call only names declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -352,12 +358,12 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_INTERACTION_REQUEST,
-      description: 'Ask missing facts or required decisions once; an unanswered question stays pending. Supply clickable options when offering alternatives. mode=continue allows independent work. Confirmations wait for a response; silence is not a choice or authorization. Submit alone.',
+      description: 'Ask once for missing facts or decisions; unanswered questions stay pending. Offer clickable options for alternatives. Confirmations wait; silence is not a choice or authorization.',
       inputSchema: structuredClone(INTERACTION_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Submit the goal, phases, verification and modification scope for confirmation. You execute the steps after approval. extendScope adds scope. A full revision replaces the plan and its manifest. For Shell, writablePaths lists write targets and command gives an example. Plan confirmation, execution permission and engineering decisions remain separate. Submit alone.',
+      description: 'Plan the goal, phases, verification and write scope. Execute after approval. A full revision replaces the plan and manifest. Plan confirmation, execution permission and engineering decisions remain separate.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {
@@ -375,6 +381,9 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
       },
     },
   ];
+  return definitions.map(tool => soloControls.has(tool.name)
+    ? { ...tool, description: `${tool.description} Submit alone: the only tool call in the response, outside any parallel batch.` }
+    : tool);
 }
 
 export function decodeSessionControlCall(
