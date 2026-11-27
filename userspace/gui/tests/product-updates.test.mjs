@@ -111,6 +111,35 @@ test('a newer updater event wins over a delayed initial status read', async t =>
   assert.equal(b.calls.some(call => ['achbit_update_check', 'achbit_update_install'].includes(call.command)), false);
 });
 
+for (const phase of ['current', 'waiting']) test(`a late initial status failure leaves the newer ${phase} event in control`, async t => {
+  const b = browser(t), initial = Promise.withResolvers();
+  const invoke = b.window.__TAURI__.core.invoke;
+  b.window.__TAURI__.core.invoke = (command, args) => {
+    if (command !== 'achbit_update_status') return invoke(command, args);
+    b.calls.push({ command }); return initial.promise;
+  };
+  const [updates, { ProductUpdateNotice }, { GuiSettingsSection }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
+    '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+  ]);
+  b.cleanups.push(updates.installProductUpdateMonitor()); await flush();
+  assert.ok(b.calls.some(call => call.command === 'achbit_update_status'));
+  const latest = { ...b.status, phase, version: phase === 'current' ? null : b.status.version };
+  b.handlers.get('achbit:product-update')({ payload: latest });
+  initial.reject(new Error('stale initial status read')); await flush();
+  const notice = capture(ProductUpdateNotice);
+  if (phase === 'current') {
+    assert.equal(notice.html, '', 'a current installation has no update warning');
+    const about = capture(GuiSettingsSection, { category: 'about', apiStatus: 'connected' });
+    assert.match(about.html, /当前已是最新版本|You are up to date/);
+  } else {
+    assert.match(notice.html, /data-ui-icon="refresh"/, 'a downloaded update still offers installation');
+    findReactElement(notice.tree, node => node.type === 'button').props.onClick(); await flush();
+    assert.equal(b.calls.at(-1).command, 'achbit_update_install');
+  }
+  assert.deepEqual(updates.productUpdateSnapshot(), latest);
+});
+
 test('a held update status does not block configuration or an explicit prepare decision', async t => {
   const b = browser(t);
   const { promise, resolve } = Promise.withResolvers();

@@ -160,7 +160,9 @@ export function installProductUpdateMonitor(): () => void {
     const beforeRead = statusVersion;
     void invoke<ProductUpdateStatus>('achbit_update_status').then(initial => {
       if (!disposed && statusVersion === beforeRead) publish(initial);
-    }).catch(reportError);
+    }).catch(error => {
+      if (statusVersion === beforeRead) reportError(error);
+    });
     cleanups.push(useSettingsStore.subscribe(configure));
     configure();
   };
