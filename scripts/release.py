@@ -288,7 +288,7 @@ class Workflow:
 
     def commit(self, paths, message):
         self.git('--literal-pathspecs', 'add', '--', *paths)
-        staged = set(self.git('diff', '--cached', '--name-only', '-z').split('\0')) - {''}
+        staged = set(self.git('diff', '--cached', '--no-renames', '--name-only', '-z').split('\0')) - {''}
         require(staged == set(paths), 'Staged paths do not match the intended group')
         self.git('diff', '--cached', '--check')
         self.git('commit', '-m', message)

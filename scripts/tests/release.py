@@ -227,6 +227,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse((self.root / '.build-cache/release.lock').exists())
         self.assertTrue(all(b'\0' not in path.read_bytes() for path in self.output.glob('*.log')))
 
+    def test_rename_group_verifies_both_paths_even_with_git_rename_detection(self):
+        git(self.root, 'config', 'diff.renames', 'true')
+        git(self.root, 'restore', 'first.txt')
+        (self.root / 'first.txt').rename(self.root / 'renamed.txt')
+        self.data['commits'][0]['paths'] = ['first.txt', 'renamed.txt']
+        flow = self.workflow()
+        flow.execute()
+        first, second = self.receipt()['commits']
+        self.assertEqual(git(self.root, 'diff', '--no-renames', '--name-status', self.initial, first['sha']),
+                         'D\tfirst.txt\nA\trenamed.txt')
+        self.assertEqual(git(self.root, 'rev-parse', first['sha'] + ':renamed.txt'),
+                         git(self.root, 'rev-parse', self.initial + ':first.txt'))
+        self.assertEqual(git(self.root, 'diff', '--name-only', first['sha'], second['sha']), 'second.txt')
+
     def test_windows_packaging_inherits_explicit_timestamp_without_logging_url(self):
         flow = self.workflow()
         flow.container, flow.workdir = 'fixture-dev', '/workspace'
