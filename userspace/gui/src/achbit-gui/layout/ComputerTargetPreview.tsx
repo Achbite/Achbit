@@ -11,8 +11,8 @@ import { CloseButton } from '../../ui-components';
 import './computerTargetPreview.css';
 
 const copy = {
-  'zh-CN': { close: '隐藏操作预览', title: '正在操作', open: '显示目标', move: '拖动预览窗口，或用方向键移动', active: '实时预览', starting: '正在连接', updating: '正在更新', stopping: '正在结束', stopped: '已结束', inactive: '目标未连接', closed: '目标已关闭', failed: '预览失败', browser: '浏览器' },
-  'en-US': { close: 'Hide operation preview', title: 'Working in', open: 'Show target', move: 'Drag preview, or move with arrow keys', active: 'Live preview', starting: 'Connecting', updating: 'Updating', stopping: 'Finishing', stopped: 'Finished', inactive: 'Target disconnected', closed: 'Target closed', failed: 'Preview failed', browser: 'Browser' },
+  'zh-CN': { close: '隐藏操作预览', title: '正在操作', open: '显示目标', move: '拖动预览窗口，或用方向键移动', active: '实时预览', accessibility: '未采集画面', starting: '正在连接', updating: '正在更新', stopping: '正在结束', stopped: '已结束', inactive: '目标未连接', closed: '目标已关闭', failed: '预览失败', browser: '浏览器' },
+  'en-US': { close: 'Hide operation preview', title: 'Working in', open: 'Show target', move: 'Drag preview, or move with arrow keys', active: 'Live preview', accessibility: 'No screen capture', starting: 'Connecting', updating: 'Updating', stopping: 'Finishing', stopped: 'Finished', inactive: 'Target disconnected', closed: 'Target closed', failed: 'Preview failed', browser: 'Browser' },
 };
 
 /** Live Host view only: it never adds preview frames to the conversation. */
@@ -258,6 +258,6 @@ export function ComputerPreviewTarget({ view, language, activating, onActivate, 
       <img src={view.frame.dataUrl} alt={title || label.title} draggable={false} />
       {pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y) && <span className={`computer-target-preview__pointer${pointer.pulse ? ' computer-target-preview__pointer--pulse' : ''}`}
         style={{ left: `${Math.max(0, Math.min(1, pointer.x)) * 100}%`, top: `${Math.max(0, Math.min(1, pointer.y)) * 100}%` }} />}
-    </span> : <span className="computer-target-preview__placeholder">{stateLabel}</span>}
+    </span> : <span className="computer-target-preview__placeholder">{view.state === 'accessibility' && title ? `${label.title} ${title} · ` : ''}{stateLabel}</span>}
   </button>;
 }

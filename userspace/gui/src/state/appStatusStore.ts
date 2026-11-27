@@ -1,6 +1,6 @@
 /**
- * 应用运行状态管理
- * 使用 Zustand 管理 API 连接状态
+ * Application runtime status.
+ * Zustand owns the API connection state.
  */
 import { create } from 'zustand';
 import type { ConnectionStatus, AppStatusState } from '../types/ui';

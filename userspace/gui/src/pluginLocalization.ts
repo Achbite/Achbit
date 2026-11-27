@@ -21,6 +21,18 @@ export function localizePlugin(plugin: PluginCatalogItem, language: UiLanguage):
   } : plugin;
 }
 
+/** Translate official UI metadata while respecting the labels in customized copies. */
+export function uiPluginText(
+  language: UiLanguage,
+  plugin: { id: string; name: string; description?: string; kind?: string } | null | undefined,
+  field: 'name' | 'description',
+): string | undefined {
+  const value = plugin?.[field];
+  if (plugin?.id !== 'achbit.session-usage' || (plugin.kind && plugin.kind !== 'ui') || !value) return value;
+  const key = 'plugins.builtin.sessionUsage.' + field;
+  return value === t('en-US', key) || value === t('zh-CN', key) ? t(language, key) : value;
+}
+
 // A newer GUI may be connected to a Host that still offers these original built-ins.
 const retiredGuides = new Map<string, string | null>([
   ['plugin://achbit-product@builtin', 'operations.md'],

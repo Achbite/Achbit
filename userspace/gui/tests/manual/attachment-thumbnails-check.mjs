@@ -56,7 +56,8 @@ export async function checkAttachmentThumbnails({ navigate, evaluate, cmd, until
   await evaluate(`document.querySelector('.fixture-main').style.removeProperty('width')`); await frame();
   // Reflow can move transcript rows as the viewport follows the latest message. Activate the named image by keyboard.
   await evaluate(`document.querySelector('${sent}').focus()`); await key('Enter');
-  await until('document.querySelector(".conversation-image-review__dialog[open] img")?.naturalWidth === 1440');
+  await until('document.querySelector(".conversation-image-review__dialog[open][data-lightbox] img")?.naturalWidth === 1440');
+  assert.equal(await evaluate('window.openedMessageAttachment'), undefined, 'viewing an image stays in place');
   await key('Escape'); await until('!document.querySelector(".conversation-image-review__dialog[open]")');
   const remove = '.local-agent__image-attachment-remove';
   await click(draft); await until('document.querySelector(".conversation-image-review__dialog[open]")');

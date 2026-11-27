@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { loadGuiModules, installGuiFetch } from './gui-projection-contract.mjs';
 import { InMemoryCommandJournal } from '../../session-core/tests/support/memoryJournal.mjs';
 import { actorWith, createSession, emptyKernel, fakeRunPreparation, messageCommand, providerEvent,
-  waitForAbort, waitForProjection, waitUntil } from '../../session-core/tests/local-agent-fixtures.mjs';
+  waitForAbort, waitForProjection, waitUntil, workspaceBinding } from '../../session-core/tests/local-agent-fixtures.mjs';
 
 test('recovery consumes the successful Session receipt, retaining failed drafts and the original session across view changes', async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:recovery';
@@ -118,6 +118,7 @@ test('editable text and decision replies keep GUI recovery error ownership witho
   const [{ createLocalAgentStore }] = await loadGuiModules(t, ['/src/state/localAgentStore.ts']);
   const store = createLocalAgentStore();
   const sessionId = 'session:reply-recovery';
+  const target = { sessionId, runId: 'run:reply', planId: 'plan:reply', revision: 1 };
   const interaction = { interactionId: 'interaction:reply', runId: 'run:reply', status: 'pending' };
   store.setState({ sessionId, projection: { sessionId, revision: 3,
     messages: [{ messageId: 'message:editable', role: 'user', content: 'Original text' }],
@@ -136,7 +137,7 @@ test('editable text and decision replies keep GUI recovery error ownership witho
   const cases = [
     { type: 'message.edit', send: id => store.getState().editMessage('message:editable', 'Edited text', 3, id),
       check: command => assert.equal(command.text, 'Edited text') },
-    { type: 'plan.respond', send: id => store.getState().respondPlan({ kind: 'requestRevision', text: 'Revise this step' }, id),
+    { type: 'plan.respond', send: id => store.getState().respondPlan({ kind: 'requestRevision', text: 'Revise this step' }, target, id),
       check: command => assert.deepEqual(command.response, { kind: 'requestRevision', text: 'Revise this step' }) },
     { type: 'interaction.respond', send: id => store.getState().respondInteraction('My answer', interaction.interactionId, id),
       check: command => assert.equal(command.response, 'My answer') },
@@ -154,9 +155,62 @@ test('editable text and decision replies keep GUI recovery error ownership witho
     assert.equal(store.getState().error, null);
     assert.equal(store.getState().errorSource, null);
   }
-  await assert.rejects(store.getState().respondPlan({ kind: 'confirm' }), /reply_send_failed/);
+  await assert.rejects(store.getState().respondPlan({ kind: 'confirm' }, target), /reply_send_failed/);
   assert.deepEqual(commands.at(-1).response, { kind: 'confirm' });
+  const previousCount = commands.length;
   assert.equal(store.getState().errorSource, 'command', 'non-text decisions retain their existing owner');
   store.getState().clearInputError('submission:plan.respond');
   assert.match(store.getState().error, /reply_send_failed/);
+  for (const changed of [{ revision: 2 }, { runId: 'other' }, { planId: 'other' }, { sessionId: 'other' }]) {
+    await assert.rejects(store.getState().respondPlan({ kind: 'confirm' }, { ...target, ...changed }));
+    assert.equal(commands.length, previousCount);
+  }
+});
+
+test('a click from the old composer cannot confirm a revision published by another window', async t => {
+  const sessionId = 'session:two-plan-windows', journal = new InMemoryCommandJournal();
+  await createSession(journal, sessionId, [workspaceBinding]);
+  let calls = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    const version = ++calls;
+    const plan = request.tools.find(tool => tool.inputSchema.properties?.mutationManifest);
+    yield providerEvent(request.requestId, 'tool.call', { callId: 'provider:plan:' + version, name: plan.name, input: {
+      title: 'Document v' + version, summary: 'Prepare the report.',
+      steps: [{ stepId: 'write', title: 'Write', details: 'Edit the report.' }],
+      mutationManifest: [{ workspace: 'primary', operation: 'fs.write', target: 'report.txt' }],
+    } });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), fakeRunPreparation().port, 'two-windows');
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:first', 'Plan the report.'));
+  const first = await waitForProjection(actor, p => p.pendingPlan?.revision === 1);
+  const [{ useAgentComposer }, { useLocalAgentStore: store }] = await loadGuiModules(t, [
+    '/src/components/local-agent/useAgentComposer.ts', '/src/state/localAgentStore.ts',
+  ]);
+  store.setState({ sessionId, projection: first, runtimeReady: true });
+  Object.assign(store.getInitialState(), store.getState());
+  const storage = globalThis.sessionStorage;
+  globalThis.sessionStorage = { getItem: () => null };
+  t.after(() => { if (storage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = storage; });
+  let composer;
+  function WindowA() { composer = useAgentComposer('en-US', () => {}); return null; }
+  renderToStaticMarkup(createElement(WindowA));
+  const original = first.pendingPlan;
+  await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'plan.respond', commandId: 'command:window-b',
+    sessionId, runId: original.runId, planId: original.planId, revision: original.revision,
+    response: { kind: 'requestRevision', text: 'Revise the report.' } });
+  const second = await waitForProjection(actor, p => p.pendingPlan?.revision === 2);
+  assert.equal(second.pendingPlan.planId, original.planId);
+  const routes = [];
+  installGuiFetch(t, async url => {
+    routes.push(url.pathname.split('/').at(-1));
+    assert.ok(url.pathname.endsWith('/projection'));
+    return Response.json({ ok: true, data: second });
+  });
+  store.setState({ errorSource: 'projection', error: 'previous refresh failed' });
+  await assert.rejects(composer.respondPlan({ kind: 'confirm' }));
+  assert.deepEqual(routes, ['projection']);
+  assert.equal(store.getState().projection.pendingPlan.revision, 2);
+  assert.equal(store.getState().errorSource, 'command');
+  assert.equal((await actor.snapshot()).pendingPlan.revision, 2);
 });

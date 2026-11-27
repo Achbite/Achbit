@@ -111,6 +111,8 @@ test('initial directories bind before run start and Plan still waits for confirm
     assert.deepEqual(preparation.prepared[0].workspaceBindingIds, [workspaceBinding.workspaceId,
       ...(reference.kind === 'directory' ? [directory.workspaceId] : [])],
     'initial preparation receives the actual run bindings, not file attachment parents');
+    assert.deepEqual(preparation.prepared[0].projectInstructionBindingIds, [workspaceBinding.workspaceId],
+      'only configured source folders supply project rules; a directory attachment stays addressable');
     if (reference.kind === 'directory') {
       assert.equal(waiting.activePlanRef, null);
       assert.deepEqual(waiting.run.workspaceBindings.map(x => x.workspaceId), [workspaceBinding.workspaceId, directory.workspaceId]);
@@ -211,4 +213,5 @@ test('initial preparation explicitly reports no project bindings for an unbound 
   await actor.submit(messageCommand(sessionId, 'command:unbound', 'Respond without a project.'));
   await waitForProjection(actor, state => state.run?.status === 'completed');
   assert.deepEqual(preparation.prepared[0].workspaceBindingIds, []);
+  assert.deepEqual(preparation.prepared[0].projectInstructionBindingIds, []);
 });

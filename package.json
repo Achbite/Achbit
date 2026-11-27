@@ -1,9 +1,9 @@
 {
   "name": "achbit",
-  "version": "0.7.90",
+  "version": "0.7.91",
   "license": "MIT",
   "private": true,
-  "description": "Achbit - 本地优先的 AI 编程工作台",
+  "description": "Achbit - a local-first AI coding workbench",
   "scripts": {
     "dev": "pnpm tauri:dev:achbit-gui",
     "dev:achbit-gui": "pnpm tauri:dev:achbit-gui",

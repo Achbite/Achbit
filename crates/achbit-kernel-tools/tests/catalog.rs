@@ -110,6 +110,62 @@ fn semantic_rejection_reports_its_own_field_and_byte_bound() {
 }
 
 #[test]
+fn core_byte_windows_and_atomic_edit_count_use_the_declared_units() {
+    let registry = KernelToolRegistry::new();
+    let exact = "中".repeat(5461) + "x"; // 16384 UTF-8 bytes
+    for name in ["bash", "powershell"] {
+        let command = &registry.descriptor(name).unwrap().input_schema["properties"]["command"];
+        assert!(command.get("maxLength").is_none());
+        assert!(command["description"]
+            .as_str()
+            .unwrap()
+            .contains("16384 UTF-8 bytes"));
+        assert!(registry
+            .canonicalize(name, json!({"command":exact}))
+            .is_ok());
+        assert!(registry
+            .canonicalize(name, json!({"command":exact.clone()+"x"}))
+            .is_err());
+    }
+    let mut edits: Vec<_> = (0..128)
+        .map(|i| json!({"oldText":format!("block-{i}"), "newText":""}))
+        .collect();
+    assert!(registry
+        .canonicalize("fs.edit", json!({"path":"a", "edits":edits}))
+        .is_ok());
+    edits.push(json!({"oldText":"extra", "newText":"x"}));
+    assert!(registry
+        .canonicalize("fs.edit", json!({"path":"a", "edits":edits}))
+        .is_err());
+    for key in ["oldText", "newText"] {
+        let mut pairs = vec![
+            json!({"oldText":"a", "newText":"A"}),
+            json!({"oldText":"b", "newText":"B"}),
+        ];
+        pairs[1][key] = json!(exact);
+        assert!(registry
+            .canonicalize("fs.edit", json!({"path":"a", "edits":pairs}))
+            .is_ok());
+        pairs[1][key] = json!("中".repeat(6000));
+        let KernelToolCatalogError::InvalidArguments { issues, .. } = registry
+            .canonicalize("fs.edit", json!({"path":"a", "edits":pairs}))
+            .unwrap_err()
+        else {
+            panic!("expected byte rejection")
+        };
+        assert!(issues
+            .iter()
+            .any(|issue| issue.path == format!("$.edits[1].{key}")
+                && issue.rule == "maxBytes"
+                && issue.expected == Some(json!(16384))));
+    }
+    let write = |n| registry.canonicalize("fs.write", json!({"path":"a", "content":"x".repeat(n)}));
+    let overhead = serde_json::to_vec(&write(0).unwrap()).unwrap().len();
+    assert!(write(1024 * 1024 - overhead).is_ok());
+    assert!(write(1024 * 1024 - overhead + 1).is_err());
+}
+
+#[test]
 fn shell_business_input_preserves_the_script_and_leaves_authority_to_kernel() {
     let registry = KernelToolRegistry::new();
     let script = "set -o pipefail\nprintf '%s\\n' 'literal $HOME' | head -1";
@@ -146,6 +202,32 @@ fn shell_business_input_preserves_the_script_and_leaves_authority_to_kernel() {
     };
     assert_eq!(command, script);
     assert_eq!(execution_scope, KernelExecutionScope::Workspace);
+}
+
+#[test]
+fn external_write_schema_does_not_prescribe_a_project_permission_mode() {
+    let registry = KernelToolRegistry::new();
+    for name in [
+        "fs.read",
+        "fs.write",
+        "fs.edit",
+        "fs.delete",
+        "bash",
+        "powershell",
+    ] {
+        let tool = registry.descriptor(name).unwrap();
+        let write = &tool.input_schema["properties"]["requestFileAccess"]["properties"]["write"];
+        assert_eq!(write["items"]["type"], "string");
+        let hint = write["description"].as_str().unwrap();
+        assert!(
+            hint.contains("External") && hint.contains("project"),
+            "{name}: {hint}"
+        );
+        assert!(
+            !hint.contains("Plan") && !hint.contains("writablePaths"),
+            "{name}: {hint}"
+        );
+    }
 }
 
 #[test]

@@ -2,7 +2,10 @@ import { fileLinkLocation, type SourcePosition } from './resourceLinks';
 
 export type DocumentFormat = 'html' | 'pdf' | 'markdown';
 
-export function documentFormat(path: string): DocumentFormat | null {
+export function documentFormat(path: string, mediaType?: string): DocumentFormat | null {
+  if (mediaType === 'application/pdf') return 'pdf';
+  if (mediaType === 'text/html') return 'html';
+  if (mediaType === 'text/markdown') return 'markdown';
   const suffix = path.split('.').at(-1)?.toLowerCase();
   if (suffix === 'html' || suffix === 'htm') return 'html';
   if (suffix === 'md' || suffix === 'markdown') return 'markdown';
@@ -19,8 +22,8 @@ export function imageMediaType(path: string): string | null {
 export async function selectedFilePreview(path: string, blob: Blob) {
   const imageType = imageMediaType(path);
   if (imageType) return { status: 'document' as const, format: 'image' as const, blob: blob.slice(0, blob.size, imageType) };
-  const format = documentFormat(path);
-  if (format === 'pdf' && await blob.slice(0, 5).text() !== '%PDF-') throw new Error('当前文件不是 PDF 文档。');
+  const format = documentFormat(path, blob.type);
+  if (format === 'pdf' && await blob.slice(0, 5).text() !== '%PDF-') throw new Error('document_invalid_pdf');
   if (format) return { status: 'document' as const, format, blob };
   return { status: 'source' as const, content: await readDocumentText(blob) };
 }
@@ -40,7 +43,11 @@ export function workspaceResourceLink(href: string): ({ workspaceId: string; log
 export async function readDocumentText(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
-  const content = new TextDecoder(encoding, { fatal: true }).decode(bytes);
-  if (content.includes('\0')) throw new Error('file_encoding_unsupported: 当前文件不是支持的文本文件。');
+  let content: string;
+  try { content = new TextDecoder(encoding, { fatal: true }).decode(bytes); }
+  catch (cause) {
+    throw new Error('file_encoding_unsupported: ' + (cause instanceof Error ? cause.message : String(cause)), { cause });
+  }
+  if (content.includes('\0')) throw new Error('file_encoding_unsupported');
   return content;
 }

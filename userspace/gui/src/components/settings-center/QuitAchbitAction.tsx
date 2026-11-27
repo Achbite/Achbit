@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { t, type UiLanguage } from '../../i18n';
+import { localizedError, t, type UiLanguage } from '../../i18n';
 import { interfaceReloadGuards } from '../../services/interfaceReload';
 import { canQuitAchbit, quitAchbit, type QuitAchbitReply } from '../../services/runtimeAdapter';
 import { Button, ModalDialog } from '../../ui-components';
@@ -54,10 +54,10 @@ export function QuitAchbitControls({ language, state, action }: {
   // After showModal(), even a pointer-opened destructive prompt defaults Enter to Cancel.
   useLayoutEffect(() => { if (prompt) cancel.current?.focus({ preventScroll: true }); }, [prompt]);
   return <>
-    <Button {...owner.action('open', 'click')} {...helpEvents} ref={target} className="settings-button" variant="secondary"
+    <Button {...owner.action('open', 'click')} {...helpEvents} ref={target} variant="secondary"
       aria-describedby={helpId} disabled={busy} onClick={() => void action.submit(null)}>{t(language, 'settings.quit.action')}</Button>
     {help}
-    {error !== null && <p className="settings-error" role="alert">{error}</p>}
+    {error !== null && <p className="settings-error" role="alert">{localizedError(language, error)}</p>}
     {prompt && <ModalDialog className="achbit-gui-text-dialog-backdrop" aria-label={t(language, 'settings.quit.title')}
       busy={busy} onClose={() => action.cancel(prompt)}>
       <section className="achbit-gui-text-dialog">

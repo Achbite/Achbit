@@ -525,7 +525,7 @@ test('Reader opens manually selected images, PDF and text through their respecti
   const pdf = new Blob(['%PDF-1.7\n']);
   assert.deepEqual(await selectedFilePreview('报告.pdf', pdf), { status: 'document', format: 'pdf', blob: pdf });
   assert.deepEqual(await selectedFilePreview('文字.txt', new Blob(['原文'])), { status: 'source', content: '原文' });
-  await assert.rejects(selectedFilePreview('损坏.pdf', new Blob(['text'])), /PDF/);
+  await assert.rejects(selectedFilePreview('损坏.pdf', new Blob(['text'])), { message: 'document_invalid_pdf' });
   await assert.rejects(selectedFilePreview('损坏.txt', new Blob([Uint8Array.of(0xff)])), /encoded|encoding|decode/i);
 });
 
@@ -731,7 +731,7 @@ test('runtime file visibility is a searchable shared GUI preference and failed s
   initial.effectiveSettings = useSettingsStore.getState().effectiveSettings;
   const html = renderToStaticMarkup(createElement(GuiSettingsSection, { category: 'general', apiStatus: 'ready' }));
   assert.match(html, /aria-label="Show runtime files"[^>]*checked=""/);
-  assert.match(html, /aria-label="Open text files with"/, 'the destination page retains its complete settings');
+  assert.match(html, /aria-label="Open files with"/, 'the destination page retains its complete settings');
   for (const [language, label] of [['zh-CN', '显示运行环境文件'], ['en-US', 'Show runtime files']]) {
     const search = settingsSearchDefinitions(language, 'macos').find(item => item.id === key);
     assert.equal(search.category, 'general');
@@ -752,7 +752,7 @@ test('runtime file visibility is a searchable shared GUI preference and failed s
 
 test('native path selection preserves OS paths, cancellation and dialog errors', async (t) => {
   const previousWindow = globalThis.window;
-  const [{ pickNativePath, hasNativePathPicker }] = await loadGuiModules(t, ['/src/services/runtimeAdapter.ts']);
+  const [{ pickNativePaths, hasNativePathPicker }] = await loadGuiModules(t, ['/src/services/runtimeAdapter.ts']);
   t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
   const calls = [];
   let selected = null;
@@ -766,24 +766,24 @@ test('native path selection preserves OS paths, cancellation and dialog errors',
   assert.equal(hasNativePathPicker(), true);
   for (const path of [String.raw`C:\Users\开发者\My Skills`, String.raw`\\server\team share\Skills`]) {
     selected = path;
-    assert.deepEqual(await pickNativePath({ kind: 'directory', title: 'Choose a Skill folder' }), { path, kind: 'directory' });
+    assert.deepEqual(await pickNativePaths({ kind: 'directory', title: 'Choose a Skill folder' }), [{ path, kind: 'directory' }]);
     assert.equal(calls.at(-1).command, 'plugin:dialog|open');
     assert.equal(calls.at(-1).args.options.directory, true);
     assert.equal(calls.at(-1).args.options.multiple, false);
   }
   selected = '/Users/developer/My Skills/SKILL.md';
   const filters = [{ name: 'Skill', extensions: ['md'] }];
-  assert.deepEqual(await pickNativePath({ kind: 'file', title: 'Choose SKILL.md', filters }), { path: selected, kind: 'file' });
+  assert.deepEqual(await pickNativePaths({ kind: 'file', title: 'Choose SKILL.md', filters }), [{ path: selected, kind: 'file' }]);
   assert.equal(calls.at(-1).args.options.directory, false);
   assert.deepEqual(calls.at(-1).args.options.filters, filters);
   selected = null;
-  assert.equal(await pickNativePath({ kind: 'directory', title: 'Choose folder' }), null);
+  assert.equal(await pickNativePaths({ kind: 'directory', title: 'Choose folder' }), null);
   failure = new Error('dialog could not open');
-  await assert.rejects(pickNativePath({ kind: 'file', title: 'Choose file' }), (error) => error === failure);
+  await assert.rejects(pickNativePaths({ kind: 'file', title: 'Choose file' }), (error) => error === failure);
   globalThis.window = {};
   assert.equal(hasNativePathPicker(), false);
   const callCount = calls.length;
-  await assert.rejects(pickNativePath({ kind: 'directory', title: 'Choose folder' }), /native_path_picker_unavailable/);
+  await assert.rejects(pickNativePaths({ kind: 'directory', title: 'Choose folder' }), /native_path_picker_unavailable/);
   assert.equal(calls.length, callCount);
 });
 
@@ -886,7 +886,7 @@ test('Host workspace initialization propagates the failing request without openi
 test('one native reference request returns the actual file or folder kind', async (t) => {
   const previousWindow = globalThis.window;
   t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
-  const [{ pickNativePath, pickNativePaths }] = await loadGuiModules(t, ['/src/services/runtimeAdapter.ts']);
+  const [{ pickNativePaths }] = await loadGuiModules(t, ['/src/services/runtimeAdapter.ts']);
   const options = { kind: 'path', title: 'Files and folders', selectLabel: 'Attach', cancelLabel: 'Cancel' };
   let selection;
   let failure;
@@ -909,15 +909,15 @@ test('one native reference request returns the actual file or folder kind', asyn
   ];
   for (const reference of references) {
     selection = [reference];
-    assert.deepEqual(await pickNativePath(options), reference);
+    assert.deepEqual(await pickNativePaths(options), [reference]);
   }
   selection = [references[0], references[3]];
   assert.deepEqual(await pickNativePaths({ ...options, multiple: true }), selection);
-  await assert.rejects(pickNativePath(options), /native_path_selection_count_invalid/);
+  await assert.rejects(pickNativePaths(options), /native_path_selection_count_invalid/);
   selection = null;
-  assert.equal(await pickNativePath(options), null);
+  assert.equal(await pickNativePaths(options), null);
   failure = new Error('native selection failed');
-  await assert.rejects(pickNativePath(options), (error) => error === failure);
+  await assert.rejects(pickNativePaths(options), (error) => error === failure);
   assert.equal(calls, references.length + 4);
 });
 
@@ -4473,6 +4473,20 @@ for (const billingMode of ['subscription', 'metered']) {
     assert.equal(container.children.length, 0);
   });
 }
+
+test('built-in session usage labels follow the UI language for old and current manifests', async t => {
+  const { uiPluginText } = await loadGuiModule(t, '/src/pluginLocalization.ts');
+  const original = { id: 'achbit.session-usage', name: 'Session 用量', description: '按会话查看已记录的模型用量。' };
+  const current = { ...original, name: 'Session usage', description: 'View recorded model usage by session.' };
+  for (const manifest of [original, current]) {
+    for (const field of ['name', 'description']) {
+      assert.equal(uiPluginText('en-US', manifest, field), current[field]);
+      assert.equal(uiPluginText('zh-CN', manifest, field), original[field]);
+    }
+  }
+  assert.equal(uiPluginText('zh-CN', { ...current, name: 'My fork' }, 'name'), 'My fork');
+  assert.equal(uiPluginText('zh-CN', { ...current, id: 'third.party' }, 'name'), current.name);
+});
 
 test('settings contributions compose while tool renderers match their declared operation', async (t) => {
   const { UiPluginRuntime } = await loadGuiModule(t, '/src/ui-plugins/runtime.ts');

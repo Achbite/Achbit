@@ -42,6 +42,7 @@ export interface PluginActivationInput {
   runId: string;
   runtime: RunRuntimeSnapshot;
   pluginUris: readonly string[];
+  workspaceBindingIds: readonly string[];
   nextId(kind: string): string;
   preparation: RunPreparationPort;
 }

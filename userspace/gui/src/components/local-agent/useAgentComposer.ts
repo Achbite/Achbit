@@ -107,7 +107,12 @@ export function useAgentComposer(
     if (!sessionId || !pendingApproval) return Promise.reject(new Error('approval_response_missing'));
     return submitApproval(decision, scope, { sessionId, runId: pendingApproval.runId, callId: pendingApproval.callId, approvalId: pendingApproval.approvalId });
   };
-  const respondPlan = useLocalAgentStore((state) => state.respondPlan);
+  const submitPlan = useLocalAgentStore((state) => state.respondPlan);
+  const respondPlan = useCallback((response: PlanResponse, submissionId?: string) => {
+    if (!sessionId || !pendingPlan) return Promise.reject(new Error('plan_response_missing'));
+    const { runId, planId, revision } = pendingPlan;
+    return submitPlan(response, { sessionId, runId, planId, revision }, submissionId);
+  }, [pendingPlan, sessionId, submitPlan]);
   const cancelRun = useLocalAgentStore((state) => state.cancelRun);
   const saveModelChoice = useLocalAgentStore(state => state.selectModel);
   const reasoningEffortOverride = useLocalAgentStore((state) => state.reasoningEffortOverride);
@@ -328,8 +333,8 @@ export function useAgentComposer(
         return;
       }
     }
-    if (!canSend) return;
     const submittedComposerKey = activeComposerStateKeyRef.current;
+    if (!canSend || pendingSubmissionsRef.current.has(submittedComposerKey)) return;
     const submission = { key: submittedComposerKey };
     const onSessionCreated = (createdSessionId: string) => {
       const previousKey = submission.key;
@@ -662,7 +667,7 @@ export function useAgentComposer(
     setAttachmentDialogOpen(false);
     try {
       const unique = selections.filter((item, index) => selections.findIndex(other => other.path === item.path && other.kind === item.kind) === index);
-      if (unique.length > 1 && unique.some(item => item.kind === 'directory')) throw new Error(language === 'zh-CN' ? '请选择多个文件或一个文件夹。' : 'Select multiple files or one folder.');
+      if (unique.some(item => item.kind !== unique[0].kind)) throw new Error(t(language, 'agent.attachment.error.mixedSelection'));
       const additions = unique.filter(item => !pendingFilesystemPaths.some(current => current.path === item.path && current.kind === item.kind));
       if (recoveredContent.filesystemReferences.length + pendingFilesystemPaths.length + pastedTexts.length + pastedImages.length + additions.length > 8) {
         throw new Error(t(language, 'agent.attachment.error.maxFiles'));
@@ -706,7 +711,7 @@ export function useAgentComposer(
   };
 
   const appendBrowserReview = (annotation: BrowserAnnotation, previewId: string, screenshot?: string) => {
-    if (!sessionId) throw new Error('请先打开对话再添加批注。');
+    if (!sessionId) throw new Error(t(language, 'agent.annotation.openFirst'));
     // An annotation belongs to the normal message draft, including during a pending decision.
     const key = sessionId;
     const current = activeComposerStateKeyRef.current === key

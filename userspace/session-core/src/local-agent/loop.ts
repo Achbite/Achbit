@@ -21,7 +21,9 @@ import { waitForRetryAt } from './providerAttempts.js';
 import { modelContextEvents } from './modelContext.js';
 import { stageForRequest } from './sessionCapabilities.js';
 import { consumeProvider } from './loopProvider.js';
+import { capacityTicket, CapacityStartUnknown } from './agentCapacity.js';
 import { TruncatedToolOutput } from './truncatedOutput.js';
+import { finishPluginActivation, interruptedActivation } from './pluginActivation.js';
 export type { LoopSnapshot } from './loopTypes.js';
 export type { LoopCommand } from './loopTypes.js';
 export type { LoopResult } from './loopTypes.js';
@@ -56,31 +58,35 @@ export async function runAgentLoop(
       outcome: 'indeterminate',
       error: {
         code: 'provider_turn_outcome_unknown',
-        message: `Provider request ${interrupted.providerRequestId} 已组成上下文但没有持久化完成事实。`,
+        message: `Provider request ${interrupted.providerRequestId} has a composed context and no recorded completion.`,
       },
     };
-    await commit([
-      providerTurnTerminalEvent(
-        snapshot.state.sessionId,
-        runId,
-        interrupted,
-        providerRuntimeForPurpose(runRuntimeSnapshot(snapshot, runId), interrupted.purpose).providerRuntimeRef,
-        settlement,
-      ),
-      {
-        type: 'run.finishing',
-        sessionId: snapshot.state.sessionId,
-        runId,
-        payload: settlement,
-      },
-    ]);
-    return finishingResult(runId, settlement);
+    const turn = providerTurnTerminalEvent(snapshot.state.sessionId, runId, interrupted,
+      providerRuntimeForPurpose(runRuntimeSnapshot(snapshot, runId), interrupted.purpose).providerRuntimeRef, settlement);
+    // Only this exact tool-free request can end indeterminately without making the original dispatch unknown.
+    // advanceCapacity will ask a human on the same gate; do not resend the review or disturb Kernel recovery.
+    if (interrupted.purpose === 'approvalReview' && interrupted.responseConstraint === 'answerOnly' && !interrupted.tools.length
+      && snapshot.events.some(e => e.type === 'agent.control.completed' && e.runId === runId
+        && capacityTicket(e.payload.result)?.reviewRequestId === interrupted.providerRequestId)) {
+      await commit(turn);
+    } else {
+      await commit([turn, { type: 'run.finishing', sessionId: snapshot.state.sessionId, runId, payload: settlement }]);
+      return finishingResult(runId, settlement);
+    }
   }
   let runtime = runRuntimeSnapshot(snapshot, runId);
   let lastRetainedCatalog: string | undefined;
   let restoreApprovals: 'resume' | 'recover' | undefined = command.type === 'resume' || command.type === 'recover' ? command.type : undefined;
   try {
     if (command.type === 'fail') throw command.error;
+    const activation = snapshot.state.pendingPluginActivation;
+    if (activation && activation.phase === 'preparing') {
+      const error = interruptedActivation(snapshot.state.sessionId, activation).payload.error;
+      const settlement = { outcome: 'indeterminate' as const, error };
+      await commit({ type: 'run.finishing', sessionId: snapshot.state.sessionId, runId, payload: settlement });
+      return finishingResult(runId, settlement);
+    }
+    if (activation && command.type === 'recover') await commit(interruptedActivation(snapshot.state.sessionId, activation));
     for (const requestEvent of pendingToolRequests(snapshot.events, runId)) {
       const existing = await deps.composition.kernel.readRecord(requestEvent.callId);
       if (existing) {
@@ -110,7 +116,7 @@ export async function runAgentLoop(
             outcome: 'indeterminate',
             error: {
               code: 'tool_effect_outcome_unknown',
-              message: `进程恢复时 Kernel 没有工具调用 ${unresolved.callId} 的确定记录。`,
+              message: `During recovery the Kernel had no conclusive execution record for tool call ${unresolved.callId}.`,
             },
           },
         });
@@ -118,7 +124,7 @@ export async function runAgentLoop(
           outcome: 'indeterminate',
           error: {
             code: 'tool_effect_outcome_unknown',
-            message: `进程恢复时 Kernel 没有工具调用 ${unresolved.callId} 的确定记录。`,
+            message: `During recovery the Kernel had no conclusive execution record for tool call ${unresolved.callId}.`,
           },
         });
       }
@@ -145,7 +151,7 @@ export async function runAgentLoop(
           if ('status' in prepared) return prepared;
           snapshot = prepared;
         }
-        const pendingCompaction = capabilities.compaction && pendingContextCompaction(snapshot.events, runId);
+        const pendingCompaction = !snapshot.state.pendingPluginActivation && capabilities.compaction && pendingContextCompaction(snapshot.events, runId);
         if (pendingCompaction) {
           await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
           continue;
@@ -153,10 +159,15 @@ export async function runAgentLoop(
         const waitingForTools = await dispatchPendingTools(snapshot, deps, runId, signal, restoreApprovals);
         restoreApprovals = undefined;
         if (waitingForTools) return waitingForTools;
+        const pendingActivation = snapshot.state.pendingPluginActivation;
+        if (pendingActivation) await finishPluginActivation(snapshot, pendingActivation, capabilities.controls, deps, signal);
         if (deps.activity) await deps.activity.waitPending(await deps.readSnapshot(), signal);
 
         throwIfAborted(signal);
         snapshot = await deps.takeQueuedInputs(runId);
+        // Keep the directories published with the prepared catalog, not a later activity snapshot.
+        const workspaceContext = runWorkspaceContext(snapshot, runId);
+        const requestDirectoryIds = workspaceContext.directoryBindings.map(binding => binding.workspaceId);
         if (deps.activity) {
           await deps.activity.sync();
           snapshot = await deps.readSnapshot();
@@ -166,7 +177,7 @@ export async function runAgentLoop(
           const failedRead = snapshot.events.findLast(event => event.type === 'tool.completed' && event.runId === runId
             && event.payload.record.toolName === 'session.read');
           if (failedRead?.type === 'tool.completed') throw new LoopFailure('model_handoff_read_failed',
-            'error' in failedRead.payload.record ? (failedRead.payload.record.error?.message ?? '未获得完整的历史读取结果，接手未完成。') : '未获得完整的历史读取结果，接手未完成。');
+            'error' in failedRead.payload.record ? (failedRead.payload.record.error?.message ?? 'Model handoff could not finish because the history read was incomplete.') : 'Model handoff could not finish because the history read was incomplete.');
         }
         throwIfAborted(signal);
         if (runtime.kernelCatalogSnapshotRef !== lastRetainedCatalog) {
@@ -191,7 +202,7 @@ export async function runAgentLoop(
           responseConstraint: 'normal',
           toolGuidance: deps.composition.toolGuidance,
           toolStage: stageForRequest(capabilities, runtime, snapshot.state),
-          ...runWorkspaceContext(snapshot, runId),
+          ...workspaceContext,
           providerRequestId: deps.nextId('provider-request'),
         }, signal);
         const request = prepareTurnBudget(snapshot, runId, runtime, preparedProviderRequest.receipt, capabilities, deps.nextId);
@@ -201,12 +212,18 @@ export async function runAgentLoop(
           continue;
         }
         throwIfAborted(signal);
-        await commit({
-          type: 'context.composed',
-          sessionId: snapshot.state.sessionId,
-          runId,
-          payload: preparedProviderRequest.receipt,
+        let directoriesChanged = false;
+        await commit(current => {
+          // An edit can land during activity sync, view retirement or context composition.
+          // Before issuing the request, retry with a matching catalog and workspace receipt.
+          // After this commit, activation must use the captured list regardless of later edits.
+          const run = current.state.run;
+          directoriesChanged = run?.runId === runId && (run.workspaceBindings.length !== requestDirectoryIds.length
+            || run.workspaceBindings.some((binding, i) => binding.workspaceId !== requestDirectoryIds[i]));
+          return directoriesChanged ? [] : [{ type: 'context.composed', sessionId: current.state.sessionId,
+            runId, payload: preparedProviderRequest.receipt }];
         });
+        if (directoriesChanged) continue;
         let turn;
         try {
           turn = await consumeProvider(preparedProviderRequest.request, preparedProviderRequest.toolCodec,
@@ -220,7 +237,7 @@ export async function runAgentLoop(
           continue;
         }
         const result = await settleProviderTurn(snapshot, turn, preparedProviderRequest.receipt, runtime,
-          capabilities, lease, agentEvidenceRevision, runId, deps, signal);
+          capabilities, lease, agentEvidenceRevision, runId, requestDirectoryIds, deps, signal);
         if (result) return result;
       } catch (error) {
         requestFailure = { error };
@@ -283,8 +300,8 @@ export async function runAgentLoop(
         outcome: 'indeterminate',
         error: {
           code: 'provider_turn_outcome_unknown',
-          message: userCancelled ? '已收到取消请求，本次生成未完成；Provider 最终完成结果未知。'
-            : `Provider request ${unknownTurn.providerRequestId} 的完成结果不可判定；原始错误 ${cause.code}：${cause.message}`,
+          message: userCancelled ? 'Cancellation was requested before generation finished. The final provider outcome is unknown.'
+            : `Provider request ${unknownTurn.providerRequestId} has an unknown outcome. Original error: ${cause.code}: ${cause.message}`,
           diagnostics: { source: 'session', phase: 'provider', category: userCancelled ? 'cancelled' : 'unknown', retryable: false,
             causes: [{ message: `${cause.code}: ${cause.message}` }],
             ...(cause.diagnostics?.secondary ? { secondary: cause.diagnostics.secondary } : {}),
@@ -316,15 +333,10 @@ export async function runAgentLoop(
     ) {
       return { status: 'suspended', runId };
     }
-    const failure = localAgentError(error);
+    const failure: RunSettlement = { outcome: error instanceof CapacityStartUnknown ? 'indeterminate' : 'failed', error: localAgentError(error) };
     if (!hasSettlement(snapshot.events, runId)) {
-      await commit({
-        type: 'run.finishing',
-        sessionId: snapshot.state.sessionId,
-        runId,
-        payload: { outcome: 'failed', error: failure },
-      });
+      await commit({ type: 'run.finishing', sessionId: snapshot.state.sessionId, runId, payload: failure });
     }
-    return finishingResult(runId, { outcome: 'failed', error: failure });
+    return finishingResult(runId, failure);
   }
 }

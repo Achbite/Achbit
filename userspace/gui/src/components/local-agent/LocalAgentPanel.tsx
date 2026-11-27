@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { normalizeUiLanguage, t } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { useSettingsStore } from '../../state/settingsStore';
+import { stillLocal } from '../../state/localInputs';
 import useAppStatusStore from '../../state/appStatusStore';
 import { usePresentedCommittedContent } from '../../presentation/PresentationRuntime';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
@@ -51,6 +52,9 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const projection = useLocalAgentStore((state) => state.projection);
   const current = projection;
   const content = projection;
+  const submissions = useLocalAgentStore(state => state.localInputs);
+  const localInputs = useMemo(() => stillLocal(submissions, projection).filter(input => input.sessionId === sessionId),
+    [submissions, projection, sessionId]);
   const rememberAnchor = useLocalAgentStore(state => state.rememberReadingAnchor);
   const loading = useLocalAgentStore((state) => state.loading);
   const runtimeReady = useLocalAgentStore((state) => state.runtimeReady);
@@ -87,7 +91,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const timelineExtentKey = useMemo(() => content?.timeline.map((item) => (
     item.kind === 'toolGroup' ? `${item.timelineId}:${item.activityIds.length}` : item.timelineId
   )).join('|') ?? '', [content?.timeline]);
-  const hasConversationContent = conversationItems.length > 0
+  const hasConversationContent = localInputs.length > 0 || conversationItems.length > 0
     || Boolean(assistantDraft)
     || Boolean(projection?.pendingInteraction)
     || Boolean(projection?.pendingApproval)
@@ -101,6 +105,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     projection: content,
     createdAt: activeSummary?.createdAt, rememberAnchor, presentationLayoutKey: presentation.layoutKey,
     assistantDraftLayoutKey,
+    localTail: localInputs.at(-1)?.commandId,
     timelineExtentKey,
   });
   const { bodyRef, showJumpToLatest, scrollToLatest } = viewport;
@@ -112,7 +117,8 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
   const automaticReview = automaticApproval || automaticPlan ? <ComposerDecisionPanels language={language} composer={{
     ...composer, pendingApproval: automaticApproval, pendingPlan: automaticPlan, pendingInteraction: null, pendingScopeAddition: null,
   }} /> : null;
-  const resourcePreview = useResourcePreview(sessionId, readerNavigation);
+  const resourcePreview = useResourcePreview(sessionId, readerNavigation, sessionId ? undefined : composer.conversationKey);
+  const readerAvailable = !!sessionId || resourcePreview.tabs.length > 0;
   const activeReader = resourcePreview.tabs.find(tab => tab.id === resourcePreview.activeId)?.target;
   const activeAgent = resourcePreview.visible && activeReader?.kind === 'agent' ? activeReader : null;
   const [readerHeader, setReaderHeader] = useState<HTMLDivElement | null>(null);
@@ -129,13 +135,13 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           kind: 'conversationHeader', sessionId, title,
           project: activeProject ? { id: activeProject.id, title: activeProject.title } : null,
           reader: { visible: resourcePreview.visible, expanded: resourcePreview.expanded,
-            treeVisible: resourcePreview.treeVisible, canOpen: !!sessionId },
+            treeVisible: resourcePreview.treeVisible, canOpen: readerAvailable },
         }} debugActions={{
-          toggleReader: { unavailableReason: sessionId ? null : 'reader_session_required' },
+          toggleReader: { unavailableReason: readerAvailable ? null : 'reader_session_required' },
           toggleReaderExpanded: { unavailableReason: resourcePreview.visible ? null : 'reader_not_visible' },
           toggleTree: { unavailableReason: null },
         }} actions={{
-          toggleReader: () => { if (sessionId) resourcePreview.toggle(); },
+          toggleReader: () => { if (readerAvailable) resourcePreview.toggle(); },
           toggleReaderExpanded: () => { if (resourcePreview.visible) resourcePreview.expand(); },
           toggleTree: resourcePreview.toggleTree,
         }} regions={{ heading: <div className="local-agent__header-conversation">
@@ -149,7 +155,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         </div>, reader: <div className="local-agent__header-preview">
           {resourcePreview.visible && <div className="reader-header-tabs" ref={setReaderHeader} />}
           <div className="local-agent__header-actions">
-          <ReaderControls sessionId={sessionId} language={language} preview={resourcePreview} disabled={!sessionId} />
+          <ReaderControls sessionId={sessionId} language={language} preview={resourcePreview} disabled={!readerAvailable} />
           </div>
         </div> }} />
       </header>
@@ -159,7 +165,7 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
     <AgentNavigationScope sessionId={sessionId} activeAgent={activeAgent} onCloseAgent={() => { if (activeAgent) requestAgentOverview(activeAgent.parentSessionId); }} tasks={current?.agentTasks} pendingDecisions={current?.pendingAgentDecisions}><section className={`local-agent local-agent--${mode}${headerTarget ? ' local-agent--external-header' : ''}${hasConversationContent || (sessionId && (loading || !projection)) ? '' : ' local-agent--empty'}${resourcePreview.visible ? ' local-agent--reading' : ''}${resourcePreview.expanded ? ' local-agent--expanded' : ''}`} style={readerLayout}>
       {headerTarget ? createPortal(header, headerTarget) : header}
       <div className="local-agent__viewport">
-      <ConversationBodies sessionId={sessionId} createdAt={activeSummary?.createdAt} projection={projection} viewport={viewport}>
+      <ConversationBodies sessionId={sessionId} createdAt={activeSummary?.createdAt} projection={projection} viewport={viewport} draftCommand={localInputs[0]?.commandId}>
         <ConversationTranscript
           layoutCache={conversationLayouts.current}
           displaySettledRunIds={display.displaySettledRunIds}
@@ -171,10 +177,12 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
           activeProject={activeProject}
           hasConversationContent={hasConversationContent}
           conversationItems={conversationItems}
+          localInputs={localInputs}
           draftItems={draftItems}
           presentation={presentation}
           viewport={viewport.reading}
           openWorkspaceResource={resourcePreview.openWorkspaceResource}
+          openAttachment={resourcePreview.openAttachment}
           setUiActionError={setUiActionError}
           canEditMessage={composer.canEditMessage}
           onEditMessage={composer.beginMessageEdit}
@@ -213,6 +221,10 @@ const LocalAgentPanel: React.FC<LocalAgentPanelProps> = ({ mode = 'panel', heade
         conversationBodyRef={bodyRef}
         readerExpanded={resourcePreview.visible}
         onEditBrowserReview={resourcePreview.editBrowserReview}
+        onOpenAttachment={async (...args) => {
+          try { setUiActionError(null); await resourcePreview.openAttachment(...args); }
+          catch (reason) { setUiActionError(reason instanceof Error ? reason.message : String(reason)); }
+        }}
         changeBar={showChangeBar && <FileChanges key={`${sessionId}:${projection.run!.runId}`} activities={roundChangeActivities(projection, projection.run!.runId)} compact />}
         language={language}
         composer={composer}

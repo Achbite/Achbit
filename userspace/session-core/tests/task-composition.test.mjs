@@ -256,3 +256,12 @@ test('paired process results, wakeups and explicit decisions expose usable facts
     { ...approval, decision:'deny',reason:'Use the bound directory.' }),
     { status:'denied',error:{code:'tool_denied',message:'Not executed.'},reason:'Use the bound directory.' });
 });
+
+test('file scope accepts UTF-8 paths through 1024 bytes and excludes control characters', () => {
+  const scope = path => decodeAgentRecipe({fileScope:{workspaceId:'workspace:test',read:[path],write:[]}});
+  const prefix = ('文'.repeat(84) + '/').repeat(4);
+  const boundary = prefix + 'abc'.repeat(4);
+  assert.equal(Buffer.byteLength(boundary), 1024);
+  assert.equal(scope(boundary).fileScope.read[0], boundary);
+  for (const invalid of [boundary + 'a', 'docs/\u0085name', 'docs/\ud800']) assert.throws(() => scope(invalid), /agent_file_scope_invalid/);
+});

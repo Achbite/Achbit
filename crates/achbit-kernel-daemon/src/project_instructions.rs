@@ -259,13 +259,14 @@ mod tests {
         .unwrap();
         let ids = ["second", "upload", "workdir", "first"].map(String::from);
         assert_eq!(
-            kernel.project_instruction_roots(&ids).unwrap(),
-            vec![PathBuf::from("/second"), PathBuf::from("/first")]
+            kernel.bound_project_roots(&ids).unwrap(),
+            vec![
+                ("second", PathBuf::from("/second")),
+                ("first", PathBuf::from("/first"))
+            ]
         );
-        assert!(kernel.project_instruction_roots(&[]).unwrap().is_empty());
-        let error = kernel
-            .project_instruction_roots(&["missing".into()])
-            .unwrap_err();
+        assert!(kernel.bound_project_roots(&[]).unwrap().is_empty());
+        let error = kernel.bound_project_roots(&["missing".into()]).unwrap_err();
         assert_eq!(error.code, "workspace_not_found");
         assert_eq!(error.message, "Original resolver error");
     }

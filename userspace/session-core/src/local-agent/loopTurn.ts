@@ -1,10 +1,10 @@
 import type { LoopSnapshot, ProviderTurn, AgentLoopDeps, LoopResult } from './loopTypes.js';
 import {
-  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_PLUGIN_ACTIVATE,
+  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_AGENT,
 } from '@achbit/protocol';
 import type {
-  ContextCompositionReceipt, RunRuntimeSnapshot, NewSessionEvent, PreparedRunRuntime, KernelPort,
+  ContextCompositionReceipt, RunRuntimeSnapshot, NewSessionEvent, KernelPort,
   AgentOperation,
 } from '@achbit/protocol';
 import type { SessionCapabilities } from './plugins.js';
@@ -22,12 +22,14 @@ import { scheduledContextCompaction, pendingContextCompaction } from './compacti
 import { modelContextEvents } from './modelContext.js';
 import { boundaryCompactionEvent, performContextCompaction } from './loopContext.js';
 import { reviewPendingPlan } from './loopTools.js';
+import { CapacityNeeded } from './agentCapacity.js';
+import { pendingCapacityApprovals, advanceCapacity } from './capacityApproval.js';
 import { pendingControlWait, controlWait, inputAfter, pendingWakeups } from './sessionWake.js';
 
 export async function settleProviderTurn(
   initial: LoopSnapshot, turn: ProviderTurn, receipt: ContextCompositionReceipt, runtime: RunRuntimeSnapshot,
   capabilities: SessionCapabilities, lease: SessionCapabilityLease, agentEvidenceRevision: number,
-  runId: string, deps: AgentLoopDeps, signal: AbortSignal,
+  runId: string, requestDirectoryIds: readonly string[], deps: AgentLoopDeps, signal: AbortSignal,
 ): Promise<LoopResult | undefined> {
   let snapshot = initial;
   const commit = async (event: Parameters<AgentLoopDeps['commit']>[0]): Promise<void> => {
@@ -87,7 +89,8 @@ export async function settleProviderTurn(
     case 'agent': {
       const fact = await agentControlFact(deps, snapshot.state.sessionId, runId, runtime, turn,
         receipt.modelView!.throughSequence, signal);
-      await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
+      await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts,
+        ...pendingCapacityApprovals([fact])]);
       break;
     }
     case 'artifactPresent': {
@@ -100,40 +103,6 @@ export async function settleProviderTurn(
           input: { items: turn.items }, error: localAgentError(error) });
       }
       await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
-      break;
-    }
-    case 'pluginActivate': {
-      let prepared: PreparedRunRuntime;
-      try {
-        throwIfAborted(signal);
-        prepared = await installedControls(capabilities.controls).preparePlugins({
-          sessionId: snapshot.state.sessionId, runId, runtime, pluginUris: turn.pluginUris,
-          nextId: deps.nextId, preparation: deps.composition.runPreparation,
-        });
-        // An admitted preparation must drain before the run releases its resources.
-        throwIfAborted(signal);
-      } catch (error) {
-        throwIfAborted(signal);
-        await commit([
-          controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
-            providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLUGIN_ACTIVATE,
-            input: { pluginUris: turn.pluginUris }, error: localAgentError(error) }),
-          providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-          ...completionDerivedFacts,
-        ]);
-        break;
-      }
-      const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-        toolPromptContributions, providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
-      await commit([
-        { type: 'session.plugins.activated', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
-          payload: { providerCallId: turn.providerCallId, pluginUris: turn.pluginUris, kernelCatalogSnapshotRef } },
-        providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-        ...completionDerivedFacts,
-        { type: 'run.tools.prepared', sessionId: snapshot.state.sessionId, runId,
-          payload: { toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-            toolPromptContributions, providerToolAliases, selectedPlugins } } },
-      ]);
       break;
     }
     case 'continuation': {
@@ -307,6 +276,12 @@ export async function settleProviderTurn(
           callFacts.push(controlRejectionFact(snapshot.state.sessionId, runId, { ...call, toolName: call.name }));
           continue;
         }
+        if (call.owner === 'activation') {
+          callFacts.push({ type: 'session.plugins.requested', sessionId: snapshot.state.sessionId, runId, callId: call.callId,
+            payload: { providerRequestId: receipt.providerRequestId, providerCallId: call.providerCallId,
+              pluginUris: call.pluginUris, workspaceBindingIds: [...requestDirectoryIds] } });
+          continue;
+        }
         if (call.owner === 'agent') {
           callFacts.push(await agentControlFact(deps, snapshot.state.sessionId, runId, runtime, call,
             receipt.modelView!.throughSequence, signal));
@@ -331,7 +306,7 @@ export async function settleProviderTurn(
         runId,
         turn.completion,
       ));
-      events.push(...completionDerivedFacts);
+      events.push(...completionDerivedFacts, ...pendingCapacityApprovals(callFacts));
       await commit(events);
       break;
     }
@@ -363,6 +338,9 @@ export async function prepareControlTurn(
       payload: { reason: 'plan', detail: plan.title } });
     return { status: 'waiting', runId, reason: 'plan', planId: plan.planId };
   }
+  const capacity = await advanceCapacity(snapshot, deps, runId, signal);
+  if ('status' in capacity) return capacity;
+  snapshot = capacity;
   const waiting = pendingControlWait(snapshot.events, runId);
   if (waiting) {
     const wait = controlWait(waiting.payload.result)!;
@@ -420,6 +398,14 @@ async function agentControlFact(
       payload: { providerCallId: call.providerCallId, operation: { ...call.operation },
         result: waits ? { ...result, wait: { afterSequence } } : result } };
   } catch (error) {
+    signal.throwIfAborted();
+    if (error instanceof CapacityNeeded) {
+      return { type: 'agent.control.completed', sessionId, runId, callId: call.callId,
+        payload: { providerCallId: call.providerCallId, operation: { ...call.operation }, result: {
+          status: 'capacityRequested', executed: false, approvalId: deps.nextId('approval'), afterSequence,
+          capacity: error.quote, ...(error.delegated ? { reviewRequestId: deps.nextId('provider-request') } : {}),
+        } } };
+    }
     return controlRejectionFact(sessionId, runId, { callId: call.callId,
       providerCallId: call.providerCallId, toolName: SESSION_CONTROL_AGENT,
       input: { ...call.operation }, error: localAgentError(error) });

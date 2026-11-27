@@ -37,6 +37,10 @@ const messages = [
 ].map((message, i) => ({ ...message, messageId: `message:${i}`, sequence: i + 1, createdAt: '2026-09-16T08:35:00Z',
   filesystemReferences: i === 0 ? [{ referenceId: 'reference:notes', workspaceId: 'workspace:preview', logicalPath: 'notes.txt',
     displayName: 'notes.txt', kind: 'file', mediaType: 'text/plain', byteLength: 120 }] : [], pluginSelections: [], feedback: null })) as SessionProjection['messages'];
+if (previewParams.has('markdown-notes')) {
+  messages[1]!.content = '甲轮引用[^注]。\n\n[^注]: 注释只属于第一条消息。';
+  messages[3]!.content = '### 公共视觉规范\n\n- **字体与对比度：**页面标题。\n- **阴影与层级：**普通分组。\n- **按钮与容器：**布局根据**实际窗格宽度**换行。\n\n' + '长文附录。'.repeat(5000) + '\n\n乙轮首次[^注]、再次[^注]。\n\n[^注]: 注释只属于第二条消息。';
+}
 if (previewParams.has('thumbnails')) {
   // Actual message/attachment components with four local, known image sizes; no Host needed.
   const assets = new Map<string, Blob>();
@@ -131,7 +135,7 @@ const question: InteractionProjection = { interactionId: 'question:preview', cal
   runId: 'run:first', sequence: 5, createdAt: '2026-10-11T02:00:00Z', status: 'pending', mode: 'continue', kind: 'question',
   prompt: '“左上角的电脑控制图标”具体指哪个位置？这会决定它属于现有窗口内的显示插件，还是需要一个不抢焦点的原生桌面浮层。\n\n我会继续核查与位置无关的接口、插件更新和调用边界。',
   options: [
-    { id: 'desktop', label: '系统桌面左上角', description: '切换到其他应用后仍可见，点击展开电脑控制预览。' },
+    { id: 'desktop', label: '系统桌面左上角', description: previewParams.has('markdown-option') ? '第一段\n\n第二段含 [![图示说明](fig.png)](notes.md) 结束。' : '切换到其他应用后仍可见，点击展开电脑控制预览。' },
     { id: 'window', label: 'Achbit 窗口左上角', description: '放在应用标题栏或导航区域内，作为预览与状态入口。' },
   ], allowFreeform: previewParams.get('freeform') !== 'false',
 };
@@ -240,8 +244,8 @@ function Preview() {
       <ConversationTranscript layoutCache={layoutCache} language={language} loading={false} projection={projection} activeProject={undefined}
         hasConversationContent displaySettledRunIds={layoutCheck ? display.displaySettledRunIds : new Set(mode.startsWith('question') ? ['run:second'] : ['run:first', 'run:second'])} onDisplayed={display.onDisplayed}
         conversationItems={items} draftItems={[]} presentation={presentation} viewport={viewport}
-        openWorkspaceResource={async () => {}} setUiActionError={setError} canEditMessage={composer.canEditMessage} onEditMessage={composer.beginMessageEdit} />
-    </div></div><ConversationComposer conversationBodyRef={viewport.bodyRef} language={language} composer={composer} uiActionError={error}
+        openAttachment={async source => { Object.assign(window, { openedMessageAttachment: source }); }} openWorkspaceResource={async () => {}} setUiActionError={setError} canEditMessage={composer.canEditMessage} onEditMessage={composer.beginMessageEdit} />
+    </div></div><ConversationComposer onOpenAttachment={async source => { Object.assign(window, { openedDraftAttachment: source }); }} conversationBodyRef={viewport.bodyRef} language={language} composer={composer} uiActionError={error}
       onDismissUiActionError={() => setError(null)} onEditBrowserReview={review => setResult(`浏览器批注：${JSON.stringify(review)}`)} /></main>
     {layoutCheck && <AchbitTaskPanel projection={projection} language={language} />}
     </div>

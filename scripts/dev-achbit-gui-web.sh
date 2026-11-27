@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[ -f /.dockerenv ] || { printf "Use make dev-achbit-gui from the host.\n" >&2; exit 1; }
+source "$ROOT_DIR/scripts/dev-language.sh"
+[ -f /.dockerenv ] || { dev_printf "Use make dev-achbit-gui from the host.\n" "请从宿主执行 make dev-achbit-gui。\n" >&2; exit 1; }
 HOST="${ACHBIT_HOST:-127.0.0.1}"
 GUI_PORT="${ACHBIT_GUI_DEV_PORT:-5174}"
 HOST_PORT="${ACHBIT_HOST_PORT:-31245}"
@@ -15,12 +16,14 @@ HOST_PID=""
 VITE_PID=""
 
 fail() {
-  printf '[achbit-gui-web][error] %s\n' "$*" >&2
+  local message="$1"
+  if [ "$ACHBIT_DEV_LANGUAGE" = zh-CN ]; then message="$2"; fi
+  printf '[achbit-gui-web][error] %s\n' "$message" >&2
   exit 1
 }
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "缺少命令：$1"
+  command -v "$1" >/dev/null 2>&1 || fail "Missing command: $1" "缺少命令：$1"
 }
 
 valid_port() {
@@ -62,7 +65,7 @@ cleanup() {
   if [ "$RUNTIME_ROOT_OWNED" = "1" ] && [ -n "$RUNTIME_ROOT" ]; then
     case "$RUNTIME_ROOT" in
       "${TMPDIR:-/tmp}"/achbit-gui-web.*) rm -rf -- "$RUNTIME_ROOT" ;;
-      *) printf '[achbit-gui-web][warning] 未清理非预期临时目录：%s\n' "$RUNTIME_ROOT" >&2 ;;
+      *) dev_printf '[achbit-gui-web][warning] Left unexpected temporary directory in place: %s\n' '[achbit-gui-web][warning] 未清理非预期临时目录：%s\n' "$RUNTIME_ROOT" >&2 ;;
     esac
   fi
   exit "$status"
@@ -95,18 +98,18 @@ wait_for_health() {
 trap cleanup EXIT INT TERM
 
 if [ -n "${ACHBIT_DEV_CONTROL:-}" ]; then
-  [ -d "$ACHBIT_DEV_CONTROL" ] || fail "Development service owner is no longer active"
+  [ -d "$ACHBIT_DEV_CONTROL" ] || fail "Development service owner is no longer active" "开发服务的所有者已退出"
   printf '%s\n' "$$" > "$ACHBIT_DEV_CONTROL/pid"
   [ ! -f "$ACHBIT_DEV_CONTROL/cancel" ] || exit 0
 fi
 
 [ "$HOST" = "127.0.0.1" ] || [ "$HOST" = "localhost" ] || [ "$HOST" = "::1" ] \
-  || fail "Web 开发 Host 只能监听 loopback"
-valid_port "$GUI_PORT" || fail "ACHBIT_GUI_DEV_PORT 必须是 1-65535 的整数"
-valid_port "$HOST_PORT" || fail "ACHBIT_HOST_PORT 必须是 1-65535 的整数"
-valid_port "$DAEMON_PORT" || fail "ACHBIT_DAEMON_PORT 必须是 1-65535 的整数"
+  || fail "The development Host must listen on loopback" "Web 开发 Host 只能监听 loopback"
+valid_port "$GUI_PORT" || fail "ACHBIT_GUI_DEV_PORT must be an integer from 1 to 65535" "ACHBIT_GUI_DEV_PORT 必须是 1-65535 的整数"
+valid_port "$HOST_PORT" || fail "ACHBIT_HOST_PORT must be an integer from 1 to 65535" "ACHBIT_HOST_PORT 必须是 1-65535 的整数"
+valid_port "$DAEMON_PORT" || fail "ACHBIT_DAEMON_PORT must be an integer from 1 to 65535" "ACHBIT_DAEMON_PORT 必须是 1-65535 的整数"
 [ "$GUI_PORT" != "$HOST_PORT" ] && [ "$GUI_PORT" != "$DAEMON_PORT" ] \
-  && [ "$HOST_PORT" != "$DAEMON_PORT" ] || fail "GUI、Host 和 daemon 端口必须互不相同"
+  && [ "$HOST_PORT" != "$DAEMON_PORT" ] || fail "GUI, Host and daemon ports must be distinct" "GUI、Host 和 daemon 端口必须互不相同"
 
 require_command node
 require_command curl
@@ -117,7 +120,7 @@ if [ "${ACHBIT_DEV_SKIP_BUILD:-0}" != "1" ]; then
 fi
 
 for port in "$GUI_PORT" "$HOST_PORT" "$DAEMON_PORT"; do
-  port_is_free "$port" || fail "端口已被占用：$HOST:$port"
+  port_is_free "$port" || fail "Port is in use: $HOST:$port" "端口已被占用：$HOST:$port"
 done
 
 if [ -z "$RUNTIME_ROOT" ]; then
@@ -132,7 +135,7 @@ mkdir -p "$RUNTIME_ROOT/logs"
 
 if [ -n "$CONFIG_SOURCE" ]; then
   [ -d "$CONFIG_SOURCE/config/user/local" ] \
-    || fail "ACHBIT_DEV_CONFIG_SOURCE 不包含 config/user/local：$CONFIG_SOURCE"
+    || fail "ACHBIT_DEV_CONFIG_SOURCE has no config/user/local: $CONFIG_SOURCE" "ACHBIT_DEV_CONFIG_SOURCE 不包含 config/user/local：$CONFIG_SOURCE"
   mkdir -p "$RUNTIME_ROOT/config/user/local"
   cp -R "$CONFIG_SOURCE/config/user/local/." "$RUNTIME_ROOT/config/user/local/"
 fi
@@ -150,10 +153,10 @@ HOST_BIN="$NATIVE/achbit-host-web"
 SESSION_BRIDGE="$ROOT_DIR/userspace/session-core/dist/sessionServiceBridge.js"
 VITE_BIN="$ROOT_DIR/userspace/gui/node_modules/vite/bin/vite.js"
 NODE_BIN="$(command -v node)"
-[ -x "$DAEMON_BIN" ] || fail "缺少 daemon：$DAEMON_BIN"
-[ -x "$HOST_BIN" ] || fail "缺少 Host：$HOST_BIN"
-[ -f "$SESSION_BRIDGE" ] || fail "缺少 Session bridge：$SESSION_BRIDGE"
-[ -f "$VITE_BIN" ] || fail "缺少 Vite：$VITE_BIN"
+[ -x "$DAEMON_BIN" ] || fail "Daemon not found: $DAEMON_BIN" "缺少 daemon：$DAEMON_BIN"
+[ -x "$HOST_BIN" ] || fail "Host not found: $HOST_BIN" "缺少 Host：$HOST_BIN"
+[ -f "$SESSION_BRIDGE" ] || fail "Session bridge not found: $SESSION_BRIDGE" "缺少 Session bridge：$SESSION_BRIDGE"
+[ -f "$VITE_BIN" ] || fail "Vite not found: $VITE_BIN" "缺少 Vite：$VITE_BIN"
 
 random_hex() {
   node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))"
@@ -179,7 +182,7 @@ wait_for_health \
   "x-achbit-host-shell-token" \
   "$SHELL_TOKEN" \
   "$RUNTIME_ROOT/logs/daemon.log" \
-  || fail "Kernel daemon 启动失败"
+  || fail "Kernel daemon failed to start" "Kernel daemon 启动失败"
 
 env \
   ACHBIT_HOST="$HOST" \
@@ -198,7 +201,7 @@ wait_for_health \
   "x-achbit-host-ui-token" \
   "$UI_TOKEN" \
   "$RUNTIME_ROOT/logs/host-web.log" \
-  || fail "Host Web 启动失败"
+  || fail "Host Web failed to start" "Host Web 启动失败"
 
 (
   cd "$ROOT_DIR/userspace/gui"
@@ -215,7 +218,7 @@ attempt=0
 while [ "$attempt" -lt 120 ]; do
   kill -0 "$VITE_PID" >/dev/null 2>&1 || {
     tail -n 40 "$RUNTIME_ROOT/logs/vite.log" >&2 || true
-    fail "Vite 启动失败"
+    fail "Vite failed to start" "Vite 启动失败"
   }
   if curl --silent --show-error --fail "http://$HOST:$GUI_PORT/" >/dev/null 2>&1; then
     break
@@ -225,17 +228,17 @@ while [ "$attempt" -lt 120 ]; do
 done
 [ "$attempt" -lt 120 ] || {
   tail -n 40 "$RUNTIME_ROOT/logs/vite.log" >&2 || true
-  fail "Vite 启动超时"
+  fail "Vite startup timed out" "Vite 启动超时"
 }
 
-printf '[achbit-gui-web] 同源 GUI 已启动：http://%s:%s/\n' "$HOST" "$GUI_PORT"
-printf '[achbit-gui-web] runtime：%s\n' "$RUNTIME_ROOT"
-printf '[achbit-gui-web] PIDs：daemon=%s host=%s vite=%s\n' "$DAEMON_PID" "$HOST_PID" "$VITE_PID"
-printf '[achbit-gui-web] Ctrl+C 将只停止上述进程并清理本次临时 runtime。\n'
+dev_printf '[achbit-gui-web] Same-origin GUI is ready: http://%s:%s/\n' '[achbit-gui-web] 同源 GUI 已启动：http://%s:%s/\n' "$HOST" "$GUI_PORT"
+dev_printf '[achbit-gui-web] runtime: %s\n' '[achbit-gui-web] runtime：%s\n' "$RUNTIME_ROOT"
+dev_printf '[achbit-gui-web] PIDs: daemon=%s host=%s vite=%s\n' '[achbit-gui-web] PIDs：daemon=%s host=%s vite=%s\n' "$DAEMON_PID" "$HOST_PID" "$VITE_PID"
+dev_printf '[achbit-gui-web] Ctrl+C stops these processes and removes their temporary runtime.\n' '[achbit-gui-web] Ctrl+C 将只停止上述进程并清理本次临时 runtime。\n'
 
 while kill -0 "$DAEMON_PID" >/dev/null 2>&1 \
   && kill -0 "$HOST_PID" >/dev/null 2>&1 \
   && kill -0 "$VITE_PID" >/dev/null 2>&1; do
   sleep 1
 done
-fail "开发拓扑中的进程提前退出；日志位于 $RUNTIME_ROOT/logs"
+fail "A development process exited early. See $RUNTIME_ROOT/logs" "开发拓扑中的进程提前退出；日志位于 $RUNTIME_ROOT/logs"

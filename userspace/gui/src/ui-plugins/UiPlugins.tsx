@@ -1,3 +1,4 @@
+import { uiPluginText } from '../pluginLocalization';
 import { completePluginInput, pluginHistorySource } from './activityInput';
 import { useHistoryDetail } from '../components/local-agent/useHistoryDetail';
 import { t } from '../i18n';
@@ -355,7 +356,7 @@ export function UiPluginSlotView({
   if (entry.status === 'error')
     return (
       <><div {...identity.part('error')} role="alert" className="ui-plugin-error">
-        <strong>{entry.manifest?.name}</strong>
+        <strong>{uiPluginText(input.locale === 'zh-CN' ? 'zh-CN' : 'en-US', entry.manifest, 'name')}</strong>
         <pre>{entry.error}</pre>
       </div>{portals}</>
     );

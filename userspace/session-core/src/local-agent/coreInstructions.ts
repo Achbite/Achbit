@@ -1,6 +1,16 @@
 export const USER_SYSTEM_PROMPT_ID = 'achbit.user-system-prompt';
 
-/** One shared preamble; the full context inserts detail without replacing its base sentences. */
+export const replyFormatInstruction = Object.freeze({
+  id: 'achbit.reply-format',
+  text: `<response>
+- Follow the requested response format and response language.
+- Match detail to the task. Include the evidence needed to understand the result, without repetition or courtesy filler.
+- Use clickable file links with readable paths and relevant line numbers.
+- Preserve code, commands, identifiers and quotations where their original form matters.
+</response>`,
+});
+
+/** The expanded form remains available for historical context contracts. */
 export function corePromptInstructions(expanded = true) {
   return [{
     id: 'achbit.coding-agent',
@@ -10,15 +20,7 @@ export function corePromptInstructions(expanded = true) {
       'Help users inspect files, run commands, and modify code.',
       ...(expanded ? ["Follow the user's goal, the task stage, and the project's instructions."] : []),
     ].join(' '),
-  }, ...(expanded ? [{
-    id: 'achbit.reply-format',
-    text: `<response>
-- Follow the requested response format and response language.
-- Match detail to the task. Include the evidence needed to understand the result, without repetition or courtesy filler.
-- Use clickable file links with readable paths and relevant line numbers.
-- Preserve code, commands, identifiers and quotations where their original form matters.
-</response>`,
-  }] : [])];
+  }, ...(expanded ? [replyFormatInstruction] : [])];
 }
 
 /** Stable instruction identities also identify the non-dynamic portion of context receipts. */

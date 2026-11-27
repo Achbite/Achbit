@@ -75,7 +75,7 @@ fn quit_local_host(
 ) -> Result<QuitOutcome, String> {
     let id = &host.identity.instance_id;
     if confirmation.is_some_and(|selected| selected != id) {
-        return Err("The connected Host changed. Choose Quit Achbit again.".into());
+        return Err("quit_host_changed".into());
     }
     let ask = |active| QuitOutcome::ConfirmationRequired {
         host_id: id.clone(),

@@ -256,10 +256,11 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
       required: ['action', ...required], properties: { action: { type: 'string', const: action }, ...properties } },
   });
   const id = { type: 'string', minLength: 1 };
+  const requestCapacity = { ...id, maxLength: 1024, description: 'If this dispatch exceeds subagent capacity, explain why waiting or reusing a member will not suffice. Approval covers this dispatch only.' };
   return [
     operation('models', 'Discover available operations and model profiles.'),
     ...(delegation && options.canSpawn !== false ? [operation('spawn', 'Create a child agent. Async overlaps work; wait pauses for a result or message. A final answer ends the child task and releases execution; continuation retains history, not an active wait. Permissions and configuration inherit from the parent. Select a template using the returned fields. model-services.md in productDocsPath has examples.', {
-      task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
+      requestCapacity, task: { ...id, description: 'Give the child necessary context, a bounded goal, scope and expected evidence. It receives this task, not the parent conversation.' }, name: id, delivery: { type: 'string', enum: ['wait', 'async'], description: 'Use async to overlap independent work; wait when the next step depends on the result.' },
       preset: { type: options.fullConfiguration ? ['string','null'] : 'string', enum: [...(options.presetIds ?? ['analysis', 'collaboration']), ...(options.fullConfiguration ? [null] : [])], description: 'Select an available template. In full configuration, null creates a fresh instance from inherited components, without a template.' },
       ...(options.fullConfiguration && options.coordinator !== false ? {
         peerGroup: {type:'string',pattern:teamKeyPattern,description:'Optional direct-peer group for sibling workers created in this root run. Both peers must have team messaging and the same group. Does not include their assistants.'},
@@ -297,7 +298,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
     ...(messaging || delegation ? [operation('send', 'Send a message to an active permitted contact. Independent sends and ordinary tools may share a turn. Delivery records the message, not agreement. Does not start tasks; ask the coordinator to assign an idle member.', { agentId: id, text: id }, ['agentId', 'text'])] : []),
     ...(delegation && options.coordinator !== false && options.canSpawn !== false ? [
       operation('assign', 'Coordinator only: asynchronously assign a new task to an idle retained agent, preserving its Session, model and configuration. Use send for an active task.',
-        { agentId: id, task: { ...id, description: 'Necessary context, scope and expected evidence for the new task.' } }, ['agentId', 'task']),
+        { agentId: id, requestCapacity, task: { ...id, description: 'Necessary context, scope and expected evidence for the new task.' } }, ['agentId', 'task']),
     ] : []),
     ...(delegation ? [
       operation('compact', 'Request child context compaction at its next safe model boundary, or before its next task if idle. Does not start work or interrupt tools.',
@@ -311,11 +312,16 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
   ];
 }
 
+// The declaration and pre-dispatch gate share this policy. `agent` has per-action rules instead.
+export const soloControls: ReadonlySet<string> = new Set([
+  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH,
+]);
+
 export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, canDelegate = true): readonly ProviderToolDefinition[] {
-  return [
+  const definitions: ProviderToolDefinition[] = [
     {
       name: SESSION_CONTROL_SESSION,
-      description: 'Schedule a follow-up or wait for input in this task. Call action=describe for the exact operations. A statement about later work does not schedule it. Submit alone.',
+      description: 'Schedule a follow-up or wait in this task; action=describe lists operations. A statement about later work does not schedule it.',
       inputSchema: { type: 'object', additionalProperties: true, required: ['action'], properties: {
         action: { type: 'string', minLength: 1 },
       } },
@@ -333,7 +339,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_ARTIFACT_PRESENT,
-      description: 'Register requested results and review materials in the outputs table using artifactIds returned by tools or resource preparation. Use the returned references as clickable Markdown links in the final reply. Writing or archiving a file alone does not deliver it. Re-prepare changed files and reuse deliveryId to update. Keep temporary scripts, logs and observation images intermediate unless selected for review. Presentation does not load pixels into model context. Submit alone.',
+      description: 'Register requested results and review materials in the outputs table by returned artifactId. Use returned references as clickable Markdown links in the reply. Writing or archiving a file alone does not deliver it. Re-prepare changed files and reuse deliveryId. Keep scripts, logs and images intermediate unless selected for review. Presentation does not load pixels into model context.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['items'], properties: {
         items: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
           required: ['artifactId', 'label'], properties: {
@@ -343,7 +349,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Activate exact discovered URIs. The result lists prepared capabilities; call only names declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate. Submit alone.',
+      description: 'Activate exact discovered URIs in one call per response. Only ordinary tools declared for this request may accompany it; they settle first. The result lists prepared capabilities; call new tools only when declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -351,12 +357,12 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_INTERACTION_REQUEST,
-      description: 'Ask missing facts or required decisions once; an unanswered question stays pending. Supply clickable options when offering alternatives. mode=continue allows independent work. Confirmations wait for a response; silence is not a choice or authorization. Submit alone.',
+      description: 'Ask once for missing facts or decisions; unanswered questions stay pending. Offer clickable options for alternatives. Confirmations wait; silence is not a choice or authorization.',
       inputSchema: structuredClone(INTERACTION_SCHEMA) as JsonObject,
     },
     {
       name: SESSION_CONTROL_PLAN_PUBLISH,
-      description: 'Submit the goal, phases, verification and modification scope for confirmation. You execute the steps after approval. extendScope adds scope. A full revision replaces the plan and its manifest. For Shell, writablePaths lists write targets and command gives an example. Plan confirmation, execution permission and engineering decisions remain separate. Submit alone.',
+      description: 'Plan the goal, phases, verification and write scope. Execute after approval. A full revision replaces the plan and manifest. Plan confirmation, execution permission and engineering decisions remain separate.',
       inputSchema: structuredClone(PLAN_SCHEMA) as JsonObject,
     },
     {
@@ -374,6 +380,9 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
       },
     },
   ];
+  return definitions.map(tool => soloControls.has(tool.name)
+    ? { ...tool, description: `${tool.description} Submit alone: the only tool call in the response, outside any parallel batch.` }
+    : tool);
 }
 
 export function decodeSessionControlCall(
@@ -433,7 +442,7 @@ export function decodeSessionControlCall(
     if (!Array.isArray(input.pluginUris) || input.pluginUris.length < 1
       || input.pluginUris.some(uri => typeof uri !== 'string' || !/^plugin:\/\/[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(uri))
       || new Set(input.pluginUris).size !== input.pluginUris.length) {
-      throw new SessionControlError('plugin_selection_invalid', 'pluginUris 必须包含 至少一个不重复的已发现插件 URI。');
+      throw new SessionControlError('plugin_selection_invalid', 'pluginUris 必须包含至少一个不重复的已发现插件 URI。', '$.pluginUris');
     }
     return { kind: 'pluginActivate', callId: canonicalCallId, pluginUris: input.pluginUris as string[] };
   }
@@ -466,14 +475,21 @@ export function decodeSessionControlCall(
   };
 }
 
-function decodeAgentOperation(input: JsonObject): AgentOperation {
+function capacityReason(input: JsonObject): {requestCapacity?: string} {
+  if (input.requestCapacity === undefined) return {};
+  const reason = requiredText(input.requestCapacity, 'requestCapacity');
+  if (reason.length > 1024) throw new SessionControlError('agent_capacity_reason_invalid', 'Capacity reason exceeds 1024 characters.', '$.requestCapacity');
+  return {requestCapacity: reason};
+}
+
+export function decodeAgentOperation(input: JsonObject): AgentOperation {
   switch (input.action) {
     case 'models':
       assertExactKeys(input, ['action']);
       return { action: 'models' };
     case 'spawn': {
-      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope'],
-        ['profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope']);
+      assertExactKeys(input, ['action', 'task', 'name', 'delivery', 'requestCapacity', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope'],
+        ['requestCapacity', 'profileId', 'reasoningEffort', 'preset', 'capabilities', 'loop', 'context', 'permissions', 'runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'peerGroup', 'helpers', 'fileScope']);
       if (input.preset !== undefined && input.preset !== null) requiredText(input.preset, 'preset');
       if (input.capabilities !== undefined && ((!input.capabilities || typeof input.capabilities !== 'object' || Array.isArray(input.capabilities))
         || Object.entries(input.capabilities).some(([key, value]) => !['messaging', 'continuation', 'delegation'].includes(key)
@@ -497,7 +513,7 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       const components = decodeAgentRecipe(Object.fromEntries(['runner', 'permissionPolicy', 'workspaceSandbox', 'tools', 'productComponents', 'fileScope']
         .filter(key => input[key] !== undefined).map(key => [key, input[key]])));
       return { action: input.action, task: requiredText(input.task, 'task'), name: requiredText(input.name, 'name'), delivery: input.delivery,
-        ...components,
+        ...components, ...capacityReason(input),
         ...(input.preset !== undefined ? { preset: input.preset as string | null } : {}),
         ...(input.peerGroup !== undefined ? {peerGroup:teamKey(input.peerGroup)} : {}),
         ...(input.helpers !== undefined ? {helpers:decodeAgentHelpers(input.helpers)} : {}),
@@ -516,8 +532,8 @@ function decodeAgentOperation(input: JsonObject): AgentOperation {
       return { action: 'compact', agentId: requiredIdentifier(input.agentId, 'agentId'),
         ...(input.focus !== undefined ? { focus: requiredText(input.focus, 'focus') } : {}) };
     case 'assign':
-      assertExactKeys(input, ['action', 'agentId', 'task']);
-      return { action: 'assign', agentId: requiredIdentifier(input.agentId, 'agentId'), task: requiredText(input.task, 'task') };
+      assertExactKeys(input, ['action', 'agentId', 'task', 'requestCapacity'], ['requestCapacity']);
+      return { action: 'assign', agentId: requiredIdentifier(input.agentId, 'agentId'), task: requiredText(input.task, 'task'), ...capacityReason(input) };
     case 'wait': {
       assertExactKeys(input, ['action', 'taskIds'], ['taskIds']);
       if (input.taskIds === undefined) return { action: 'wait' };

@@ -11,6 +11,7 @@ import { useConversationSessionId } from './ConversationSessionScope';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { useAutoDismiss } from '../shared/useAutoDismiss';
 import { ImageReview } from './ImageReview';
+import { ReaderImageScope } from './documentImages';
 import { RichContentScope } from './RichContentIdentity';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 
@@ -52,7 +53,8 @@ export const CodeContent = memo(function CodeContent({ code, language, streaming
 
 export function ImageContent({ source, alt, width, height }: { source: string; alt: string; width?: number; height?: number }) {
   const uiLanguage = useUiLanguage();
-  const { loadImage } = useConversationHost();
+  const host = useConversationHost();
+  const loadImage = useContext(ReaderImageScope) ?? host.loadImage;
   const slot = useRef<HTMLSpanElement>(null);
   // Archived tool images are owned by the execution record store.
   const available = useLocalAgentStore(state => !source.startsWith('artifact://') || state.runtimeReady);

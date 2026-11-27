@@ -49,6 +49,7 @@ export function hasDesktopNotifications(): boolean {
 }
 
 export interface CompletionReminder {
+  appearance?: string;
   foregroundSound: boolean;
   sessionId: string;
   title: string;
@@ -112,7 +113,7 @@ export interface NativePathSelection {
 export async function pickNativePaths(options: NativePathOptions): Promise<NativePathSelection[] | null> {
   if (!hasNativePathPicker()) throw new Error('native_path_picker_unavailable');
   if (options.kind === 'path') {
-    return tauriInvoke()!<NativePathSelection[] | null>('achbit_pick_path', { options: {
+    const paths = await tauriInvoke()!<NativePathSelection[] | null>('achbit_pick_path', { options: {
       title: options.title,
       kind: options.kind,
       selectLabel: options.selectLabel ?? 'Select',
@@ -121,6 +122,7 @@ export async function pickNativePaths(options: NativePathOptions): Promise<Nativ
       filters: options.filters ?? [],
       multiple: options.multiple ?? false,
     } });
+    return checkedSelection(paths, options.multiple);
   }
   const { open } = await import('@tauri-apps/plugin-dialog');
   const paths = await open({
@@ -130,14 +132,12 @@ export async function pickNativePaths(options: NativePathOptions): Promise<Nativ
     defaultPath: options.defaultPath,
     filters: options.filters,
   });
-  return paths === null ? null : (Array.isArray(paths) ? paths : [paths]).map(path => ({ path, kind: options.kind as 'file' | 'directory' }));
+  return checkedSelection(paths === null ? null : (Array.isArray(paths) ? paths : [paths]).map(path => ({ path, kind: options.kind as 'file' | 'directory' })), options.multiple);
 }
 
-export async function pickNativePath(options: NativePathOptions): Promise<NativePathSelection | null> {
-  const paths = await pickNativePaths({ ...options, multiple: false });
-  if (paths === null) return null;
-  if (paths.length !== 1) throw new Error('native_path_selection_count_invalid');
-  return paths[0];
+function checkedSelection(paths: NativePathSelection[] | null, multiple = false): NativePathSelection[] | null {
+  if (paths && !multiple && paths.length !== 1) throw new Error('native_path_selection_count_invalid');
+  return paths;
 }
 
 async function windowCommand(

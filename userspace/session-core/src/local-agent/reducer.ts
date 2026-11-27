@@ -83,6 +83,8 @@ export interface SessionState {
   tokenUsageHistory: Record<string, SessionProjection['tokenUsageHistory'][number]>;
   runRuntimeSnapshots: Record<string, RunRuntimeSnapshot>;
   runToolViews: Record<string, PreparedRequestToolView>;
+  pendingPluginActivation?: Extract<SessionEvent, { type: 'session.plugins.requested' }>['payload']
+    & { runId: string; callId: string; phase: 'requested' | 'preparing' };
   pendingRunSettlements: Record<string, RunSettlement>;
   runRuntimeReleases: Record<
     string,
@@ -278,15 +280,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (next.queuedInputs.some((input) => input.messageId === event.payload.messageId)) {
         throw new Error('queued_input_duplicate');
       }
-      next.queuedInputs = [...next.queuedInputs, {
-        ...event.payload,
-        runId: event.runId,
-        filesystemReferences: (event.payload.filesystemReferences ?? []).map((reference) => ({ ...reference })),
-        pluginSelections: (event.payload.pluginSelections ?? []).map((selection) => ({ ...selection })),
-        sequence: event.sequence,
-        createdAt: event.occurredAt,
-        status: 'queued',
-      }];
+      next.queuedInputs = [...next.queuedInputs, queuedInput(event, 'queued')];
       break;
     case 'run.host.rebound': {
       const binding = next.run?.hostBinding;
@@ -318,13 +312,14 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       next.shellAuthorizations = next.shellAuthorizations.filter(grant => grant.authorityId !== event.payload.authorityId);
       break;
     case 'approval.reviewed': {
-      if (!next.pendingApprovals.some(item => item.approvalId === event.payload.approvalId && item.callId === event.callId)) throw new Error('approval_review_request_missing');
+      const pending = next.pendingApprovals.find(item => item.approvalId === event.payload.approvalId && item.callId === event.callId);
+      if (!pending) throw new Error('approval_review_request_missing');
       const review = { decision: event.payload.decision, reason: event.payload.reason };
       const activityId = approvalActivityId(event.payload.approvalId);
       const activity = next.activities[activityId];
       // A first malformed reply gets one format correction. Keep its diagnostic on the
       // activity; only the final verdict belongs in the pending decision shown to people.
-      if (event.payload.error?.code !== 'approval_review_invalid' || activity.approvalReview) {
+      if (pending.preview.reviewPolicy?.subject === 'subagentCapacity' || event.payload.error?.code !== 'approval_review_invalid' || activity.approvalReview) {
         next.pendingApprovals = next.pendingApprovals.map(item => item.approvalId === event.payload.approvalId
           ? { ...item, preview: { ...item.preview, review } } : item);
       }
@@ -444,6 +439,7 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
         if (acceptedInput) delete next.acceptedInputs[acceptedInput[0]];
         const common = {
           messageId: event.payload.messageId,
+          ...(event.payload.role === 'user' && acceptedInput ? { commandId: acceptedInput[0] } : {}),
           content: event.payload.content,
           ...(event.payload.guidanceReferences?.length ? {guidanceReferences:structuredClone(event.payload.guidanceReferences)} : {}),
           filesystemReferences: (event.payload.filesystemReferences ?? []).map((reference) => ({
@@ -891,11 +887,60 @@ function reduceSessionEvent(previous: SessionState, event: SessionEvent, replay?
       if (next.run?.runId !== event.runId || !['running', 'waiting'].includes(next.run.status)) throw new Error('agent_message_run_not_active');
       recordAgentMessageActivity(next, event);
       break;
-    case 'session.plugins.activated':
+    case 'session.plugins.requested': {
       assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
+      if (next.pendingPluginActivation) throw new Error('plugin_activation_already_pending');
+      const activityId = pluginActivationActivityId(event.callId);
+      if (next.activities[toolActivityId(event.callId)]) throw new Error('provider_call_fact_duplicate');
       recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
         SESSION_CONTROL_PLUGIN_ACTIVATE, event.sequence);
+      next.pendingPluginActivation = { ...structuredClone(event.payload), runId: event.runId, callId: event.callId, phase: 'requested' };
+      // Display the Session operation and its targets, never a fabricated Kernel execution record.
+      writableRecord(next, 'activities')[activityId] = { activityId, kind: 'tool', status: 'requested',
+        label: SESSION_CONTROL_PLUGIN_ACTIVATE, runId: event.runId, callId: event.callId, sequence: event.sequence,
+        tool: { operation: SESSION_CONTROL_PLUGIN_ACTIVATE, resources: event.payload.pluginUris.map(label => ({ kind: 'logicalTarget', label })) } };
       break;
+    }
+    case 'session.plugins.preparing':
+    case 'session.plugins.failed': {
+      const slot = next.pendingPluginActivation;
+      // A transcript page may omit the parent request. It is a read, never a scheduling input.
+      if (!slot && replay?.transcriptCompositions) break;
+      if (!slot || slot.callId !== event.callId || slot.runId !== event.runId) throw new Error('plugin_activation_request_missing');
+      if (event.type === 'session.plugins.preparing') {
+        assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
+        if (slot.phase !== 'requested') throw new Error('plugin_activation_already_preparing');
+        next.pendingPluginActivation = { ...slot, phase: 'preparing' };
+        settleActivity(next, pluginActivationActivityId(event.callId), 'active');
+      } else {
+        const { outcome, error } = event.payload;
+        if (slot.phase === 'requested' ? outcome !== 'notExecuted' : outcome !== 'failed' && outcome !== 'indeterminate') {
+          throw new Error('plugin_activation_outcome_mismatch');
+        }
+        const id = pluginActivationActivityId(event.callId);
+        const activity = next.activities[id];
+        writableRecord(next, 'activities')[id] = { ...activity, status: outcome === 'notExecuted' ? 'cancelled' : outcome,
+          tool: { ...activity.tool!, error: structuredClone(error) } };
+        delete next.pendingPluginActivation;
+      }
+      break;
+    }
+    case 'session.plugins.activated': {
+      const slot = next.pendingPluginActivation;
+      if (slot) {
+        if (slot.phase !== 'preparing' || slot.runId !== event.runId || slot.callId !== event.callId
+          || slot.providerCallId !== event.payload.providerCallId
+          || JSON.stringify(slot.pluginUris) !== JSON.stringify(event.payload.pluginUris)) throw new Error('plugin_activation_result_mismatch');
+        settleActivity(next, pluginActivationActivityId(event.callId), 'completed');
+        delete next.pendingPluginActivation;
+      } else {
+        // Standalone historical activations registered their provider call on success.
+        assertRunningRun(next, event.runId, 'plugin_activation_run_not_active');
+        recordProviderCallFact(next, event.callId, event.runId, event.payload.providerCallId,
+          SESSION_CONTROL_PLUGIN_ACTIVATE, event.sequence);
+      }
+      break;
+    }
     case 'session.control.rejected':
       writableRecord(next, 'activities');
       assertRunningRun(next, event.runId, 'session_control_rejection_run_not_active');
@@ -1373,6 +1418,18 @@ export function projectSessionHistory(sessionId: string, events: readonly Sessio
   return projectSession(replaySession(sessionId, events, true, undefined, undefined, reading));
 }
 
+function queuedInput(event: Extract<SessionEvent, { type: 'input.queued' }>, status: 'queued' | 'notApplied'): SessionProjection['queuedInputs'][number] {
+  return {
+    ...event.payload,
+    runId: event.runId,
+    filesystemReferences: (event.payload.filesystemReferences ?? []).map((reference) => ({ ...reference })),
+    pluginSelections: (event.payload.pluginSelections ?? []).map((selection) => ({ ...selection })),
+    sequence: event.sequence,
+    createdAt: event.occurredAt,
+    status,
+  };
+}
+
 export function projectTranscriptFacts(sessionId: string, facts: TranscriptFacts, around = facts.end): TranscriptPage {
   return transcriptPageAt(projectTranscriptTurn(sessionId, facts), around);
 }
@@ -1389,8 +1446,14 @@ export function projectTranscriptTurn(sessionId: string, facts: TranscriptFacts)
   if (receipts.size !== visible.length) throw new Error('provider_request_receipt_duplicate');
   const state = replaySession(sessionId, events, true, range, receipts);
   const groups = timelineGroups(state, visible);
-  return { range, groups, content: transcriptContent(state, groups.flatMap(g => g.items)),
-    current: range.end === range.revision ? projectTranscriptRun(state) : undefined };
+  const current = range.end === range.revision ? projectTranscriptRun(state) : undefined;
+  if (current && range.start > 1) {
+    const history = activeConversationEvents(events).filter(e => e.sequence < range.start);
+    const settled = new Set(history.flatMap(e => e.type === 'run.settled' ? [e.runId] : []));
+    current.queuedInputs = [...history.flatMap(e => e.type === 'input.queued'
+      ? [queuedInput(e, settled.has(e.runId) ? 'notApplied' : 'queued')] : []), ...current.queuedInputs];
+  }
+  return { range, groups, content: transcriptContent(state, groups.flatMap(g => g.items)), current };
 }
 
 export type TranscriptTurn = ReturnType<typeof projectTranscriptTurn>;
@@ -1460,6 +1523,7 @@ function replaySession(sessionId: string, events: readonly SessionEvent[], borro
     && event.sequence >= range.start && event.sequence <= range.end ? [event.payload.messageId] : [])) : undefined;
   for (const event of active) {
     const outside = !!range && (event.sequence < range.start || event.sequence > range.end);
+    if (outside && (event.type === 'input.queued' || event.type === 'run.settled')) continue;
     if (pageMessages && event.type === 'message.feedback.updated' && !pageMessages.has(event.payload.messageId)) continue;
     // Delivery and accounting references may span multiple turns. They belong to the
     // current controls / execution read; transcript rows only depend on their source tools.
@@ -1925,10 +1989,7 @@ function providerToolGroup(
   callIds: readonly string[],
   index: ReturnType<typeof timelineIndexes>,
 ): Extract<SessionProjection['timeline'][number], { kind: 'toolGroup' }> | undefined {
-  const activities = callIds.flatMap(callId => {
-    const activity = index.calls.get(callId);
-    return activity ? [...index.approvals.get(callId) ?? [], activity] : [];
-  });
+  const activities = callIds.flatMap(callId => callActivities(index, callId));
   if (!activities.length) return undefined;
   return {
     kind: 'toolGroup', timelineId: `provider-turn:${turn.providerRequestId}:tools`,
@@ -1936,6 +1997,13 @@ function providerToolGroup(
     providerRequestId: turn.providerRequestId,
     activityIds: activities.map(activity => activity.activityId),
   };
+}
+
+// A Session-owned dispatch can have an approval without a Kernel tool activity.
+function callActivities(index: ReturnType<typeof timelineIndexes>, callId: string): ActivityProjection[] {
+  const approvals = index.approvals.get(callId) ?? [];
+  const call = index.calls.get(callId);
+  return call ? [...approvals, call] : approvals;
 }
 
 function projectOrderedProviderTurnTimeline(
@@ -2018,8 +2086,7 @@ function projectOrderedProviderTurnTimeline(
           });
           break;
         }
-        const activity = index.calls.get(block.callId);
-        if (activity) groupedActivities.push(...index.approvals.get(block.callId) ?? [], activity);
+        groupedActivities.push(...callActivities(index, block.callId));
         break;
       }
     }
@@ -2658,6 +2725,7 @@ export function artifactsFromRecord(record: ToolExecutionRecord): ArtifactProjec
 
 function runActivityId(runId: string): string { return `run:${runId}`; }
 function toolActivityId(callId: string): string { return `tool:${callId}`; }
+function pluginActivationActivityId(callId: string): string { return `plugin-activation:${callId}`; }
 function approvalActivityId(approvalId: string): string { return `approval:${approvalId}`; }
 function interactionActivityId(interactionId: string): string { return `interaction:${interactionId}`; }
 function planActivityId(planId: string, revision: number): string {

@@ -6,6 +6,8 @@ import type {
 import type { SessionActor } from './actor.js';
 import type { AgentTaskSummary, AgentLifecycleState } from './agentLifecycle.js';
 import { agentOperationDefinitions } from './sessionControls.js';
+import { capacityInputId, capacityNeeds, CapacityNeeded, CapacityStartUnknown, coversCapacity, delegatedCapacity,
+  type CapacityGrant, type CapacityQuote, type CapacityReservation } from './agentCapacity.js';
 import { errorFact, LoopFailure } from './loopFailure.js';
 import type { ControlWait } from './sessionWake.js';
 import { agentPresets, helperPresets, type AgentPreset, agentPermissionPatches, allowedAgentProfiles, canSpawnAgent, resolveAgentCapabilities } from './agentConfiguration.js';
@@ -15,11 +17,13 @@ import { AgentLoopRegistry } from './loopRegistry.js';
 export interface AgentWait extends ControlWait { taskIds?: string[] }
 
 export interface AgentSessionRuntime {
-  execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
+  execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal, grant?: CapacityGrant): Promise<JsonObject>;
   wait(runId: string, signal: AbortSignal, acceptedWait?: AgentWait): Promise<void>;
+  reconcileCapacityStart(reservation: CapacityReservation): Promise<string | null>;
+  capacityEvidence(quote: CapacityQuote): Promise<readonly {content:string}[]>;
   /** Restore result delivery, without joining children or changing an inbox wait's wake conditions. */
   reattach(runId: string, tasks: readonly AgentTaskSummary[]): void;
-  cancel(runId: string): Promise<void>;
+  cancel(runId: string, owner?: SessionActor): Promise<void>;
 }
 
 type AgentSnapshot = Awaited<ReturnType<SessionActor['agentSnapshot']>>;
@@ -31,6 +35,7 @@ export interface AgentManagementSnapshot extends AgentLifecycleState {
 export interface AgentSessionAccess {
   withActor<T>(sessionId: string, operation: (actor: SessionActor) => Promise<T>): Promise<T>;
   read(sessionId: string): Promise<AgentManagementSnapshot>;
+  readCapacityStart(reservation: CapacityReservation): Promise<string | null>;
 }
 
 type TaskLease = {
@@ -58,18 +63,29 @@ export class AgentManager {
 
   forSession(sessionId: string): AgentSessionRuntime {
     return {
-      execute: (runId, callId, operation, signal) => this.execute(sessionId, runId, callId, operation, signal),
+      execute: (runId, callId, operation, signal, grant) => this.execute(sessionId, runId, callId, operation, signal, grant),
       wait: (runId, signal, acceptedWait) => this.wait(sessionId, runId, acceptedWait?.taskIds, signal, acceptedWait),
       reattach: (runId, tasks) => {
         for (const task of tasks) {
           if (task.parentRunId === runId && task.status === 'running' && task.childRunId) this.track(sessionId, task);
         }
       },
-      cancel: runId => this.cancelRun(sessionId, runId),
+      cancel: (runId, owner) => this.cancelRun(sessionId, runId, owner),
+      reconcileCapacityStart: reservation => this.admit(sessionId, reservation.runId, () => {
+        if (reservation.sessionId !== sessionId) throw new Error('agent_capacity_owner_mismatch');
+        return this.reconcileCapacityStart(reservation);
+      }),
+      capacityEvidence: async quote => {
+        const caller = await this.snapshot(sessionId);
+        if ((caller.agentContext?.ownerSessionId ?? sessionId) !== quote.ownerSessionId) throw new Error('agent_capacity_owner_mismatch');
+        const owner = await this.snapshot(quote.ownerSessionId);
+        if (!delegatedCapacity(owner.permissions)) throw new LoopFailure('capacity_review_policy_changed','The coordinator no longer delegates budget review.');
+        return this.sessions.withActor(quote.ownerSessionId, actor => actor.capacityEvidence(quote.ownerRunId));
+      },
     };
   }
 
-  async execute(sessionId: string, runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject> {
+  async execute(sessionId: string, runId: string, callId: string, operation: AgentOperation, signal: AbortSignal, grant?: CapacityGrant): Promise<JsonObject> {
     signal.throwIfAborted();
     if (this.#closing) throw new Error('agent_manager_stopped');
     const caller = await this.snapshot(sessionId);
@@ -141,13 +157,20 @@ export class AgentManager {
             configuration: this.configurations.describe(fullConfiguration) } : {}) } : {}) };
       }
       case 'spawn': {
-        const task = await abortable(this.admit(sessionId, runId, () => this.start(caller, runId, callId, operation, signal)), signal);
+        const task = await abortable(this.admit(sessionId, runId, () => this.start(caller, runId, callId, operation, signal, undefined, grant)), signal);
         // Delivery waits after the Provider completion is committed by the Loop.
         return { taskId: task.taskId, agentId: task.agentSessionId };
       }
-      case 'send':
-        // A message does not reserve a task and must not wait behind creation or cleanup.
-        return await abortable(this.send(caller, runId, operation.agentId, operation.text, signal), signal);
+      case 'send': {
+        let writing = false;
+        const beforeWrite = () => { signal.throwIfAborted(); writing = true; };
+        try {
+          return await abortable(this.send(caller, runId, operation.agentId, operation.text, signal, beforeWrite), signal);
+        } catch (error) {
+          if (!writing) throw error;
+          return { agentId: operation.agentId, status: 'indeterminate', error: errorFact(error) };
+        }
+      }
       case 'compact': {
         const ownerId = caller.agentContext?.ownerSessionId ?? sessionId;
         const family = await this.family(await this.snapshot(ownerId));
@@ -168,7 +191,7 @@ export class AgentManager {
           const target = family.find(item => item.sessionId === operation.agentId);
           if (!target || target.run && !terminal(target.run.status)) throw new Error('agent_child_not_idle');
           const task = await this.start(caller, runId, callId, { action: 'spawn', name: child.displayName,
-            task: operation.task, delivery: 'async' }, signal, child);
+            task: operation.task, delivery: 'async', requestCapacity: operation.requestCapacity }, signal, child, grant);
           return { taskId: task.taskId, agentId: task.agentSessionId };
         }), signal);
       }
@@ -207,7 +230,7 @@ export class AgentManager {
 
   private async start(caller: AgentSnapshot, runId: string, callId: string,
     operation: Extract<AgentOperation, { action: 'spawn' }>, signal: AbortSignal,
-    existingChild?: AgentChildProjection): Promise<AgentTaskProjection> {
+    existingChild?: AgentChildProjection, grant?: CapacityGrant): Promise<AgentTaskProjection> {
     signal.throwIfAborted();
     caller = await this.snapshot(caller.sessionId);
     if (caller.run?.runId !== runId || caller.run.status !== 'running') throw new Error('agent_caller_run_not_active');
@@ -288,12 +311,29 @@ export class AgentManager {
     if (operation.capabilities?.delegation === true && helpers?.length === 0) throw new Error('agent_helper_menu_empty');
     if (recipe?.fileScope && !caller.run.workspaceBindings.some(b => b.workspaceId === recipe.fileScope!.workspaceId)) throw new Error('agent_file_scope_workspace_unavailable');
     if (existingChild && (!existingChild.capabilities.continuation || existingChild.closed)) throw new Error('agent_child_not_continuable');
-    if ((caller.agentTasks ?? []).filter(task => task.parentRunId === runId).length >= settings.maxCallsPerRun) throw new LoopFailure('agent_run_call_limit', 'agent_run_call_limit');
     const family = await this.family(owner);
-    if (family.flatMap(item => item.agentTasks ?? []).filter(task => task.status === 'running').length >= settings.maxConcurrent) throw new LoopFailure('agent_concurrency_limit', 'agent_concurrency_limit');
-    if (!existingChild
-      && family.flatMap(item => item.agentChildren ?? []).filter(child => !child.closed).length
-        >= settings.maxMembersPerSession) throw new LoopFailure('agent_continuation_limit', 'agent_continuation_limit');
+    const needs = capacityNeeds({
+      callsThisRun: [(caller.agentTasks ?? []).filter(task => task.parentRunId === runId).length, settings.maxCallsPerRun, 1],
+      concurrentTasks: [family.flatMap(item => item.agentTasks ?? []).filter(task => task.status === 'running').length, settings.maxConcurrent, 1],
+      openMembers: [family.flatMap(item => item.agentChildren ?? []).filter(child => !child.closed).length, settings.maxMembersPerSession, existingChild ? 0 : 1],
+    });
+    const quote = { ownerSessionId: ownerId, ownerRunId: owner.run?.runId ?? '', needs };
+    if (grant) {
+      if (!operation.requestCapacity || grant.sessionId !== caller.sessionId || grant.runId !== runId || grant.callId !== callId
+        || !owner.run || !['running', 'waiting'].includes(owner.run.status) || !coversCapacity(grant.quote, quote)
+        || grant.source === 'agent' && !(delegatedCapacity(owner.permissions) && delegatedCapacity(caller.permissions))) {
+        throw new LoopFailure('agent_capacity_scope_changed', 'The approved envelope no longer covers this dispatch. No new task was started.');
+      }
+    } else if (needs.length) {
+      if (operation.requestCapacity && owner.run && ['running', 'waiting'].includes(owner.run.status)) {
+        throw new CapacityNeeded(quote, delegatedCapacity(owner.permissions) && delegatedCapacity(caller.permissions));
+      }
+      const code = { callsThisRun:'agent_run_call_limit', concurrentTasks:'agent_concurrency_limit', openMembers:'agent_continuation_limit' }[needs[0]!.resource];
+      const usage = needs.map(n => `${n.resource} ${n.used}/${n.limit}`).join('; ');
+      throw new LoopFailure(code, code, { source: 'session', phase: 'agentAdmission', category: 'capacity', retryable: false,
+        causes: [{ kind: 'subagentCapacity', message: `${usage}. No task started. Supply requestCapacity with a reason to request review for this dispatch.` }] });
+    }
+    signal.throwIfAborted();
 
     const task: AgentTaskProjection = {
       taskId: id('agent-task'), agentSessionId: existingChild?.agentSessionId ?? id('session'),
@@ -323,7 +363,7 @@ export class AgentManager {
         signal.throwIfAborted();
         childInputSubmitted = true;
         accepted(await child.submit({ schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'message.submit',
-          sessionId: task.agentSessionId, commandId: id('agent-input'),
+          sessionId: task.agentSessionId, commandId: grant ? capacityInputId(task.taskId) : id('agent-input'),
           text: `Task from agent ${caller.sessionId}:\n${task.text}`,
           ...modelSelection }, async childRunId => {
             await this.sessions.withActor(caller.sessionId, parent => parent.recordAgentEvents([{ type: 'agent.task.started', sessionId: caller.sessionId, runId,
@@ -356,6 +396,7 @@ export class AgentManager {
           if (cleaned) { signal.throwIfAborted(); return task; }
         } catch (cleanup) {
           // A started child without settlement remains pending. Its journal and lease retain the real failure.
+          if (grant && !task.childRunId) throw new CapacityStartUnknown(task.taskId, cleanup);
           if (task.childRunId) throw new AggregateError([error, cleanup], 'agent_start_cleanup_failed');
           error = new AggregateError([error, cleanup], 'agent_start_cleanup_failed');
         }
@@ -369,7 +410,7 @@ export class AgentManager {
     return task;
   }
 
-  private async send(caller: AgentSnapshot, runId: string, targetId: string, text: string, signal: AbortSignal): Promise<JsonObject> {
+  private async send(caller: AgentSnapshot, runId: string, targetId: string, text: string, signal: AbortSignal, beforeWrite: () => void): Promise<JsonObject> {
     signal.throwIfAborted();
     caller = await this.snapshot(caller.sessionId);
     if (targetId === caller.sessionId) throw new Error('agent_message_self');
@@ -394,11 +435,11 @@ export class AgentManager {
         signal.throwIfAborted();
         if (!managesTarget && !(await target.agentCapabilities(targetRunId)).messaging) throw new Error('agent_message_target_unavailable');
         await target.recordAgentEvents([{ type: 'agent.message.received', sessionId: targetId, runId: targetRunId,
-          payload: { sourceSessionId: caller.sessionId, text } }]);
+          payload: { sourceSessionId: caller.sessionId, text } }], beforeWrite);
       });
       return { agentId: targetId, delivered: true };
     }
-    throw new LoopFailure('agent_message_target_inactive', '消息未发送：目标没有可接收消息的活动任务。请由主会话使用 assign 显式续派；send 不会创建任务。');
+    throw new LoopFailure('agent_message_target_inactive', 'The target has no active task to receive this message. The owner can use assign to start a follow-up task.');
   }
 
   private async family(root: AgentManagementSnapshot | AgentSnapshot): Promise<AgentManagementSnapshot[]> {
@@ -446,13 +487,18 @@ export class AgentManager {
       payload: { agentSessionId: targetId } }]));
   }
 
-  private track(parentSessionId: string, task: AgentTaskSummary): TaskLease {
+  // During release recovery the opening Actor must not await its own Service opening promise.
+  private withParent<T>(id: string, owner: SessionActor | undefined, op: (actor: SessionActor) => Promise<T>): Promise<T> {
+    return owner?.sessionId === id ? op(owner) : this.sessions.withActor(id, op);
+  }
+
+  private track(parentSessionId: string, task: AgentTaskSummary, owner?: SessionActor): TaskLease {
     const existing = this.#leases.get(task.taskId);
     if (existing) return existing;
     const lease: TaskLease = { parentSessionId, parentRunId: task.parentRunId, agentSessionId: task.agentSessionId, completion: Promise.resolve() };
     lease.completion = this.sessions.withActor(task.agentSessionId, async child => {
       const result = await child.waitForRunResult(task.childRunId!);
-      await this.sessions.withActor(parentSessionId, parent => parent.recordAgentEvents([
+      await this.withParent(parentSessionId, owner, parent => parent.recordAgentEvents([
         { type: 'agent.task.completed', sessionId: parentSessionId,
           runId: task.parentRunId, payload: { taskId: task.taskId, result } },
       ]));
@@ -489,11 +535,31 @@ export class AgentManager {
     }
   }
 
-  private async cancelTask(sessionId: string, task: AgentTaskSummary): Promise<void> {
+  private async reconcileCapacityStart(reservation: CapacityReservation, owner?: SessionActor): Promise<string | null> {
+    const { taskId, agentSessionId, createsAgent } = reservation.payload;
+    const { sessionId, runId } = reservation;
+    try {
+      const childRunId = await this.sessions.readCapacityStart(reservation);
+      await this.withParent(sessionId, owner, parent => parent.recordAgentEvents(childRunId
+        ? [{ type: 'agent.task.started', sessionId, runId, payload: { taskId, childRunId } }]
+        : [{ type: 'agent.task.completed', sessionId, runId, payload: { taskId, result: { outcome: 'failed', error: {
+          code: 'agent_capacity_not_started', message: 'Dispatch interrupted before the child accepted the task. No assignment was repeated.',
+        } } } }, ...(createsAgent ? [{ type: 'agent.closed' as const, sessionId, payload: { agentSessionId } }] : [])]));
+      return childRunId;
+    } catch (error) { throw new CapacityStartUnknown(taskId, error); }
+  }
+
+  private async cancelTask(sessionId: string, task: AgentTaskSummary, owner?: SessionActor): Promise<void> {
     if (task.status !== 'running') { await this.#leases.get(task.taskId)?.completion; return; }
-    if (!task.childRunId) throw new Error('agent_task_start_incomplete');
-    const childRunId = task.childRunId;
-    const lease = this.track(sessionId, task);
+    if (!task.childRunId) {
+      const reserved = await this.withParent(sessionId, owner, parent => parent.capacityReservation(task.parentRunId, task.taskId));
+      if (!reserved) throw new Error('agent_task_start_incomplete');
+      const childRunId = await this.reconcileCapacityStart(reserved, owner);
+      if (!childRunId) return;
+      task = { ...task, childRunId };
+    }
+    const childRunId = task.childRunId!;
+    const lease = this.track(sessionId, task, owner);
     if (!lease.cancellation) {
       lease.cancellation = this.sessions.withActor(task.agentSessionId, async child => {
         const snapshot = await child.agentSnapshot();
@@ -510,14 +576,14 @@ export class AgentManager {
     await lease.cancellation;
   }
 
-  async cancelRun(sessionId: string, runId: string): Promise<void> {
+  async cancelRun(sessionId: string, runId: string, owner?: SessionActor): Promise<void> {
     const admission = this.#activeAdmission;
     if (admission?.sessionId === sessionId && admission.runId === runId) {
       await admission.completion.catch(() => undefined);
     }
     const tasks = (await this.sessions.read(sessionId)).agentTasks ?? [];
     const results = await Promise.allSettled(tasks.filter(task => task.parentRunId === runId && (task.status === 'running' || this.#leases.has(task.taskId)))
-      .map(task => this.cancelTask(sessionId, task)));
+      .map(task => this.cancelTask(sessionId, task, owner)));
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
     if (errors.length) throw new AggregateError(errors, 'agent_children_cancel_failed');
   }

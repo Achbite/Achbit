@@ -1,7 +1,7 @@
 import { InterfaceLoadBoundary } from '../shared/InterfaceUpdateNotice';
 import { loadInterfaceModule } from '../../services/interfaceUpdates';
 import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { UiLanguage } from '../../i18n';
+import { localizedError, type UiLanguage } from '../../i18n';
 import { fileLinkLocation, type SourcePosition } from './resourceLinks';
 import { MarkdownContent } from './BufferedMarkdown';
 import { readDocumentText, type DocumentFormat } from './documentResources';
@@ -17,14 +17,34 @@ import type { BrowserViewport } from '../../services/nativeBrowser';
 
 const PdfDocumentPreview = lazy(() => loadInterfaceModule(() => import('./PdfDocumentPreview')));
 
-function scrollToHeading(document: HTMLElement, fragment: string): boolean {
+function revealFragment(target: Element) {
+  target.scrollIntoView({ block: 'start' });
+  const scroller = target.closest('.local-agent__resource-body') ?? target.ownerDocument.scrollingElement;
+  const toolbar = target.closest('.document-preview')?.querySelector('.document-preview__file-toolbar');
+  if (scroller && toolbar) {
+    // The sticky toolbar belongs to this pane. Its actual height can change with font size.
+    const overlap = toolbar.getBoundingClientRect().bottom - target.getBoundingClientRect().top;
+    if (overlap > 0) scroller.scrollTop -= Math.ceil(overlap);
+  }
+}
+
+function scrollToFragment(document: HTMLElement, fragment: string, focus: boolean): boolean {
+  // Prefer the current document's actual target (footnote call, definition or return).
+  // Upstream names remain valid for links opening this file from a different view.
+  const target = document.querySelector<HTMLElement>('#' + CSS.escape(fragment))
+    ?? document.querySelector<HTMLElement>(`[data-footnote-anchor="${CSS.escape(fragment)}"]`);
+  if (target) {
+    revealFragment(target);
+    if (focus) target.focus({ preventScroll: true });
+    return true;
+  }
   const used = new Set<string>();
   for (const heading of document.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
     const base = (heading.textContent ?? '').toLowerCase().trim()
       .replace(/[^\p{L}\p{M}\p{N}_ -]/gu, '').replace(/ /gu, '-');
     let id = base, occurrence = 0;
     while (used.has(id)) id = base + '-' + ++occurrence;
-    if (id === fragment) { heading.scrollIntoView({ block: 'start' }); return true; }
+    if (id === fragment) { revealFragment(heading); return true; }
     used.add(id);
   }
   return false;
@@ -33,14 +53,14 @@ function scrollToHeading(document: HTMLElement, fragment: string): boolean {
 function MarkdownDocument({ content, location, active }: { content: string; location?: SourcePosition; active: boolean }) {
   const container = useRef<HTMLDivElement>(null);
   const pending = useRef<MutationObserver | null>(null);
-  const follow = (fragment?: string) => {
+  const follow = (fragment?: string, focus = false) => {
     pending.current?.disconnect();
     pending.current = null;
     const surface = container.current;
-    if (!fragment || !surface || scrollToHeading(surface, fragment)
+    if (!fragment || !surface || scrollToFragment(surface, fragment, focus)
       || !surface.querySelector('[aria-busy="true"]')) return;
     const observe = new MutationObserver(() => {
-      if (scrollToHeading(surface, fragment) || !surface.querySelector('[aria-busy="true"]')) {
+      if (scrollToFragment(surface, fragment, focus) || !surface.querySelector('[aria-busy="true"]')) {
         observe.disconnect();
         pending.current = null;
       }
@@ -52,15 +72,15 @@ function MarkdownDocument({ content, location, active }: { content: string; loca
     if (active) follow(location?.fragment);
     return () => pending.current?.disconnect();
   }, [location, content, active]);
-  const followHeading = (event: React.MouseEvent<HTMLDivElement>) => {
+  const followLink = (event: React.MouseEvent<HTMLDivElement>) => {
     const href = event.target instanceof Element ? event.target.closest('a[href]')?.getAttribute('href') : null;
     if (!href || !/^[?#]/u.test(href) || event.defaultPrevented) return;
     const fragment = fileLinkLocation(href)?.fragment;
     if (!fragment) return;
     event.preventDefault();
-    follow(fragment);
+    follow(fragment, true);
   };
-  return <div className="document-preview__markdown" ref={container} onClickCapture={followHeading} onAuxClickCapture={followHeading}>
+  return <div className="document-preview__markdown" ref={container} onClickCapture={followLink} onAuxClickCapture={followLink}>
     <MarkdownContent active={active} documentPreview>{content}</MarkdownContent>
   </div>;
 }
@@ -101,7 +121,7 @@ export function DocumentPreview({ blob, format, filename, language, readingKey, 
         </a>
       </div>
     </div>
-    {error ? <p role="alert" className="local-agent__resource-error">{error}</p>
+    {error ? <p role="alert" className="local-agent__resource-error" title={error}>{localizedError(language, error)}</p>
       : showSource ? (content === null ? loading : <SourceFileView content={content} filename={filename} viewKey={`${readingKey ?? filename}:source`} wrap />)
         : format === 'image' ? <ImageReview source={download || undefined} alt={filename} imageClassName="document-preview__image"
               onError={() => setError(chinese ? '无法解码图片：' + filename : 'Could not decode the image: ' + filename)} /> : <UiPluginSlotView slot={`document.${format}`} input={{ kind: 'document', blob, format, filename, locale: language, theme }}>

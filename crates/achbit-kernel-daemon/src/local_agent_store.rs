@@ -380,7 +380,15 @@ fn advise_replay_index_scan(path: &Path) -> std::io::Result<()> {
 }
 
 impl LocalAgentJournal {
+    #[cfg(test)]
     pub(crate) fn open(path: &Path) -> Result<Self, LocalAgentStoreError> {
+        Self::open_with_catalog(path, None)
+    }
+
+    pub(crate) fn open_with_catalog(
+        path: &Path,
+        catalog: Option<&SessionCatalogReader>,
+    ) -> Result<Self, LocalAgentStoreError> {
         let connection = open_session_store(path)?;
         // Index the kind together with JSON validity. Old stores build this once on the
         // execution thread; SQLite maintains it with each journal append afterwards.
@@ -389,6 +397,9 @@ impl LocalAgentJournal {
             [], |row| row.get(0),
         ).map_err(sql_error("session_store_index_create_failed"))?;
         if !has_replay_index {
+            // A long transcript uses this independent connection. Finish its transaction
+            // before taking SQLite's exclusive schema lock during an upgrade.
+            let _catalog_guard = catalog.map(SessionCatalogReader::lock).transpose()?;
             #[cfg(target_os = "macos")]
             let _ = advise_replay_index_scan(path); // Advisory only. SQLite owns validation and errors.
             connection.execute_batch(&format!(
@@ -2022,11 +2033,15 @@ fn validate_new_event(
         "tool.not-executed",
         "session.subagent-settings.updated",
         "session.control.rejected",
+        "session.plugins.requested",
+        "session.plugins.preparing",
+        "session.plugins.failed",
         "session.plugins.activated",
         "agent.task.created",
         "agent.task.started",
         "agent.task.completed",
         "agent.closed",
+        "agent.capacity.settled",
         "agent.control.completed",
         "session.control.completed",
         "wake.scheduled",
@@ -2091,9 +2106,13 @@ fn validate_new_event(
             | "tool.interrupted"
             | "tool.not-executed"
             | "session.control.rejected"
+            | "session.plugins.requested"
+            | "session.plugins.preparing"
+            | "session.plugins.failed"
             | "session.plugins.activated"
             | "artifacts.presented"
             | "agent.task.created"
+            | "agent.capacity.settled"
             | "agent.control.completed"
             | "session.control.completed"
     );
@@ -2127,6 +2146,7 @@ fn validate_new_event(
             | "plan.published"
             | "tool.requested"
             | "session.control.rejected"
+            | "session.plugins.requested"
             | "session.plugins.activated"
             | "artifacts.presented"
             | "agent.control.completed"
@@ -2241,6 +2261,17 @@ fn validate_new_event(
                 "agentSessionId",
                 required_string(payload, "agentSessionId")?,
             )?;
+        }
+        "agent.capacity.settled" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["approvalId", "result"], &[])?;
+            validate_id("approvalId", required_string(payload, "approvalId")?)?;
+            if !payload["result"].is_object() {
+                return Err(LocalAgentStoreError::new(
+                    "agent_capacity_result_invalid",
+                    "Invalid subagent capacity result.",
+                ));
+            }
         }
         "agent.control.completed" | "session.control.completed" => {
             let payload = &event["payload"];
@@ -3001,29 +3032,70 @@ fn validate_new_event(
             required_positive_revision(payload, "revision")?;
             validate_todo_items(payload.get("items").expect("validated todo items"))?;
         }
-        "session.plugins.activated" => {
-            let payload = event.get("payload").expect("validated payload");
-            exact_object(
-                payload,
-                &["providerCallId", "pluginUris", "kernelCatalogSnapshotRef"],
-                &[],
-            )?;
-            required_string(payload, "kernelCatalogSnapshotRef")?;
+        "session.plugins.requested" | "session.plugins.activated" => {
+            let payload = &event["payload"];
+            if event_type == "session.plugins.requested" {
+                exact_object(
+                    payload,
+                    &[
+                        "providerCallId",
+                        "providerRequestId",
+                        "pluginUris",
+                        "workspaceBindingIds",
+                    ],
+                    &[],
+                )?;
+                validate_runtime_identity(
+                    "providerRequestId",
+                    required_string(payload, "providerRequestId")?,
+                )?;
+                validate_unique_ids(payload, "workspaceBindingIds")?;
+            } else {
+                exact_object(
+                    payload,
+                    &["providerCallId", "pluginUris", "kernelCatalogSnapshotRef"],
+                    &[],
+                )?;
+                required_string(payload, "kernelCatalogSnapshotRef")?;
+            }
             let uris = payload["pluginUris"].as_array().ok_or_else(|| {
                 LocalAgentStoreError::new("session_event_invalid", "pluginUris 必须是数组。")
             })?;
             let mut seen = std::collections::HashSet::new();
             if uris.is_empty()
                 || uris.iter().any(|uri| {
-                    uri.as_str()
-                        .is_none_or(|uri| !uri.starts_with("plugin://") || !seen.insert(uri))
+                    uri.as_str().is_none_or(|uri| {
+                        !valid_plugin_uri(uri)
+                            || !uri
+                                .trim_start_matches("plugin://")
+                                .split('@')
+                                .all(|part| part.starts_with(|c: char| c.is_ascii_alphanumeric()))
+                            || !seen.insert(uri)
+                    })
                 })
             {
                 return Err(LocalAgentStoreError::new(
                     "session_event_invalid",
-                    "pluginUris 必须包含至少一个不重复的插件 URI。",
+                    "pluginUris 必须包含至少一个不重复的 source-qualified 插件 URI。",
                 ));
             }
+        }
+        "session.plugins.preparing" => {
+            exact_object(&event["payload"], &[], &[])?;
+        }
+        "session.plugins.failed" => {
+            let payload = &event["payload"];
+            exact_object(payload, &["outcome", "error"], &[])?;
+            if !matches!(
+                required_string(payload, "outcome")?,
+                "failed" | "notExecuted" | "indeterminate"
+            ) {
+                return Err(LocalAgentStoreError::new(
+                    "session_event_invalid",
+                    "无效的插件激活结果。",
+                ));
+            }
+            validate_local_agent_error(&payload["error"])?;
         }
         "artifacts.presented" => {
             let payload = &event["payload"];
@@ -3791,6 +3863,34 @@ fn validate_event_references(
             return Err(LocalAgentStoreError::new(
                 "session_event_call_missing",
                 "Session event references an unknown call.",
+            ));
+        }
+    }
+    if event["type"] == "session.plugins.requested" {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id=?1 AND run_id=?2 AND event_type='context.composed'
+             AND json_extract(payload_json, '$.providerRequestId')=?3 AND json_extract(payload_json, '$.purpose')='agent')",
+            params![session_id, event["runId"].as_str(), event["payload"]["providerRequestId"].as_str()], |row| row.get(0),
+        ).map_err(sql_error("session_event_reference_read_failed"))?;
+        if !exists {
+            return Err(LocalAgentStoreError::new(
+                "session_event_request_missing",
+                "插件激活缺少所属 Agent 请求。",
+            ));
+        }
+    }
+    if matches!(
+        event["type"].as_str(),
+        Some("session.plugins.preparing" | "session.plugins.failed")
+    ) {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id=?1 AND run_id=?2 AND call_id=?3 AND event_type='session.plugins.requested')",
+            params![session_id, event["runId"].as_str(), event["callId"].as_str()], |row| row.get(0),
+        ).map_err(sql_error("session_event_reference_read_failed"))?;
+        if !exists {
+            return Err(LocalAgentStoreError::new(
+                "session_event_call_missing",
+                "插件激活缺少逻辑调用。",
             ));
         }
     }
@@ -5587,6 +5687,7 @@ fn validate_run_runtime_snapshot(
             "agentToolsEnabled",
             "planMode",
             "toolSelection",
+            "coreToolInterface",
             "codingTools",
             "mode",
             "subagentSettings",
@@ -5597,6 +5698,15 @@ fn validate_run_runtime_snapshot(
     }
     if let Some(settings) = value.get("subagentSettings") {
         validate_subagent_settings(settings)?;
+    }
+    if value
+        .get("coreToolInterface")
+        .is_some_and(|interface| interface != "shared")
+    {
+        return Err(LocalAgentStoreError::new(
+            "core_tool_interface_invalid",
+            "Invalid captured core tool interface.",
+        ));
     }
     if value
         .get("codingTools")
@@ -6750,6 +6860,37 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn first_replay_index_waits_for_the_catalog_transaction() {
+        let store = Store::new();
+        let path = store.path();
+        let reader = SessionCatalogReader::open(&path).unwrap();
+        let mut connection = reader.lock().unwrap();
+        let tx = connection.transaction().unwrap();
+        tx.query_row("SELECT count(*) FROM session_events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+        let other = reader.clone();
+        let (done, completed) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            done.send(LocalAgentJournal::open_with_catalog(&path, Some(&other)).map(|_| ()))
+                .unwrap();
+        });
+        // Hold the old read past SQLite's five-second busy timeout.
+        assert!(matches!(
+            completed.recv_timeout(std::time::Duration::from_millis(5200)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        tx.commit().unwrap();
+        drop(connection);
+        completed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        writer.join().unwrap();
     }
 
     #[test]
@@ -7964,6 +8105,16 @@ mod tests {
     }
 
     #[test]
+    fn shared_core_interface_is_optional_and_validated_on_replay() {
+        let mut runtime = runtime_snapshot();
+        assert!(validate_run_runtime_snapshot(&runtime).is_ok());
+        runtime["coreToolInterface"] = json!("shared");
+        assert!(validate_run_runtime_snapshot(&runtime).is_ok());
+        runtime["coreToolInterface"] = json!("unknown");
+        assert!(validate_run_runtime_snapshot(&runtime).is_err());
+    }
+
+    #[test]
     fn runtime_snapshot_requires_tool_prompt_to_match_a_callable_prepared_binding() {
         let mut runtime = runtime_snapshot();
         runtime["tools"] = json!([{
@@ -8899,6 +9050,122 @@ mod tests {
             .expect("missing required column");
         assert_eq!(error.code, "session_store_schema_incomplete");
         assert!(error.message.contains("payload_json"));
+    }
+
+    #[test]
+    fn activation_phases_validate_exact_payloads_and_round_trip_through_sqlite() {
+        let store = Store::new();
+        let journal = LocalAgentJournal::open(&store.path()).unwrap();
+        let session_id = "session:activation";
+        let run_id = "run:activation";
+        journal
+            .create_session(session_id, "Activation", &json!([]), None, None)
+            .unwrap();
+        journal.append(&json!({"type":"run.started", "sessionId":session_id, "runId":run_id,
+            "payload":{"inputMessageId":"message:one", "workspaceBindings":[], "runtimeSnapshot":runtime_snapshot()}})).unwrap();
+        let event = |kind: &str, payload: Value| json!({"type":kind, "sessionId":session_id, "runId":run_id, "callId":"call:activation", "payload":payload});
+        let request = event(
+            "session.plugins.requested",
+            json!({"providerRequestId":"request:plugin", "providerCallId":"native:plugin",
+            "pluginUris":["plugin://one@local", "plugin://two@local"], "workspaceBindingIds":[]}),
+        );
+        let start = event("session.plugins.preparing", json!({}));
+        let failed = event(
+            "session.plugins.failed",
+            json!({"outcome":"indeterminate", "error":{"code":"activation_unknown", "message":"No receipt."}}),
+        );
+        assert_eq!(
+            journal.append(&request).unwrap_err().code,
+            "session_event_request_missing"
+        );
+        assert_eq!(
+            journal.append(&start).unwrap_err().code,
+            "session_event_call_missing"
+        );
+        for fact in [&request, &start, &failed] {
+            for key in ["callId", "runId"] {
+                let mut malformed = fact.clone();
+                malformed.as_object_mut().unwrap().remove(key);
+                assert!(validate_new_event(&malformed, false).is_err());
+            }
+            let mut extra = fact.clone();
+            extra["payload"]["extra"] = json!(true);
+            assert!(validate_new_event(&extra, false).is_err());
+        }
+        for (field, value) in [
+            ("pluginUris", json!([])),
+            (
+                "pluginUris",
+                json!(["plugin://one@local", "plugin://one@local"]),
+            ),
+            ("pluginUris", json!(["plugin://missing-source"])),
+            ("pluginUris", json!(["plugin://-one@local"])),
+            ("workspaceBindingIds", json!(["work:one", "work:one"])),
+            ("workspaceBindingIds", json!([false])),
+            ("providerCallId", json!("call:activation")),
+            ("providerRequestId", json!("")),
+        ] {
+            let mut malformed = request.clone();
+            malformed["payload"][field] = value;
+            assert!(
+                validate_new_event(&malformed, false).is_err(),
+                "{malformed}"
+            );
+        }
+        for (field, value) in [
+            ("outcome", json!("completed")),
+            ("error", json!({"message":"missing code"})),
+            (
+                "error",
+                json!({"message":"wrong diagnostics", "code":"err", "diagnostics":{}}),
+            ),
+        ] {
+            let mut malformed = failed.clone();
+            malformed["payload"][field] = value;
+            assert!(
+                validate_new_event(&malformed, false).is_err(),
+                "{malformed}"
+            );
+        }
+        let parts: Vec<_> = [
+            "instructions",
+            "sessionControls",
+            "tools",
+            "workspaceBindings",
+            "contextProviders",
+            "journalMessages",
+            "filesystemReferences",
+        ]
+        .iter()
+        .map(|kind| json!({"kind":kind,"itemCount":1,"requestShapeUnits":1}))
+        .collect();
+        journal.append(&json!({"type":"context.composed", "sessionId":session_id, "runId":run_id, "payload":{
+            "providerRequestId":"request:plugin", "purpose":"agent", "responseConstraint":"normal", "dynamicInstructionBytes":0,
+            "messages":[], "workspaceBindings":[], "partitions":parts, "modelView":{"throughSequence":2,"additions":[]},
+            "tools":[{"itemId":"plugin.activate", "label":"plugin_activate", "canonicalName":"plugin.activate", "wireName":"plugin_activate", "origin":"sessionControl", "availability":"callable"}]}})).unwrap();
+        let turn = json!({"type":"provider.turn.settled", "sessionId":session_id, "runId":run_id, "payload":{
+            "providerRequestId":"request:plugin", "providerRuntimeRef":"provider-runtime:test", "purpose":"agent", "outcome":"completed", "orderedCallIds":["call:activation"],
+            "toolCallInputs":[{"callId":"call:activation","providerCallId":"native:plugin","toolName":"plugin.activate", "arguments":json!({"pluginUris":request["payload"]["pluginUris"]}).to_string()}]}});
+        let mut missing_parent = start.clone();
+        missing_parent["callId"] = json!("call:other");
+        assert!(journal
+            .append_batch(&[request.clone(), missing_parent])
+            .is_err());
+        assert!(
+            journal.read_events(session_id, 3).unwrap().is_empty(),
+            "failed append must roll back registration"
+        );
+        let mut committed = journal.append_batch(&[request, turn]).unwrap();
+        committed.push(journal.append(&start).unwrap());
+        committed.push(journal.append(&failed).unwrap());
+        drop(journal);
+        assert_eq!(
+            LocalAgentJournal::open(&store.path())
+                .unwrap()
+                .read_events(session_id, 3)
+                .unwrap(),
+            committed
+        );
     }
 
     #[test]

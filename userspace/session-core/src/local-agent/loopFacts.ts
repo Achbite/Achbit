@@ -189,12 +189,6 @@ export function runWorkspaceContext(snapshot: LoopSnapshot, runId: string) {
     workspaceBindings: requestResourceBindings(run.workspaceBindings, snapshot.events) };
 }
 
-export function positiveOrZeroInteger(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : undefined;
-}
-
 export function positiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
     ? value

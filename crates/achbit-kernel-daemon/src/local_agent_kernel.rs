@@ -1578,17 +1578,17 @@ impl LocalAgentKernel {
         Ok(prepared)
     }
 
-    /// Uploaded snapshots and private workdirs are not project instruction roots.
-    /// Resolve addresses without reading an excluded resource or borrowing its owner.
-    pub(crate) fn project_instruction_roots(
+    /// Keep binding identities so instruction discovery can distinguish source folders
+    /// from supplementary directories on the same request. Exclude private resources.
+    pub(crate) fn bound_project_roots<'a>(
         &self,
-        workspace_ids: &[String],
-    ) -> Result<Vec<PathBuf>, LocalAgentKernelError> {
+        workspace_ids: &'a [String],
+    ) -> Result<Vec<(&'a str, PathBuf)>, LocalAgentKernelError> {
         let mut roots = Vec::new();
         for workspace_id in workspace_ids {
             let workspace = self.resolver.resolve(workspace_id)?;
             if matches!(workspace.access, WorkspaceAccess::Project) {
-                roots.push(PathBuf::from(workspace.root));
+                roots.push((workspace_id.as_str(), PathBuf::from(workspace.root)));
             }
         }
         Ok(roots)
@@ -5079,7 +5079,7 @@ mod attempt_control_tests {
         let (kernel, request, _) = kernel_with_workspaces(
             projects.clone(),
             "fs.write",
-            json!({"workspaceId":"workspace:test", "path":projects.0.join("second/result.txt"), "content":"outside current Plan"}),
+            json!({"workspaceId":"workspace:test", "path":projects.0.join("second/result.txt"), "content":"wrong workspace"}),
             crate::local_agent_product_tools::test_product_tools(),
             KernelExecutorConfig::default(),
             json!([{"workspaceId":"workspace:test","displayName":"First"}, {"workspaceId":"workspace:second","displayName":"Second"}]),
@@ -5088,6 +5088,14 @@ mod attempt_control_tests {
             .prepare_tool(&request)
             .err()
             .expect("wrong workspace must be rejected");
+        let assert_scope_issue = |error: &LocalAgentKernelError, path: &str| {
+            assert_eq!(error.code, "tool_input_invalid");
+            assert!(
+                matches!(error.input_issues.as_deref(), Some([issue]) if issue.path == path && issue.rule == "workspaceWriteScope"),
+                "{error:?}"
+            );
+        };
+        assert_scope_issue(&error, "$.workspaceId");
         assert!(error.message.contains("another bound project"));
         assert!(!projects.0.join("second/result.txt").exists());
         let (kernel, request, _) = kernel_with_request(
@@ -5096,11 +5104,17 @@ mod attempt_control_tests {
             json!({"workspaceId":"workspace:test", "command":"printf unauthorized > result.txt",
                 "requestFileAccess":{"write":[projects.0.join("first")]}}),
         );
-        let error = kernel
-            .prepare_tool(&request)
-            .err()
-            .expect("file grant must not replace Plan authority");
-        assert!(error.message.contains("Plan writablePaths"));
+        // External file grants are the wrong route regardless of project write policy.
+        for mode in ["plan", "allow"] {
+            kernel.journal.append(&json!({"type":"session.permissions.updated", "sessionId":request.session_id,
+                "payload":{"commandId":format!("policy:{mode}"), "patches":{"agent.permissions.workspaceMutation":mode}}})).unwrap();
+            let error = kernel
+                .prepare_tool(&request)
+                .err()
+                .expect("a file grant cannot replace the bound project's write policy");
+            assert_scope_issue(&error, "$.requestFileAccess.write");
+            assert!(!error.message.contains("Plan"), "{mode}: {error:?}");
+        }
         assert!(!projects.0.join("first/result.txt").exists());
         std::fs::create_dir(projects.0.join("first/.git")).unwrap();
         let (kernel, request, _) = kernel_with_request(

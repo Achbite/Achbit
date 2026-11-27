@@ -143,7 +143,7 @@ const SettingsCenter: React.FC<SettingsCenterProps> = ({
             <button
               key={item.key}
               className={`settings-nav-item ${
-                activeKey === item.key ? 'settings-nav-item--active' : ''
+                !searching && activeKey === item.key ? 'settings-nav-item--active' : ''
               }`}
               onClick={() => navigate(item.key)}
               aria-current={!searching && activeKey === item.key ? 'page' : undefined}

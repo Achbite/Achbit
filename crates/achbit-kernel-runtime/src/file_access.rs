@@ -3,6 +3,29 @@ use achbit_kernel_abi::{KernelError, KernelResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Check the captured kind and canonical path before adding a project Skill to a call's read scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillReadScope {
+    Entry(PathBuf),
+    Bundle(PathBuf),
+}
+
+impl SkillReadScope {
+    pub fn current_path(&self) -> Option<&Path> {
+        let (path, directory) = match self {
+            Self::Entry(path) => (path, false),
+            Self::Bundle(path) => (path, true),
+        };
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        ((if directory {
+            meta.is_dir()
+        } else {
+            meta.is_file()
+        }) && path.canonicalize().ok()?.as_path() == path)
+            .then_some(path.as_path())
+    }
+}
+
 /// Resolved by Kernel admission; model requests are not execution grants.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

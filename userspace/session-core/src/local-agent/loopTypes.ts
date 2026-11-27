@@ -7,6 +7,7 @@ import type { SessionState } from './reducer.js';
 import type { AgentComposition, RunActivity } from './plugins.js';
 import type { SessionCapabilityManager } from './sessionCapabilities.js';
 import type { AgentWait } from './agentManager.js';
+import type { CapacityGrant, CapacityQuote, CapacityReservation } from './agentCapacity.js';
 import type { ControlWait } from './sessionWake.js';
 import type {
   SessionControlCall, ArtifactPresentationInput, PlanPublicationDraft, PlanScopeExtension,
@@ -55,7 +56,9 @@ export interface AgentLoopDeps {
   waitForChange?(revision: number, signal: AbortSignal, permissions?: SessionState['publishedPermissions']): Promise<void>;
   activity?: RunActivity;
   agents?: {
-    execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal): Promise<JsonObject>;
+    execute(runId: string, callId: string, operation: AgentOperation, signal: AbortSignal, grant?: CapacityGrant): Promise<JsonObject>;
+    reconcileCapacityStart?(reservation: CapacityReservation): Promise<string | null>;
+    capacityEvidence?(quote: CapacityQuote): Promise<readonly {content:string}[]>;
     wait(runId: string, signal: AbortSignal, acceptedWait?: AgentWait): Promise<void>;
   };
   sessionOperation?(runId: string, operation: SessionOperation, signal: AbortSignal): Promise<JsonObject>;
@@ -142,13 +145,17 @@ export type ProviderDispatchCall = {
   providerCallId: string;
   name: string;
   input: Record<string, unknown>;
-} & ({ owner: 'kernel' } | { owner: 'agent'; operation: AgentOperation } | { owner: 'rejected'; error: LocalAgentError });
+} & (
+  | { owner: 'kernel' }
+  | { owner: 'activation'; pluginUris: string[] }
+  | { owner: 'agent'; operation: AgentOperation }
+  | { owner: 'rejected'; error: LocalAgentError }
+);
 
 export type ProviderTurn =
   | ({ kind: 'agent'; callId: string; providerCallId: string; operation: AgentOperation } & ProviderTurnCommon)
   | ({ kind: 'session'; callId: string; providerCallId: string; operation: SessionOperation } & ProviderTurnCommon)
   | ({ kind: 'artifactPresent'; callId: string; providerCallId: string; items: ArtifactPresentationInput[] } & ProviderTurnCommon)
-  | ({ kind: 'pluginActivate'; callId: string; providerCallId: string; pluginUris: string[] } & ProviderTurnCommon)
   | ({ kind: 'answer'; content: string; messageId?: string } & ProviderTurnCommon)
   | ({ kind: 'continuation' } & ProviderTurnCommon)
   | {

@@ -151,7 +151,7 @@ fn approval_selector(response: &str) -> Option<(&str, &str)> {
     Some((id, decision.trim()))
 }
 
-/// Never reinterpret an implicit approval when an interactive client's refresh changes its identity.
+/// Bind a reply to the decision shown before the interactive client refreshed.
 pub fn check_reply_refresh(
     language: Language,
     before: &SessionProjection,
@@ -161,39 +161,59 @@ pub fn check_reply_refresh(
     let Some(("reply", response)) = slash_command(text) else {
         return Ok(());
     };
-    fn identities<'a>(
-        p: &'a SessionProjection,
-        selected: Option<&str>,
-    ) -> Vec<(&'a str, &'a str, &'a str, &'a str)> {
-        let local = p.human_approvals().map(|a| {
-            (
-                p.session_id.as_str(),
-                a.run_id.as_str(),
-                a.call_id.as_str(),
-                a.approval_id.as_str(),
-            )
-        });
-        if selected.is_none()
-            && (p.human_approvals().next().is_some()
-                || p.pending_plan.is_some()
-                || p.pending_interaction.is_some())
-        {
-            return local.collect(); // An unrelated child's change cannot invalidate this local reply.
+    #[derive(PartialEq)]
+    enum Target<'a> {
+        Approval(&'a str, &'a str, &'a str, &'a str),
+        Plan(&'a str, &'a str, &'a str, u64),
+        Question(&'a str, &'a str, &'a str),
+    }
+    fn identities<'a>(p: &'a SessionProjection, selected: Option<&str>) -> Vec<Target<'a>> {
+        let mut targets: Vec<_> = p
+            .human_approvals()
+            .filter(|a| selected.is_none_or(|id| id == a.approval_id))
+            .map(|a| Target::Approval(&p.session_id, &a.run_id, &a.call_id, &a.approval_id))
+            .collect();
+        if !targets.is_empty() {
+            return targets;
         }
-        let children = p.pending_agent_decisions.iter().flatten().filter_map(|r| {
-            r.approval.as_ref().map(|a| {
-                (
-                    r.agent_session_id.as_str(),
-                    r.run_id.as_str(),
-                    a.call_id.as_str(),
-                    a.approval_id.as_str(),
-                )
-            })
-        });
-        local
-            .chain(children)
-            .filter(|a| selected.is_none_or(|id| id == a.3))
-            .collect()
+        if selected.is_none() {
+            if let Some(plan) = &p.pending_plan {
+                return vec![Target::Plan(
+                    &p.session_id,
+                    &plan.run_id,
+                    &plan.plan_id,
+                    plan.revision,
+                )];
+            }
+            if let Some(question) = &p.pending_interaction {
+                return vec![Target::Question(
+                    &p.session_id,
+                    &question.run_id,
+                    &question.interaction_id,
+                )];
+            }
+        }
+        for route in p.pending_agent_decisions.iter().flatten() {
+            let session = route.agent_session_id.as_str();
+            let run = route.run_id.as_str();
+            if let Some(a) = &route.approval {
+                if selected.is_none_or(|id| id == a.approval_id) {
+                    targets.push(Target::Approval(session, run, &a.call_id, &a.approval_id));
+                }
+            }
+            if selected.is_none() {
+                if let Some(plan) = &route.plan {
+                    targets.push(Target::Plan(session, run, &plan.plan_id, plan.revision));
+                }
+                targets.extend(
+                    route
+                        .interaction_ids
+                        .iter()
+                        .map(|id| Target::Question(session, run, id)),
+                );
+            }
+        }
+        targets
     }
     let id = approval_selector(response).map(|(id, _)| id);
     if identities(before, id) != identities(after, id) {
@@ -241,7 +261,7 @@ pub fn contextual_input_command(
             .shell_authorizations
             .iter()
             .find(|grant| grant.authority_id == authority.trim())
-            .ok_or("No active grant with this authority ID")?;
+            .ok_or_else(|| language.text("tui.noActiveAuthority"))?;
         return Ok(
             json!({"schemaVersion":"achbit.command.v3", "type":"approval.revoke", "commandId":command_id, "sessionId":projection.session_id, "runId":grant.run_id, "authorityId":grant.authority_id}),
         );
@@ -369,7 +389,7 @@ fn approval_decision_for_input(language: Language, input: &str) -> Result<&'stat
         "1" | "allow" | "允许" | "同意" => Ok("allow"),
         "2" | "deny" | "拒绝" | "不同意" => Ok("deny"),
         "3" | "allow-run" | "本轮允许此命令" => Ok("allow-run"),
-        "4" | "allow-host-run" | "本轮允许Host" => Ok("allow-host-run"),
+        "4" | "allow-host-run" | "本轮允许host" => Ok("allow-host-run"),
         "5" | "allow-files-run" => Ok("allow-files-run"),
         "6" | "allow-files-session" => Ok("allow-files-session"),
         _ => achbit_kernel_client::AUTHORIZATION_OPTIONS
@@ -485,6 +505,54 @@ mod tests {
 
     fn reply(p: &SessionProjection, text: &str) -> Result<serde_json::Value, String> {
         contextual_input_command(Language::EnUs, p, text, "command:reply", None, &[], &[])
+    }
+
+    #[test]
+    fn refreshed_reply_keeps_plan_revision_and_question_identity() {
+        for (field, value, ..) in fixtures::pending_decisions().into_iter().take(2) {
+            let shown = fixtures::waiting_projection(field, value);
+            let mut changed = shown.clone();
+            check_reply_refresh(Language::EnUs, &shown, &changed, "/reply 1").unwrap();
+            if let Some(plan) = changed.pending_plan.as_mut() {
+                plan.revision += 1;
+            }
+            if let Some(question) = changed.pending_interaction.as_mut() {
+                question.interaction_id.push_str("-next");
+            }
+            assert!(check_reply_refresh(Language::EnUs, &shown, &changed, "/reply 1").is_err());
+        }
+    }
+
+    #[test]
+    fn run_approval_shortcuts_target_only_the_offered_scope() {
+        let mut p = approval_projection(&["human"]);
+        for (scope, input, label) in [
+            ("runCommand", "/reply 3", "/reply 本轮允许此命令"),
+            ("runHostShell", "/reply 4", "/reply 本轮允许Host"),
+        ] {
+            p.pending_approvals.as_mut().unwrap()[0]
+                .preview
+                .authorization_scopes = None;
+            assert!(reply(&p, input).is_err());
+            p.pending_approvals.as_mut().unwrap()[0]
+                .preview
+                .authorization_scopes = Some(vec![scope.to_owned()]);
+            for text in [input, label] {
+                assert_eq!(reply(&p, text).unwrap()["authorizationScope"], scope);
+            }
+        }
+        for language in [Language::ZhCn, Language::EnUs] {
+            for key in ["tui.help", "tui.commandHelp"] {
+                let help = language.text(key);
+                let (_, choices) = help.split_once("/reply 3").unwrap();
+                let (command, host) = choices.split_once("/reply 4").unwrap();
+                assert!(
+                    !command.to_ascii_lowercase().contains("host") && !command.contains("宿主")
+                );
+                let host = host.lines().next().unwrap().to_ascii_lowercase();
+                assert!(host.contains("host") || host.contains("宿主"));
+            }
+        }
     }
 
     #[test]

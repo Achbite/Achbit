@@ -52,6 +52,72 @@ test('nested output retains follow while scrolling internally and releases it at
   assert.equal(body.scrollTop, 1400, 'only reaching the conversation tail resumes automatic following');
 });
 
+test('no-op upward input at the tail and a disclosure in a fitting transcript keep default follow on later growth', async t => {
+  const { useConversationViewport } = await loadGuiModule(t, '/src/components/local-agent/useConversationViewport.ts');
+  const old = globalThis.window, frames = new Map(); let id = 0;
+  globalThis.window = { requestAnimationFrame(cb) { frames.set(++id, cb); return id; }, cancelAnimationFrame(key) { frames.delete(key); } };
+  t.after(() => { globalThis.window = old; });
+  const flush = () => { const work = [...frames.values()]; frames.clear(); work.forEach(cb => cb()); };
+  const positions = []; let viewport;
+  function Probe() {
+    viewport = useConversationViewport({ sessionId: 'session:tail', loading: false, projection: { sessionId: 'session:tail' },
+      presentationLayoutKey: '', assistantDraftLayoutKey: '', timelineExtentKey: '', rememberAnchor: (_, anchor) => positions.push(anchor) });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  const body = { clientHeight: 500, scrollHeight: 800, scrollTop: 300, getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [row] };
+  const row = { dataset: { conversationAnchor: 'summary' }, closest: () => row,
+    getBoundingClientRect: () => ({ top: 350 - body.scrollTop, bottom: 390 - body.scrollTop }) };
+  viewport.bodyRef.current = body;
+  viewport.scrollToLatest();
+  viewport.bodyHandlers.onWheel({ target: body, deltaY: -0.25 });
+  viewport.preserveReadingPosition(); flush();
+  assert.ok(positions.every(p => p === null), 'a wheel event with no actual movement is not a bookmark');
+  body.scrollHeight += 100; viewport.preserveReadingPosition(); flush();
+  assert.equal(body.scrollTop, 400, 'new output still follows');
+  body.scrollHeight = body.clientHeight; body.scrollTop = 0;
+  viewport.anchorDisclosure(row); viewport.preserveReadingPosition(); flush();
+  body.scrollHeight += 160; viewport.preserveReadingPosition(); flush();
+  assert.equal(body.scrollTop, 160, 'when the toggled transcript still fits, the next output follows');
+  assert.equal(positions.at(-1), null, 'no false history position survives a reopen');
+});
+
+test('an already clamped bottom resumes follow without scrolling up first, even if no scroll event arrives', async t => {
+  const { useConversationViewport } = await loadGuiModule(t, '/src/components/local-agent/useConversationViewport.ts');
+  const old = globalThis.window, frames = new Map(); let id = 0;
+  globalThis.window = { requestAnimationFrame(cb) { frames.set(++id, cb); return id; }, cancelAnimationFrame(key) { frames.delete(key); } };
+  t.after(() => { globalThis.window = old; });
+  const flush = () => { const work = [...frames.values()]; frames.clear(); work.forEach(cb => cb()); };
+  let viewport;
+  function Probe() {
+    viewport = useConversationViewport({ sessionId: 'clamp', loading: false, projection: { sessionId: 'clamp' },
+      presentationLayoutKey: '', assistantDraftLayoutKey: '', timelineExtentKey: '' });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Probe));
+  const body = { clientHeight: 500, scrollHeight: 1500, scrollTop: 740, getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [] };
+  viewport.bodyRef.current = body;
+  for (const delivered of ['resize only', 'scroll', 'downward wheel at limit']) {
+    body.scrollHeight = 1500; body.scrollTop = 740; viewport.setLatestFollowMode(false);
+    body.scrollHeight = 1140; body.scrollTop = 640; // the browser clamps to min(previous position, new maximum)
+    if (delivered === 'resize only') { viewport.preserveReadingPosition(); flush(); }
+    else if (delivered === 'scroll') viewport.bodyHandlers.onScroll({ target: body, currentTarget: body });
+    else viewport.bodyHandlers.onWheel({ target: body, deltaY: 90 });
+    body.scrollHeight += 180; viewport.preserveReadingPosition(); flush();
+    assert.equal(body.scrollTop, 820, `${delivered}: subsequent output must actually follow, not just hide the arrow`);
+  }
+  // The compositor can hit the old tail before the next Markdown frame grows the document.
+  for (const [nativeTop, expected] of [[920, 920], [1000, 1180]]) {
+    body.scrollHeight = 1500; body.scrollTop = 740; viewport.setLatestFollowMode(false);
+    viewport.bodyHandlers.onWheel({ target: body, deltaY: 1000 });
+    body.scrollTop = nativeTop;
+    body.scrollHeight += 180;
+    viewport.bodyHandlers.onScroll({ target: body, currentTarget: body });
+    viewport.preserveReadingPosition(); flush();
+    assert.equal(body.scrollTop, expected, 'actual arrival at the pre-growth tail, not wheel distance, resumes follow');
+  }
+});
+
 test('a short page keeps the displayed jump position through layout, and a new jump uses the requested offset', async t => {
   const { useConversationViewport } = await loadGuiModule(t, '/src/components/local-agent/useConversationViewport.ts');
   let viewport;

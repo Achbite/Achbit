@@ -1,198 +1,198 @@
 /**
- * 工作区相关共享 DTO
+ * Shared workspace types.
  *
- * 用于 /api/workspaces/* 路由的请求与响应类型；前后端复用此定义。
+ * The GUI and Host share these request and response types for workspace routes.
  *
- * 设计要点：
- *   1. WorkspaceSpec 是当前活动工作区的事实源，包含 source、folders[]、settings 与不支持字段；
- *   2. 兼容 VS Code-style .code-workspace 文件（仅 folders + settings 子集）；
- *   3. 路径安全：每个 WorkspaceFolder 解析后得到独立 rootId，所有文件读写必须绑定到某个 folderId；
- *   4. 不含历史兼容字段，命名直接采用最新方案。
+ * Workspace conventions
+ *   WorkspaceSpec describes the active source, folders, settings and unsupported fields.
+ *   VS Code workspace files support the folders and settings subset.
+ *   Each resolved root has its own ID. File operations specify the target folderId.
+ *   Use the field names in the current workspace contract.
  */
 
 /**
- * 工作区来源类型。
- *   - directory       ：用户打开的是单个目录
- *   - code-workspace  ：用户打开的是 VS Code-style .code-workspace 文件
- *   - fallback        ：无任何用户选择时使用的默认工作区（仓库内 ./workspace）
+ * How the workspace was opened.
+ *   directory opens a single directory.
+ *   code-workspace opens a VS Code .code-workspace file.
+ *   fallback selects ./workspace when the user has not chosen a workspace.
  */
 export type WorkspaceSourceKind = 'directory' | 'code-workspace' | 'fallback';
 
 /**
- * 工作区中的单个根文件夹。
+ * A root folder in a workspace.
  *
- * id 由后端生成；前端在所有文件 API 调用中通过 folderId 指明落点。
+ * The Host generates its ID. Clients pass the folderId to file APIs.
  */
 export interface WorkspaceFolderSpec {
-  /** 后端生成的稳定 ID，如 'wf-0'；同一会话内不变 */
+  /** Host-assigned ID, e.g. wf-0, stable throughout a session. */
   id: string;
-  /** 展示名；优先取 .code-workspace 中的 name，否则取目录基名 */
+  /** Explicit workspace folder name or the directory basename. */
   name: string;
-  /** 解析后的绝对路径（POSIX 风格） */
+  /** Resolved absolute path in POSIX form. */
   absolutePath: string;
-  /** .code-workspace 中的原始 path 字段；directory 来源时与 absolutePath 一致 */
+  /** Original path from the workspace file, or absolutePath for a directory source. */
   originalPath: string;
-  /** 原始 path 是否为绝对路径；用于 UI 风险提示 */
+  /** Whether the original path was absolute. The UI uses this in its path warning. */
   isAbsolute: boolean;
 }
 
 /**
- * .code-workspace 中我们当前不解析、但保留作为兼容提示的字段名。
- * 例如 'extensions' / 'tasks' / 'launch'。
+ * Unparsed workspace fields retained for compatibility notices.
+ * Examples include extensions, tasks and launch.
  */
 export interface UnsupportedField {
-  /** 字段名 */
+  /** Field name. */
   key: string;
-  /** 该字段在 JSON 中的类型摘要，如 'object' / 'array' */
+  /** JSON type of the field, such as object or array. */
   kind: string;
 }
 
 /**
- * 当前活动工作区的完整描述。
+ * Full description of the active workspace.
  */
 export interface WorkspaceSpec {
-  /** 工作区 ID，按打开次数递增；fallback 工作区固定为 'fallback' */
+  /** Workspace ID increments on open. The fallback ID is always fallback. */
   id: string;
-  /** 工作区名；directory 取目录基名；code-workspace 取文件名（去 .code-workspace 后缀） */
+  /** Directory basename or workspace filename without the .code-workspace suffix. */
   name: string;
-  /** 工作区来源 */
+  /** Workspace source. */
   source: WorkspaceSourceKind;
-  /** 当 source 为 'code-workspace' 时存在，是 .code-workspace 文件的绝对路径 */
+  /** Absolute path of the source file for a code-workspace workspace. */
   sourcePath: string | null;
-  /** 解析后的 folders 列表；至少包含 1 个 */
+  /** Resolved folders. Every workspace has at least one. */
   folders: WorkspaceFolderSpec[];
-  /** 不支持但保留的字段，用于 UI 提示 */
+  /** Unsupported fields retained for the UI. */
   unsupportedFields: UnsupportedField[];
-  /** 工作区打开时间（ISO） */
+  /** ISO timestamp when the workspace opened. */
   openedAt: string;
 }
 
 /**
- * 工作区状态摘要，用于健康检查与启动日志。
+ * Brief workspace status for health checks and startup logs.
  */
 export interface WorkspaceSummary {
-  /** 是否存在当前活动工作区 */
+  /** Whether an active workspace exists. */
   available: boolean;
   id: string | null;
   name: string | null;
   source: WorkspaceSourceKind | null;
-  /** folders 数量；首期常为 1 */
+  /** Number of root folders. */
   folderCount: number;
 }
 
-/** GET /api/workspaces/current 成功响应 data 字段 */
+/** Successful GET /api/workspaces/current response payload. */
 export interface WorkspaceState {
   current: WorkspaceSpec | null;
-  /** 当前是否使用 fallback 工作区（首次启动或上次工作区不可用） */
+  /** Whether the fallback is active after first launch or an unavailable workspace. */
   fallbackUsed: boolean;
-  /** 上一次 openWorkspace 失败原因；成功后清空 */
+  /** Reason the last open failed. Cleared on success. */
   lastError: string | null;
 }
 
-/** POST /api/workspaces/open 请求体 */
+/** POST /api/workspaces/open request. */
 export interface OpenWorkspaceRequest {
   /**
-   * 用户选择的绝对路径；可以指向：
-   *   - 一个目录
-   *   - 一个 .code-workspace 文件
+   * Absolute path selected by the user.
+   *   A directory or
+   *   a .code-workspace file.
    *
-   * 必须是绝对路径；该 Host 管理入口不受 Agent run-relative 工具路径约束。
+   * This Host management endpoint accepts absolute paths. Agent tools resolve paths within a run.
    */
   path: string;
 }
 
-/** POST /api/workspaces/open 成功响应 data 字段 */
+/** Successful POST /api/workspaces/open response payload. */
 export interface OpenWorkspaceResult {
   workspace: WorkspaceSpec;
 }
 
-/** POST /api/workspaces/save-file 请求体 */
+/** POST /api/workspaces/save-file request. */
 export interface SaveWorkspaceFileRequest {
-  /** 目标 WorkspaceFolder；省略时使用当前 active/default folder */
+  /** Destination folder. Omission selects the current active/default folder. */
   folderId?: string;
-  /** 可选文件名；省略时使用当前工作区名生成 <name>.code-workspace */
+  /** Optional filename. Defaults to <workspace name>.code-workspace. */
   fileName?: string;
 }
 
-/** POST /api/workspaces/save-file 成功响应 data 字段 */
+/** Successful POST /api/workspaces/save-file response payload. */
 export interface SaveWorkspaceFileResult {
-  /** 生成或覆盖的 .code-workspace 文件绝对路径 */
+  /** Absolute path of the created or overwritten workspace file. */
   workspaceFilePath: string;
-  /** 保存后重新打开的工作区状态 */
+  /** Workspace reopened after saving. */
   workspace: WorkspaceSpec;
-  /** 本次是否创建了新文件 */
+  /** Whether the save created a file. */
   created: boolean;
-  /** 本次是否覆盖了已有文件 */
+  /** Whether the save overwrote a file. */
   overwritten: boolean;
 }
 
 // ============================================================================
-// 文件系统浏览（用于"Open Workspace"可视化对话框）
+// Filesystem browsing for the Open Workspace dialog.
 // ============================================================================
 
 /**
- * 浏览目录的单个子项。
+ * One directory entry returned by the workspace browser.
  *
- * 该 DTO 仅用于 /api/fs/browse 路由：在用户点击 Open Workspace 时由前端
- * 模态对话框驱动进行目录浏览，最终由用户确认目录或 .code-workspace 文件，
- * 再走 POST /api/workspaces/open 完成切换。
+ * The Open Workspace dialog calls /api/fs/browse to browse directories.
+ * The user selects a directory or a .code-workspace file,
+ * then the dialog calls POST /api/workspaces/open.
  *
- * 注意：这里不暴露文件大小、修改时间等细节，避免成为通用文件系统 API；
- * 仅满足"打开工作区/打开 .code-workspace"场景所需的最小信息。
+ * The response contains only the fields needed by the workspace picker.
+ * File size and modification time are outside this contract.
  */
 export interface BrowseEntry {
-  /** 条目名 */
+  /** Entry name. */
   name: string;
-  /** 解析后的绝对路径（POSIX 风格） */
+  /** Resolved absolute path in POSIX form. */
   absolutePath: string;
-  /** 条目类型 */
+  /** Entry type. */
   type: 'directory' | 'file';
-  /** 文件名是否以 .code-workspace 结尾；UI 据此突出显示 */
+  /** Whether to highlight this entry as a .code-workspace file. */
   isCodeWorkspace: boolean;
-  /** 是否为隐藏项（以 . 开头），UI 默认折叠 */
+  /** Whether the name starts with a dot. Hidden items are collapsed by default. */
   hidden: boolean;
 }
 
-/** GET /api/fs/browse 查询参数 */
+/** GET /api/fs/browse query. */
 export interface BrowsePathQuery {
   /**
-   * 要浏览的绝对路径；不传或空字符串时由后端返回首选起点（用户主目录）。
-   * 该 Host 管理路由出于"打开工作区"场景必须接受绝对路径。
+   * Absolute directory to browse. An empty or omitted path selects the home directory.
+   * The Host workspace picker accepts absolute paths.
    */
   path?: string;
 }
 
-/** GET /api/fs/browse 成功响应 data 字段 */
+/** Successful GET /api/fs/browse response payload. */
 export interface BrowsePathResult {
-  /** 实际解析到的绝对路径（POSIX 风格） */
+  /** Resolved absolute path in POSIX form. */
   absolutePath: string;
-  /** 父目录绝对路径；位于驱动器/文件系统根时为 null */
+  /** Absolute parent directory, or null at a drive or filesystem root. */
   parentPath: string | null;
-  /** 子项列表（已按 directory 优先 + 名称升序排序） */
+  /** Entries sorted by directory first, then by name. */
   entries: BrowseEntry[];
 }
 
 /**
- * 用户主目录、Windows 盘符、当前工作区父目录等"快捷起点"。
- * 由 GET /api/fs/initial-locations 返回，用于对话框侧栏。
+ * Starting locations such as the home directory, drive roots and the workspace parent.
+ * GET /api/fs/initial-locations supplies these entries to the sidebar.
  */
 export interface InitialLocation {
-  /** 展示标签，例如 "Home"、"E:\\"、"Current Workspace" */
+  /** Display label, e.g. Home or Current Workspace. */
   label: string;
-  /** 绝对路径（POSIX 风格） */
+  /** Absolute path in POSIX form. */
   absolutePath: string;
-  /** 分组：home / drive / workspace */
+  /** Sidebar group: home, drive or workspace. */
   kind: 'home' | 'drive' | 'workspace';
 }
 
-/** GET /api/fs/initial-locations 成功响应 data 字段 */
+/** Successful GET /api/fs/initial-locations response payload. */
 export interface InitialLocations {
   /**
-   * 平台标识，与 Node.js `process.platform` 取值一致；
-   * 这里用字符串字面量集合表达，避免 protocol 包依赖 @types/node。
-   * 常见值：'win32' | 'linux' | 'darwin'，其余按字符串透传。
+   * Platform identifier using Node process.platform values.
+   * String literals keep the protocol independent of Node typings.
+   * Common values are win32, linux and darwin. Other values pass through.
    */
   platform: 'win32' | 'linux' | 'darwin' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' | 'cygwin' | 'netbsd' | string;
-  /** 推荐起点列表（按重要性排序） */
+  /** Suggested starting locations in priority order. */
   locations: InitialLocation[];
 }

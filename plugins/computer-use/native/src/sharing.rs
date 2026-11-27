@@ -7,27 +7,17 @@ extern "C" {
     fn ac_sharing_request(request: *const c_char) -> *mut c_char;
     fn ac_sharing_free(response: *mut c_char);
     fn ac_sharing_preview(request: *const c_char) -> *mut c_char;
-    fn ac_sharing_pointer_feedback(
-        window: u32,
-        generation: u64,
-        pointer_window: u32,
-        x: f64,
-        y: f64,
-        pulse: bool,
-    );
+    fn ac_sharing_pointer_feedback(window: u32, generation: u64, x: f64, y: f64, pulse: bool);
+    fn mach_absolute_time() -> u64;
 }
 
-/// The pointer is a real companion capture source. Position is presentation
-/// metadata in target coordinates, never a replacement desktop input target.
-pub fn pointer_feedback(
-    window: u32,
-    generation: u64,
-    pointer_window: u32,
-    x: f64,
-    y: f64,
-    pulse: bool,
-) {
-    unsafe { ac_sharing_pointer_feedback(window, generation, pointer_window, x, y, pulse) }
+pub fn display_time() -> u64 {
+    unsafe { mach_absolute_time() }
+}
+
+/// Local presentation metadata only, never an independent capture source.
+pub fn pointer_feedback(window: u32, generation: u64, x: f64, y: f64, pulse: bool) {
+    unsafe { ac_sharing_pointer_feedback(window, generation, x, y, pulse) }
 }
 
 pub fn request(mut input: Value, binding: &Value) -> Result<Value, String> {

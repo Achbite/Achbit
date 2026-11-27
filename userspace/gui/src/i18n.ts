@@ -59,6 +59,16 @@ export function t(language: UiLanguage, key: string, variables?: I18nVariables):
   return formatMessage(template, variables);
 }
 
+export function localizedError(language: UiLanguage, message: string, code?: string): string {
+  const raw = message.replace(/^(?:Error|ConversationRequestError): /, '').replace(/^conversation_document_read_failed:/, '');
+  const key = 'error.' + (code ?? raw.split(':', 1)[0]);
+  const summary = PACKS[language].messages?.[key];
+  if (!summary) return message;
+  if (code) return summary;
+  const detail = raw.slice(raw.indexOf(':') + 1).trim();
+  return raw.includes(':') && detail ? summary + ' ' + detail : summary;
+}
+
 export function activeT(key: string, variables?: I18nVariables): string {
   return t(activeLanguage, key, variables);
 }

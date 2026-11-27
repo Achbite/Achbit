@@ -97,8 +97,9 @@ impl CliRenderState {
                 self.finish_text(out)?;
                 writeln!(
                     out,
-                    "请求未完成，等待同一请求的第 {} 次发送。",
-                    attempt.attempt + 1
+                    "{}",
+                    crate::language()
+                        .format("cli.retryAttempt", &[(attempt.attempt + 1).to_string()])
                 )?;
                 self.retry_attempt = Some(attempt.provider_attempt_id.clone());
             }
@@ -107,13 +108,18 @@ impl CliRenderState {
             if self.queued_inputs.get(&input.message_id) != Some(&input.status) {
                 self.finish_text(out)?;
                 let status = if input.status == "queued" {
-                    "已排队"
+                    crate::language().text("cli.queued")
                 } else {
-                    "未执行"
+                    crate::language().text("cli.notApplied")
                 };
                 writeln!(out, "{status}: {}", input.text)?;
                 for reference in &input.filesystem_references {
-                    writeln!(out, "  附件：{}", reference.display_name)?;
+                    writeln!(
+                        out,
+                        "{}",
+                        crate::language()
+                            .format("cli.attachment", &[reference.display_name.to_string()])
+                    )?;
                 }
                 self.queued_inputs
                     .insert(input.message_id.clone(), input.status.clone());
@@ -210,8 +216,11 @@ impl CliRenderState {
                         )?,
                         Some(status) if status != &plan.status => writeln!(
                             out,
-                            "Plan 状态 · revision {} · {}",
-                            plan.revision, plan.status
+                            "{}",
+                            crate::language().format(
+                                "cli.planStatus",
+                                &[plan.revision.to_string(), plan.status.to_string()]
+                            )
                         )?,
                         Some(_) => {}
                     }
@@ -275,7 +284,7 @@ impl CliRenderState {
         let delta = content.strip_prefix(previous).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "CLI 已输出文本与 Session 流内容不一致。",
+                crate::language().text("cli.streamMismatch"),
             )
         })?;
         if delta.is_empty() {
@@ -330,10 +339,9 @@ impl CliRenderState {
         }
         if let Some(preview) = draft.plan_preview.as_ref() {
             let key = format!("{}:{}", draft.turn_id, preview.provider_call_id);
-            let status = format!(
-                "正在生成计划 · {} · {} 个步骤",
-                preview.title,
-                preview.steps.len()
+            let status = crate::language().format(
+                "cli.planDraft",
+                &[preview.title.to_string(), (preview.steps.len()).to_string()],
             );
             if self.plan_preview.as_ref() != Some(&(key.clone(), status.clone())) {
                 self.finish_text(out)?;
@@ -388,30 +396,38 @@ impl CliRenderState {
                 self.plans.insert(key, plan.status.clone());
             }
             if plan.is_model_reviewing(projection.run.as_ref()) {
-                writeln!(out, "正在独立审批计划。")?;
+                writeln!(out, "{}", crate::language().text("cli.planReviewing"))?;
             } else {
                 if let Some(reason) = plan
                     .review
                     .as_ref()
                     .and_then(|review| review.reason.as_deref())
                 {
-                    writeln!(out, "计划审批：{reason}")?;
+                    writeln!(
+                        out,
+                        "{}",
+                        crate::language().format("cli.planReview", &[reason.to_string()])
+                    )?;
                 }
                 if !plan.workspace_requests.is_empty() {
-                    writeln!(out, "工作区权限：将以下目录加入工作区并确认计划？")?;
+                    writeln!(out, "{}", crate::language().text("cli.planWorkspace"))?;
                     for request in &plan.workspace_requests {
                         writeln!(out, "  {}", request.root_path)?;
                     }
                 }
-                writeln!(out, "输入 /reply 1 或 /reply 确认；输入 /reply <意见> 请求修订；普通消息继续排队；显式运行 `achbit-cli cancel-plan --session {}` 取消。", projection.session_id)?;
+                writeln!(
+                    out,
+                    "{}",
+                    crate::language().format("cli.planReply", &[projection.session_id.to_string()])
+                )?;
             }
         }
         if let Some(interaction) = projection.pending_interaction.as_ref() {
             render_interaction(out, interaction)?;
             writeln!(
                 out,
-                "继续：achbit-cli ask --session {} \"/reply <response>\"",
-                projection.session_id
+                "{}",
+                crate::language().format("cli.continueReply", &[projection.session_id.to_string()])
             )?;
         }
         let multiple = projection.human_approvals().nth(1).is_some();
@@ -457,14 +473,24 @@ impl CliRenderState {
             if members.insert(&task.agent_session_id) {
                 writeln!(
                     out,
-                    "子代理 {} · achbit-cli show --session {}",
-                    task.display_name, task.agent_session_id
+                    "{}",
+                    crate::language().format(
+                        "cli.childShow",
+                        &[
+                            task.display_name.to_string(),
+                            task.agent_session_id.to_string()
+                        ]
+                    )
                 )?;
             }
         }
         let changes = projection.file_changes_for_run(run_id);
         if !changes.is_empty() {
-            writeln!(out, "本轮修改 · {run_id}")?;
+            writeln!(
+                out,
+                "{}",
+                crate::language().format("cli.runChanges", &[run_id.to_string()])
+            )?;
             for (record, index, change) in changes {
                 writeln!(
                     out,
@@ -524,12 +550,16 @@ fn render_plan_document(
         }
         if let Some(verification) = step.verification.as_ref() {
             for item in verification {
-                writeln!(out, "   验证：{item}")?;
+                writeln!(
+                    out,
+                    "{}",
+                    crate::language().format("cli.verification", &[item.to_string()])
+                )?;
             }
         }
     }
     if !operations.is_empty() {
-        writeln!(out, "修改范围：")?;
+        writeln!(out, "{}", crate::language().text("cli.changeScope"))?;
         for operation in operations {
             write!(
                 out,
@@ -541,7 +571,7 @@ fn render_plan_document(
             }
             if let Some(paths) = &operation.writable_paths {
                 if paths.is_empty() {
-                    write!(out, " · 无项目写入")?;
+                    write!(out, "{}", crate::language().text("cli.noProjectWrites"))?;
                 }
                 for target in paths {
                     write!(
@@ -580,7 +610,7 @@ pub(crate) fn render_projection(
         )
     )?;
     if !projection.session_directory_indexes.is_empty() {
-        writeln!(out, "对话目录索引：")?;
+        writeln!(out, "{}", crate::language().text("cli.directoryIndex"))?;
         for binding in &projection.session_directory_indexes {
             writeln!(out, "  {} ({})", binding.display_name, binding.workspace_id)?;
         }
@@ -629,13 +659,20 @@ pub(crate) fn render_tool_activity(
         .as_ref()
         .map_or(activity.status.as_str(), |result| {
             match result.reason.as_str() {
-                "approvalRequired" => "未执行：读取需要额外授权",
-                "dependencyFailed" => "未执行：前序调用未成功",
-                "dependencyPending" => "未执行：前序调用仍在运行",
-                _ => "未执行：已取消",
+                "approvalRequired" => crate::language().text("cli.approvalRequired"),
+                "dependencyFailed" => crate::language().text("cli.dependencyFailed"),
+                "dependencyPending" => crate::language().text("cli.dependencyPending"),
+                _ => crate::language().text("cli.cancelled"),
             }
         });
-    writeln!(out, "工具 {operation} [{status}]")?;
+    writeln!(
+        out,
+        "{}",
+        crate::language().format(
+            "cli.toolStatus",
+            &[operation.to_string(), status.to_string()]
+        )
+    )?;
     if activity.status == "active" {
         if let Some(elapsed) = activity.started_at.as_ref().and_then(|started| {
             let started = started.parse::<u128>().ok()?;
@@ -645,7 +682,12 @@ pub(crate) fn render_tool_activity(
                 .as_millis()
                 .checked_sub(started)
         }) {
-            writeln!(out, "  已执行 {:.1}s", elapsed as f64 / 1_000.0)?;
+            writeln!(
+                out,
+                "{}",
+                crate::language()
+                    .format("cli.elapsed", &[format!("{:.1}", elapsed as f64 / 1_000.0)])
+            )?;
         }
         if let Some(output) = activity.live_output.as_ref() {
             render_live_tool_output(out, output, None)?;
@@ -759,14 +801,20 @@ fn render_live_tool_output(
 ) -> io::Result<()> {
     writeln!(
         out,
-        "  实时输出 · stdout {} bytes · stderr {} bytes{}",
-        output.stdout_bytes,
-        output.stderr_bytes,
-        if output.truncated {
-            " · 仅保留最新片段"
-        } else {
-            ""
-        }
+        "{}",
+        crate::language().format(
+            "cli.liveOutput",
+            &[
+                output.stdout_bytes.to_string(),
+                output.stderr_bytes.to_string(),
+                (if output.truncated {
+                    crate::language().text("cli.truncated")
+                } else {
+                    ""
+                })
+                .to_string()
+            ]
+        )
     )?;
     for (label, text, total, before) in [
         (
@@ -785,11 +833,19 @@ fn render_live_tool_output(
         // Raw-byte totals can include an unfinished UTF-8 character. Compare
         // decoded text rather than treating those totals as string offsets.
         if before.is_some_and(|(old, bytes)| output.truncated && old == text && bytes != total) {
-            print_tool_stream(out, &format!("{label} 最新片段"), text)?;
+            print_tool_stream(
+                out,
+                &crate::language().format("cli.latestFragment", &[label.to_string()]),
+                text,
+            )?;
         } else if let Some(delta) = text.strip_prefix(before.map_or("", |(text, _)| text)) {
             print_tool_stream(out, label, delta)?;
         } else {
-            print_tool_stream(out, &format!("{label} 最新片段"), text)?;
+            print_tool_stream(
+                out,
+                &crate::language().format("cli.latestFragment", &[label.to_string()]),
+                text,
+            )?;
         }
     }
     Ok(())
@@ -799,9 +855,9 @@ pub(crate) fn render_todo(out: &mut impl Write, projection: &SessionProjection) 
     let Some(todo) = projection.todo_list.as_ref() else {
         return Ok(());
     };
-    writeln!(out, "任务")?;
+    writeln!(out, "{}", crate::language().text("cli.tasks"))?;
     if todo.items.is_empty() {
-        writeln!(out, "  （空）")?;
+        writeln!(out, "{}", crate::language().text("cli.emptyList"))?;
         return Ok(());
     }
     for item in &todo.items {
@@ -815,7 +871,7 @@ pub(crate) fn render_todo(out: &mut impl Write, projection: &SessionProjection) 
             out,
             "  {marker} {} · {}",
             item.text,
-            crate::i18n::Language::default().text(match item.status.as_str() {
+            crate::language().text(match item.status.as_str() {
                 "completed" => "achbitGui.tasks.status.completed",
                 "inProgress" => "achbitGui.tasks.status.inProgress",
                 "blocked" => "achbitGui.tasks.status.blocked",
@@ -839,17 +895,23 @@ pub(crate) fn render_usage(out: &mut impl Write, projection: &SessionProjection)
     } else {
         "unavailable"
     };
-    writeln!(out,
-        "Provider 调用 {} · 输入 {} · 输出 {} · 缓存命中 {} · 缓存读取 {} · 缓存未命中 {} · 缓存报告 {}/{} ({})",
-        usage.provider_call_count,
-        usage.input_tokens,
-        usage.output_tokens,
-        cache,
-        usage.cache_read_input_tokens,
-        usage.cache_miss_input_tokens,
-        usage.reported_call_count,
-        usage.provider_call_count,
-        coverage,
+    writeln!(
+        out,
+        "{}",
+        crate::language().format(
+            "cli.tokenUsage",
+            &[
+                usage.provider_call_count.to_string(),
+                usage.input_tokens.to_string(),
+                usage.output_tokens.to_string(),
+                cache.to_string(),
+                usage.cache_read_input_tokens.to_string(),
+                usage.cache_miss_input_tokens.to_string(),
+                usage.reported_call_count.to_string(),
+                usage.provider_call_count.to_string(),
+                coverage.to_string()
+            ]
+        )
     )?;
     Ok(())
 }
@@ -861,13 +923,17 @@ pub(crate) fn render_attachments(
     if !message.filesystem_references.is_empty() {
         writeln!(
             out,
-            "  文件系统引用：{}",
-            message
-                .filesystem_references
-                .iter()
-                .map(|reference| reference.display_name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            "{}",
+            crate::language().format(
+                "cli.fileReference",
+                &[(message
+                    .filesystem_references
+                    .iter()
+                    .map(|reference| reference.display_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "))
+                .to_string()]
+            )
         )?;
     }
     Ok(())
@@ -899,7 +965,7 @@ fn render_source_references(
             )?;
         }
         if references.unresolved {
-            writeln!(out, "部分引用来源未返回，标为 [?] 的引用无法打开。")?;
+            writeln!(out, "{}", crate::language().text("cli.missingSources"))?;
         }
     }
     Ok(())
@@ -914,32 +980,51 @@ pub(crate) fn render_approval(
         out,
         "{}：{}",
         if reply_prefix.is_none() {
-            "模型正在审查执行权限"
+            crate::language().text("cli.permissionReview")
         } else {
-            "需要你批准"
+            crate::language().text("cli.permissionRequired")
         },
         approval.preview.summary
     )?;
     if let Some(operation) = &approval.preview.operation {
-        writeln!(out, "操作：{}", operation.tool_name)?;
+        writeln!(
+            out,
+            "{}",
+            crate::language().format("cli.operation", &[operation.tool_name.to_string()])
+        )?;
         if let Some(root) = &operation.workspace_root {
-            writeln!(out, "工作目录：{root}")?;
+            writeln!(
+                out,
+                "{}",
+                crate::language().format("cli.root", &[root.to_string()])
+            )?;
         }
         if let Some(scope) = &operation.execution_scope {
-            writeln!(out, "执行范围：{scope}")?;
+            writeln!(
+                out,
+                "{}",
+                crate::language().format("cli.executionScope", &[scope.to_string()])
+            )?;
         }
         writeln!(
             out,
-            "参数：{}",
-            serde_json::to_string_pretty(&operation.arguments)?
+            "{}",
+            crate::language().format(
+                "cli.arguments",
+                &[(serde_json::to_string_pretty(&operation.arguments)?).to_string()]
+            )
         )?;
     }
     if approval.preview.authorization_scope.as_deref() == Some("sessionBrowser") {
-        writeln!(out, "允许后，当前对话内的浏览器页面操作无需重复确认。")?;
+        writeln!(out, "{}", crate::language().text("cli.sessionBrowser"))?;
     }
     if let Some(review) = approval.preview.review.as_ref() {
         if let Some(reason) = review.get("reason").and_then(serde_json::Value::as_str) {
-            writeln!(out, "审查结果：{reason}")?;
+            writeln!(
+                out,
+                "{}",
+                crate::language().format("cli.reviewResult", &[reason.to_string()])
+            )?;
         }
     }
     if let Some(prefix) = reply_prefix {
@@ -948,7 +1033,11 @@ pub(crate) fn render_approval(
             "{} · {} · {}",
             approval.run_id, approval.call_id, approval.approval_id
         )?;
-        writeln!(out, "{prefix} 1 允许一次 · {prefix} 2 拒绝")?;
+        writeln!(
+            out,
+            "{}",
+            crate::language().format("cli.approvalOptions", &[prefix.to_string()])
+        )?;
         for (scope, input) in achbit_kernel_client::AUTHORIZATION_OPTIONS {
             if approval
                 .preview
@@ -959,7 +1048,7 @@ pub(crate) fn render_approval(
                 writeln!(
                     out,
                     "{prefix} {input} {}",
-                    crate::i18n::Language::ZhCn.text(&format!("agent.permission.scope.{scope}"))
+                    crate::language().text(&format!("agent.permission.scope.{scope}"))
                 )?;
             }
         }
@@ -983,7 +1072,11 @@ pub(crate) fn render_interaction(
     out: &mut impl Write,
     interaction: &InteractionProjection,
 ) -> io::Result<()> {
-    writeln!(out, "需要你回答：{}", interaction.prompt)?;
+    writeln!(
+        out,
+        "{}",
+        crate::language().format("cli.question", &[interaction.prompt.to_string()])
+    )?;
     if let Some(options) = interaction.options.as_ref() {
         for (index, option) in options.iter().enumerate() {
             match option.description.as_deref() {
@@ -1018,7 +1111,7 @@ pub(crate) fn render_run_state(
                     writeln!(
                         out,
                         "{}",
-                        crate::i18n::Language::default()
+                        crate::language()
                             .format("tui.todoEndedRemaining", &[remaining.to_string()])
                     )?;
                 }
@@ -1053,15 +1146,27 @@ pub(crate) fn render_terminal_error(
                 )?;
             }
             for secondary in &details.secondary {
-                writeln!(out, "  附加错误 {}: {}", secondary.code, secondary.message)?;
+                writeln!(
+                    out,
+                    "{}",
+                    crate::language().format(
+                        "cli.secondaryError",
+                        &[secondary.code.to_string(), secondary.message.to_string()]
+                    )
+                )?;
             }
         }
         if let Some(snapshot) = &projection.failure_snapshot {
             writeln!(
                 out,
-                "  已记录失败状态：revision {} · {} 次 Provider 发送",
-                snapshot.revision,
-                snapshot.provider_attempt_ids.len()
+                "{}",
+                crate::language().format(
+                    "cli.failureState",
+                    &[
+                        snapshot.revision.to_string(),
+                        (snapshot.provider_attempt_ids.len()).to_string()
+                    ]
+                )
             )?;
         }
     }

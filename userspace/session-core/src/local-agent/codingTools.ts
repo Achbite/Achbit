@@ -1,8 +1,6 @@
-import type { JsonObject, PreparedToolDescriptor, RunRuntimeSnapshot, ToolExecutionRecord } from '@achbit/protocol';
+import { CORE_CODING_TOOLS, type JsonObject, type PreparedToolDescriptor, type RunRuntimeSnapshot, type ToolExecutionRecord } from '@achbit/protocol';
 
-export const codingToolNames = new Map([
-  ['fs.read', 'read'], ['bash', 'bash'], ['powershell', 'powershell'], ['fs.edit', 'edit'], ['fs.write', 'write'],
-]);
+export const codingToolNames = CORE_CODING_TOOLS;
 
 /** Shared tools/rules slices for every context; expanded guidance is inserted, never substituted. */
 export function codingToolInstruction(tools: readonly PreparedToolDescriptor[], aliases: ReadonlyMap<string, string>,
@@ -83,7 +81,23 @@ function fieldHelp(field: unknown, description: string): unknown {
   return record(field) ? { ...field, description } : field;
 }
 
-/** A presentation selects fields from one captured Kernel definition; it never copies its operation prose. */
+/** Project only the public line names. All other fields and budgets belong to the captured Kernel binding. */
+export function sharedCodingToolView(tools: readonly PreparedToolDescriptor[]): readonly PreparedToolDescriptor[] {
+  return tools.map(tool => {
+    if (tool.origin !== 'coreBuiltin' || tool.name !== 'fs.read' || !record(tool.inputSchema.properties)) return tool;
+    const { startLine, maxLines, ...rest } = tool.inputSchema.properties;
+    const properties = { ...rest,
+      ...(startLine === undefined ? {} : { offset: startLine }),
+      ...(maxLines === undefined ? {} : { limit: maxLines }),
+      ...(rest.startByte === undefined ? {} : { startByte: fieldHelp(rest.startByte, 'Files: resume at nextByte, even mid-line. Overrides offset.') }),
+    };
+    const required = Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(name =>
+      name === 'startLine' ? 'offset' : name === 'maxLines' ? 'limit' : name) : undefined;
+    return { ...tool, inputSchema: { ...tool.inputSchema, properties, ...(required ? { required } : {}) } };
+  });
+}
+
+/** Replay of the interface in pre-unification coding snapshots. */
 export function codingToolView(tools: readonly PreparedToolDescriptor[], coding = true, compact = false): readonly PreparedToolDescriptor[] {
   return tools.map(tool => {
     if (!coding || tool.origin !== 'coreBuiltin' || !codingToolNames.has(tool.name)) return tool;
@@ -118,13 +132,15 @@ export function codingToolView(tools: readonly PreparedToolDescriptor[], coding 
   });
 }
 
-export function decodeCodingRead(input: JsonObject): JsonObject {
+export function decodeCodingRead(input: JsonObject, kernelBudget = false): JsonObject {
   const { offset, limit, ...rest } = input;
-  return { ...rest, ...(offset !== undefined ? { startLine: offset } : {}), ...(limit !== undefined ? { maxLines: limit } : {}), maxBytes: readBytes };
+  return { ...rest, ...(offset !== undefined ? { startLine: offset } : {}), ...(limit !== undefined ? { maxLines: limit } : {}),
+    ...(kernelBudget ? {} : { maxBytes: readBytes }) };
 }
 
-export function encodeCodingRead(input: JsonObject): JsonObject {
-  const { startLine, maxLines, maxBytes: _window, ...rest } = input;
+export function encodeCodingRead(input: JsonObject, kernelBudget = false): JsonObject {
+  const { startLine, maxLines, ...rest } = input;
+  if (!kernelBudget) delete rest.maxBytes;
   return { ...rest, ...(startLine !== undefined ? { offset: startLine } : {}), ...(maxLines !== undefined ? { limit: maxLines } : {}) };
 }
 

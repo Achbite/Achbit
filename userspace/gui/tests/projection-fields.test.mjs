@@ -27,6 +27,22 @@ test('a worker projection preserves the optional named helper and still rejects 
   }
 });
 
+test('a rejected argument can quote a NUL in its diagnostic without losing the session or its rejection', async () => {
+  const p = projectSession(emptySessionState('session:quoted-field'));
+  const rejection = { code: 'tool_input_invalid', message: 'Unknown field `\0`.',
+    issues: [{ path: '$.edits[0].\0', rule: 'additionalProperties', message: 'Remove this undeclared field.' }] };
+  const row = { activityId: 'tool:edit', callId: 'call:edit', runId: 'run:one', kind: 'tool', label: 'fs.edit', status: 'rejected', sequence: 1 };
+  p.revision = 2;
+  p.timeline = [{ kind: 'toolGroup', timelineId: 'group:one', providerRequestId: 'request:one', sequence: 1, activityIds: [row.activityId] }];
+  const withError = inputRejection => ({ ...p, activities: [{ ...row, inputRejection }] });
+  const snapshot = withError(rejection);
+  assert.deepEqual(await decodeGuiProjection(snapshot), snapshot, 'preserve even the original quoted field; this tool did not run');
+  for (const fields of [{ code: 'bad\0code' }, { message: null }, { message: ' ' }, { issues: [] },
+    { issues: [{ ...rejection.issues[0], path: 0 }] }, { diagnostics: {} }, { executed: true }]) {
+    await assert.rejects(decodeGuiProjection(withError({ ...rejection, ...fields })), /conversation_projection_invalid/);
+  }
+});
+
 async function sessionFixture(t) {
   let requests = 0;
   const service = new SessionService(new InMemoryCommandJournal(), { async create() {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Keep the container process group owned by this foreground development service.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/dev-language.sh"
 CONTAINER="$1"
 WORKDIR="$2"
 GUI_PORT="$3"
@@ -19,7 +20,7 @@ cleanup() {
       kill -TERM -- "-$pid" 2>/dev/null || true
     fi
     rm -rf -- "$ACHBIT_DEV_CONTROL"
-  ' || { printf "[achbit-gui-web] Could not stop owned container service: %s\n" "$CONTROL" >&2; status=1; }
+  ' || { dev_printf "[achbit-gui-web] Could not stop owned container service: %s\n" "[achbit-gui-web] 无法停止本次容器服务：%s\n" "$CONTROL" >&2; status=1; }
   if [ -n "$CLIENT_PID" ]; then wait "$CLIENT_PID" 2>/dev/null || true; fi
   exit "$status"
 }
@@ -27,7 +28,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-docker exec "$@" -w "$WORKDIR" -e ACHBIT_GUI_BIND_HOST=0.0.0.0 \
+docker exec "$@" -e ACHBIT_DEV_LANGUAGE -w "$WORKDIR" -e ACHBIT_GUI_BIND_HOST=0.0.0.0 \
   -e ACHBIT_GUI_DEV_PORT="$GUI_PORT" -e ACHBIT_HOST_PORT=31247 -e ACHBIT_DAEMON_PORT=31248 \
   -e ACHBIT_DEV_CONTROL="$CONTROL" "$CONTAINER" setsid --wait bash scripts/dev-achbit-gui-web.sh &
 CLIENT_PID=$!

@@ -29,8 +29,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
   const [locations, setLocations] = useState<InitialLocation[]>([]);
   const [browseResult, setBrowseResult] = useState<BrowsePathResult | null>(null);
   const [addressInput, setAddressInput] = useState('');
-  const [selectedEntry, setSelectedEntry] = useState<BrowseEntry | null>(null);
-  const [selectedFiles, setSelectedFiles] = useState<BrowseEntry[]>([]);
+  const [selectedEntries, setSelectedEntries] = useState<BrowseEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(false);
@@ -42,8 +41,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
     setError(null);
     setBrowseResult(null);
     setAddressInput(absolutePath);
-    setSelectedEntry(null);
-    setSelectedFiles([]);
+    setSelectedEntries([]);
     try {
       const result = await browsePath(absolutePath);
       if (request !== navigation.current) return;
@@ -99,18 +97,19 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
     )),
     [browseResult, allowsFiles, showHidden, filters],
   );
-  const selectedPath = selectedEntry?.absolutePath ?? browseResult?.absolutePath ?? '';
-  const selectedType = selectedEntry?.type ?? 'directory';
+  const selectedPath = selectedEntries[0]?.absolutePath ?? browseResult?.absolutePath ?? '';
+  const selectedType = selectedEntries[0]?.type ?? 'directory';
+  const selectionLabel = selectedEntries.length > 1
+    ? t(language, 'agent.attachment.selectionCount', { count: selectedEntries.length }) : selectedPath;
+  const isSelected = (entry: BrowseEntry) => selectedEntries.some(item => item.absolutePath === entry.absolutePath);
   const canConfirm = !loading && !error && Boolean(selectedPath)
     && (selectionMode !== 'file' || selectedType === 'file');
   const selectEntry = (entry: BrowseEntry, additive = false) => {
-    if (isAttachmentSelection && entry.type === 'file') {
-      setSelectedEntry(null);
-      setSelectedFiles(current => additive
-        ? current.some(file => file.absolutePath === entry.absolutePath)
-          ? current.filter(file => file.absolutePath !== entry.absolutePath) : [...current, entry]
-        : [entry]);
-    } else { setSelectedFiles([]); setSelectedEntry(entry); }
+    setSelectedEntries(current => {
+      if (!isAttachmentSelection || !onSelectMany || !additive || current[0]?.type !== entry.type) return [entry];
+      return current.some(item => item.absolutePath === entry.absolutePath)
+        ? current.filter(item => item.absolutePath !== entry.absolutePath) : [...current, entry];
+    });
   };
   const openEntry = (entry: BrowseEntry) => {
     if (entry.type === 'directory') void navigateTo(entry.absolutePath);
@@ -206,18 +205,14 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
                 {entries.map((entry) => (
                   <li
                     key={entry.absolutePath}
-                    className={`ws-open-dialog__entry${selectedEntry?.absolutePath === entry.absolutePath || selectedFiles.some(file => file.absolutePath === entry.absolutePath) ? ' ws-open-dialog__entry--selected' : ''}`}
+                    className={`ws-open-dialog__entry${isSelected(entry) ? ' ws-open-dialog__entry--selected' : ''}`}
                     title={entry.absolutePath}
                   >
-                    {isAttachmentSelection && entry.type === 'file' && <input type="checkbox"
-                      aria-label={entry.name} checked={selectedFiles.some(file => file.absolutePath === entry.absolutePath)}
-                      onClick={event => event.stopPropagation()} onChange={() => {
-                        setSelectedEntry(null);
-                        setSelectedFiles(current => current.some(file => file.absolutePath === entry.absolutePath)
-                          ? current.filter(file => file.absolutePath !== entry.absolutePath) : [...current, entry]);
-                      }} />}
+                    {isAttachmentSelection && onSelectMany && <input type="checkbox"
+                      aria-label={entry.name} checked={isSelected(entry)}
+                      onChange={() => selectEntry(entry, true)} />}
                     <Button size="compact" className="ws-open-dialog__entry-action"
-                      aria-pressed={selectedEntry?.absolutePath === entry.absolutePath || selectedFiles.some(file => file.absolutePath === entry.absolutePath)}
+                      aria-pressed={isSelected(entry)}
                       onClick={event => selectEntry(entry, event.metaKey || event.ctrlKey)}
                       onDoubleClick={() => openEntry(entry)}
                       onKeyDown={event => {
@@ -244,7 +239,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
           </main>
         </div>
         <div className="ws-open-dialog__footer">
-          <div className="ws-open-dialog__footer-info" title={selectedPath}>{selectedFiles.length ? `${selectedFiles.length} ${language === 'zh-CN' ? '个文件' : 'files'}` : selectedPath}</div>
+          <div className="ws-open-dialog__footer-info" title={selectionLabel}>{selectionLabel}</div>
           <div className="ws-open-dialog__footer-actions">
             <button type="button" className="ws-open-dialog__btn" onClick={onCancel}>
               {t(language, 'workspaceDialog.cancel')}
@@ -255,7 +250,7 @@ const BrowserProjectFolderDialog: React.FC<ProjectFolderDialogProps> = ({
               disabled={!canConfirm}
               onClick={() => {
                 if (!canConfirm) return;
-                if (selectedFiles.length && onSelectMany) onSelectMany(selectedFiles.map(file => ({ path: file.absolutePath, kind: 'file' })));
+                if (selectedEntries.length && onSelectMany) onSelectMany(selectedEntries.map(entry => ({ path: entry.absolutePath, kind: entry.type })));
                 else if (selectedPath && selectedType) onSelect(selectedPath, selectedType);
               }}
             >

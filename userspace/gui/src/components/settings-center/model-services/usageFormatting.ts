@@ -6,7 +6,7 @@ export function periodQuery(days: number, connectionId?: string, now = new Date(
   return { from: +from, to: +to, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     granularity: days === 1 ? 'hour' : 'day', ...(connectionId ? { connectionId } : {}) };
 }
-// Keep the same decimal K/M/B notation in both UI languages (zh-CN compact uses 万/亿).
+// Keep the same decimal K/M/B notation in both UI languages.
 export const formatUsageTokens = new Intl.NumberFormat('en-US', {
   notation: 'compact', maximumFractionDigits: 2,
 }).format;

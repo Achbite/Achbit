@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/source-identity.sh"
+source "$ROOT_DIR/scripts/dev-language.sh"
 CONTAINER_NAME="${CONTAINER_NAME:-achbit-dev}"
 WORKDIR_IN_CTNR="${WORKDIR_IN_CTNR:-/workspace}"
 OUTPUT_DIR="${ACHBIT_OUTPUT_DIR:-$ROOT_DIR/bin}"
@@ -11,6 +12,33 @@ OUTPUT_DIR="${ACHBIT_OUTPUT_DIR:-$ROOT_DIR/bin}"
 export ACHBIT_BUILD_KIND=normal
 STAGES=()
 usage() {
+  if [ "$ACHBIT_DEV_LANGUAGE" = zh-CN ]; then
+    cat <<'HELP'
+用法：bash build.sh [-debug] [--stage STAGE]...
+  -debug                将 Windows/macOS 调试运行目录及压缩包写入 bin/debug，跳过安装器。
+  runtime（默认）        编译并更新 bin/ 中适合开发宿主的运行目录。
+  runtime-macos | runtime-windows | runtime-linux 仅更新所选平台的运行目录。
+  code                  在 Docker 中编译共享 TypeScript、GUI 资源和 Linux Rust 代码。
+  package               打包所有可用平台；若无可用平台则失败。
+  package-linux         为容器架构生成 Linux 运行目录。
+  package-windows       使用 GNU 交叉工具链和 NSIS 生成 Windows x64 运行目录、ZIP 和安装器。
+  package-macos         经 Mac 宿主生成 macOS arm64 运行目录、压缩包及 PKG。
+  ui                    构建共享 TypeScript 和 GUI 并发布到 bin/ui。
+  daemon | cli | tui    只构建指定的 Linux 可执行文件。
+  native-gui            只构建 Linux 原生 GUI。
+  computer-use          只更新独立签名的 macOS Computer Use App。
+  computer-use-windows  只更新 bin/win64/Achbit-Computer-Use.exe，可保持 GUI 运行。
+环境变量：CONTAINER_NAME、WORKDIR_IN_CTNR、ACHBIT_OUTPUT_DIR、ACHBIT_BUILD_COMMIT、
+  CARGO_TARGET_DIR、RUSTC_WRAPPER、SCCACHE_DIR、ACHBIT_MACOS_CARGO、ACHBIT_MACOS_NODE_BIN、
+  ACHBIT_MACOS_CARGO_TARGET_DIR、ACHBIT_MACOS_SIGN_IDENTITY（默认 Achbit Local Development）。
+  Windows 使用 make shell 挂载的签名配置；ACHBIT_WINDOWS_TIMESTAMP_URL 可指定 RFC 3161 时间戳服务。
+请预先安装工具。打包使用新的暂存目录，保留 Cargo/pnpm 缓存及现有用户数据。
+运行目录包含原生程序和共享资源，macOS App 会签名。Docker 通过 ACHBIT_BUILD_HOST_OS 选择宿主平台。
+code 阶段只保留编译输出。全平台打包使用 bash build.sh --stage package。
+在 Mac 上，make shell 会在进入 Docker 前准备宿主构建通道。
+HELP
+    return
+  fi
   cat <<'HELP'
 Usage: bash build.sh [-debug] [--stage STAGE]...
   -debug              Windows/macOS Debug runtime/archive in bin/debug, without installers.
@@ -47,7 +75,7 @@ while [ "$#" -gt 0 ]; do
     -debug) export ACHBIT_BUILD_KIND=debug; shift ;;
     --stage) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; STAGES+=("$2"); shift 2 ;;
     --help|-h) usage; exit 0 ;;
-    *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
+    *) dev_printf 'Unknown argument: %s\n' '未知参数：%s\n' "$1" >&2; exit 2 ;;
   esac
 done
 # Keep assignment separate from export so a failed Git lookup stops the build
@@ -57,14 +85,14 @@ export ACHBIT_BUILD_COMMIT
 export ACHBIT_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$ACHBIT_BUILD_KIND" = debug ]; then
   if [ -n "${ACHBIT_OUTPUT_DIR+x}" ] && [ "$OUTPUT_DIR" != "$ROOT_DIR/bin/debug" ]; then
-    printf 'Debug output is fixed at bin/debug; remove conflicting ACHBIT_OUTPUT_DIR.\n' >&2; exit 2
+    dev_printf 'Debug output is fixed at bin/debug; remove conflicting ACHBIT_OUTPUT_DIR.\n' '调试输出固定在 bin/debug，请移除冲突的 ACHBIT_OUTPUT_DIR。\n' >&2; exit 2
   fi
   OUTPUT_DIR="$ROOT_DIR/bin/debug"
   [ "${#STAGES[@]}" -gt 0 ] || STAGES=(package)
   for stage in "${STAGES[@]}"; do
     case "$stage" in
       package|package-macos|package-windows) ;;
-      *) printf 'Debug stage is not supported: %s (use package-windows or package-macos).\n' "$stage" >&2; exit 2 ;;
+      *) dev_printf 'Debug stage is not supported: %s (use package-windows or package-macos).\n' '不支持调试阶段 %s，请选 package-windows 或 package-macos。\n' "$stage" >&2; exit 2 ;;
     esac
   done
 else
@@ -74,13 +102,13 @@ IN_CONTAINER=0
 [ ! -f /.dockerenv ] || IN_CONTAINER=1
 if [ "$IN_CONTAINER" -eq 0 ]; then
   mounted_root="$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$WORKDIR_IN_CTNR\"}}{{.Source}}{{end}}{{end}}" "$CONTAINER_NAME")"
-  [ "$mounted_root" = "$ROOT_DIR" ] || { printf 'Container %s mounts another worktree; use make shell with this worktree configuration.\n' "$CONTAINER_NAME" >&2; exit 1; }
-  [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME")" = true ] || { printf 'Container is not running; use make shell.\n' >&2; exit 1; }
+  [ "$mounted_root" = "$ROOT_DIR" ] || { dev_printf 'Container %s mounts another worktree; use make shell with this worktree configuration.\n' '容器 %s 挂载了其他工作树，请用本工作树的配置执行 make shell。\n' "$CONTAINER_NAME" >&2; exit 1; }
+  [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME")" = true ] || { dev_printf 'Container is not running; use make shell.\n' '容器未运行，请先执行 make shell。\n' >&2; exit 1; }
 fi
-case "$OUTPUT_DIR/" in "$ROOT_DIR/"*) ;; *) printf 'Output must be inside the mounted worktree.\n' >&2; exit 2 ;; esac
+case "$OUTPUT_DIR/" in "$ROOT_DIR/"*) ;; *) dev_printf 'Output must be inside the mounted worktree.\n' '输出必须位于挂载的工作树内。\n' >&2; exit 2 ;; esac
 mkdir -p "$ROOT_DIR/.build-cache"
 BUILD_LOCK="$ROOT_DIR/.build-cache/build.lock"
-mkdir "$BUILD_LOCK" 2>/dev/null || { printf 'Another build owns %s; wait for it to finish.\n' "$BUILD_LOCK" >&2; exit 1; }
+mkdir "$BUILD_LOCK" 2>/dev/null || { dev_printf 'Another build owns %s; wait for it to finish.\n' '另一个构建正在使用 %s，请等待其结束。\n' "$BUILD_LOCK" >&2; exit 1; }
 TRANSACTION="$(mktemp -d "$ROOT_DIR/.build-cache/package.XXXXXX")"
 printf '%s\n' "$TRANSACTION" > "$BUILD_LOCK/transaction"
 started=$SECONDS
@@ -94,7 +122,7 @@ cleanup() {
   if [ "$IN_CONTAINER" -eq 0 ] && [ -f "$TRANSACTION/container.pid" ]; then
     local process_group
     process_group="$(cat "$TRANSACTION/container.pid")"
-    docker exec "$CONTAINER_NAME" kill -TERM -- "-$process_group" || printf 'Could not stop this build process group: %s\n' "$process_group" >&2
+    docker exec "$CONTAINER_NAME" kill -TERM -- "-$process_group" || dev_printf 'Could not stop this build process group: %s\n' '无法停止本次构建进程组：%s\n' "$process_group" >&2
   fi
   if [ -f "$TRANSACTION/macos-request" ]; then
     if ! python3 "$ROOT_DIR/scripts/macos-build-bridge.py" cancel --shared "$TRANSACTION/shared"; then
@@ -103,7 +131,7 @@ cleanup() {
     fi
   fi
   if [ "$macos_pending" -eq 1 ]; then
-    printf 'Mac host has not confirmed exit; retaining staging and build lock: %s\n' "$TRANSACTION" >&2
+    dev_printf 'Mac host has not confirmed exit; retaining staging and build lock: %s\n' 'Mac 宿主尚未确认退出，已保留暂存目录和构建锁：%s\n' "$TRANSACTION" >&2
   else
     rm -rf -- "$TRANSACTION" "$BUILD_LOCK"
   fi
@@ -120,7 +148,7 @@ macos_step() {
   if [ "$IN_CONTAINER" -eq 1 ]; then
     python3 "$ROOT_DIR/scripts/macos-build-bridge.py" "$@"
   elif [ "$(uname -s)" != Darwin ]; then
-    printf 'No macOS build host is registered for this worktree.\n'; return 3
+    dev_printf 'No macOS build host is registered for this worktree.\n' '当前工作树没有已登记的 macOS 构建宿主。\n'; return 3
   elif [ "$1" = check ]; then
     bash "$ROOT_DIR/scripts/package-macos.sh" --check
   elif [ "$1" = check-runtime ]; then
@@ -138,7 +166,7 @@ container_step() {
     bash "$ROOT_DIR/scripts/build-platforms.sh" "$@"
   else
     local name
-    local environment=(-e ACHBIT_BUILD_COMMIT -e ACHBIT_BUILD_TIME -e ACHBIT_BUILD_KIND -e ACHBIT_BUILD_VERSION)
+    local environment=(-e ACHBIT_DEV_LANGUAGE -e ACHBIT_BUILD_COMMIT -e ACHBIT_BUILD_TIME -e ACHBIT_BUILD_KIND -e ACHBIT_BUILD_VERSION)
     for name in PNPM_STORE_DIR ACHBIT_WINDOWS_NODE_BIN ACHBIT_NODE_LICENSE ACHBIT_DISABLE_SCCACHE ACHBIT_WINDOWS_TIMESTAMP_URL; do
       [ -z "${!name+x}" ] || environment+=(-e "$name")
     done
@@ -175,7 +203,7 @@ local_platform() {
   local build_host_os="${ACHBIT_BUILD_HOST_OS:-}"
   if [ -z "$build_host_os" ]; then
     if [ "$IN_CONTAINER" -eq 1 ]; then
-      printf 'Container host platform is missing (ACHBIT_BUILD_HOST_OS). Re-enter with make shell from the host, or choose --stage runtime-macos/runtime-windows/runtime-linux explicitly.\n' >&2
+      dev_printf 'Container host platform is missing (ACHBIT_BUILD_HOST_OS). Re-enter with make shell from the host, or choose --stage runtime-macos/runtime-windows/runtime-linux explicitly.\n' '缺少宿主平台 ACHBIT_BUILD_HOST_OS。请从宿主重新执行 make shell，或通过 --stage 显式指定 runtime-macos/runtime-windows/runtime-linux。\n' >&2
       return 2
     fi
     build_host_os="$(uname -s)"
@@ -186,7 +214,7 @@ local_platform() {
     Linux)
       if [ -n "${WSL_DISTRO_NAME:-}" ]; then printf 'windows\n'; else printf 'linux\n'; fi
       ;;
-    *) printf 'Unsupported development host: %s\n' "$build_host_os" >&2; return 2 ;;
+    *) dev_printf 'Unsupported development host: %s\n' '不支持的开发宿主：%s\n' "$build_host_os" >&2; return 2 ;;
   esac
 }
 for stage in "${STAGES[@]}"; do
@@ -207,7 +235,7 @@ for stage in "${STAGES[@]}"; do
     computer-use) computer_use=1 ;;
     computer-use-windows) computer_use_windows=1 ;;
     daemon|cli|tui|native-gui) native_stages+=("$stage") ;;
-    *) printf 'Unknown stage: %s\n' "$stage" >&2; usage >&2; exit 2 ;;
+    *) dev_printf 'Unknown stage: %s\n' '未知阶段：%s\n' "$stage" >&2; usage >&2; exit 2 ;;
   esac
 done
 available=()
@@ -223,7 +251,7 @@ for platform in "${platforms[@]:-}"; do
   current_stage="check-$platform"
   if reason="$("${check[@]}" 2>&1)"; then
     available+=("$platform")
-    [ "$platform" != macos ] || printf '==[build][host]== macOS arm64 build host available\n'
+    [ "$platform" != macos ] || dev_printf '==[build][host]== macOS arm64 build host available\n' '==[build][host]== macOS arm64 构建宿主可用\n'
   else
     check_status=$?
     if [ "$all" -eq 1 ] && { [ "$platform" != macos ] || [ "$check_status" -eq 3 ]; }; then
@@ -234,7 +262,7 @@ for platform in "${platforms[@]:-}"; do
     fi
   fi
 done
-[ "${#platforms[@]}" -eq 0 ] || [ "${#available[@]}" -gt 0 ] || { printf 'No platform can be built.\n' >&2; exit 1; }
+[ "${#platforms[@]}" -eq 0 ] || [ "${#available[@]}" -gt 0 ] || { dev_printf 'No platform can be built.\n' '没有可构建的平台。\n' >&2; exit 1; }
 if [ "$ui" -eq 1 ] || [ "${#available[@]}" -gt 0 ]; then
   current_stage=shared
   container_step --shared "$SHARED_DIR"

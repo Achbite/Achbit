@@ -89,10 +89,17 @@ export class InMemoryCommandJournal {
     const index = Math.max(0, starts.findLastIndex(sequence => sequence <= anchor));
     const start = index ? starts[index] : 1, next = starts[index+1] ?? null, end = next === null ? revision : next-1;
     const within = e => e.sequence >= start && e.sequence <= end;
+    const committed = new Set(user.map(e => e.payload.messageId));
+    const pageUsers = new Set(user.filter(within).map(e => e.payload.messageId));
+    const queued = all.filter(e => next === null && e.sequence < start && e.type === 'input.queued'
+      && !committed.has(e.payload.messageId) && !edits.some(r => r.fromSequence <= e.sequence && e.sequence <= r.throughSequence));
+    const queuedRuns = new Set(queued.map(e => e.runId));
     return { tip, sessionId, revision, start, end, previous: starts[index-1] ?? null, next,
       navigation: user.map(e => ({key:e.payload.messageId,sequence:e.sequence,label:e.payload.content?.trim().slice(0,180) || e.payload.filesystemReferences?.[0]?.displayName || ''})),
       compositions: all.filter(e => within(e) && e.type === 'context.composed').map(e => ({sequence:e.sequence,runId:e.runId,providerRequestId:e.payload.providerRequestId,purpose:e.payload.purpose})),
       events: structuredClone(all.filter(e => e.type !== 'context.composed' && (within(e) || e.type === 'session.created' || e.type === 'conversation.revised'
+        || (e.sequence < start && e.type === 'input.accepted' && pageUsers.has(e.payload.messageId))
+        || queued.includes(e) || (e.sequence < start && e.type === 'run.settled' && queuedRuns.has(e.runId))
         || e.type.startsWith('plan.') || projectAgentLifecycleEvent(e) || e.type === 'message.feedback.updated'
         || (e.sequence < start && ['session.workspaces.updated','session.directory-index.attached','session.directory-index.detached','session.model-settings.updated','session.subagent-settings.updated','session.mode.updated'].includes(e.type))))),
     };

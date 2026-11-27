@@ -56,7 +56,14 @@ export async function checkComposerPluginMentions({ navigate, evaluate, cmd, fra
   assert.ok(pickedOkay, 'choosing a plugin preserves both sides of the draft, returns the caret and does not send');
 
   await caret(expectedText.length); await insert('@chr');
-  assert.deepEqual((await read()).options, ['Chrome']); await key('Enter');
+  assert.deepEqual((await read()).options, ['Chrome']);
+  const selectedStyle = await evaluate(`(async()=>{const row=document.querySelector('${list} [aria-selected="true"]');
+    if (!row) return null;
+    await Promise.all(row.getAnimations().map(a=>a.finished));
+    const swatch=document.createElement('span');swatch.hidden=true;swatch.style.backgroundColor='var(--ac-selection)';row.append(swatch);
+    try { return { fill:getComputedStyle(row).backgroundColor, expected:getComputedStyle(swatch).backgroundColor,
+      checked:!!row.querySelector('.plugin-selection-mark svg') }; } finally {swatch.remove();} })()`);
+  await key('Enter');
   const repeated = await read();
   assert.equal(repeated.draft, expectedText, 'choosing the same plugin again removes only the new query');
   assert.deepEqual(repeated.chips, picked.chips, 'the original selected identity survives');
@@ -65,7 +72,7 @@ export async function checkComposerPluginMentions({ navigate, evaluate, cmd, fra
   const { sends } = await read();
   assert.deepEqual(sends, [{ text: expectedText, pluginSelections: [{ selectionId: picked.chips[0].id, uri: 'plugin://chrome-devtools@builtin', label: 'Chrome' }] }],
     'the composer sends the original catalog URI exactly once, not a URI derived from the display label');
-  await record('composer-plugin-dedup-send', { repeated, sends }, true);
+  await record('composer-plugin-dedup-send', { repeated, sends, selectedStyle }, selectedStyle?.checked===true && selectedStyle.fill===selectedStyle.expected);
 
   const legacy = { draft: '保留说明', pastedTexts: [], pastedImages: [], filesystemPaths: [],
     pluginSelections: [{ selectionId: 'draft:retired', uri: 'plugin://achbit-product@builtin', label: '旧操作指南' }],

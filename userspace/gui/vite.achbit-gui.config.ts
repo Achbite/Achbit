@@ -64,6 +64,7 @@ export default defineConfig(({ command }) => {
       rollupOptions: {
         input: {
           index: 'achbit-gui.html',
+          completion: 'completion.html',
         },
         output: {
           manualChunks(id: string) {

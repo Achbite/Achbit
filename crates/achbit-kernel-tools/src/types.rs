@@ -38,6 +38,11 @@ pub struct ToolDescriptor {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ToolValidationError {
+    #[error("edits[{index}]: {source}")]
+    EditItem {
+        index: usize,
+        source: Box<ToolValidationError>,
+    },
     #[error("{field} must not be empty")]
     EmptyField { field: &'static str },
     #[error("{field} exceeds {maximum_bytes} bytes")]

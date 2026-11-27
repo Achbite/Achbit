@@ -34,6 +34,14 @@ Review each new or changed operation, including changes within existing files an
 
 `DisclosureSummary` renders a native `summary` with the shared decorative chevron for ordinary content disclosures. Its parent `details` retains open state and native keyboard/toggle behavior; refs, events, localized children and owner/action attributes pass through. Use `chevronPosition="leading"` when a compact settings label leads with the arrow. The default places it after the label. Feature styles retain placement and surrounding layout. Menus, tree navigation and already specialized disclosure controls keep their existing interaction policies.
 
+### Type, depth and selection
+
+Use the app's scaled type roles: `--ac-font-page-title` for a settings page, `--ac-font-body-large` for a section or notification subject, `--ac-font-body`/`--ac-font-label` for a field or action and `--ac-font-caption` for supporting text. Use `--ac-font-ui` for controls, the reading role for conversation content and the code/mono role for identifiers. Test the actual text and surface together; `muted` and `faint` are still readable text, not disabled opacity. The built-in resting text pairs are checked in `tests/appearance-contrast.test.mjs`; custom palettes and blended/interactive states require separate review.
+
+Ordinary sections are flat. Use `--ac-shadow-small` for a slight lift and `--ac-shadow-panel` for floating surfaces; each theme owns both the short contact shadow and the wider, softer shadow. `--ac-shadow-inset` is an inner edge, not a higher elevation. Add `--ac-modal-scrim` only when input is blocked, never to a status reminder. Native window placement or an OS shadow is separate from CSS painting.
+
+An action fires once; a toggle reflects persistent `aria-pressed` state; a picker, switch and page navigation expose their corresponding selection, checked or current-page semantics. Ordinary selected buttons, segments and list choices share the flat `--ac-selection` background with `--ac-foreground-strong` text. Do not add a bottom or side accent strip, raised shadow or a separate tint on hover. Keep meaningful checkmarks, radio indicators and data colors. Hover and keyboard focus are independent of selection: keyboard-only focus cues must remain visible, including in forced colors. Success belongs to the completed operation, not to every selected action. Do not hide an available action merely because the containing pane is narrow. Size from the pane that changes, wrap controls when needed and keep scrollable details with their owner.
+
 ## Framework layers and entry points
 
 Start with the owner of the change. Source paths in this table are relative to `userspace/gui/src`.

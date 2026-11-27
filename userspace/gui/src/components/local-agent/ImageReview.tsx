@@ -1,5 +1,6 @@
 import { showContentDialog } from '../shared/interactionFocus';
 import { ContentImageSave } from './ContentImageSave';
+import { Button, CloseButton } from '../../ui-components';
 import { readContentImage, type ContentImage } from './contentImage';
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { t } from '../../i18n';
@@ -9,6 +10,7 @@ import './viewerDialog.css';
 import './imageReview.css';
 
 type ImageReviewProps = {
+  lightbox?: boolean;
   createImage?(signal: AbortSignal): Promise<ContentImage>;
   triggerIdentity?: Readonly<Record<`data-ui-${string}`, string>>;
   source?: string; alt: string; children?: ReactNode; className?: string; imageClassName?: string;
@@ -18,7 +20,7 @@ type ImageReviewProps = {
 };
 
 /** Keep the thumbnail and its native dialog paired. Mount the full viewer only while open. */
-export function ImageReview({ source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, onThumbnailReady, intrinsicSize, triggerRef, hideTrigger, thumbnailPending = false, createImage }: ImageReviewProps) {
+export function ImageReview({ lightbox, source, alt, triggerIdentity, children, className = '', imageClassName, title, onError, onThumbnailReady, intrinsicSize, triggerRef, hideTrigger, thumbnailPending = false, createImage }: ImageReviewProps) {
   const language = useUiLanguage();
   const [open, setOpen] = useState(false);
   const frameless = !className && typeof navigator !== 'undefined' && /Win/.test(navigator.platform);
@@ -29,13 +31,13 @@ export function ImageReview({ source, alt, triggerIdentity, children, className 
       onClick={() => setOpen(true)}>
       {children ?? <img className={imageClassName} src={source} alt={alt} width={intrinsicSize?.width} height={intrinsicSize?.height} loading="lazy" decoding="async" onLoad={onThumbnailReady ? event => onThumbnailReady(event.currentTarget) : undefined} onError={onError} />}
     </button>
-    <ImageReviewDialog open={open && !!source} source={source} alt={alt} intrinsicSize={intrinsicSize}
+    <ImageReviewDialog lightbox={lightbox} open={open && !!source} source={source} alt={alt} intrinsicSize={intrinsicSize}
       onError={onError} createImage={createImage} onClose={() => setOpen(false)} />
   </>;
 }
 
-export function ImageReviewDialog({ open, source, alt, intrinsicSize, createImage, onError, onClose }:
-  Pick<ImageReviewProps, 'source' | 'alt' | 'intrinsicSize' | 'createImage' | 'onError'> & { open: boolean; onClose(): void }) {
+export function ImageReviewDialog({ lightbox, open, source, alt, intrinsicSize, createImage, onError, onClose }:
+  Pick<ImageReviewProps, 'lightbox' | 'source' | 'alt' | 'intrinsicSize' | 'createImage' | 'onError'> & { open: boolean; onClose(): void }) {
   const language = useUiLanguage();
   const dialog = useRef<HTMLDialogElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
@@ -76,10 +78,12 @@ export function ImageReviewDialog({ open, source, alt, intrinsicSize, createImag
   }, [ready, source]);
   const resetFit = () => { anchor.current = centeredZoom; setZoom(null); };
   return (
-    <dialog ref={dialog} className="conversation-viewer-dialog conversation-image-review__dialog" aria-label={alt || t(language, 'content.image.expand')}
+    <dialog ref={dialog} className="conversation-viewer-dialog conversation-image-review__dialog" data-lightbox={lightbox || undefined} aria-label={alt || t(language, 'content.image.expand')}
       onClose={() => { drag.current = null; resetFit(); onClose(); }}
       onCancel={event => event.stopPropagation()}
-      onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}
+      onClick={event => {
+        if (event.target === event.currentTarget || lightbox && event.target instanceof Element && event.target.matches('.conversation-image-review__canvas')) dialog.current?.close();
+      }}
       onKeyDown={event => {
         event.stopPropagation();
         if (event.key === '+' || event.key === '=') { event.preventDefault(); changeZoom(1.25); }
@@ -95,10 +99,11 @@ export function ImageReviewDialog({ open, source, alt, intrinsicSize, createImag
           <output aria-label={t(language, 'content.image.zoom')}>{scale === null ? '—' : `${Math.round(scale * 100)}%`}</output>
           <button type="button" aria-label={t(language, 'content.image.zoomIn')} title={t(language, 'content.image.zoomIn')}
             disabled={scale === null || scale >= maxScale} onClick={() => changeZoom(1.25)}>+</button>
-          <button type="button" aria-pressed={zoom === null} onClick={resetFit}>{t(language, 'content.image.fit')}</button>
+          <Button aria-pressed={zoom === null} onClick={resetFit}>{t(language, 'content.image.fit')}</Button>
         </div>
-        <button type="button" className="conversation-image-review__close" aria-label={t(language, 'content.image.close')} onClick={() => dialog.current?.close()}>
-          {t(language, 'content.image.close')}</button>
+        {lightbox ? <CloseButton className="conversation-image-review__close" aria-label={t(language, 'content.image.close')} onClick={() => dialog.current?.close()} />
+          : <button type="button" className="conversation-image-review__close" aria-label={t(language, 'content.image.close')} onClick={() => dialog.current?.close()}>
+              {t(language, 'content.image.close')}</button>}
       </div>
       <div ref={viewport} className="conversation-image-review__scroll" tabIndex={0} data-pannable={fit !== null && scale !== null && scale > fit || undefined}
         onPointerDown={event => {

@@ -92,7 +92,7 @@
 
 .achbit-gui-session-entry--active,
 .achbit-gui-session-entry--active:hover {
-  background: var(--ac-surface-active);
+  background: var(--ac-selection);
   color: var(--ac-foreground-strong);
 }
 
@@ -525,7 +525,7 @@
 
 .achbit-gui-session-row--active,
 .achbit-gui-session-row--active:hover {
-  background: var(--ac-surface-active);
+  background: var(--ac-selection);
 }
 
 .achbit-gui-session-row > button:first-child {
@@ -1445,28 +1445,20 @@
   min-height: 38px;
   padding: 6px 4px;
   border: 0;
-  border-bottom: 1px solid var(--ac-border);
-  border-radius: 0;
+  border-radius: var(--ac-radius-control);
   background: transparent;
   color: var(--ac-foreground);
   text-align: left;
   cursor: pointer;
 }
 
-.achbit-session-model__context-sections > button:last-child {
-  border-bottom: 0;
+.achbit-session-model__context-sections > button:is(:hover, :focus-visible) {
+  background: var(--ac-surface-hover);
 }
 
 .achbit-session-model__context-sections > button.is-active {
-  background: color-mix(in srgb, var(--achbit-context-color) 10%, transparent);
-  box-shadow: inset 3px 0 0 var(--achbit-context-color);
-}
-
-.achbit-session-model__context-sections > button:hover,
-.achbit-session-model__context-sections > button:focus-visible {
-  background: color-mix(in srgb, var(--achbit-context-color) 10%, transparent);
-  box-shadow: inset 3px 0 0 var(--achbit-context-color);
-  outline: none;
+  background: var(--ac-selection);
+  color: var(--ac-foreground-strong);
 }
 
 .achbit-session-model__context-sections > button strong {
@@ -1496,18 +1488,10 @@
   background: var(--achbit-context-instructions);
 }
 
-.achbit-session-model__context-sections > button[data-context-key='instructions'] {
-  --achbit-context-color: var(--achbit-context-instructions);
-}
-
 .achbit-session-model__context-detail > span[data-context-key='tools'],
 .achbit-session-model__context-sections > button[data-context-key='tools'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='tools'] {
   background: var(--achbit-context-tools);
-}
-
-.achbit-session-model__context-sections > button[data-context-key='tools'] {
-  --achbit-context-color: var(--achbit-context-tools);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='workspaceBindings'],
@@ -1516,18 +1500,10 @@
   background: var(--achbit-context-index);
 }
 
-.achbit-session-model__context-sections > button[data-context-key='workspaceBindings'] {
-  --achbit-context-color: var(--achbit-context-index);
-}
-
 .achbit-session-model__context-detail > span[data-context-key='sessionControls'],
 .achbit-session-model__context-sections > button[data-context-key='sessionControls'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='sessionControls'] {
   background: var(--achbit-context-session);
-}
-
-.achbit-session-model__context-sections > button[data-context-key='sessionControls'] {
-  --achbit-context-color: var(--achbit-context-session);
 }
 
 .achbit-session-model__context-detail > span[data-context-key='contextProviders'],
@@ -1536,32 +1512,16 @@
   background: var(--achbit-context-provider);
 }
 
-.achbit-session-model__context-sections > button[data-context-key='contextProviders'] {
-  --achbit-context-color: var(--achbit-context-provider);
-}
-
 .achbit-session-model__context-detail > span[data-context-key='journalMessages'],
 .achbit-session-model__context-sections > button[data-context-key='journalMessages'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='journalMessages'] {
   background: var(--achbit-context-messages);
 }
 
-.achbit-session-model__context-sections > button[data-context-key='journalMessages'] {
-  --achbit-context-color: var(--achbit-context-messages);
-}
-
 .achbit-session-model__context-detail > span[data-context-key='filesystemReferences'],
 .achbit-session-model__context-sections > button[data-context-key='filesystemReferences'] > span:first-child,
 .achbit-session-model__composition-segment[data-context-key='filesystemReferences'] {
   background: var(--achbit-context-attachments);
-}
-
-.achbit-session-model__context-sections > button[data-context-key='filesystemReferences'] {
-  --achbit-context-color: var(--achbit-context-attachments);
-}
-
-.achbit-session-model__context-sections > button[data-context-key='output'] {
-  --achbit-context-color: var(--achbit-context-output);
 }
 
 .achbit-session-model__context-sections > button[data-context-key='output'] > span:first-child {
@@ -1634,7 +1594,6 @@
 }
 .achbit-session-model__menu button:where(:not(.ac-button)):hover,
 .achbit-session-model__menu button:where(:not(.ac-button)):focus-visible { background: var(--ac-surface-hover); }
-.achbit-session-model__menu button[aria-checked="true"] { background: var(--ac-surface-active); }
 .achbit-session-model__menu button:where(:not(.ac-button)):disabled,
 .achbit-session-model__menu button:where(:not(.ac-button))[aria-disabled="true"] { opacity: .48; cursor: default; }
 .achbit-session-model__menu button > span:first-child { overflow-wrap: anywhere; }
@@ -1650,7 +1609,7 @@
 /* Own the full inset here so lazy conversation CSS cannot change this surface. */
 .achbit-session-model__efforts { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 11px; padding: 3px; border-radius: 10px; background: var(--ac-surface-subtle); }
 .achbit-session-model__menu .achbit-session-model__efforts button { flex: 1 0 auto; width: auto; justify-content: center; min-height: 32px; padding: 4px 3px; border: 1px solid transparent; font-size: var(--ac-font-caption); color: var(--ac-muted); }
-.achbit-session-model__menu .achbit-session-model__efforts button[aria-checked="true"] { color: var(--ac-foreground-strong); background: var(--ac-surface); border-color: var(--ac-model-border); font-weight: 600; box-shadow: var(--ac-shadow-small); }
+.achbit-session-model__menu :is(.achbit-session-model__model-list, .achbit-session-model__efforts) button[aria-checked="true"] { background: var(--ac-selection); color: var(--ac-foreground-strong); }
 .achbit-reasoning-slider { --effort-track-height: 30px; --effort-thumb-size: 36px; --effort-end-inset: calc((var(--effort-thumb-size) - var(--effort-track-height)) / 2); margin-top: 11px; padding-top: 3px; }
 .achbit-reasoning-slider__control { position: relative; isolation: isolate; height: 48px; }
 /* Concentric right caps stay inside the highest-effort thumb instead of peeking past it. */

@@ -22,7 +22,8 @@ import PlanCard from './PlanCard';
 import { ToolActivityGroup } from './ToolActivityDetails';
 import type { BlockingShell } from './shellProgress';
 import { openingRows } from './openingRows';
-import { conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow, type ConversationRound } from './conversationItems';
+import type { LocalInput } from '../../state/localInputs';
+import { appendLocalInputs, rowMountKey, conversationRounds, type ProjectionItem, type AssistantDraftItem, type ConversationRow, type ConversationRound } from './conversationItems';
 import type { ConversationViewport } from './useConversationViewport';
 import { ConversationNavigation } from './ConversationNavigation';
 import { ReadingBodyActive } from './ConversationBodies';
@@ -32,6 +33,8 @@ import { ConversationLayoutCache, ConversationVirtualizer } from './conversation
 import { ConversationVirtualRow, useConversationRowState } from './ConversationVirtualRow';
 import { MessageActions } from './MessageActions';
 import { MessageAttachments } from './MessageAttachments';
+import { retainedAttachment } from './attachmentPreview';
+import type { OpenAttachment } from './fileOpening';
 import { RunFailureDetails, StoppedRunStatus, providerRetryAttempt, ProviderRetryStatus } from './RunFailureDetails';
 import { UiEventStack } from './UiEventStack';
 import { InteractionCard } from './InteractionCard';
@@ -52,6 +55,8 @@ const TranscriptMessageActions = React.memo(function TranscriptMessageActions({ 
     onFeedback={feedback => onFeedback(message.messageId, feedback)} onEdit={() => onEdit(message)} />;
 });
 
+const noLocalInputs: LocalInput[] = [];
+
 interface ConversationTranscriptProps {
   layoutCache: ConversationLayoutCache;
   language: UiLanguage;
@@ -69,9 +74,11 @@ interface ConversationTranscriptProps {
   activeProject: { title: string } | undefined;
   hasConversationContent: boolean;
   conversationItems: ProjectionItem[];
+  localInputs?: LocalInput[];
   draftItems: AssistantDraftItem[];
   presentation: PresentedCommittedContent;
   viewport: ConversationViewport['reading'];
+  openAttachment: OpenAttachment;
   openWorkspaceResource: (workspaceId: string, logicalPath: string, position?: SourcePosition) => Promise<void>;
   setUiActionError: React.Dispatch<React.SetStateAction<string | null>>;
   unappliedRecovery?: UnappliedRecovery;
@@ -96,10 +103,11 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
   activeProject,
   hasConversationContent,
   conversationItems,
+  localInputs = noLocalInputs,
   draftItems,
   presentation,
   viewport,
-  openWorkspaceResource,
+  openWorkspaceResource, openAttachment,
   setUiActionError,
   canEditMessage = false,
   unappliedRecovery,
@@ -219,7 +227,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
             {item.value.filesystemReferences.length > 0 && (
               <MessageAttachments sessionId={sessionKey} references={item.value.filesystemReferences} language={language}
                 identity={reference => referencesIdentity.action('open', 'click', { messageId: item.value.messageId, referenceId: reference.referenceId })}
-                onOpen={openWorkspaceResource} onError={setUiActionError} />
+                onOpen={ref => openAttachment(retainedAttachment(sessionKey, ref), ref.kind, ref.mediaType)} onError={setUiActionError} />
             )}
           </div>
           {(item.value.role === 'assistant' || item.value.role === 'user') && (
@@ -272,7 +280,16 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
           </div>
         </article>
       ) : <PlanPreviewCard preview={item.value} key={item.key} language={language} onToggle={onPlanToggle} />;
-  const renderRow = ({ item, draft }: ConversationRow) => {
+  const renderRow = ({ item, draft, local }: ConversationRow) => {
+    if (local) return <article data-local-command={local.commandId} className="local-agent__message local-agent__message--user">
+      <div className="local-agent__message-content">
+        {local.text.trim() && <div className="local-agent__message-text"><div className="conversation-plain">{local.text}</div></div>}
+        {!!local.attachmentNames.length && <div className="local-agent__message-attachments">
+          {local.attachmentNames.map((name, i) => <span key={i}>{name}</span>)}
+        </div>}
+      </div>
+      <div className="local-agent__message-actions" aria-hidden="true" />
+    </article>;
     if (item?.type === 'toolGroup' || draft?.type === 'providerHostedGroup') {
       const group = item?.type === 'toolGroup' ? item : undefined;
       return <ToolActivityGroup activities={group?.values ?? []} foregroundShells={foregroundShells} hostedKeys={group?.hostedKeys} batchConflicts={group?.batchConflicts}
@@ -299,7 +316,16 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
       )}
 </>;
   const items = conversationItems;
-  const rounds = useMemo(() => conversationRounds(items, draftItems, runView?.run?.runId), [items, draftItems, runView?.run?.runId]);
+  const committedRounds = useMemo(() => conversationRounds(items, draftItems, runView?.run?.runId), [items, draftItems, runView?.run?.runId]);
+  const rounds = useMemo(() => appendLocalInputs(committedRounds, active ? localInputs : noLocalInputs), [committedRounds, active, localInputs]);
+  useEffect(() => {
+    const observe = globalThis.window?.__ACHBIT_DEBUG_UI__?.observe;
+    if (!observe || !active || !localInputs.length) return;
+    const mounted = new Set([...transcriptRef.current?.querySelectorAll<HTMLElement>('[data-local-command]') ?? []].map(node => node.dataset.localCommand));
+    for (const input of localInputs) if (mounted.has(input.commandId)) observe('conversation.composer', 'send.feedback-dom', {
+      sessionId: input.sessionId, submissionId: input.submissionId, commandId: input.commandId, phase: 'local',
+    });
+  }, [active, localInputs, transcriptRef]);
   const timingsByRun = useMemo(() => {
     const timings = new Map<string, NonNullable<SessionProjection['runTimings']>[number]>();
     for (const timing of content?.runTimings ?? []) {
@@ -310,7 +336,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
   const preservePosition = useRef(viewport.preserveReadingPosition);
   useLayoutEffect(() => { preservePosition.current = viewport.preserveReadingPosition; }, [viewport.preserveReadingPosition]);
   const virtualizer = useMemo(() => new ConversationVirtualizer(layoutCache.session(sessionKey), () => preservePosition.current()), [layoutCache, sessionKey]);
-  const navigation = useMemo(() => conversationNavigation(rounds, projection?.interactions), [rounds, projection?.interactions]);
+  const navigation = useMemo(() => conversationNavigation(committedRounds, projection?.interactions), [committedRounds, projection?.interactions]);
   const latestUserRow = navigation.at(-1)?.key;
   useEffect(() => {
     const diagnostics = globalThis.window?.__ACHBIT_DEBUG_UI__;
@@ -341,9 +367,9 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
     const displaySettled = displaySettledRunIds.has(round.runId);
     const terminal = current && ['failed', 'cancelled', 'indeterminate'].includes(runView!.run!.status);
     const timing = timingsByRun.get(round.runId);
-    const rows = round.rows.map((row) => ({
-      key: row.key, sequence: row.item?.sequence,
-      process: row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
+    const rows: React.ComponentProps<typeof ConversationRoundView>['rows'] = round.rows.map((row) => ({
+      key: row.key, mountKey: rowMountKey(row), transient: !!row.local, sequence: row.item?.sequence,
+      process: row.local ? false : row.item ? row.item.type !== 'message' : row.draft?.type !== 'text' || row.draft.block.kind === 'narrative',
       required: row.item?.type === 'plan' && samePlanReference(runView?.pendingPlan, row.item.value)
         || row.item?.type === 'interaction' && row.item.value.status === 'pending',
       live: Boolean(row.draft) || (current && !displaySettled && row.item?.type === 'message' && row.item.value.role === 'assistant'),
@@ -357,7 +383,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
     const changeActivities = displaySettled || terminal
       ? roundChangeActivities(content, round.runId)
       : [];
-    return <ConversationRoundView sessionId={sessionKey} language={language} key={`${sessionKey}:${round.key}`} roundKey={round.key} virtualizer={virtualizer} eagerRows={eager}
+    return <ConversationRoundView sessionId={sessionKey} language={language} key={round.runId ? JSON.stringify(['run', round.key]) : rowMountKey(round.rows[0]!)} roundKey={round.key} virtualizer={virtualizer} eagerRows={eager}
       displaySettled={displaySettled} timing={timing} onToggleProcess={viewport.anchorDisclosure} rows={rows}
       eagerFooter={(current && !viewport.openingAnchor && round === rounds.at(-1)) || eager.has(`${round.key}:file-changes`)}>
       {changeActivities.some(activity => activity.tool?.fileChanges?.length) ? <FileChanges activities={changeActivities} /> : null}
@@ -406,7 +432,7 @@ export const ConversationTranscript = React.memo(function ConversationTranscript
       {runView && <RunFailureDetails key={runView.run?.runId} projection={runView} language={language} onError={setUiActionError} />}
       {runView && <UnappliedInputs key={`unapplied:${runView.sessionId}`} sessionId={runView.sessionId} inputs={runView.queuedInputs} language={language} recovery={unappliedRecovery}
         copiedId={copiedMessageId} onCopy={(id, text) => void copyMessage(id, text)}
-        onOpenReference={reference => { void openWorkspaceResource(reference.workspaceId, reference.logicalPath).catch(reason => setUiActionError(String(reason))); }} />}
+        onOpenReference={reference => { void openAttachment(retainedAttachment(runView.sessionId, reference), reference.kind, reference.mediaType).catch(reason => setUiActionError(String(reason))); }} />}
       <div ref={active ? messageEndRef : undefined} />
     </div>
     </PreviewArtifactsScope.Provider></ConversationBodyLinkScope.Provider>
@@ -424,7 +450,7 @@ function ConversationRoundView({ sessionId, language, roundKey, virtualizer, eag
   sessionId: string; language: UiLanguage; roundKey: string; virtualizer: ConversationVirtualizer; eagerRows: Set<string>;
   eagerFooter: boolean; displaySettled: boolean; onToggleProcess(node: HTMLElement): void;
   timing: NonNullable<SessionProjection['runTimings']>[number] | undefined;
-  rows: Array<{ key: string; sequence?: number; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
+  rows: Array<{ key: string; mountKey?: string; transient?: boolean; sequence?: number; process: boolean; required: boolean; live: boolean; content(): React.ReactNode }>;
   children: React.ReactNode;
 }) {
   const identity = useUiOwner('conversation.round', undefined, { sessionId, roundKey });
@@ -440,7 +466,7 @@ function ConversationRoundView({ sessionId, language, roundKey, virtualizer, eag
   const expanded = !displaySettled || disclosure.open;
   const firstProcess = rows.find(row => row.process)?.key;
   return <section className="conversation-round" data-transcript-sequence={rows.find(row => row.sequence)?.sequence}>
-    {rows.map(row => <React.Fragment key={row.key}>
+    {rows.map(row => <React.Fragment key={row.mountKey ?? row.key}>
       {displaySettled && row.key === firstProcess && <div className="conversation-process-heading"><button {...identity.action('toggle-process', 'click')} className="conversation-process-toggle" type="button"
         data-conversation-anchor={`${roundKey}:disclosure`} data-transcript-sequence={row.sequence} aria-expanded={expanded} onClick={(event) => {
         onToggleProcess(event.currentTarget);
@@ -449,7 +475,7 @@ function ConversationRoundView({ sessionId, language, roundKey, virtualizer, eag
         <AchbitShellIcon name="tool" /><span>{t(language, expanded ? 'agent.process.expanded' : 'agent.process.open')}</span>
         <AchbitShellIcon name="chevronDown" className="conversation-disclosure-chevron" />
       </button><RunTiming timing={timing} language={language} /></div>}
-      <ConversationVirtualRow rowKey={row.key} sequence={row.sequence} virtualizer={virtualizer} virtualize={row.process && !row.required} hidden={row.process && !expanded && !row.required}
+      <ConversationVirtualRow rowKey={row.key} sequence={row.sequence} transient={row.transient} virtualizer={virtualizer} virtualize={row.process && !row.required} hidden={row.process && !expanded && !row.required}
         eager={eagerRows.has(row.key)} live={row.live || row.required}>{row.content}</ConversationVirtualRow>
     </React.Fragment>)}
     {children && <ConversationVirtualRow rowKey={`${roundKey}:file-changes`} sequence={rows.findLast(row => row.sequence !== undefined)?.sequence} eager={eagerFooter} virtualizer={virtualizer} virtualize={false}>

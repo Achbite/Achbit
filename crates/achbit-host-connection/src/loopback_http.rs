@@ -45,21 +45,6 @@ pub fn connect_loopback_until(host: &str, port: &str, deadline: Instant) -> io::
     Err(last_error)
 }
 
-pub fn probe_loopback_listener(host: &str, port: &str) -> io::Result<bool> {
-    match connect_loopback(host, port, Duration::from_millis(180)) {
-        Ok(_) => Ok(true),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
-    }
-}
-
 pub fn request_loopback_json<T: DeserializeOwned>(
     host: &str,
     port: &str,
@@ -201,19 +186,22 @@ mod tests {
     }
 
     #[test]
-    fn listener_probe_keeps_invalid_ports_distinct_from_absent_listeners() {
+    fn connect_keeps_invalid_ports_distinct_from_absent_listeners() {
         for port in ["", "invalid", "65536"] {
-            let error = probe_loopback_listener("127.0.0.1", port).unwrap_err();
+            let error =
+                connect_loopback("127.0.0.1", port, Duration::from_millis(180)).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
             assert!(error.to_string().contains("Invalid Host port"));
         }
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port().to_string();
-        assert!(probe_loopback_listener("127.0.0.1", &port).unwrap());
+        connect_loopback("127.0.0.1", &port, Duration::from_millis(180)).unwrap();
         // A connected client's local port stays reserved but never listens.
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let client_port = client.local_addr().unwrap().port().to_string();
-        assert!(!probe_loopback_listener("127.0.0.1", &client_port).unwrap());
+        let error =
+            connect_loopback("127.0.0.1", &client_port, Duration::from_millis(180)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
     }
 
     #[test]

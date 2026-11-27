@@ -79,7 +79,7 @@ export function publishPlan(
   let draft: PlanPublicationDraft;
   if ('mode' in input) {
     if (previous?.status !== 'confirmed') return reject('plan_scope_extension_not_active',
-      'Scope additions need a confirmed Plan in this run. Publish a complete Plan for a new task.');
+      'There is no confirmed Plan to extend in this run. Publish a complete Plan for the proposed work instead.');
     const manifest = structuredClone(previous.mutationManifest);
     const keys = new Set(manifest.map((operation) => JSON.stringify(canonicalJsonValue(operation))));
     for (const operation of input.mutationManifest) {

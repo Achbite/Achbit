@@ -24,6 +24,7 @@ export async function withProviderAttempts<T>(
   deps: AgentLoopDeps,
   signal: AbortSignal,
   consume: (attempt: ProviderRequest, onCompleted: () => void, onEvent: (event: ProviderEvent) => void) => Promise<T>,
+  retryTransport = true,
 ): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     if (signal.aborted) throw signal.reason;
@@ -93,7 +94,7 @@ export async function withProviderAttempts<T>(
       catch (recordError) { throw classifyFailure(new AggregateError([error, recordError], failure.message)); }
       deps.updateAssistantDraft(null);
       deps.resetReasoning?.();
-      if (completed || signal.aborted) throw classifyFailure(error);
+      if (completed || signal.aborted || !retryTransport) throw classifyFailure(error);
       const diagnostic = failure.diagnostics;
       if (!(error instanceof ProviderReportedFailure) || diagnostic?.source !== 'providerTransport'
         || !diagnostic.retryable || diagnostic.secondary?.length

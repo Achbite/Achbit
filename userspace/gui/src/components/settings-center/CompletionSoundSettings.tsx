@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { t, type UiLanguage } from '../../i18n';
 import { getCompletionSound, hasDesktopNotifications, previewCompletionSound, setCompletionSound,
   type CompletionSoundInfo } from '../../services/runtimeAdapter';
+import { Button } from '../../ui-components';
 import { useSettingsSearchTarget } from './settingsSearch';
 
 export default function CompletionSoundSettings({ language }: { language: UiLanguage }) {
@@ -28,12 +29,12 @@ export default function CompletionSoundSettings({ language }: { language: UiLang
     <span className="settings-field__label">{t(language, 'settings.completion.title')}</span>
     <div className="settings-field__control">
       <span>{t(language, info?.custom ? 'settings.completion.custom' : 'settings.completion.default')}</span>
-      <button type="button" className="settings-button" disabled={busy || !info}
-        onClick={() => void perform(previewCompletionSound)}>{t(language, 'settings.completion.preview')}</button>
-      <button type="button" className="settings-button" disabled={busy || !info}
-        onClick={() => input.current?.click()}>{t(language, 'settings.completion.choose')}</button>
-      {info?.custom && <button type="button" className="settings-button" disabled={busy}
-        onClick={() => void perform(async () => { setInfo(await setCompletionSound(null)); })}>{t(language, 'settings.completion.reset')}</button>}
+      <Button variant="secondary" disabled={busy || !info}
+        onClick={() => void perform(previewCompletionSound)}>{t(language, 'settings.completion.preview')}</Button>
+      <Button variant="secondary" disabled={busy || !info}
+        onClick={() => input.current?.click()}>{t(language, 'settings.completion.choose')}</Button>
+      {info?.custom && <Button disabled={busy}
+        onClick={() => void perform(async () => { setInfo(await setCompletionSound(null)); })}>{t(language, 'settings.completion.reset')}</Button>}
       <input ref={input} type="file" accept=".wav,audio/wav,audio/x-wav" hidden onChange={event => {
         const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';
         if (file) void perform(async () => {

@@ -52,8 +52,24 @@
   padding: 0;
   color: var(--ac-muted);
 }
-.ac-icon-button[aria-pressed='true'] { color: var(--ac-success); background: var(--ac-success-soft); }
-.ac-icon-button[aria-pressed='true']:is(:hover, :focus-visible):not(:disabled) { color: var(--ac-success); background: color-mix(in srgb, var(--ac-success) 16%, var(--ac-surface-raised)); }
+/* Selection persists under the pointer. Use the same flat surface for switches of view and list choices. */
+.ac-button[data-variant='ghost']:is([aria-pressed='true'], [aria-selected='true'], [aria-checked='true']) {
+  background: var(--ac-selection);
+  color: var(--ac-foreground-strong);
+}
+.ac-button:focus-visible:not(:disabled) { text-decoration: underline; text-underline-offset: .2em; }
+.ac-icon-button:focus-visible:not(:disabled) > svg { stroke-width: 2.5; }
+@media (forced-colors: active) {
+  .ac-button[data-variant='ghost']:is([aria-pressed='true'], [aria-selected='true'], [aria-checked='true']) {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  :root[data-product='achbit-gui'] .ac-button:focus-visible:not(:disabled), .ac-button:focus-visible {
+    outline: 2px dotted currentColor;
+    outline-offset: -3px;
+  }
+}
 .ac-icon-button > svg { width: var(--ac-button-glyph); height: var(--ac-button-glyph); flex: none; }
 .ac-panel-header { display: flex; align-items: center; justify-content: space-between; gap: var(--ac-panel-header-gap, 8px); min-width: 0; }
 .ac-panel-header > :is(h1, h2, h3, strong, span) { min-width: 0; }

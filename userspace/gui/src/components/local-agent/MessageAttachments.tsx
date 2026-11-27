@@ -8,7 +8,8 @@ import { useConversationRowState } from './ConversationVirtualRow';
 import { ImageReview } from './ImageReview';
 import { loadComposerImage } from './ComposerImageAttachment';
 import { browserAnnotationCapture } from './browserReview';
-import { formatBytes } from './conversationFormatting';
+import { FileAttachmentCard } from './FileAttachmentCard';
+import { isImageAttachment, retainedAttachment } from './attachmentPreview';
 
 type Identity = Readonly<Record<`data-ui-${string}`, string>>;
 const isAnnotation = (reference: FilesystemReference) => reference.kind === 'file'
@@ -38,7 +39,7 @@ function AttachmentPreview({ sessionId, reference, references, language, label, 
 }) {
   const host = useConversationHost();
   const key = JSON.stringify([sessionId, reference,
-    label ? references.filter(item => item.kind === 'file' && item.mediaType.startsWith('image/')) : null]);
+    label ? references.filter(isImageAttachment) : null]);
   // Retain only the failed read, not blobs/permissions. Scrolling a virtual row back
   // into view must not retry a stale path or interrupt the current composer.
   const [failure, setFailure] = useConversationRowState<{ key: string; reason: string } | null>(`attachment:${reference.referenceId}:failure`, null);
@@ -74,34 +75,30 @@ function AttachmentPreview({ sessionId, reference, references, language, label, 
   </details>;
   const url = current?.image.kind === 'image' ? current.image.url : undefined;
   const decodeError = () => { setResult(null); setFailure({ key, reason: t(language, 'content.image.decodeError') }); };
-  const preview = <ImageReview triggerRef={trigger} triggerIdentity={identity} source={url} alt={label ?? reference.displayName}
+  const preview = <ImageReview lightbox triggerRef={trigger} triggerIdentity={identity} source={url} alt={label ?? reference.displayName}
     className={className} title={label ?? reference.displayName} onError={decodeError}>
-    {note ?? (url ? <img src={url} alt={reference.displayName} loading="lazy" decoding="async" onError={decodeError} />
-      : <UiIcon name="artifact" size={14} />)}
+    {note ?? (url ? <img src={url} alt={reference.displayName} loading="lazy" decoding="async" onError={decodeError} /> : <UiIcon name="artifact" size={14} />)}
   </ImageReview>;
   return note ? preview : <div className="local-agent__message-image-slot">{preview}</div>;
 }
 
 export function MessageAttachments({ sessionId, references, language, onOpen, onError, identity }: {
   sessionId: string; references: FilesystemReference[]; language: UiLanguage; identity(reference: FilesystemReference): Identity;
-  onOpen(workspaceId: string, logicalPath: string): Promise<void>; onError(error: string): void;
+  onOpen(reference: FilesystemReference): Promise<void>; onError(error: string): void;
 }) {
   const annotations = references.filter(isAnnotation);
-  const dense = references.filter(ref => ref.kind === 'file' && ref.mediaType.startsWith('image/')).length > 4;
+  const dense = references.filter(isImageAttachment).length > 4;
   return <div className="local-agent__message-attachments" data-dense-images={dense || undefined}>
     {references.map(reference => {
-      const open = () => { void onOpen(reference.workspaceId, reference.logicalPath).catch(error => onError(String(error))); };
+      const open = () => { void onOpen(reference).catch(error => onError(String(error))); };
       const annotation = isAnnotation(reference);
-      return annotation || reference.kind === 'file' && reference.mediaType.startsWith('image/')
+      return annotation || isImageAttachment(reference)
         ? <AttachmentPreview key={reference.referenceId} sessionId={sessionId} reference={reference} references={references}
             label={annotation ? `${language === 'zh-CN' ? '标注' : 'Annotation'} ${annotations.indexOf(reference) + 1}` : undefined}
             language={language} identity={identity(reference)} onOpen={open} />
-        : <Button key={reference.referenceId} {...identity(reference)} size="compact"
-            className={`local-agent__message-file${reference.kind === 'directory' ? ' local-agent__message-directory' : ''}`}
-            title={reference.displayName} onClick={open}>
-            <UiIcon name={reference.kind === 'directory' ? 'folder' : 'artifact'} size={14} /><span>{reference.displayName}</span>
-            {reference.kind === 'file' && <small>{reference.source === 'pastedText' ? 'TXT · ' : ''}{formatBytes(reference.byteLength, language)}</small>}
-          </Button>;
+        : <FileAttachmentCard key={reference.referenceId} attachmentId={reference.referenceId} kind={reference.kind} name={reference.displayName}
+            source={retainedAttachment(sessionId, reference)} mediaType={reference.mediaType} byteLength={reference.byteLength}
+            language={language} openIdentity={identity(reference)} onClick={open} />;
     })}
   </div>;
 }

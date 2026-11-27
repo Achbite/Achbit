@@ -6,6 +6,7 @@ import { watchConversationEvents } from '../../services/conversationEvents';
 import { useSettingsStore } from '../../state/settingsStore';
 import useAppStatusStore from '../../state/appStatusStore';
 import { CompletionNotifications } from './completionNotifications';
+import { captureCompletionAppearance } from '../../theme/completionAppearance';
 
 export function useCompletionNotifications(sessions: ConversationSessionSummary[], language: UiLanguage) {
   const foregroundSound = useSettingsStore(state => state.effectiveSettings['gui.completionSound.foreground'] === true);
@@ -26,6 +27,7 @@ export function useCompletionNotifications(sessions: ConversationSessionSummary[
       const title = current.sessions.find(session => session.id === event.sessionId)?.title
         || t(current.language, 'achbitGui.nav.newChat');
       void notifyTaskCompleted({ foregroundSound: current.foregroundSound, sessionId: event.sessionId,
+        appearance: captureCompletionAppearance(current.language),
         title: t(current.language, 'achbitGui.notification.completed'), body: title,
         openLabel: t(current.language, 'achbitGui.notification.open'),
         dismissLabel: t(current.language, 'achbitGui.notification.dismiss'),

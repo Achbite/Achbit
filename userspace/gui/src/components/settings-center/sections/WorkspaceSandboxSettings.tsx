@@ -1,3 +1,4 @@
+import { Button } from '../../../ui-components';
 import { useState } from 'react';
 import { initializeWorkspaceSandbox } from '../../../services/apiClient';
 import { useSettingsStore } from '../../../state/settingsStore';
@@ -25,7 +26,7 @@ export default function WorkspaceSandboxSettings({ chinese }: { chinese: boolean
           <div className="settings-field__label">{sandbox?.available ? (chinese ? '可用' : 'Available') : (chinese ? '尚不可用' : 'Unavailable')}</div>
           {sandbox?.reason && <p className="settings-field__description">{sandbox.reason}</p>}
         </div>
-        {environment?.os === 'windows' && !sandbox?.available && <button className="settings-button" disabled={pending} onClick={() => void initialize()}>{pending ? (chinese ? '正在检查…' : 'Checking…') : (chinese ? '检查 Windows 支持' : 'Check Windows support')}</button>}
+        {environment?.os === 'windows' && !sandbox?.available && <Button variant="secondary" disabled={pending} onClick={() => void initialize()}>{pending ? (chinese ? '正在检查…' : 'Checking…') : (chinese ? '检查 Windows 支持' : 'Check Windows support')}</Button>}
       </div>
       {error && <p className="settings-error" role="alert">{error}</p>}
     </div>

@@ -42,24 +42,25 @@ for (const turns of [32,512,1024]) test(`opening ${turns} turns reads full immed
     seen.push(url.pathname.split('/').at(-1)); assert.ok(url.pathname.endsWith('/projection')); started.release();await held.wait;return ok(p);
   });
   await store.getState().refresh();const anchor=turns===512?{key:rowKey(p.timeline[turns]),offset:-23}:undefined;
-  const first=store.getState().activateSession(p.sessionId,anchor);await started.wait;
+  if (anchor) store.getState().rememberReadingAnchor(p.sessionId,anchor);
+  const first=store.getState().activateSession(p.sessionId);await started.wait;
   const same=store.getState().activateSession(p.sessionId);await tick();
   assert.deepEqual(seen,['projection']);assert.equal(store.getState().projection,null);
   held.release();await Promise.all([first,same]); assert.deepEqual(store.getState().projection,p);assert.deepEqual(seen,['projection']);
 });
 
 test('an explicit revision reader preserves canonical rows, anchor/offset indexing, and the producer fallback discriminator',async t=>{
-  const p=full('session:explicit',32),{readRevisionWindow}=await loadGuiModule(t,'/src/services/localAgentApi.ts');
+  const p=full('session:explicit',32),{readConversation}=await loadGuiModule(t,'/src/services/localAgentApi.ts');
   let fallback=false;installGuiFetch(t,async (url,init)=>{
     assert.ok(url.pathname.endsWith('/read'));const q=JSON.parse(init.body);assert.equal(q.throughSequence,p.revision);assert.equal(q.view,'readingWindow');
     const body=page(p,q.anchorKey,q.limit);return ok(fallback?{...body,readingWindow:{kind:'requiresProjection'}}:body);
   });
-  for(const key of [undefined,rowKey(p.timeline[22])]) assert.deepEqual(await readRevisionWindow(p.sessionId,p.revision,new AbortController().signal,key),page(p,key).readingWindow);
-  fallback=true;assert.deepEqual(await readRevisionWindow(p.sessionId,p.revision,new AbortController().signal),{kind:'requiresProjection'});
+  for(const key of [undefined,rowKey(p.timeline[22])]) assert.deepEqual((await readConversation(p.sessionId,{view:'readingWindow',throughSequence:p.revision,anchorKey:key},new AbortController().signal)).readingWindow,page(p,key).readingWindow);
+  fallback=true;assert.deepEqual((await readConversation(p.sessionId,{view:'readingWindow',throughSequence:p.revision},new AbortController().signal)).readingWindow,{kind:'requiresProjection'});
 });
 
 test('explicit malformed, wrong-owner or denied windows keep their original failure and never retry a full read',async t=>{
-  const p=full('session:badwindow',12),{readRevisionWindow}=await loadGuiModule(t,'/src/services/localAgentApi.ts'); let decorate;
+  const p=full('session:badwindow',12),{readConversation}=await loadGuiModule(t,'/src/services/localAgentApi.ts'); let decorate;
   installGuiFetch(t,async url=>{assert.ok(url.pathname.endsWith('/read'));return decorate(structuredClone(page(p)));});
   for(const [transform,error] of [[x=>ok({...x,revision:p.revision-1}),/revision/],[x=>ok({...x,sessionId:'elsewhere'}),/identity/],
     [x=>{x.readingWindow.rows[1].message.content=2;return ok(x);},/invalid/],[x=>{x.readingWindow.rows[0].key='not the stream or message';return ok(x);},/invalid/],
@@ -67,7 +68,7 @@ test('explicit malformed, wrong-owner or denied windows keep their original fail
     [x=>{x.readingWindow.rows.at(-1).message.content='😀'.repeat(70_000);return ok(x);},/invalid/],[x=>{x.readingWindow.anchorKey=x.readingWindow.rows[0].key;return ok(x);},/anchor/],
     [()=>Response.json({ok:false,error:'session_forbidden',message:'private failure'},{status:403}),/session_forbidden:private failure/],
     [()=>Response.json({ok:false,error:'conversation_read_revision_changed',message:'current revision required'},{status:409}),/conversation_read_revision_changed:current revision required/]]) {
-    decorate=transform;await assert.rejects(readRevisionWindow(p.sessionId,p.revision,new AbortController().signal),error);
+    decorate=transform;await assert.rejects(readConversation(p.sessionId,{view:'readingWindow',throughSequence:p.revision},new AbortController().signal),error);
   }
 });
 
@@ -77,7 +78,7 @@ test('a real settled journal: explicit windows, ordinary GUI opens, and feedback
   t.after(()=>actor.dispose());await actor.submit(messageCommand(id,'command:produce','Original question'));
   const actual=await waitForProjection(actor,p=>p.run?.status==='completed');
   const service=new SessionService(journal,{async create(){throw new Error('unwanted actor');}});t.after(()=>service.dispose());
-  const store=await loadGuiModelStore(t),{readRevisionWindow}=await loadGuiModule(t,'/src/services/localAgentApi.ts'),seen=[]; catalog(store,actual);
+  const store=await loadGuiModelStore(t),{readConversation}=await loadGuiModule(t,'/src/services/localAgentApi.ts'),seen=[]; catalog(store,actual);
   installGuiFetch(t,async(url,init)=>{
     if(url.pathname.endsWith('/statuses'))return ok(await service.statuses([id]),{'x-achbit-reading-window':String(service.readingWindowVersion)});
     if(url.pathname.endsWith('/read')){seen.push('read');return ok(await service.read({...JSON.parse(init.body),sessionId:id}));}
@@ -85,7 +86,7 @@ test('a real settled journal: explicit windows, ordinary GUI opens, and feedback
     assert.ok(url.pathname.endsWith('/projection'));seen.push('full');return ok(await service.snapshot(id));
   });
   await store.getState().refresh();await store.getState().activateSession(id);assert.deepEqual(seen,['full']);assert.deepEqual(store.getState().projection,actual);
-  const w=await readRevisionWindow(id,actual.revision,new AbortController().signal);assert.deepEqual(w.rows.map(r=>r.message),actual.messages);
+  const w=(await readConversation(id,{view:'readingWindow',throughSequence:actual.revision},new AbortController().signal)).readingWindow;assert.deepEqual(w.rows.map(r=>r.message),actual.messages);
   assert.deepEqual(w.rows.map(r=>r.key),actual.timeline.map(rowKey));assert.deepEqual(w.rows.map(r=>r.timelineId),actual.timeline.map(r=>r.timelineId));
   await store.getState().setMessageFeedback(w.rows.at(-1).message.messageId,'up');const oracle=await service.snapshot(id);
   assert.deepEqual(store.getState().projection,oracle);assert.equal(oracle.messages.at(-1).feedback,'up');assert.deepEqual(seen,['full','read','command','full']);

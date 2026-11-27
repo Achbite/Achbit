@@ -23,7 +23,7 @@ import type {
 import { CONVERSATION_COMMAND_VERSION, connectedModelReasoningEfforts, decodeAgentSettings } from '@achbit/protocol';
 import { getLlmProfiles, patchLlmProfiles } from '../services/apiClient';
 import { useSettingsStore } from './settingsStore';
-import { normalizeUiLanguage } from '../i18n';
+import { normalizeUiLanguage, t } from '../i18n';
 import { retiredDraftSkillNotice } from '../pluginLocalization';
 import { runHandoffNotice } from './handoffNotice';
 import { selectPendingApproval, type ApprovalIdentity } from '../components/local-agent/composerDecisions';
@@ -32,7 +32,9 @@ import { uiEvents } from './uiEvents';
 import { ChildDeliveryIndex } from '../components/local-agent/childDeliveryIndex';
 import { writePosition, type ReadingPosition } from './readingPosition';
 import { dismissUnappliedInputs } from './unappliedInputReminders';
-import type { PastedTextInput } from '../services/pastedText';
+import { pastedTextTitle, type PastedTextInput } from '../services/pastedText';
+import { resourceFilename } from '../components/local-agent/resourceLinks';
+import { stillLocal, type LocalInput } from './localInputs';
 import { supportsNativeFileInput } from '../services/modelFileInput';
 import {
   attachConversationDirectoryIndex,
@@ -100,6 +102,8 @@ export function conversationOpening(state: LocalAgentState): ReadStatus {
   return error ? { phase: 'error', message: error } : reading;
 }
 
+type PlanTarget = Pick<NonNullable<SessionProjection['pendingPlan']>, 'runId' | 'planId' | 'revision'> & { sessionId: string };
+
 export interface LocalAgentState {
   welcomeIndex: number;
   sessionId: string | null;
@@ -130,6 +134,7 @@ export interface LocalAgentState {
   submitting: boolean;
   /** Transport feedback, never a transcript row or permission to start a second run. */
   messageSubmission: { sessionId: string; commandId: string; text: string; phase: 'sending' | 'accepted'; revision?: number } | null;
+  localInputs: LocalInput[];
   catalogBusy: boolean;
   error: string | null;
   errorSource: StoreErrorSource | null;
@@ -141,7 +146,7 @@ export interface LocalAgentState {
   retryCatalogWatch(): void;
   refreshPluginCatalog(): Promise<void>;
   startNewSession(projectId?: string | null): void;
-  activateSession(sessionId: string, rememberedAnchor?: Pick<ReadingPosition, 'key' | 'offset'> | null): Promise<void>;
+  activateSession(sessionId: string): Promise<void>;
   selectModel(profileId: string, effort: LlmReasoningEffort | null): Promise<boolean>;
   setSubagentSettings(patches: Partial<AgentSettings>): Promise<void>;
   setMode(mode: 'minimal' | 'full'): Promise<CommandReply>;
@@ -174,7 +179,7 @@ export interface LocalAgentState {
   setPermissions(patches: UserSettings): Promise<CommandReply>;
   revokeAuthorization(authorityId: string): Promise<CommandReply>;
   respondApproval(decision: 'allow' | 'deny', authorizationScope: ShellAuthorizationScope | undefined, target: ApprovalIdentity & { sessionId: string }): Promise<CommandReply>;
-  respondPlan(response: PlanResponse, submissionId?: string): Promise<CommandReply>;
+  respondPlan(response: PlanResponse, target: PlanTarget, submissionId?: string): Promise<CommandReply>;
   continueProvider(sessionId: string, runId: string): Promise<CommandReply>;
   cancelRun(): Promise<CommandReply>;
   cancelTool(sessionId: string, runId: string, callId: string): Promise<CommandReply>;
@@ -429,7 +434,7 @@ const store = create<LocalAgentState>((set, get) => ({
     if (projectionCache.size !== previousSize) set({});
   },
   loading: false, loadingPurpose: null,
-  submitting: false, messageSubmission: null,
+  submitting: false, messageSubmission: null, localInputs: [],
   catalogBusy: false,
   error: null,
   errorSource: null,
@@ -583,7 +588,7 @@ const store = create<LocalAgentState>((set, get) => ({
     const defaults = useSettingsStore.getState();
     activeSubmissionCount = 0;
     set({
-      messageSubmission: null,
+      messageSubmission: null, localInputs: get().localInputs.filter(input => input.sessionId !== null),
       welcomeIndex: get().sessionId === null ? get().welcomeIndex : Math.floor(Math.random() * 4),
       sessionId: null,
       projection: null,
@@ -607,7 +612,7 @@ const store = create<LocalAgentState>((set, get) => ({
     });
   },
 
-  activateSession: async (sessionId, rememberedAnchor) => {
+  activateSession: async (sessionId) => {
     if (openingFlight?.sessionId === sessionId && openingFlight.generation === generation) return openingFlight.promise;
     if (get().sessionId === sessionId) {
       if (get().profileRead.phase === 'error') void get().refreshProfiles();
@@ -620,14 +625,24 @@ const store = create<LocalAgentState>((set, get) => ({
     let summary = get().catalog.sessions.find(s => s.id === sessionId);
     if (!summary) {
       set({ loading: true, loadingPurpose: 'session', error: null, errorSource: null });
+      const version = catalogVersion;
       try {
         const catalog = await getConversationCatalog(signal);
         if (owner !== generation) return;
-        summary = catalog.sessions.find(s => s.id === sessionId);
-        if (!summary) throw new Error('conversation_session_not_found');
-        set({ catalog, catalogStatus: 'ready' });
+        if (catalogVersion === version) {
+          catalogVersion += 1;
+          set({ catalog, catalogStatus: 'ready' });
+        }
       } catch (error) {
-        if (owner === generation) set({ loading: false, loadingPurpose: null, catalogStatus: 'error', error: errorMessage(error), errorSource: 'catalog' });
+        if (owner !== generation) return;
+        if (catalogVersion === version) {
+          set({ loading: false, loadingPurpose: null, catalogStatus: 'error', error: errorMessage(error), errorSource: 'catalog' });
+          return;
+        }
+      }
+      summary = get().catalog.sessions.find(s => s.id === sessionId);
+      if (!summary) {
+        set({ loading: false, loadingPurpose: null, error: 'conversation_session_not_found', errorSource: 'catalog' });
         return;
       }
     }
@@ -638,9 +653,9 @@ const store = create<LocalAgentState>((set, get) => ({
       projectionCache.delete(sessionId);
       projectionCache.set(sessionId, cached);
     }
-    if (rememberedAnchor === null) writePosition(sessionId, null);
     set({
       sessionId, projection: null, contextWindowReading: null, ...cached,
+      localInputs: get().localInputs.filter(input => input.sessionId !== null),
       messageSubmission: null, draftProjectId: null, selectedProfileId: summary.profileId ?? get().defaultProfileId, reasoningEffortOverride: null,
       ...projectModelSettings(cached?.projection ?? null),
       submitting: false, modelSettingsBusy: false, subagentSettingsBusy: false, loading: !cached, loadingPurpose: cached ? null : 'session',
@@ -956,7 +971,7 @@ const store = create<LocalAgentState>((set, get) => ({
     );
   },
 
-  respondPlan: async (response, submissionId) => await submitPlanResponse(set, get, response, submissionId),
+  respondPlan: async (response, target, submissionId) => submitPlanResponse(set, get, response, target, submissionId),
 
   cancelTool: async (sessionId, runId, callId) => submitDecision(set, get, `cancel-tool:${sessionId}:${callId}`, () => ({
     schemaVersion: CONVERSATION_COMMAND_VERSION, type: 'tool.cancel', commandId: nextId('command'), sessionId, runId, callId,
@@ -1057,6 +1072,7 @@ const store = create<LocalAgentState>((set, get) => ({
     writePosition(sessionId, null);
     projectionCache.delete(sessionId);
     uiEvents.clear(sessionId);
+    set(state => ({ localInputs: state.localInputs.filter(input => input.sessionId !== sessionId) }));
     if (get().sessionId === sessionId) get().startNewSession(projectId ?? null);
   },
 
@@ -1073,12 +1089,16 @@ async function submitPlanResponse(
   set: StoreSet,
   get: () => LocalAgentState,
   response: PlanResponse,
+  target: PlanTarget,
   submissionId?: string,
 ): Promise<CommandReply> {
-  const state = get();
-  const sessionId = requiredSession(state);
+  const { sessionId, runId, planId, revision } = target;
   const plan = (await freshRun(sessionId))?.pendingPlan;
-  if (!plan) throw new Error('plan_response_missing');
+  if (get().sessionId !== sessionId || !plan || plan.runId !== runId || plan.planId !== planId || plan.revision !== revision) {
+    const message = t(normalizeUiLanguage(useSettingsStore.getState().effectiveSettings['workbench.language']), 'tui.childDecisionChanged');
+    if (get().sessionId === sessionId) set({ error: message, errorSource: submissionId ? { kind: 'input', submissionId } : 'command' });
+    throw new Error(message);
+  }
   return await submitDecision(
     set,
     get,
@@ -1088,9 +1108,7 @@ async function submitPlanResponse(
       type: 'plan.respond',
       commandId: nextId('command'),
       sessionId,
-      runId: plan.runId,
-      planId: plan.planId,
-      revision: plan.revision,
+      runId, planId, revision,
       response,
     }),
     submissionId,
@@ -1110,7 +1128,27 @@ async function submitNewRun(
   planMode?: 'manual',
   retained: RetainedMessageResources = {},
 ): Promise<CommandReply> {
+  const initial = get();
+  const commandId = nextId('command');
+  const local: LocalInput | undefined = type === 'message.submit' && !planMode && retained.submissionId ? {
+    sessionId: initial.sessionId, commandId, submissionId: retained.submissionId, text,
+    attachmentNames: [...(retained.filesystemReferences ?? []).map(ref => ref.displayName),
+      ...filesystemPaths.map(file => resourceFilename(file.path)), ...pastedTexts.map(paste => pastedTextTitle(paste.text)),
+      ...pastedImages.map(image => image.name)],
+  } : undefined;
+  const showLocal = () => {
+    if (local && !get().localInputs.some(input => input.commandId === commandId)) {
+      set(state => ({ localInputs: [...state.localInputs, local] }));
+    }
+  };
+  const hideLocal = () => {
+    if (local && get().localInputs.some(input => input.commandId === commandId)) {
+      set(state => ({ localInputs: state.localInputs.filter(input => input.commandId !== commandId) }));
+    }
+  };
   const submissionGeneration = beginSubmission(set);
+  // Do not mistake an earlier send awaiting publication for an idle Session.
+  if (!initial.submitting && (!initial.sessionId || !acceptedInputs.has(initial.sessionId)) && idleForEcho(initial)) showLocal();
   try {
     if (filesystemPaths.length + pastedTexts.length + pastedImages.length + (retained.filesystemReferences?.length ?? 0) > 8) throw new Error('message_filesystem_reference_limit');
     if (pluginSelections.length || retained.guidanceReferences?.length) {
@@ -1127,6 +1165,8 @@ async function submitNewRun(
     if (generation !== submissionGeneration || get().sessionId !== selected) throw new Error('conversation_session_changed');
     const activeRun = controls?.run;
     const queuedMessage = type === 'message.submit' && activeRun && ['running', 'waiting'].includes(activeRun.status);
+    if (queuedMessage || !idleForEcho(get())) hideLocal();
+    else showLocal();
     if (queuedMessage && planMode) throw new Error('plan_run_active');
     if (!queuedMessage && (!messageProfileId || !get().profiles.some((profile) => profile.id === messageProfileId && profile.enabled))) throw new Error('llm_profile_unavailable');
     const pluginCatalog = get().pluginCatalog;
@@ -1157,7 +1197,9 @@ async function submitNewRun(
       if (generation !== submissionGeneration) throw new Error('conversation_session_changed');
       sessionId = created.sessionId;
       onSessionCreated?.(sessionId);
-      set({ sessionId, ...cacheProjection(created, observedAt, sessionId), draftProjectId: null, draftSubagentSettings: null });
+      const view = cacheProjection(created, observedAt, sessionId);
+      set(state => ({ sessionId, ...view, draftProjectId: null, draftSubagentSettings: null,
+        localInputs: state.localInputs.map(input => input.commandId === commandId ? { ...input, sessionId } : input) }));
       void get().refreshCatalog();
     }
     const filesystemReferences = [...(retained.filesystemReferences ?? []), ...(filesystemPaths.length
@@ -1177,7 +1219,7 @@ async function submitNewRun(
     const executionSelections = effectivePluginSelections.filter((selection)=>!pluginCatalog.plugins.find((item)=>item.uri===selection.uri)?.reference);
     const common = {
       schemaVersion: CONVERSATION_COMMAND_VERSION,
-      commandId: nextId('command'),
+      commandId,
       sessionId,
       ...(filesystemReferences.length
         ? {
@@ -1199,8 +1241,15 @@ async function submitNewRun(
       : { ...common, type, task: text };
     if (type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.command',
       { sessionId, submissionId: retained.submissionId, commandId: command.commandId });
-    return await submitCommandAndReconcile(set, get, command);
+    const reply = await submitCommandAndReconcile(set, get, command);
+    if (get().sessionId !== reply.sessionId) hideLocal(); // Returning to this Session reads its own journal.
+    else if (local && get().localInputs.some(input => input.commandId === commandId)) {
+      set(state => ({ localInputs: state.localInputs.map(input => input.commandId === commandId
+        ? { ...input, acceptedRevision: reply.revision } : input) }));
+    }
+    return reply;
   } catch (error) {
+    hideLocal();
     if (type === 'message.submit') globalThis.window?.__ACHBIT_DEBUG_UI__?.observe?.('conversation.composer', 'send.failed',
       { submissionId: retained.submissionId, reason: generation === submissionGeneration ? 'submission-failed' : 'session-changed' });
     if (errorMessage(error).includes('plugin_selection_stale')) {
@@ -1501,6 +1550,12 @@ function initialProfileId(
 function isLiveRun(run: ConversationSessionStatus['run'] | undefined) {
   return run?.status === 'running' || run?.status === 'waiting' || run?.status === 'releasing';
 }
+function idleForEcho({ sessionId, projection, sessionStatuses }: LocalAgentState) {
+  if (!sessionId) return true;
+  if (projection?.sessionId !== sessionId || isLiveRun(projection.run)) return false;
+  const observed = sessionStatuses[sessionId];
+  return !observed || observed.revision < projection.revision || !isLiveRun(observed.run);
+}
 function canRestoreProjection(projection: SessionProjection) {
   return !projection.assistantDraft && !isLiveRun(projection.run);
 }
@@ -1566,6 +1621,10 @@ function errorMessage(error: unknown): string {
 // timeline, a new live reading, or another conversation behind this read-only lookup.
 let historyLookup: { key: string; controller: AbortController } | null = null;
 store.subscribe((state, previous) => {
+  if (state.projection !== previous.projection || state.localInputs !== previous.localInputs) {
+    const localInputs = stillLocal(state.localInputs, state.projection);
+    if (localInputs !== state.localInputs) store.setState({ localInputs });
+  }
   if (state.catalog !== previous.catalog) {
     // A catalog title change is not a new Session; deletion/recreation is. Its former
     // monotone sidebar revision cannot impose a minimum on a new incarnation either.
@@ -1578,6 +1637,9 @@ store.subscribe((state, previous) => {
       if (openingFlight?.sessionId === id && openingFlight.generation === generation) viewReadController.abort(new Error('conversation_session_not_found'));
       projectionReadQueues.delete(id);
       projectionCache.delete(id);
+      if (store.getState().localInputs.some(input => input.sessionId === id)) {
+        store.setState(current => ({ localInputs: current.localInputs.filter(input => input.sessionId !== id) }));
+      }
       if (state.sessionStatuses[id]) {
         remaining ??= { ...state.sessionStatuses }; delete remaining[id];
       }

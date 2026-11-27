@@ -75,6 +75,27 @@ def files(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
 
 
+class DevelopmentLanguageTests(unittest.TestCase):
+    def test_terminal_messages_follow_locale_precedence_and_keep_exit_codes(self):
+        env = dict(os.environ)
+        for key in ('ACHBIT_DEV_LANGUAGE', 'LANG', 'LC_ALL', 'LC_MESSAGES'):
+            env.pop(key, None)
+        for locale, expected in [
+            ({}, 'Unknown verification profile'),
+            ({'LANG': 'zh_CN.UTF-8'}, '未知验证范围'),
+            ({'LANG': 'zh_CN.UTF-8', 'LC_MESSAGES': 'C'}, 'Unknown verification profile'),
+            ({'LANG': 'C', 'LC_MESSAGES': 'zh_TW.UTF-8'}, '未知验证范围'),
+            ({'LC_ALL': 'C', 'LC_MESSAGES': 'zh_TW.UTF-8'}, 'Unknown verification profile'),
+            ({'LC_ALL': 'C', 'ACHBIT_DEV_LANGUAGE': 'zh-CN'}, '未知验证范围'),
+        ]:
+            with self.subTest(locale=locale):
+                result = subprocess.run(['bash', 'test.sh', 'unknown'], cwd=ROOT, env={**env, **locale},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(expected, result.stderr)
+                self.assertEqual(result.stdout, '')
+
+
 class ProgramCleanupTests(unittest.TestCase):
     @unittest.skipUnless(Path('/.dockerenv').exists(), 'maintenance targets the development container')
     def test_routine_maintenance_preserves_builds_and_removes_only_disposable_caches(self):
@@ -235,7 +256,7 @@ class CodeCompilationTests(unittest.TestCase):
         scratch = tempfile.TemporaryDirectory(prefix='achbit-code-build-')
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
-        for name in ('build.sh', 'scripts/source-identity.sh', 'scripts/build-platforms.sh'):
+        for name in ('build.sh', 'scripts/source-identity.sh', 'scripts/dev-language.sh', 'scripts/build-platforms.sh'):
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, destination)
@@ -374,7 +395,7 @@ class BuildTests(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         (self.root / 'scripts').mkdir()
-        for name in ['build.sh', 'Makefile', 'rust-toolchain.toml', 'scripts/source-identity.sh']:
+        for name in ['build.sh', 'Makefile', 'rust-toolchain.toml', 'scripts/source-identity.sh', 'scripts/dev-language.sh']:
             shutil.copy2(ROOT / name, self.root / name)
         (self.root / 'scripts/step.py').write_text(STEP)
         (self.root / 'scripts/macos-build-bridge.py').write_text(STEP)

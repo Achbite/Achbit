@@ -99,8 +99,6 @@ export class ConversationVirtualizer {
     }
   }
 
-  previewKeys(): IterableIterator<string> { return this.retainedPreviews.keys(); }
-
   measure(node: HTMLElement, measuredHeight?: number): void {
     if (node.hidden || node.dataset.virtualRendered !== 'true') return;
     const layout = this.layout(node.dataset.conversationAnchor!);

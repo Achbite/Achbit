@@ -1,6 +1,7 @@
 //! Physical macOS I/O in the independently signed helper. Kernel admits every call.
+use crate::mac_observation::{self, Kind};
 use objc2::{class, msg_send, runtime::AnyObject};
-use objc2_foundation::NSString;
+use objc2_foundation::{NSPoint, NSRect, NSString};
 use serde_json::{json, Value};
 use std::{
     cell::RefCell,
@@ -33,6 +34,15 @@ pub(crate) struct Rect {
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXUIElementCreateApplication(pid: i32) -> Ref;
+    fn AXUIElementCreateSystemWide() -> Ref;
+    fn AXUIElementCopyElementAtPosition(root: Ref, x: f32, y: f32, result: *mut Ref) -> i32;
+    fn CGEventCreate(source: Ref) -> Ref;
+    fn CGGetDisplaysWithPoint(
+        point: Point,
+        max_displays: u32,
+        displays: *mut u32,
+        count: *mut u32,
+    ) -> i32;
     fn AXUIElementGetTypeID() -> usize;
     fn AXUIElementCopyAttributeValue(element: Ref, name: Ref, result: *mut Ref) -> i32;
     fn AXUIElementSetAttributeValue(element: Ref, name: Ref, value: Ref) -> i32;
@@ -63,6 +73,7 @@ extern "C" {
     fn CFStringGetTypeID() -> usize;
     fn CFBooleanGetTypeID() -> usize;
     fn CFBooleanGetValue(value: Ref) -> bool;
+    fn CFDictionaryGetTypeID() -> usize;
     fn CFNumberGetTypeID() -> usize;
     fn CFNumberGetValue(value: Ref, kind: isize, result: *mut c_void) -> bool;
     static kCFBooleanTrue: Ref;
@@ -99,11 +110,49 @@ struct Observation {
     foreground: bool,
     pixels: bool,
     binding: Value,
-    image_width: f64,
-    image_height: f64,
-    sharing_generation: u64,
+    visual: Option<VisualObservation>,
+}
+#[derive(Clone, Copy)]
+struct VisualObservation {
+    width: f64,
+    height: f64,
+    generation: u64,
+    selected_by_user: bool,
+}
+impl Observation {
+    fn validate_visual(&self) -> Result<(), String> {
+        if let Some(visual) = self.visual {
+            crate::sharing::validate(&self.binding, self.window_id, visual.generation)?;
+        }
+        Ok(())
+    }
+}
+impl Rect {
+    fn logical(self) -> crate::protocol::Bounds {
+        crate::protocol::Bounds {
+            x: self.origin.x,
+            y: self.origin.y,
+            width: self.size.width,
+            height: self.size.height,
+        }
+    }
 }
 static OBSERVATION: Mutex<Option<Observation>> = Mutex::new(None);
+// Presentation-only copy, like the visual thumbnail cache. No AX handles, images
+// or sharing generation; the independent preview socket cannot acquire a target.
+static AX_ACTIVITY: Mutex<Option<(Value, Instant, Value)>> = Mutex::new(None);
+pub fn preview(binding: &Value, input: &Value) -> Result<Value, String> {
+    if let Some((owner, at, metadata)) = AX_ACTIVITY
+        .lock()
+        .map_err(|_| "Desktop activity unavailable")?
+        .as_ref()
+    {
+        if owner == binding && crate::protocol::check_observation_age(at.elapsed()).is_ok() {
+            return Ok(metadata.clone());
+        }
+    }
+    crate::sharing::preview(binding, input)
+}
 
 // The mutex serializes physical operations. Only the AppKit thread owns AX refs;
 // this is the retained window of that one observation, not a second session.
@@ -567,6 +616,22 @@ unsafe fn tree(root: Ref) -> (Vec<Value>, Value, Vec<Owned>) {
                         "elementId":item["elementId"],"role":item["role"],
                         "attribute":"AXValue","message":message})),
                 }
+                // Match UIA's sparse flag: only a native false proves disabled. A missing
+                // or unreadable optional attribute must not discard this node or its handle.
+                let enabled = attribute(element, "AXEnabled").and_then(|flag| match flag {
+                    Some(flag) if CFGetTypeID(flag.0) == CFBooleanGetTypeID() => {
+                        Ok(Some(CFBooleanGetValue(flag.0)))
+                    }
+                    Some(_) => Err("AXEnabled is not a boolean".into()),
+                    None => Ok(None),
+                });
+                match enabled {
+                    Ok(Some(false)) => item["enabled"] = json!(false),
+                    Err(message) => errors
+                        .push(json!({"depth":depth,"elementId":item["elementId"],
+                        "role":item["role"],"attribute":"AXEnabled","message":message})),
+                    _ => {}
+                }
                 let retained = match Owned::new(CFRetain(element)) {
                     Ok(retained) => retained,
                     Err(message) => {
@@ -639,25 +704,14 @@ unsafe fn tree(root: Ref) -> (Vec<Value>, Value, Vec<Owned>) {
     )
 }
 fn point(input: &Value, x: &str, y: &str, observation: &Observation) -> Result<Point, String> {
-    let value = Point {
-        x: input[x].as_f64().ok_or("Missing x coordinate")?,
-        y: input[y].as_f64().ok_or("Missing y coordinate")?,
-    };
-    if !value.x.is_finite()
-        || !value.y.is_finite()
-        || value.x < 0.0
-        || value.y < 0.0
-        || value.x >= observation.image_width
-        || value.y >= observation.image_height
-    {
-        return Err("Coordinates must be inside the returned screenshot (image pixels).".into());
-    }
-    Ok(Point {
-        x: observation.bounds.origin.x
-            + value.x * observation.bounds.size.width / observation.image_width,
-        y: observation.bounds.origin.y
-            + value.y * observation.bounds.size.height / observation.image_height,
-    })
+    let (x, y) = mac_observation::desktop_point(
+        input,
+        x,
+        y,
+        observation.bounds.logical(),
+        observation.visual.map(|v| (v.width, v.height)),
+    )?;
+    Ok(Point { x, y })
 }
 
 unsafe fn select_window(
@@ -723,7 +777,13 @@ unsafe fn observe(
 ) -> Result<(Observation, Value), String> {
     let window_id = input["windowId"].as_u64().map(|id| id as u32);
     let foreground = crate::protocol::foreground_requested(input);
-    let pixels = input["observationType"] == "pixels";
+    let kind = Kind::parse(input)?;
+    let pixels = kind == Kind::Pixels;
+    if kind == Kind::Ax && activate_requested {
+        // Reads the run's existing ownership only. In the usual AX-only case
+        // this does not enumerate SCK content or start/stop any stream.
+        crate::sharing::request(json!({"operation":"enterAX"}), binding)?;
+    }
     let (mut items, accessibility, window_info, window_id, bounds) = if pixels {
         let id =
             window_id.ok_or("Pixel observation requires an exact windowId from listWindows")?;
@@ -751,7 +811,7 @@ unsafe fn observe(
             if foreground && activate_requested {
                 activate_window(pid, element.0)?;
             }
-            let window_info = json!({"windowId":window_id,"title":text_attribute(element.0, "AXTitle")?,"bounds":rect_json(bounds)});
+            let window_info = json!({"windowId":window_id,"pid":pid,"title":text_attribute(element.0, "AXTitle")?,"bounds":rect_json(bounds)});
             let (items, mut accessibility, elements) = tree(element.0);
             AX_DIAGNOSTICS.with(|slot| {
                 if let Some(errors) = slot.borrow().get("candidateErrors") {
@@ -768,31 +828,60 @@ unsafe fn observe(
             Ok((items, accessibility, window_info, window_id, bounds))
         })?
     };
-    let mut capture = input.clone();
-    capture["windowId"] = json!(window_id);
-    let sharing =
-        crate::sharing::request(json!({"operation":"ensure","windowId":window_id}), binding)?;
-    let sharing_generation = sharing["generation"]
-        .as_u64()
-        .ok_or("Missing sharing generation")?;
-    let (id, path, width, height) = capture_pixels(app, &capture, binding)?;
-    crate::sharing::validate(binding, window_id, sharing_generation)?;
+    let id = app.resource_id();
+    let mut image_fields = json!({});
+    let mut observed_at = Instant::now();
+    // Only a fully validated observation owns an image artifact.
+    let mut uncommitted_image = PendingImage(None);
+    let visual = if kind == Kind::Ax {
+        None
+    } else {
+        let request = if let Some(generation) = input.get("expectedGeneration") {
+            json!({"operation":"validate","windowId":window_id,"generation":generation})
+        } else {
+            json!({"operation":"ensure","windowId":window_id})
+        };
+        let sharing = crate::sharing::request(request, binding)?;
+        let generation = sharing["generation"]
+            .as_u64()
+            .ok_or("Missing sharing generation")?;
+        let (path, frame) = write_window_image(input, binding, window_id, &id, generation, bounds)?;
+        uncommitted_image.0 = Some(path.clone());
+        observed_at = observed_at
+            .checked_sub(Duration::from_millis(
+                frame["ageMillis"].as_u64().ok_or("Missing frame age")?,
+            ))
+            .ok_or("Invalid frame age")?;
+        crate::protocol::check_observation_age(observed_at.elapsed())?;
+        let width = frame["width"]
+            .as_f64()
+            .filter(|v| *v > 0.0)
+            .ok_or("Invalid frame width")?;
+        let height = frame["height"]
+            .as_f64()
+            .filter(|v| *v > 0.0)
+            .ok_or("Invalid frame height")?;
+        crate::sharing::validate(binding, window_id, generation)?;
+        image_fields = json!({"contentRef":path,"contentType":"image/png","width":width,"height":height,
+            "sharing":sharing,"frame":frame,"imagePixelsPerWindowPoint":{"x":width/bounds.size.width,"y":height/bounds.size.height}});
+        Some(VisualObservation {
+            width,
+            height,
+            generation,
+            selected_by_user: sharing["selectedByUser"] == true,
+        })
+    };
     if !pixels {
         with_observed_window(app, pid, move |_, window| window.validate_geometry())?;
     }
     if window_snapshot(window_id)? != (pid, bounds) {
-        return Err("Target window changed during capture; observe again".into());
+        return Err("Target window changed during observation; observe again".into());
     }
-    let sx = width / bounds.size.width;
-    let sy = height / bounds.size.height;
-    for item in &mut items {
-        if let Some(rect) = item.get_mut("bounds") {
-            *rect = json!({"x":(rect["x"].as_f64().ok_or("Invalid AX x")? - bounds.origin.x) * sx,
-                "y":(rect["y"].as_f64().ok_or("Invalid AX y")? - bounds.origin.y) * sy,
-                "width":rect["width"].as_f64().ok_or("Invalid AX width")? * sx,
-                "height":rect["height"].as_f64().ok_or("Invalid AX height")? * sy});
-        }
-    }
+    mac_observation::project_elements(
+        &mut items,
+        bounds.logical(),
+        visual.map(|v| (v.width, v.height)),
+    )?;
     let captured_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -803,32 +892,73 @@ unsafe fn observe(
     } else {
         "background"
     };
-    let output = json!({"observationId":id,"app":bundle,"window":window_info,"mode":mode,"elements":items,"accessibility":accessibility,
-        "contentRef":path,"contentType":"image/png","width":width,"height":height,"capturedAt":captured_at,
-        "coordinateSpace":"window screenshot pixels","sharing":sharing,
+    let mut output = json!({"observationId":id,"app":bundle,"window":window_info,"mode":mode,"elements":items,"accessibility":accessibility,
+        "capturedAt":captured_at,"hasScreenshot":visual.is_some(),
+        "coordinateSpace":if visual.is_some() {"window screenshot pixels"} else {"windowPoints"},
         "observationType":if pixels {"pixels"} else {"accessibility"},
         "inputFocus":if pixels {"foregroundApplication"} else {"accessibilityWindow"},
         "supportedActions":if foreground && AXIsProcessTrusted() {
             if pixels {json!(["click","type","key","scroll","drag"])} else {json!(["press","setValue","click","type","key","scroll","drag"])}
         } else if pixels {json!([])} else {json!(["press","setValue"])} });
+    if let Some(stamp) = image_fields["frame"].get("capturedAt") {
+        output["capturedAt"] = stamp.clone();
+    }
+    if let Value::Object(extra) = image_fields {
+        output.as_object_mut().unwrap().extend(extra);
+    }
+    if let Some(v) = visual {
+        crate::sharing::validate(binding, window_id, v.generation)?;
+    }
+    uncommitted_image.0.take();
     Ok((
         Observation {
             id,
             app: bundle.into(),
             pid,
-            at: Instant::now(),
+            at: observed_at,
             bounds,
             window_id,
             foreground,
             pixels,
             binding: binding.clone(),
-            image_width: width,
-            image_height: height,
-            sharing_generation,
+            visual,
         },
         output,
     ))
 }
+struct PendingImage(Option<std::path::PathBuf>);
+impl Drop for PendingImage {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            if let Err(e) = std::fs::remove_file(path) {
+                eprintln!("computer_uncommitted_image_cleanup: {e}");
+            }
+        }
+    }
+}
+// Tool frames and one-shot screenshots are separate from thumbnail reads.
+fn write_window_image(
+    input: &Value,
+    binding: &Value,
+    window: u32,
+    id: &str,
+    generation: u64,
+    bounds: Rect,
+) -> Result<(std::path::PathBuf, Value), String> {
+    let directory = Path::new(
+        input["captureDirectory"]
+            .as_str()
+            .ok_or("Missing archive directory")?,
+    );
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let path = directory.join(format!("{id}.png"));
+    let frame = crate::sharing::request(
+        json!({"operation":"frame","windowId":window,"generation":generation,"path":path,"windowWidth":bounds.size.width,"windowHeight":bounds.size.height,"afterDisplayTime":input["afterDisplayTime"]}),
+        binding,
+    )?;
+    Ok((path, frame))
+}
+
 unsafe fn capture_pixels(
     app: &crate::runtime::MainThread,
     input: &Value,
@@ -859,6 +989,13 @@ unsafe fn capture_pixels(
     Ok((id, path, width, height))
 }
 
+pub fn owns_observation(binding: &Value) -> Option<bool> {
+    OBSERVATION
+        .lock()
+        .ok()
+        .map(|slot| slot.as_ref().is_some_and(|s| &s.binding == binding))
+}
+
 pub fn status() -> Result<Value, String> {
     objc2::rc::autoreleasepool(|_| unsafe {
         let bundle: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
@@ -874,7 +1011,7 @@ pub fn status() -> Result<Value, String> {
             "permissions":{"accessibility":AXIsProcessTrusted(),"screenCapture":CGPreflightScreenCaptureAccess()},
             "capabilities":{"capture":true,"accessibility":true,"input":true,
                 "exactWindowIdentity":crate::window_identity::available(),"nativeWindowSharing":true,
-                "observationTypes":["accessibility","pixels"],"pixelObservationRequiresAccessibility":false,
+                "observationTypes":["accessibility","pixels"],"observationContract":"ax-default","accessibilityRequiresScreenCapture":false,"pixelObservationRequiresAccessibility":false,
                 "permissionsAreExecutorOnly":true}
         }))
     })
@@ -884,17 +1021,22 @@ unsafe fn dictionary_value(dictionary: Ref, name: &str) -> *mut AnyObject {
     let key = NSString::from_str(name);
     msg_send![dictionary as *mut AnyObject, objectForKey:&*key]
 }
-pub(crate) unsafe fn window_snapshot(window_id: u32) -> Result<(i32, Rect), String> {
-    let list = Owned::new(CGWindowListCopyWindowInfo(8 | 16, window_id))?;
-    if CFArrayGetCount(list.0) != 1 {
-        return Err("Target window is closed or unavailable; observe again".into());
+unsafe fn window_number(item: Ref, key: &str) -> Option<i64> {
+    let number: Ref = dictionary_value(item, key).cast();
+    if number.is_null() || CFGetTypeID(number) != CFNumberGetTypeID() {
+        return None;
     }
-    let item = CFArrayGetValueAtIndex(list.0, 0);
-    let visible: bool = msg_send![dictionary_value(item, "kCGWindowIsOnscreen"), boolValue];
-    if !visible {
-        return Err("Target window is minimized or off-screen; observe again".into());
-    }
-    let owner: i32 = msg_send![dictionary_value(item, "kCGWindowOwnerPID"), intValue];
+    let mut value = 0_i64;
+    CFNumberGetValue(number, 4, (&mut value as *mut i64).cast()).then_some(value)
+}
+
+unsafe fn window_owner_and_id(item: Ref) -> Option<(i32, u32)> {
+    let pid = i32::try_from(window_number(item, "kCGWindowOwnerPID")?).ok()?;
+    let id = u32::try_from(window_number(item, "kCGWindowNumber")?).ok()?;
+    (pid > 0 && id != 0).then_some((pid, id))
+}
+
+unsafe fn server_window_bounds(item: Ref) -> Result<Rect, String> {
     let mut bounds = Rect {
         origin: Point { x: 0.0, y: 0.0 },
         size: Size {
@@ -902,10 +1044,11 @@ pub(crate) unsafe fn window_snapshot(window_id: u32) -> Result<(i32, Rect), Stri
             height: 0.0,
         },
     };
-    if !CGRectMakeWithDictionaryRepresentation(
-        dictionary_value(item, "kCGWindowBounds").cast(),
-        &mut bounds,
-    ) {
+    let dictionary: Ref = dictionary_value(item, "kCGWindowBounds").cast();
+    if dictionary.is_null()
+        || CFGetTypeID(dictionary) != CFDictionaryGetTypeID()
+        || !CGRectMakeWithDictionaryRepresentation(dictionary, &mut bounds)
+    {
         return Err("WindowServer returned invalid geometry".into());
     }
     if !bounds.origin.x.is_finite()
@@ -917,41 +1060,59 @@ pub(crate) unsafe fn window_snapshot(window_id: u32) -> Result<(i32, Rect), Stri
     {
         return Err("Target window has invalid geometry; observe again".into());
     }
-    Ok((owner, bounds))
+    Ok(bounds)
+}
+
+pub(crate) unsafe fn window_snapshot(window_id: u32) -> Result<(i32, Rect), String> {
+    let list = Owned::new(CGWindowListCopyWindowInfo(8 | 16, window_id))?;
+    if CFArrayGetCount(list.0) != 1 {
+        return Err("Target window is closed or unavailable; observe again".into());
+    }
+    let item = CFArrayGetValueAtIndex(list.0, 0);
+    let visible: bool = msg_send![dictionary_value(item, "kCGWindowIsOnscreen"), boolValue];
+    if !visible {
+        return Err("Target window is minimized or off-screen; observe again".into());
+    }
+    let (owner, id) = window_owner_and_id(item).ok_or("Target window identity is unavailable")?;
+    if id != window_id {
+        return Err("Target window identity changed; observe again".into());
+    }
+    Ok((owner, server_window_bounds(item)?))
 }
 
 unsafe fn windows() -> Result<Value, String> {
-    if !CGPreflightScreenCaptureAccess() {
-        return Err("Screen recording access is required to inspect external windows; inspect computer.control status".into());
-    }
     let list = Owned::new(CGWindowListCopyWindowInfo(1 | 16, 0))?;
-    let mut windows = vec![];
+    let mut windows = Vec::new();
+    let mut omitted = 0_usize;
     for index in 0..CFArrayGetCount(list.0) {
         let item = CFArrayGetValueAtIndex(list.0, index);
-        let layer: i32 = msg_send![dictionary_value(item, "kCGWindowLayer"), intValue];
-        if layer != 0 {
+        match window_number(item, "kCGWindowLayer") {
+            Some(0) => {}
+            Some(_) => continue,
+            None => {
+                omitted += 1;
+                continue;
+            }
+        }
+        let (Some((pid, id)), Ok(bounds)) = (window_owner_and_id(item), server_window_bounds(item))
+        else {
+            omitted += 1;
             continue;
-        }
-        let pid: i32 = msg_send![dictionary_value(item, "kCGWindowOwnerPID"), intValue];
-        let window_id: u32 = msg_send![dictionary_value(item, "kCGWindowNumber"), unsignedIntValue];
-        let mut bounds = Rect {
-            origin: Point { x: 0.0, y: 0.0 },
-            size: Size {
-                width: 0.0,
-                height: 0.0,
-            },
         };
-        if !CGRectMakeWithDictionaryRepresentation(
-            dictionary_value(item, "kCGWindowBounds").cast(),
-            &mut bounds,
-        ) {
-            return Err("WindowServer returned invalid geometry".into());
+        let mut row = json!({"windowId":id,"pid":pid,"bounds":rect_json(bounds)});
+        for (field, native) in [("title", "kCGWindowName"), ("owner", "kCGWindowOwnerName")] {
+            let text = dictionary_value(item, native);
+            if !text.is_null() && CFGetTypeID(text.cast()) == CFStringGetTypeID() {
+                row[field] = json!(string(text.cast()));
+            }
         }
-        let title = string(dictionary_value(item, "kCGWindowName").cast());
-        let owner = string(dictionary_value(item, "kCGWindowOwnerName").cast());
-        windows.push(json!({"windowId":window_id,"pid":pid,"owner":owner,"title":title,"bounds":rect_json(bounds)}));
+        windows.push(row);
     }
-    Ok(json!({"windows":windows}))
+    let mut result = json!({"windows":windows});
+    if omitted > 0 {
+        result["omittedIncompleteEntries"] = json!(omitted);
+    }
+    Ok(result)
 }
 
 // Pixels carry an exact capture/coordinate target, not an AX focus proof.
@@ -1121,7 +1282,6 @@ pub fn execute(
         if action == "status" {
             let mut output = status()?;
             output["sharing"] = crate::sharing::status(binding)?;
-            output["capabilities"]["nativeWindowSharing"] = json!(true);
             return Ok(output);
         }
         if action == "releaseRun" {
@@ -1131,6 +1291,11 @@ pub fn execute(
             {
                 *observation = None;
             }
+            let owner = binding.clone();
+            on_main_thread(gui, move || {
+                crate::indicator::hide_binding(&owner);
+                Ok(())
+            })?;
             return crate::sharing::release(binding, input["forImageReplacement"] == true);
         }
         if action == "listWindows" {
@@ -1177,12 +1342,42 @@ pub fn execute(
             }
             crate::protocol::check_observation_age(saved.at.elapsed())?;
         }
-        if !(action == "observe" && input["observationType"] == "pixels") && !AXIsProcessTrusted() {
-            return Err("macOS 辅助功能授权未被当前 Computer Use 辅助 App识别。请先使用 computer.control status 核对进程和应用身份；系统设置中的同名开关不能确认当前实例的状态。".into());
+        if action == "observe" && input["observationContract"] != "ax-default" {
+            return Err("The Host has not negotiated the macOS AX-only observation contract; update both components. No observation performed.".into());
         }
-        if !CGPreflightScreenCaptureAccess() {
-            return Err("macOS screen recording access is not granted to the executing Computer Use App; inspect computer.control status for its identity".into());
-        }
+        let requested = (action == "observe")
+            .then(|| Kind::parse(input))
+            .transpose()?;
+        let kind = requested.unwrap_or_else(|| match observation.as_ref() {
+            Some(o) if o.pixels => Kind::Pixels,
+            Some(o) if o.visual.is_some() => Kind::AxWithImage,
+            _ => Kind::Ax,
+        });
+        let existing_share = if requested.is_some() {
+            Some(crate::sharing::status(binding)?)
+        } else {
+            None
+        };
+        let using_picker_filter = match &existing_share {
+            Some(s) => {
+                kind != Kind::Ax
+                    && s["state"] == "active"
+                    && s["selectedByUser"] == true
+                    && input["windowId"].is_u64()
+                    && s["windowId"] == input["windowId"]
+            }
+            None => observation
+                .as_ref()
+                .and_then(|o| o.visual)
+                .is_some_and(|v| v.selected_by_user),
+        };
+        mac_observation::check_access(
+            kind,
+            action != "observe",
+            using_picker_filter,
+            || AXIsProcessTrusted(),
+            || CGPreflightScreenCaptureAccess(),
+        )?;
         let target_bundle = bundle.to_string();
         let target_window = if action == "observe" {
             input["windowId"].as_u64().map(|id| id as u32)
@@ -1211,7 +1406,10 @@ pub fn execute(
             Ok(pid)
         })?;
         if action == "observe" {
-            let sharing = crate::sharing::status(binding)?;
+            if let Ok(mut activity) = AX_ACTIVITY.lock() {
+                *activity = None;
+            }
+            let sharing = existing_share.expect("observe reads its own sharing status");
             if !matches!(sharing["state"].as_str(), Some("inactive" | "active")) {
                 return Err(format!("Window sharing is unavailable: {sharing}"));
             }
@@ -1234,8 +1432,15 @@ pub fn execute(
         if !semantic && !saved.foreground {
             return Err("This input requires an explicit foreground observation; background mode supports press and setValue only".into());
         }
-        crate::sharing::validate(binding, saved.window_id, saved.sharing_generation)?;
+        saved.validate_visual()?;
         if !semantic {
+            // Reject invalid or ambiguous units before focus restoration.
+            if matches!(action, "click" | "drag") {
+                point(input, "x", "y", &saved)?;
+            }
+            if action == "drag" {
+                point(input, "toX", "toY", &saved)?;
+            }
             if saved.pixels {
                 activate_pixel_target(gui, saved.pid, saved.window_id, saved.bounds)?;
             } else {
@@ -1246,11 +1451,7 @@ pub fn execute(
         let saved_for_input = saved.clone();
         let value_target = if saved.pixels {
             on_main_thread(gui, move || {
-                crate::sharing::validate(
-                    &saved_for_input.binding,
-                    saved_for_input.window_id,
-                    saved_for_input.sharing_generation,
-                )?;
+                saved_for_input.validate_visual()?;
                 if window_snapshot(saved_for_input.window_id)?
                     != (saved_for_input.pid, saved_for_input.bounds)
                     || !pixel_app_active(saved_for_input.pid, saved_for_input.window_id)?
@@ -1264,11 +1465,7 @@ pub fn execute(
             })?
         } else {
             with_observed_window(gui, pid, move |root, window| {
-                crate::sharing::validate(
-                    &saved_for_input.binding,
-                    saved_for_input.window_id,
-                    saved_for_input.sharing_generation,
-                )?;
+                saved_for_input.validate_visual()?;
                 window.validate_geometry()?;
                 if window_snapshot(saved_for_input.window_id)?
                     != (saved_for_input.pid, saved_for_input.bounds)
@@ -1281,10 +1478,42 @@ pub fn execute(
                         .strip_prefix("element:")
                         .and_then(|s| s.parse::<usize>().ok())
                         .ok_or("Invalid elementId")?;
+                    if id != format!("element:{index}") {
+                        return Err("Expected the original elementId from this observation".into());
+                    }
                     let element = window
                         .elements
                         .get(index)
                         .ok_or("Unknown elementId; observe again")?;
+                    if !CFEqual(element.0, window.element.0) {
+                        let owner = attribute(element.0, "AXWindow")?.ok_or(
+                            "Observed element no longer identifies its window; no input dispatched",
+                        )?;
+                        if !CFEqual(owner.0, window.element.0) {
+                            return Err("Observed element belongs to a different window; no input dispatched".into());
+                        }
+                    }
+                    if value_attribute(element.0, "AXEnabled")? == Some(json!(false)) {
+                        return Err("The observed control is disabled; no input dispatched".into());
+                    }
+                    if arguments["action"] == "computer:press" {
+                        let mut actions = std::ptr::null();
+                        let code = AXUIElementCopyActionNames(element.0, &mut actions);
+                        if code != 0 {
+                            return Err(format!(
+                                "Could not read supported AX actions ({code}); no input dispatched"
+                            ));
+                        }
+                        let actions = Owned::new(actions)?;
+                        if CFGetTypeID(actions.0) != CFArrayGetTypeID()
+                            || !(0..CFArrayGetCount(actions.0)).any(|i| {
+                                text_value(CFArrayGetValueAtIndex(actions.0, i)).as_deref()
+                                    == Ok("AXPress")
+                            })
+                        {
+                            return Err("The observed control does not support AXPress; no input dispatched".into());
+                        }
+                    }
                     let item = tree_item(element.0, 0)?;
                     let marker = item["bounds"].as_object().and_then(|_| {
                         Some(Point {
@@ -1297,7 +1526,8 @@ pub fn execute(
                     crate::indicator::show(
                         saved_for_input.window_id,
                         marker,
-                        saved_for_input.sharing_generation,
+                        &saved_for_input.binding,
+                        saved_for_input.visual.map(|v| v.generation),
                     )?;
                     let error = if arguments["action"] == "computer:press" {
                         let action = NSString::from_str("AXPress");
@@ -1336,6 +1566,7 @@ pub fn execute(
         };
         // A short bounded delay lets the application process dispatched input. A
         // screenshot remains an observation, not a claim that backend work settled.
+        let after_dispatch = crate::sharing::display_time();
         std::thread::sleep(Duration::from_millis(200));
         let mut result = json!({"app":bundle,"action":action,"dispatched":true});
         if let Some(index) = value_target {
@@ -1351,6 +1582,11 @@ pub fn execute(
         }
         let mut next = input.clone();
         next["windowId"] = json!(saved.window_id);
+        next["includeScreenshot"] = json!(saved.visual.is_some());
+        if let Some(visual) = saved.visual {
+            next["expectedGeneration"] = json!(visual.generation);
+            next["afterDisplayTime"] = json!(after_dispatch);
+        }
         next["observationType"] = json!(if saved.pixels {
             "pixels"
         } else {
@@ -1382,6 +1618,28 @@ pub fn execute(
             }
         }
     });
+    // Update only from an accepted observation. A failed action that consumed
+    // the observation clears the card; unrelated status/release preserves it.
+    if let Ok(mut activity) = AX_ACTIVITY.lock() {
+        if let (Some(saved), Ok(output)) = (observation.as_ref(), &result) {
+            if saved.visual.is_none() && output["observationId"] == saved.id {
+                *activity = Some((
+                    saved.binding.clone(),
+                    saved.at,
+                    json!({"state":"accessibility","target":{
+                    "windowId":saved.window_id,"observationId":saved.id,"pid":saved.pid,"app":saved.app,"title":output["window"]["title"],"width":saved.bounds.size.width,"height":saved.bounds.size.height}}),
+                ));
+            }
+        }
+        if !observation.as_ref().is_some_and(|o| {
+            o.visual.is_none()
+                && activity
+                    .as_ref()
+                    .is_some_and(|(_, _, v)| v["target"]["observationId"] == o.id)
+        }) {
+            *activity = None;
+        }
+    }
     if observation.is_none() {
         let cleanup = on_main_thread(gui, || {
             OBSERVED_WINDOW.with(|slot| slot.borrow_mut().take());
@@ -1461,6 +1719,56 @@ fn activate_shared_target(
     }
 }
 
+// A single-window bitmap does not prove the same screen point is unobstructed.
+// Ask the system which window would receive mouse-down, not which rectangular
+// window bounds overlap. This also handles mouse-through panels and holes in
+// windows, and does not depend on the covering window having an AX provider.
+unsafe fn verify_pointer_target(p: Point, saved: &Observation) -> Result<(), String> {
+    let (mut display, mut count) = (0, 0);
+    if CGGetDisplaysWithPoint(p, 1, &mut display, &mut count) != 0 || count == 0 {
+        return Err("Point is not on an active display; no input dispatched".into());
+    }
+    if !(saved.bounds.origin.x..saved.bounds.origin.x + saved.bounds.size.width).contains(&p.x)
+        || !(saved.bounds.origin.y..saved.bounds.origin.y + saved.bounds.size.height).contains(&p.y)
+    {
+        return Err("Point is not in the visible observed window; no input dispatched".into());
+    }
+    // CGEvent uses a top-left global origin; NSWindow wants AppKit screen
+    // points. Flip about the primary screen, not the target's display or DPI.
+    let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
+    let primary: *mut AnyObject = msg_send![screens, firstObject];
+    if primary.is_null() {
+        return Err("Cannot resolve the input display; no input dispatched".into());
+    }
+    let frame: NSRect = msg_send![primary, frame];
+    let appkit = NSPoint::new(p.x, frame.origin.y + frame.size.height - p.y);
+    let hit: isize = msg_send![class!(NSWindow), windowNumberAtPoint:appkit, belowWindowWithWindowNumber:0_isize];
+    if hit <= 0 {
+        return Err("No window receives mouse input at this point; no input dispatched".into());
+    }
+    if u32::try_from(hit).ok() != Some(saved.window_id) {
+        return Err("Screen point is covered by another window; no input dispatched".into());
+    }
+    if !saved.pixels {
+        let root = Owned::new(AXUIElementCreateSystemWide())?;
+        let mut hit = std::ptr::null();
+        if AXUIElementCopyElementAtPosition(root.0, p.x as f32, p.y as f32, &mut hit) != 0 {
+            return Err("Could not verify the AX hit window; no input dispatched".into());
+        }
+        let hit = Owned::new(hit)?;
+        let id = if text_attribute(hit.0, "AXRole")?.as_deref() == Some("AXWindow") {
+            exact_window_id(hit.0)?
+        } else {
+            let w = attribute(hit.0, "AXWindow")?.ok_or("Point has no verifiable AX window")?;
+            exact_window_id(w.0)?
+        };
+        if id != saved.window_id {
+            return Err("AX hit belongs to a different window; no input dispatched".into());
+        }
+    }
+    Ok(())
+}
+
 unsafe fn dispatch_input(input: &Value, saved: &Observation) -> Result<(), String> {
     let action = input["action"]
         .as_str()
@@ -1526,13 +1834,39 @@ unsafe fn dispatch_input(input: &Value, saved: &Observation) -> Result<(), Strin
         }
         _ => return Err("Unsupported computer action".into()),
     }
+    // Validate all sampled positions before the first mouse-down; do not
+    // leave a drag half-dispatched as a consequence of a bad destination.
+    if matches!(action, "click" | "drag") {
+        for event in &events {
+            verify_pointer_target(CGEventGetLocation(event.0), saved)?;
+        }
+    } else if action == "scroll" {
+        let cursor = Owned::new(CGEventCreate(null))?;
+        verify_pointer_target(CGEventGetLocation(cursor.0), saved)?;
+    } else if saved.pixels {
+        let root = Owned::new(AXUIElementCreateApplication(saved.pid))?;
+        let window = attribute(root.0,"AXFocusedWindow")?.ok_or("Pixel target's key window cannot be verified; use a fresh AX observation before keyboard input")?;
+        if exact_window_id(window.0)? != saved.window_id {
+            return Err("Keyboard focus is in a different window; no input dispatched".into());
+        }
+    }
+    crate::protocol::check_observation_age(saved.at.elapsed())?;
+    saved.validate_visual()?;
+    if window_snapshot(saved.window_id)? != (saved.pid, saved.bounds) {
+        return Err("Target changed during hit verification; no input dispatched".into());
+    }
     for event in events {
         if matches!(CGEventGetType(event.0), 1 | 2 | 6) {
-            crate::indicator::show(
+            // Decoration failure must not strand a mouse-down or mask already
+            // dispatched input. All fallible event creation and checks are above.
+            if let Err(error) = crate::indicator::show(
                 saved.window_id,
                 Some(CGEventGetLocation(event.0)),
-                saved.sharing_generation,
-            )?;
+                &saved.binding,
+                saved.visual.map(|v| v.generation),
+            ) {
+                eprintln!("computer_pointer_feedback_unavailable: {error}");
+            }
         }
         CGEventPost(0, event.0);
         if action == "drag" && matches!(CGEventGetType(event.0), 1 | 6) {

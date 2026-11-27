@@ -45,13 +45,13 @@ import {
   KERNEL_REPLY_VERSION,
   LOCAL_AGENT_PROTOCOL_VERSION,
 } from '@achbit/protocol';
-import { createProviderToolAliases } from './providerToolCodec.js';
+import { createProviderToolAliases, aliasesForNewCoreInterface } from './providerToolCodec.js';
 import { LoopFailure, errorFact } from './loopFailure.js';
 import { readJournalSequence, READING_FACTS_V1, type JournalPermissions, type JournalPublication } from './journalSequence.js';
 import { checkCompleteHistory, projectionEventBatch } from './conversationRead.js';
 import { postLocalStream } from './localHttpStream.js';
 import { sessionControlToolDefinitions } from './sessionControls.js';
-import { environmentInstruction } from './sessionEnvironment.js';
+import { decodeSessionEnvironment } from './sessionEnvironment.js';
 import { USER_SYSTEM_PROMPT_ID } from './coreInstructions.js';
 import type { ProductEnvironmentInstructions } from './sessionConfiguration.js';
 import {
@@ -69,6 +69,9 @@ interface HttpPortOptions {
   serviceToken: string;
   fetchImpl?: typeof fetch;
 }
+
+/** A decoded error envelope, distinct from losing or failing to decode the reply. */
+class RemoteRejection extends LoopFailure {}
 
 class LocalAgentHttpPort {
   readonly apiBase: string;
@@ -126,6 +129,13 @@ class LocalAgentHttpPort {
     if (!response.ok || !envelope.ok) {
       const code = typeof envelope.error === 'string' ? envelope.error : 'local_agent_http_failed';
       const message = typeof envelope.message === 'string' ? envelope.message : code;
+      if (!envelope.ok && typeof envelope.error === 'string') {
+        if (code !== code.trim() || !isLocalAgentErrorValue({ code, message })
+          || envelope.message !== undefined && typeof envelope.message !== 'string') {
+          throw new LoopFailure('local_agent_http_error_invalid', `${method} ${path} returned a malformed error (HTTP ${response.status}).`);
+        }
+        throw new RemoteRejection(code, message);
+      }
       throw new LoopFailure(code, message);
     }
     return envelope.data as T;
@@ -576,7 +586,20 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
   }
 
   async prepare(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime> {
-    const { previousProviderToolAliases, ...kernelRequest } = request;
+    try { return await this.prepareView(request); }
+    catch (cause) {
+      if (!request.modelActivation || cause instanceof RemoteRejection) throw cause;
+      const error = errorFact(cause);
+      const detail = isLocalAgentErrorValue(error) ? error : undefined;
+      throw new LoopFailure('plugin_activation_outcome_unknown', 'No conclusive plugin preparation receipt; do not automatically retry.'
+        + (detail ? ` ${detail.code}: ${detail.message}` : ''), detail?.diagnostics);
+    }
+  }
+
+  private async prepareView(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime> {
+    const { previousProviderToolAliases, existingPresentation, ...kernelRequest } = request;
+    const shared = !existingPresentation || existingPresentation.coreToolInterface === 'shared';
+    const coding = existingPresentation ? existingPresentation.codingTools === true : this.#codingTools;
     const value = await this.json('/api/local-agent/runtime/prepare-run', {
       method: 'POST',
       body: JSON.stringify(kernelRequest),
@@ -654,11 +677,19 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           .filter((tool) => tool.availability === 'callable')
           .map((tool) => tool.name),
         ...(toolSelection?.controls ?? sessionControlToolDefinitions().map(tool => tool.name)),
-      ], previousProviderToolAliases, this.#codingTools);
+      ], existingPresentation ? previousProviderToolAliases : aliasesForNewCoreInterface(previousProviderToolAliases),
+        shared ? 'shared' : coding);
+      const { data: environment } = decodeSessionEnvironment(value.environment);
+      const userPrompt = userSystemPromptContribution(value.userSystemPrompt);
+      // Validate Kernel sources on every response. Only a new run composes their wording.
+      const project = projectInstructionContributions(value.projectInstructions, coding);
+      const instructions = existingPresentation?.instructions
+        ?? [...this.#instructions, ...userPrompt, ...(this.#environmentInstructions?.(environment) ?? []), ...project];
       return {
         runtimeSnapshot: Object.freeze({
           ...(value.mode ? { mode: value.mode as 'minimal' | 'full' } : {}),
-          ...(this.#codingTools ? { codingTools: true as const } : {}),
+          ...(shared ? { coreToolInterface: 'shared' as const } : {}),
+          ...(coding ? { codingTools: true as const } : {}),
           contextManagement: decodeContextManagementSettings(value.contextManagement),
           ...(subagentSettings ? { subagentSettings } : {}),
           agentCapabilities,
@@ -671,14 +702,9 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
           ...(approvalReviewer ? { approvalReviewer } : {}),
           ...(approvalReviewerError ? { approvalReviewerError: structuredClone(approvalReviewerError) } : {}),
           webSearch,
-          environment: value.environment as JsonObject,
+          environment,
           permissions: pluginConfig.permissions,
-          instructions: [...runtimeInstructions([
-            ...this.#instructions, environmentInstruction(value.environment),
-            ...userSystemPromptContribution(value.userSystemPrompt),
-            ...projectInstructionContributions(value.projectInstructions, this.#codingTools),
-            ...(this.#environmentInstructions?.(value.environment as JsonObject) ?? []),
-          ])],
+          instructions: [...runtimeInstructions(instructions)],
           tools,
           toolPromptContributions: toolPromptContributions as PreparedToolPromptContribution[],
           providerToolAliases,
@@ -686,6 +712,10 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         }),
       };
     } catch (error) {
+      // Only initial acquisition owns whole-run rollback. A captured presentation or an
+      // explicit same-run operation borrows resources that still serve other calls and jobs.
+      if (existingPresentation || request.restoreEnvironment || request.modelActivation
+        || request.rebindHost || request.refreshPlugins !== undefined) throw error;
       try {
         await this.release(releaseRequest);
       } catch (releaseError) {
@@ -865,7 +895,7 @@ function decodeSelectedPluginSnapshot(
   const requested = request.pluginSelections ?? [];
   const admitted = new Set([...requested, ...(request.inheritedPluginSelections ?? [])].map(selection => selection.uri));
   if (
-    admitted.size > 0
+    (admitted.size > 0 || request.restoreEnvironment)
     && (
       (!request.refreshPlugins && requested.some(selection => !seen.has(selection.uri)))
       || plugins.some(plugin => !admitted.has(plugin.uri))

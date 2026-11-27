@@ -1,5 +1,5 @@
 /**
- * 前端 UI 相关类型
+ * Frontend UI types.
  */
 export type ConnectionStatus = 'checking' | 'connected' | 'disconnected' | 'error';
 

@@ -9,20 +9,29 @@ import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { checkReaderFileMenu, checkReaderSplit } from './reader-split-check.mjs';
+import { checkComposerOverlays } from './composer-overlay-check.mjs';
+import { checkViewportFollow } from './viewport-follow-check.mjs';
+import { checkSendEcho } from './send-echo-check.mjs';
 import { checkComposerPluginMentions } from './composer-plugin-mentions-check.mjs';
 import { checkPreviewLayout } from './preview-layout-check.mjs';
 import { checkRichFormatBoundaries } from './rich-format-boundary-check.mjs';
+import { checkFileAttachmentCards } from './file-attachment-cards-check.mjs';
 import { checkAttachmentThumbnails } from './attachment-thumbnails-check.mjs';
 import { checkPluginMarketplace } from './plugin-marketplace-check.mjs';
+import { checkSettingsPages, checkCompletionWindow } from './settings-system-check.mjs';
 const preview = resolve(process.env.UI_FIXTURE_ROOT ?? fileURLToPath(new URL('../../../../.task-artifacts/manual-preview', import.meta.url)));
+const product = process.env.UI_PRODUCT_ROOT ? resolve(process.env.UI_PRODUCT_ROOT) : preview;
 const out = process.env.UI_EVIDENCE_DIR ? resolve(process.env.UI_EVIDENCE_DIR) : await mkdtemp(join(tmpdir(), 'achbit-ui-results-'));
 console.log('Browser evidence: ' + out);
 await mkdir(out, { recursive: true });
-const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.svg': 'image/svg+xml' };
+const mime = { '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript', '.wasm': 'application/wasm', '.css': 'text/css', '.woff2': 'font/woff2', '.svg': 'image/svg+xml' };
 const server = createServer(async (req, res) => {
   try {
-    const path = resolve(preview, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
-    const child = relative(preview, path);
+    const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    const standalone = pathname.startsWith('/built-reminder/');
+    const root = standalone ? product : preview;
+    const path = resolve(root, '.' + (standalone ? pathname.slice('/built-reminder'.length) : pathname.replace(/^\/tests\/manual\/pdfjs\//u, '/pdfjs/')));
+    const child = relative(root, path);
     assert.ok(child && !isAbsolute(child) && child !== '..' && !child.startsWith('..' + sep));
     const data = await readFile(path); res.writeHead(200, { 'content-type': mime[extname(path)] ?? 'application/octet-stream' }); res.end(data);
   } catch (error) { res.writeHead(404); res.end(String(error)); }
@@ -64,12 +73,13 @@ try {
   };
   const frame = () => evaluate('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
   const until = condition => evaluate(`new Promise((done,reject)=>{const end=performance.now()+8000;const check=()=>{if(${condition})done();else if(performance.now()>end)reject(Error('condition timeout: '+${JSON.stringify(condition)}));else setTimeout(check,25)};check()})`);
-  const navigate = async (name, query = {}) => {
+  const navigateEntry = async (path, query = {}) => {
     let timer;
     const loaded = new Promise((done, reject) => { timer = setTimeout(() => reject(Error('load timeout')), 20000); listeners.set(sessionId + ':Page.loadEventFired', () => { clearTimeout(timer); done(); }); });
-    await cmd('Page.navigate', { url: `${base}/tests/manual/${name}.html?${new URLSearchParams(query)}` }); await loaded;
+    await cmd('Page.navigate', { url: `${base}${path}?${new URLSearchParams(query)}` }); await loaded;
     await until('document.querySelector("#root")?.childElementCount>0'); await frame();
   };
+  const navigate = (name, query) => navigateEntry(`/tests/manual/${name}.html`, query);
   const click = async selector => {
     const point = await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing element');e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
@@ -89,9 +99,39 @@ try {
     const image = await cmd('Page.captureScreenshot', { format: 'png' }); await writeFile(join(out, name + '.png'), Buffer.from(image.data, 'base64'));
     console.log(`${pass ? 'PASS' : 'FAIL'} ${name}: ${JSON.stringify(actual)}`);
   };
+  // A sandboxed srcdoc can be an out-of-process iframe. Inspect that exact frame
+  // from the isolated browser, without enabling same-origin or scripts in the product.
+  const frameContent = async (selector, expression) => {
+    const element = await cmd('Runtime.evaluate',{expression:`document.querySelector(${JSON.stringify(selector)})`});
+    const { node } = await cmd('DOM.describeNode',{objectId:element.result.objectId});
+    await cmd('Runtime.releaseObject',{objectId:element.result.objectId});
+    const { targetInfos } = await call('Target.getTargets');
+    let result;
+    if (targetInfos.some(t => t.type==='iframe' && t.targetId===node.frameId)) {
+      const sub = await call('Target.attachToTarget',{targetId:node.frameId,flatten:true});
+      try { result=await call('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},sub.sessionId); }
+      finally { await call('Target.detachFromTarget',{sessionId:sub.sessionId}); }
+    } else {
+      const world=await cmd('Page.createIsolatedWorld',{frameId:node.frameId,worldName:'document-observation'});
+      result=await cmd('Runtime.evaluate',{contextId:world.executionContextId,expression,returnByValue:true,awaitPromise:true});
+    }
+    if (result.exceptionDetails) throw Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
+    return result.result.value;
+  };
+  const controls = { navigate, evaluate, cmd, until, frame, frameContent, click, key, record };
+  await checkViewportFollow(controls);
+  await checkFileAttachmentCards(controls);
+  if (process.argv.includes('--composer-checks')) {
+    await checkComposerOverlays(controls);
+    await checkAttachmentThumbnails(controls);
+  } else await fullSuite();
+  async function fullSuite() {
+  await checkCompletionWindow({ navigateEntry, evaluate, cmd, click, until, key, record });
+  await checkSettingsPages(controls);
   await checkComposerPluginMentions({ navigate, evaluate, cmd, frame, click, key, type, record });
   await checkReaderFileMenu({ navigate, evaluate, until, click, key, record });
   await checkReaderSplit({ navigate, evaluate, cmd, until, frame, click, record });
+  await checkComposerOverlays({ navigate, evaluate, cmd, until, frame, click, key, record });
   await checkAttachmentThumbnails({ navigate, evaluate, cmd, until, frame, click, key, record });
   await navigate('ui-components');
   const closeButton = '[aria-label="紧凑关闭"]';
@@ -169,7 +209,9 @@ try {
   await key('Escape');
   const modalRemained = await evaluate("!!document.querySelector('dialog[open]') && !document.querySelector('[role=tooltip]:popover-open')");
   await record('settings-help-pointer-and-nested-escape', { readable, modalRemained }, readable && modalRemained);
-  await evaluate("document.querySelector('dialog[open] .model-danger').focus()");
+  await evaluate(`(() => { const actions=[...document.querySelectorAll('dialog[open] .model-editor .model-actions button')];
+    const cancel=actions.find(b=>b.getClientRects().length && ['取消','Cancel'].includes(b.textContent.trim()));
+    if (!cancel) throw Error('Visible Cancel action missing from the model editor'); cancel.focus(); })()`);
   await key('Tab', 'Tab', 8);
   const hintFocused = await evaluate(`document.activeElement.matches('${hintSelector}') && !!document.querySelector('[role=tooltip]:popover-open')`);
   await key('Escape');
@@ -232,6 +274,8 @@ try {
   await checkPluginMarketplace({ navigate, evaluate, cmd, until, click, frame, key, type, selectFixture, record });
   await checkPreviewLayout({ navigate, evaluate, cmd, until, frame, click, key, record });
   await checkRichFormatBoundaries({ navigate, evaluate, cmd, until, frame, record });
+  }
+  await checkSendEcho({ ...controls, type });
   assert.ok(results.every(result => result.pass), 'see the retained browser result for failed invariants');
   await call('Browser.close');
 } finally {

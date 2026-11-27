@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const MAX_CANONICAL_INVOCATION_BYTES: usize = 1024 * 1024;
-const MAX_ORDINARY_STRING_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_ORDINARY_STRING_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_EDITS: usize = 128;
 pub const MAX_TERMINAL_STDIN_BYTES: usize = 64 * 1024;
 
 fn empty_field(field: &'static str) -> ToolValidationError {
@@ -246,18 +247,22 @@ impl KernelCanonicalInvocation {
             Self::FsWrite { path, .. } => validate_path(path, false)?,
             Self::FsEdit { path, edits } => {
                 validate_path(path, false)?;
-                if edits.is_empty() || edits.len() > 128 {
+                if edits.is_empty() || edits.len() > MAX_EDITS {
                     return Err(invalid_value(
                         "edits",
                         "must contain between 1 and 128 items",
                     ));
                 }
                 let mut old_texts = std::collections::HashSet::with_capacity(edits.len());
-                for edit in edits {
-                    validate_text("edits.oldText", &edit.old_text, false)?;
-                    validate_text("edits.newText", &edit.new_text, true)?;
+                for (index, edit) in edits.iter().enumerate() {
+                    let at_item = |source| ToolValidationError::EditItem {
+                        index,
+                        source: Box::new(source),
+                    };
+                    validate_text("oldText", &edit.old_text, false).map_err(at_item)?;
+                    validate_text("newText", &edit.new_text, true).map_err(at_item)?;
                     if !old_texts.insert(edit.old_text.as_str()) {
-                        return Err(invalid_value("edits.oldText", "must be unique"));
+                        return Err(at_item(invalid_value("oldText", "must be unique")));
                     }
                 }
             }

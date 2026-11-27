@@ -1,7 +1,7 @@
 /*
- * WorkspaceOpenDialog 样式
- * 与 SettingsCenter / WorkbenchLayout 保持暗色调一致；尽量克制装饰，
- * 强调列表可点击区与 .code-workspace 高亮即可。
+ * Workspace picker styles.
+ * Match the dark palette of SettingsCenter and WorkbenchLayout.
+ * Highlight selectable rows and .code-workspace files.
  */
 
 .ws-open-dialog__backdrop {
@@ -98,7 +98,7 @@
 .ws-open-dialog__body {
   display: grid;
   grid-template-columns: 200px 1fr;
-  min-height: 0; /* 允许内部滚动 */
+  min-height: 0; /* Allow the content to scroll. */
 }
 
 .ws-open-dialog__sidebar {
@@ -177,7 +177,7 @@
   background: color-mix(in srgb, var(--ac-foreground) 4%, transparent);
 }
 .ws-open-dialog__entry--selected {
-  background: color-mix(in srgb, var(--ac-accent) 30%, transparent);
+  background: var(--ac-selection);
   color: var(--ac-foreground-strong);
 }
 .ws-open-dialog__entry-icon {
@@ -383,7 +383,7 @@
 }
 
 :root[data-product='achbit-gui'] .ws-open-dialog__entry--selected {
-  background: var(--ac-surface-active);
+  background: var(--ac-selection);
   color: var(--ac-foreground-strong);
 }
 

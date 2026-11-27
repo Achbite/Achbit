@@ -10,6 +10,8 @@ Interface variables and saved palette keys use the `--ac-*` prefix. Reading and 
 
 The default Achbit theme retains its light appearance. Dark mode distinguishes the background, sidebar, content surfaces, and overlays by brightness. Catppuccin, Gruvbox, and Nord palettes are adaptations to Achbit's interface roles, not official ports. References: [Catppuccin](https://github.com/catppuccin/catppuccin#-palette), [Gruvbox](https://github.com/morhetz/gruvbox/blob/master/colors/gruvbox.vim), and [Nord](https://www.nordtheme.com/docs/colors-and-palettes/).
 
+Supporting text (`muted` and `faint`) in the built-in palettes is checked against the background, sidebar, content, secondary and raised resting surfaces. This is a text-pair check, not a claim about arbitrary imported colors, state overlays or all product screens. Shadows are controlled by theme-specific `shadow-small`, `shadow-panel` and `shadow-inset` tokens; feature CSS chooses the surface rather than inventing a shadow ramp.
+
 Selections and edits use the existing user settings store, leaving installed default JSON files unchanged. `workbench.styleTokenOverrides` is the applied palette; the selected theme name is derived from actual colors. `gui.themeLibrary` stores imported theme documents only. Adding a theme does not apply it. Light and dark palettes are selected independently; `gui.colorTheme` determines the active mode. Custom accent colors take priority. Selecting an accent preset clears accent overrides for both modes.
 
 ## Import format

@@ -23,6 +23,23 @@ struct Navigation {
     label: String,
 }
 
+// Read each selected payload by its journal primary key, including sparse prior inputs.
+const TRANSCRIPT_EVENTS_SQL: &str = "WITH selected AS (
+    SELECT sequence FROM session_events WHERE session_id=?1 AND sequence BETWEEN ?2 AND ?3
+    UNION ALL SELECT value FROM json_each(?4)
+    UNION ALL SELECT sequence FROM session_events WHERE session_id=?1 AND (sequence<?2 OR sequence>?3)
+    AND (event_type IN ('session.created','conversation.revised','agent.task.created','agent.task.started','agent.task.completed','agent.closed','message.feedback.updated')
+      OR event_type LIKE 'plan.%'
+      OR (sequence<?2 AND event_type='input.accepted' AND json_extract(payload_json,'$.messageId') IN (
+          SELECT json_extract(m.payload_json,'$.messageId') FROM session_events m WHERE m.session_id=?1
+          AND m.sequence BETWEEN ?2 AND ?3 AND m.event_type='message.committed' AND json_extract(m.payload_json,'$.role')='user'))
+      OR (sequence<?2 AND event_type='run.settled' AND run_id IN (SELECT value FROM json_each(?5)))
+      OR (sequence<?2 AND event_type IN ('session.workspaces.updated','session.directory-index.attached','session.directory-index.detached','session.model-settings.updated','session.subagent-settings.updated','session.mode.updated'))))
+ SELECT e.sequence,e.event_id,e.event_type,e.occurred_at,e.run_id,e.call_id,
+ CASE WHEN e.event_type='context.composed' THEN json_object('providerRequestId',json_extract(e.payload_json,'$.providerRequestId'),'purpose',json_extract(e.payload_json,'$.purpose'),'sequence',e.sequence,'runId',e.run_id)
+ ELSE e.payload_json END
+ FROM session_events e WHERE e.session_id=?1 AND e.sequence IN (SELECT sequence FROM selected) ORDER BY e.sequence";
+
 impl SessionCatalogReader {
     /// A consistent cut of one human turn. Only its journal payloads and the compact facts
     /// that can affect it outside that range are materialized.
@@ -114,20 +131,36 @@ impl SessionCatalogReader {
         let previous = index.checked_sub(1).map(|n| starts[n]);
         let mut events = Vec::new();
         let mut compositions = Vec::new();
+        // The navigation scan already knows which user messages survived edits. Only
+        // fetch old queue payloads and settlement receipts for outstanding messages.
+        let mut queued = Vec::new();
+        let mut queue_runs = std::collections::BTreeSet::new();
+        if next.is_none() && start > 1 {
+            let committed: std::collections::HashSet<_> =
+                navigation.iter().map(|row| row.key.as_str()).collect();
+            let mut q = tx.prepare("SELECT sequence,run_id,json_extract(payload_json,'$.messageId') FROM session_events
+                WHERE session_id=?1 AND sequence<?2 AND event_type='input.queued'").map_err(&error)?;
+            let mut rows = q.query(params![id, start]).map_err(&error)?;
+            while let Some(row) = rows.next().map_err(&error)? {
+                let seq: i64 = row.get(0).map_err(&error)?;
+                let message: String = row.get(2).map_err(&error)?;
+                if active(seq) && !committed.contains(message.as_str()) {
+                    queued.push(seq);
+                    queue_runs.insert(row.get::<_, String>(1).map_err(&error)?);
+                }
+            }
+        }
         {
-            // The range scan uses the journal primary key. The second scan touches payloads
-            // only for facts shared across turns, such as child identity and later feedback.
-            let mut q = tx.prepare("WITH selected AS (
-                    SELECT sequence FROM session_events WHERE session_id=?1 AND sequence BETWEEN ?2 AND ?3
-                    UNION ALL SELECT sequence FROM session_events WHERE session_id=?1 AND (sequence<?2 OR sequence>?3)
-                    AND (event_type IN ('session.created','conversation.revised','agent.task.created','agent.task.started','agent.task.completed','agent.closed','message.feedback.updated')
-                      OR event_type LIKE 'plan.%'
-                      OR (sequence<?2 AND event_type IN ('session.workspaces.updated','session.directory-index.attached','session.directory-index.detached','session.model-settings.updated','session.subagent-settings.updated','session.mode.updated'))))
-                 SELECT e.sequence,e.event_id,e.event_type,e.occurred_at,e.run_id,e.call_id,
-                 CASE WHEN e.event_type='context.composed' THEN json_object('providerRequestId',json_extract(e.payload_json,'$.providerRequestId'),'purpose',json_extract(e.payload_json,'$.purpose'),'sequence',e.sequence,'runId',e.run_id)
-                 ELSE e.payload_json END
-                 FROM selected JOIN session_events e ON e.session_id=?1 AND e.sequence=selected.sequence ORDER BY e.sequence").map_err(&error)?;
-            let mut rows = q.query(params![id, start, end]).map_err(&error)?;
+            let mut q = tx.prepare(TRANSCRIPT_EVENTS_SQL).map_err(&error)?;
+            let mut rows = q
+                .query(params![
+                    id,
+                    start,
+                    end,
+                    json!(queued).to_string(),
+                    json!(queue_runs).to_string()
+                ])
+                .map_err(&error)?;
             let mut expected = start;
             while let Some(r) = rows.next().map_err(&error)? {
                 let seq: i64 = r.get(0).map_err(&error)?;
@@ -271,6 +304,106 @@ impl SessionCatalogReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tail_reads_only_outstanding_prior_inputs_and_their_settlements() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.sqlite");
+        let journal = LocalAgentJournal::open(&path).unwrap();
+        let id = "session:queue";
+        journal
+            .create_session(id, "Queue", &json!([]), None, None)
+            .unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let user = |id| json!({"messageId":id,"role":"user","content":id});
+        for (index, (kind, run, payload)) in [
+            ("message.committed", None, user("first")),
+            ("input.queued", Some("old"), json!({"messageId":"applied"})),
+            ("input.queued", Some("old"), json!({"messageId":"pending"})),
+            ("message.committed", Some("old"), user("applied")),
+            ("run.settled", Some("old"), json!({"outcome":"cancelled"})),
+            ("message.committed", None, user("second")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute("INSERT INTO session_events(session_id,sequence,event_id,event_type,occurred_at,run_id,payload_json)
+                VALUES(?1,?2,?3,?4,'now',?5,?6)",params![id,index as i64+2,format!("q-{index}"),kind,run,payload.to_string()]).unwrap();
+        }
+        let reader = SessionCatalogReader::open(&path).unwrap();
+        let tail = reader.transcript_facts(id, None, None).unwrap().unwrap();
+        let prior: Vec<_> = tail
+            .events
+            .iter()
+            .filter(|e| e.sequence < tail.start && e.sequence > 1)
+            .map(|e| e.sequence)
+            .collect();
+        assert_eq!(prior, [4, 6]);
+    }
+
+    #[test]
+    fn turn_boundary_includes_only_the_matching_prior_acceptance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same.sqlite");
+        let id = "session:same";
+        let journal = LocalAgentJournal::open(&path).unwrap();
+        journal
+            .create_session(id, "Same", &json!([]), None, None)
+            .unwrap();
+        for mid in ["first", "second"] {
+            journal.append(&json!({"type":"input.accepted","sessionId":id,"payload":{"messageId":mid,"commandId":format!("send:{mid}"),"text":"same"}})).unwrap();
+            journal.append(&json!({"type":"message.committed","sessionId":id,"payload":{"messageId":mid,"role":"user","content":"same"}})).unwrap();
+        }
+        let facts = SessionCatalogReader::open(&path)
+            .unwrap()
+            .transcript_facts(id, None, None)
+            .unwrap()
+            .unwrap();
+        let prior: Vec<_> = facts
+            .events
+            .iter()
+            .filter(|e| e.event_type == "input.accepted")
+            .collect();
+        assert_eq!(prior.len(), 1);
+        assert_eq!(prior[0].sequence, facts.start - 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(prior[0].payload.get()).unwrap()["commandId"],
+            "send:second"
+        );
+    }
+
+    #[test]
+    fn tail_query_work_grows_linearly_with_prior_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.sqlite");
+        let journal = LocalAgentJournal::open(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let steps = |count: i64| {
+            let id = format!("session:tail-{count}");
+            journal
+                .create_session(&id, "History", &json!([]), None, None)
+                .unwrap();
+            conn.execute("WITH RECURSIVE history(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM history WHERE n<?2)
+                INSERT INTO session_events(session_id,sequence,event_id,event_type,payload_json,occurred_at)
+                SELECT ?1,n+1,?1 || '-' || n,'message.committed','{}','now' FROM history", params![id,count]).unwrap();
+            let mut query = conn.prepare(TRANSCRIPT_EVENTS_SQL).unwrap();
+            let sequences = query
+                .query_map(params![id, count + 1, count + 1, "[]", "[]"], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(sequences, [1, count + 1]);
+            query.get_status(rusqlite::StatementStatus::VmStep)
+        };
+        let small = steps(128);
+        let large = steps(512);
+        assert!(
+            large < small * 6,
+            "four times the history took {large} VM steps versus {small}"
+        );
+    }
 
     #[test]
     fn formal_page_cursors_enclose_complete_turns_and_keep_compact_composition_identity() {

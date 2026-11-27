@@ -95,7 +95,9 @@ fn serve(executor: &mut Executor, host: &str, stream: &mut TcpStream) -> Result<
             Err("computer_host_binding_mismatch".into())
         };
         let response = match result {
-            Ok(data) => json!({"ok":true,"data":data}),
+            Ok(data) => {
+                json!({"ok":true,"data":crate::observation_output::for_host(data, &request["input"], &executor.instance)})
+            }
             Err(message) => json!({"ok":false,"message":message,"diagnostics":{
                 "phase":request["input"]["action"],"native":status()}}),
         };

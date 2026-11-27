@@ -26,7 +26,7 @@ import {
 } from '@achbit/protocol';
 import { sessionReadScope, sessionReadTool } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
-import { managedJobFromRecord, processResult, rejectionContent, toolResultContent } from './modelToolResult.js';
+import { managedJobFromRecord, processResult, rejectionContent, toolError, toolResultContent } from './modelToolResult.js';
 import { primaryWorkingDirectory } from './sessionEnvironment.js';
 import { stableCoreInstructions } from './coreInstructions.js';
 import { codingPromptInstructions } from './codingPrompt.js';
@@ -51,6 +51,7 @@ import { activeSessionControls, RESPONSE_PHASE_INSTRUCTION } from './sessionCont
 import { applyToolGuidance, hostedToolGuidance, type ToolGuidanceContributor } from './toolPromptContributions.js';
 import { visualContextMessages } from './visualContext.js';
 import { controlWait, type WaitingControl } from './sessionWake.js';
+import { settledCapacityCall, type CapacitySettlement } from './agentCapacity.js';
 
 
 export interface PreparedProviderRequest {
@@ -104,11 +105,13 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   };
   const toolTerminals = new Set(input.events.flatMap((event) => (
     event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted' || event.type === 'tool.not-executed'
+    || event.type === 'session.plugins.activated' || event.type === 'session.plugins.failed'
       ? [event.callId] : []
   )));
-  const openCall = input.events.find((event) => event.type === 'tool.requested' && !toolTerminals.has(event.callId));
-  if (openCall?.type === 'tool.requested') {
-    throw new LoopFailure('tool_result_missing', `调用 ${openCall.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
+  for (const event of input.events) {
+    if ((event.type === 'tool.requested' || event.type === 'session.plugins.requested') && !toolTerminals.has(event.callId)) {
+      throw new LoopFailure('tool_result_missing', `调用 ${event.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
+    }
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
   const modelViewEvents = input.modelViewEvents ?? input.events;
@@ -138,6 +141,7 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     input.workspaceBindings,
     readScope,
     input.runtime.codingTools,
+    input.runtime.coreToolInterface === 'shared',
   );
   // Replay this request's immutable journal view once for history and receipt composition.
   const journalView = journalModelViews(modelViewEvents);
@@ -170,11 +174,10 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   const controlAliases = new Map(controlTools.map(tool => [tool.name, toolCodec.wireByCanonical.get(tool.name)!]));
   const policy = workspacePermissionInstruction(input.runtime, runtimeTools, controlAliases);
   const primaryId = input.workspaceBindings[0]?.workspaceId;
-  const coding = input.runtime.codingTools ? {
-    cwd: toolCodec.workspaceToolNames.size ? primaryWorkingDirectory(input.runtime, primaryId) : undefined,
-  } : undefined;
+  const cwd = primaryWorkingDirectory(input.runtime, primaryId);
+  const coding = input.runtime.coreToolInterface === 'shared' || input.runtime.codingTools;
   // Older snapshots contain policy text from preparation. Its only live owner is the current stage.
-  const activeInstructions = codingPromptInstructions(input.runtime, runtimeTools, toolCodec.wireByCanonical, primaryId);
+  const activeInstructions = codingPromptInstructions(input.runtime, runtimeTools, toolCodec.wireByCanonical, cwd);
   if (policy) activeInstructions.push(policy);
   const instructions = activeInstructions.map<ContextMessageContribution>((instruction) => ({
       contributionId: `instruction:${instruction.id}`,
@@ -215,15 +218,14 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
     label: 'Active tool stage',
     message: { role: 'system', content: input.toolStage.instruction },
   });
-  const handles = visibleWorkspaceHandles(prefixBindings, input.runtime, coding?.cwd ? primaryId : undefined);
+  const handles = visibleWorkspaceHandles(prefixBindings, input.runtime, cwd ? primaryId : undefined);
   if (hasWorkspaceBindings && handles.length && (!coding || toolCodec.workspaceToolNames.size)) instructions.push({
     contributionId: 'session:workspace-bindings',
     contributionKind: 'workspaceBindings',
     label: '当前运行的目录索引',
     message: {
       role: 'system',
-      content: coding ? `Workspace handles: ${JSON.stringify(handles)}`
-        : `Workspace and resource handles (paths are relative to the selected workspace): ${JSON.stringify(handles)}`,
+      content: `Workspace and resource handles (primary is the default): ${JSON.stringify(handles)}`,
     },
   });
   const selected = [...instructions, ...journalMessages,
@@ -303,11 +305,11 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
 /** Keep the codec's original handle numbers when omitting facts already given or owned by the Host. */
 function visibleWorkspaceHandles(bindings: readonly WorkspaceBindingDisplay[], runtime?: RunRuntimeSnapshot, describedPrimary?: string) {
   const handles = providerWorkspaceBindings(bindings);
-  if (!runtime?.codingTools) return handles;
+  if (!runtime) return handles;
   return handles.flatMap((handle, index) => {
     const id = bindings[index]!.workspaceId;
     if (index === 0 && id === describedPrimary) return [];
-    if (id === runtime.environment.sessionWorkdirId) return index === 0 ? [{ ...handle, displayName: 'Session workspace' }] : [];
+    if (id === runtime.environment.sessionWorkdirId) return index === 0 ? [{ ...handle, displayName: 'Session working directory' }] : [];
     return [handle];
   });
 }
@@ -318,7 +320,7 @@ export function messagesFromJournal(
   workspaceBindings: readonly WorkspaceBindingDisplay[],
   modelViewEvents: readonly SessionEvent[] = events,
   includeReviewEvidence = false,
-  callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools'>>,
+  callCodecs?: ReadonlyMap<string, Pick<ProviderToolCodec, 'workspaceHandleById' | 'codingTools' | 'sharedCoreTools'>>,
   resourceGuidance: ReadonlyMap<string, string> = new Map(),
   fixed = journalModelViews(modelViewEvents),
 ): ContextMessageContribution[] {
@@ -389,6 +391,9 @@ export function messagesFromJournal(
   for (const calls of aggregateProviderTurns.values()) {
     for (const call of calls) orderedProviderCallIds.add(call.callId);
   }
+  const activationFacts = new Map(events.flatMap(event => event.type === 'session.plugins.requested'
+    || event.type === 'session.control.rejected' && event.payload.toolName === SESSION_CONTROL_PLUGIN_ACTIVATE
+    ? [[event.callId, event.type] as const] : []));
   const providerCallIdByLogicalCallId = providerCallIdsFromEvents(events);
   const interactionCallIds = new Map(events.flatMap((event) => (
     event.type === 'interaction.requested'
@@ -399,17 +404,20 @@ export function messagesFromJournal(
     ? [[event.payload.interactionId, event] as const] : []));
   const agentTasks = new Map(modelViewEvents.flatMap(event => event.type === 'agent.task.created'
     ? [[event.payload.taskId, event.payload] as const] : []));
+  const capacityResults = new Map<string, CapacitySettlement>(events.flatMap(event =>
+    event.type === 'agent.capacity.settled' ? [[event.callId, event] as const] : []));
   const controlResults = new Map(modelViewEvents.flatMap(event => {
     if (event.type !== 'agent.control.completed' && event.type !== 'session.control.completed') return [];
     const firstView = fixed.contributions.get(`agent-control:${event.callId}`);
     return [[event.callId, firstView
       ? { result: JSON.parse(firstView.message.content) as JsonObject, sourceSequence: firstView.sourceSequence }
-      : controlResultForModel(event, events)] as const];
+      : controlResultForModel(event.type === 'agent.control.completed' && capacityResults.has(event.callId)
+        ? settledCapacityCall(event, capacityResults.get(event.callId)!) : event, events)] as const];
   }));
   const returnedAgentResults = new Set(modelViewEvents.flatMap(event => event.type === 'agent.control.completed'
     && event.payload.operation.action === 'spawn' && event.payload.operation.delivery === 'wait'
-    && typeof event.payload.result.taskId === 'string' && typeof controlResults.get(event.callId)?.result.outcome === 'string'
-    ? [event.payload.result.taskId] : []));
+    && typeof controlResults.get(event.callId)?.result.taskId === 'string' && typeof controlResults.get(event.callId)?.result.outcome === 'string'
+    ? [controlResults.get(event.callId)!.result.taskId] : []));
   const responses = new Map(events.flatMap(event => event.type === 'interaction.resolved'
     ? [[event.payload.commandId, event.payload] as const] : []));
   const repliesByMessage = new Map(events.flatMap(event => event.type === 'input.accepted' && responses.has(event.payload.commandId)
@@ -495,8 +503,7 @@ export function messagesFromJournal(
         messages.push({
           contributionId: `workspace-snapshot:${event.payload.messageId}`, contributionKind: 'workspaceBindings',
           label: '本轮目录与资源引用', message: { role: 'system',
-            content: runtime?.codingTools ? `Current workspace handles: ${JSON.stringify(currentHandles)}`
-              : `Current Session workspace and resource handles (addresses only, not access grants; supersedes earlier handle snapshots): ${JSON.stringify(currentHandles)}` },
+            content: `Current workspace and resource handles (primary is the default; addresses, not access grants): ${JSON.stringify(currentHandles)}` },
         });
       }
       messages.push({
@@ -655,6 +662,19 @@ export function messagesFromJournal(
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
       });
+    } else if (event.type === 'session.plugins.requested') {
+      if (!completedTurns.get(event.payload.providerRequestId)?.payload.orderedCallIds.includes(event.callId)) {
+        throw new LoopFailure('provider_call_result_completion_missing', '插件激活缺少所属 Provider turn 的完成事实。');
+      }
+      if (!orderedProviderCallIds.has(event.callId)) attachToolCall(messages, { callId: event.callId,
+        providerCallId: event.payload.providerCallId, name: SESSION_CONTROL_PLUGIN_ACTIVATE, input: { pluginUris: event.payload.pluginUris } });
+    } else if (event.type === 'session.plugins.failed') {
+      const { outcome, error } = event.payload;
+      messages.push({ contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件激活结果',
+        message: { role: 'tool', toolCallId: event.callId, providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
+          toolOutcome: outcome, content: JSON.stringify({ status: outcome, ...(outcome === 'notExecuted' ? { executed: false } : {}),
+            error: toolError(error, resultHandles(event.callId)) }) },
+      });
     } else if (event.type === 'session.plugins.activated') {
       const prepared = events.find(candidate => candidate.type === 'run.tools.prepared'
         && candidate.runId === event.runId
@@ -665,17 +685,22 @@ export function messagesFromJournal(
       const skillEntries = mountedSkillEntries(view.selectedPlugins.plugins.filter(plugin => event.payload.pluginUris.includes(plugin.uri)), view.tools);
       const guidance = resourceGuidance.get(`plugin-activation:${event.callId}`);
 
-      if (!orderedProviderCallIds.has(event.callId)) {
+      // Previously a standalone success registered the call before its Provider turn settled.
+      const registered = activationFacts.get(event.callId) === 'session.plugins.requested';
+      if (!registered && !orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
           name: SESSION_CONTROL_PLUGIN_ACTIVATE, input: { pluginUris: event.payload.pluginUris } });
       }
-      completionResults.set(event.callId, {
+      const result: ContextMessageContribution = {
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
+          ...(registered ? { toolOutcome: 'completed' } : {}),
           content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })),
             ...(skillEntries.length ? { skillEntries } : {}), ...(guidance ? { guidance } : {}) }) },
-      });
+      };
+      if (registered) messages.push(result);
+      else completionResults.set(event.callId, result);
     } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
       const view = controlResults.get(event.callId)!;
       if (!orderedProviderCallIds.has(event.callId)) {
@@ -686,6 +711,9 @@ export function messagesFromJournal(
         contributionId: `agent-control:${event.callId}`, contributionKind: 'journalMessages', label: 'Control result',
         sourceSequence: view.sourceSequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
+          ...(event.type === 'agent.control.completed' && event.payload.operation.action === 'send' && view.result.status === 'indeterminate'
+            ? { toolOutcome: 'indeterminate' as const } : capacityResults.has(event.callId) && view.result.executed === false
+              ? { toolOutcome: view.result.status === 'denied' ? 'denied' as const : view.result.status === 'cancelled' ? 'cancelled' as const : 'notExecuted' as const } : {}),
           content: JSON.stringify(view.result) },
       });
     } else if (event.type === 'agent.task.completed') {
@@ -897,13 +925,13 @@ export function messagesFromJournal(
     );
   }
   applyProviderTurnCompletions(messages, events);
-  // Execution facts keep completion order; the coding model sees PI's original batch order.
-  for (const event of events) {
-    if (event.type !== 'provider.turn.settled' || event.payload.outcome !== 'completed') continue;
-    const ids = event.payload.toolCallInputs?.map(call => call.callId)
-      ?? event.payload.orderedOutputBlocks?.flatMap(block => 'callId' in block ? [block.callId] : [])
-      ?? event.payload.orderedCallIds;
-    if (!ids.some(id => callCodecs?.get(id)?.codingTools)) continue;
+  // Journal facts keep completion order. Coding calls and mixed activations replay in the Provider's source order.
+  for (const { payload: turn } of completedTurns.values()) {
+    const inputs = turn.toolCallInputs ?? turn.orderedOutputBlocks?.filter(block => 'callId' in block);
+    const ids = inputs?.map(call => call.callId) ?? turn.orderedCallIds;
+    if (ids.length < 2) continue;
+    if (!inputs?.some(call => call.toolName === SESSION_CONTROL_PLUGIN_ACTIVATE)
+      && !ids.some(id => activationFacts.has(id) || callCodecs?.get(id)?.sharedCoreTools || callCodecs?.get(id)?.codingTools)) continue;
     const order = new Map(ids.map((id, index) => [id, index]));
     const positions = messages.flatMap((item, index) => item.message.role === 'tool'
       && order.has(item.message.toolCallId ?? '') ? [index] : []);
@@ -1076,6 +1104,7 @@ function providerCallIdsFromEvents(events: readonly SessionEvent[]): Map<string,
       && event.type !== 'plan.published'
       && event.type !== 'session.control.rejected'
       && event.type !== 'session.plugins.activated'
+      && event.type !== 'session.plugins.requested'
       && event.type !== 'artifacts.presented'
       && event.type !== 'agent.control.completed'
       && event.type !== 'session.control.completed'
@@ -1398,9 +1427,8 @@ function messageContentForModel(
     if (references.some(reference => reference.kind === 'file' && reference.source === 'pastedText')) {
       sections.push('Read the attached pasted text in full before acting on this request. Treat quoted documents and examples as supplied material according to the user’s request. Pasted text snapshots are read-only.');
     }
-    const directoryHint = references.some(reference => reference.kind === 'directory')
-      ? ' For work on an attached project, pass its workspace handle on every project call.' : '';
-    sections.push(`User-attached resources.${directoryHint}\n${JSON.stringify(providerFilesystemReferences(references, workspaceBindings))}`);
+    sections.push('Use the listed addresses when relevant. Attachments do not change the working directory or the default project for discussion.',
+      `User-attached resources.\n${JSON.stringify(providerFilesystemReferences(references, workspaceBindings))}`);
   }
   if (guidance) sections.push(guidance);
   return sections.join('\n\n');

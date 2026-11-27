@@ -2,6 +2,10 @@ import { decodeAgentConfiguration, decodeAgentContribution, type AgentConfigurat
 import { isLlmReasoningEffort, type LlmReasoningEffort } from './llm.js';
 import { validatePermissionPatches } from './permissions.js';
 import type { UserSettings } from './userSettings.js';
+import coreCodingTools from './coreCodingTools.json' with { type: 'json' };
+
+/** Shared ordered manifest: Kernel identity and model name. Only the selected Shell is callable. */
+export const CORE_CODING_TOOLS: ReadonlyMap<string, string> = new Map(coreCodingTools.map(([kernel, wire]) => [kernel, wire]));
 
 /** Task-owned selection. Omitted groups inherit; [] installs no tools in that group. */
 export interface AgentToolSelection {
@@ -40,8 +44,9 @@ export function inheritAgentTools(parent: AgentToolSelection | undefined, select
 export interface AgentFileScope { workspaceId: string; read: string[]; write: string[] }
 export function decodeAgentFileScope(value: unknown): AgentFileScope {
   const s = value as AgentFileScope;
-  const valid = (path: unknown) => typeof path === 'string' && (path === '.' || path.length <= 1024
-    && !/[\\\\:\u0000-\u001f\u007f]/u.test(path) && path.split('/').every(part => part && part !== '.' && part !== '..'));
+  const encoder = new TextEncoder();
+  const valid = (path: unknown) => typeof path === 'string' && (path === '.' || encoder.encode(path).byteLength <= 1024
+    && !/[\\\\:\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(path) && path.split('/').every(part => part && part !== '.' && part !== '..'));
   if (!s || typeof s !== 'object' || Array.isArray(s) || Object.keys(s).length !== 3
     || typeof s.workspaceId !== 'string' || !s.workspaceId.trim() || s.workspaceId !== s.workspaceId.trim()
     || [s.read,s.write].some(paths => !Array.isArray(paths) || paths.length > 64 || !paths.every(valid) || new Set(paths).size !== paths.length)) {

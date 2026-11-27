@@ -150,7 +150,7 @@ export function builtinSessionContributions(): SessionContribution[] {
     },
   };
   return [
-    { kind: 'context', id: 'coding', description: 'Journal context with the read, shell, edit and write coding interface.',
+    { kind: 'context', id: 'coding', description: 'Coding journal context for the standard Loop.',
       ...noParameters, create: () => ({ implementation: createContextCapability() }) },
     { kind: 'controls', id: 'none', description: 'No Session control tools or turn hooks.',
       ...noParameters, create: () => ({ implementation: undefined }) },

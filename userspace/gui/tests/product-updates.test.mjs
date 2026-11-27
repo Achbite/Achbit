@@ -111,6 +111,35 @@ test('a newer updater event wins over a delayed initial status read', async t =>
   assert.equal(b.calls.some(call => ['achbit_update_check', 'achbit_update_install'].includes(call.command)), false);
 });
 
+for (const phase of ['current', 'waiting']) test(`a late initial status failure leaves the newer ${phase} event in control`, async t => {
+  const b = browser(t), initial = Promise.withResolvers();
+  const invoke = b.window.__TAURI__.core.invoke;
+  b.window.__TAURI__.core.invoke = (command, args) => {
+    if (command !== 'achbit_update_status') return invoke(command, args);
+    b.calls.push({ command }); return initial.promise;
+  };
+  const [updates, { ProductUpdateNotice }, { GuiSettingsSection }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
+    '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+  ]);
+  b.cleanups.push(updates.installProductUpdateMonitor()); await flush();
+  assert.ok(b.calls.some(call => call.command === 'achbit_update_status'));
+  const latest = { ...b.status, phase, version: phase === 'current' ? null : b.status.version };
+  b.handlers.get('achbit:product-update')({ payload: latest });
+  initial.reject(new Error('stale initial status read')); await flush();
+  const notice = capture(ProductUpdateNotice);
+  if (phase === 'current') {
+    assert.equal(notice.html, '', 'a current installation has no update warning');
+    const about = capture(GuiSettingsSection, { category: 'about', apiStatus: 'connected' });
+    assert.match(about.html, /当前已是最新版本|You are up to date/);
+  } else {
+    assert.match(notice.html, /data-ui-icon="refresh"/, 'a downloaded update still offers installation');
+    findReactElement(notice.tree, node => node.type === 'button').props.onClick(); await flush();
+    assert.equal(b.calls.at(-1).command, 'achbit_update_install');
+  }
+  assert.deepEqual(updates.productUpdateSnapshot(), latest);
+});
+
 test('a held update status does not block configuration or an explicit prepare decision', async t => {
   const b = browser(t);
   const { promise, resolve } = Promise.withResolvers();
@@ -316,12 +345,12 @@ test('automatic updates follow loaded settings; manual installation confirms act
 
 test('About Achbit exposes a manual check and a ready installation action', async t => {
   const b = browser(t);
-  const [updates, { GuiSettingsSection }] = await loadGuiModules(t, [
-    '/src/services/productUpdates.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+  const [updates, { GuiSettingsSection }, { Button }] = await loadGuiModules(t, [
+    '/src/services/productUpdates.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx', '/src/ui-components/index.ts',
   ]);
   const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
   const action = () => findReactElement(capture(GuiSettingsSection, { category: 'about', apiStatus: 'connected' }).tree,
-    node => node.type === 'button' && /安装更新|检查更新|Install update|Check for updates/.test(node.props.children));
+    node => node.type === Button && /安装更新|检查更新|Install update|Check for updates/.test(node.props.children));
   action().props.onClick(); await flush();
   assert.equal(b.calls.at(-1).command, 'achbit_update_install');
   b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase: 'current' } });
@@ -331,9 +360,9 @@ test('About Achbit exposes a manual check and a ready installation action', asyn
 
 for (const language of ['zh-CN', 'en-US']) test(`About keeps update feedback outside its action group (${language})`, async t => {
   const b = browser(t);
-  const [updates, { GuiSettingsSection }, { useSettingsStore }] = await loadGuiModules(t, [
+  const [updates, { GuiSettingsSection }, { useSettingsStore }, { Button }] = await loadGuiModules(t, [
     '/src/services/productUpdates.ts', '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
-    '/src/state/settingsStore.ts',
+    '/src/state/settingsStore.ts', '/src/ui-components/index.ts',
   ]);
   const initial = useSettingsStore.getInitialState(), original = { ...initial };
   initial.effectiveSettings = { ...initial.effectiveSettings, 'workbench.language': language };
@@ -341,7 +370,7 @@ for (const language of ['zh-CN', 'en-US']) test(`About keeps update feedback out
   const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
   let reloads = 0;
   b.window.addEventListener('achbit:request-interface-reload', () => { reloads++; });
-  const isButton = node => isValidElement(node) && node.type === 'button';
+  const isButton = node => isValidElement(node) && node.type === Button;
   for (const phase of ['current', 'error', 'checking', 'downloading', 'waiting', 'preparing', 'installing']) {
     const error = phase === 'error' ? 'update_failed: /a/long/path/download could not be verified' : null;
     b.handlers.get('achbit:product-update')({ payload: { ...b.status, phase, error } });
@@ -350,6 +379,7 @@ for (const language of ['zh-CN', 'en-US']) test(`About keeps update feedback out
     const children = Children.toArray(actions.props.children);
     assert.ok(children.every(isButton), 'status/error content cannot split the two actions');
     const [update, reload] = children;
+    assert.equal((renderToStaticMarkup(actions).match(/<button\b/g) ?? []).length, 2, 'both actions are native buttons');
     assert.equal(update.props.disabled, ['checking', 'downloading', 'preparing', 'installing'].includes(phase));
     assert.notEqual(reload.props.disabled, true, 'update feedback does not disable interface reload');
     reload.props.onClick();
@@ -369,9 +399,9 @@ for (const language of ['zh-CN', 'en-US']) test(`About keeps update feedback out
 
 test('a pending confirmation remains interactive and cannot be replaced by another preparation', async t => {
   const b = browser(t);
-  const [updates, { ProductUpdateNotice }, { GuiSettingsSection }] = await loadGuiModules(t, [
+  const [updates, { ProductUpdateNotice }, { GuiSettingsSection }, { Button }] = await loadGuiModules(t, [
     '/src/services/productUpdates.ts', '/src/components/shared/ProductUpdateNotice.tsx',
-    '/src/components/settings-center/sections/CategorizedSettingsSections.tsx',
+    '/src/components/settings-center/sections/CategorizedSettingsSections.tsx', '/src/ui-components/index.ts',
   ]);
   const stop = await updates.installProductUpdateMonitor(); b.cleanups.push(stop); await flush();
   b.root.inert = true;
@@ -383,7 +413,7 @@ test('a pending confirmation remains interactive and cannot be replaced by anoth
   assert.equal(findReactElement(notice, node => node.props['data-product-update']).props['data-product-update'], 'confirming');
   assert.equal(findReactElement(notice, node => node.props.className === 'product-update-notice__icon').props.onClick, undefined);
   const about = capture(GuiSettingsSection, { category: 'about', apiStatus: 'connected' }).tree;
-  assert.equal(findReactElement(about, node => node.type === 'button' && /等待确认更新|Waiting for confirmation/.test(node.props.children)).props.disabled, true);
+  assert.equal(findReactElement(about, node => node.type === Button && /等待确认更新|Waiting for confirmation/.test(node.props.children)).props.disabled, true);
   b.handlers.get('achbit:update-prepare')({ payload: { nonce: 8, manual: true, busy: false } }); await flush();
   assert.deepEqual(b.calls.at(-1), { command: 'achbit_update_prepare_response', args: { nonce: 8, storage: null } });
   assert.equal(updates.productUpdateConfirmation(), pending);

@@ -139,7 +139,8 @@ test('Reader attachment summary preserves the one-line draft, attachment actions
   assert.equal(summary.props['aria-expanded'], false);
   assert.equal(summary.props['aria-label'], '查看 1 个附件');
   assert.match(renderToStaticMarkup(rail), /保留附件.md/);
-  findReactElement(rail, node => node.props['aria-label'] === '移除 保留附件.md').props.onClick();
+  const card = findReactElement(rail, node => node.props.attachmentId === 'file:/workspace/保留附件.md');
+  findReactElement(capture(card.type, card.props), node => node.props['aria-label'] === '移除 保留附件.md').props.onClick();
   assert.deepEqual(removed, [[]], 'the summary keeps the original removal route');
   await findReactElement(tree, node => node.props['data-ui-action'] === 'composer.controls.submit').props.onClick();
   assert.deepEqual(sent, [composer.draft]);

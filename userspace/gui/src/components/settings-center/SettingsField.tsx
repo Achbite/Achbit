@@ -1,4 +1,4 @@
-import { NativeSelect, ToggleSwitch } from '../../ui-components';
+import { Button, NativeSelect, ToggleSwitch } from '../../ui-components';
 import { useInterfaceReloadGuard } from '../../services/interfaceReload';
 import { useSettingsSearchTarget } from './settingsSearch';
 import { useSettingsHelp } from './SettingsHelp';
@@ -156,8 +156,8 @@ const SettingsField: React.FC<SettingsFieldProps> = ({
       <div className="settings-field__control" aria-busy={saving}>
         {renderControl()}
         {editable && definition.control !== 'number' && dirty && <div className="settings-field__edit-actions">
-          <button type="button" className="settings-button" disabled={disabled || saving} onClick={save}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</button>
-          <button type="button" className="settings-field__discard" disabled={saving} onClick={() => { setDraft({ saved: savedText, text: savedText }); setError(null); }}>{t(language, 'settings.edit.discard')}</button>
+          <Button variant="primary" disabled={disabled || saving} onClick={save}>{t(language, saving ? 'settings.edit.saving' : 'settings.edit.save')}</Button>
+          <Button disabled={saving} onClick={() => { setDraft({ saved: savedText, text: savedText }); setError(null); }}>{t(language, 'settings.edit.discard')}</Button>
         </div>}
         {error && <p className="settings-error" role="alert">{error}</p>}
       </div>

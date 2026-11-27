@@ -186,7 +186,7 @@ export type AgentOperation =
   | { action: 'models' }
   | { action: 'spawn'; preset?: string | null; peerGroup?: string; helpers?: AgentHelperSpec[];
       fileScope?: AgentRecipe['fileScope']; capabilities?: Partial<AgentCapabilities>;
-      task: string; name: string; delivery: 'wait' | 'async';
+      task: string; name: string; delivery: 'wait' | 'async'; requestCapacity?: string;
       profileId?: string; reasoningEffort?: LlmReasoningEffort;
       loop?: Partial<Pick<AgentConfiguration, 'controls' | 'compaction'>>;
       runner?: AgentContributionSelection;
@@ -197,7 +197,7 @@ export type AgentOperation =
       context?: AgentContributionSelection; permissions?: UserSettings }
   | { action: 'send'; agentId: string; text: string }
   | { action: 'compact'; agentId: string; focus?: string }
-  | { action: 'assign'; agentId: string; task: string }
+  | { action: 'assign'; agentId: string; task: string; requestCapacity?: string }
   | { action: 'wait'; taskIds?: string[] }
   | { action: 'cancel'; taskId: string }
   | { action: 'close'; agentId: string };
@@ -1049,6 +1049,7 @@ export type SessionEvent =
   | (SessionEventBase & { type: 'agent.task.started'; runId: string; payload: { taskId: string; childRunId: string } })
   | (SessionEventBase & { type: 'agent.task.completed'; runId: string; payload: { taskId: string; result: AgentTaskResult } })
   | (SessionEventBase & { type: 'agent.closed'; payload: { agentSessionId: string } })
+  | (SessionEventBase & { type: 'agent.capacity.settled'; runId: string; callId: string; payload: { approvalId: string; result: JsonObject } })
   | (SessionEventBase & { type: 'agent.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
   | (SessionEventBase & { type: 'agent.message.received'; runId: string; payload: { sourceSessionId: string; text: string } })
   | (SessionEventBase & { type: 'session.control.completed'; runId: string; callId: string; payload: { providerCallId: string; operation: JsonObject; result: JsonObject } })
@@ -1323,6 +1324,26 @@ export type SessionEvent =
       payload: { record: ToolExecutionRecord };
     })
   | (SessionEventBase & {
+      type: 'session.plugins.requested';
+      runId: string;
+      callId: string;
+      /** Ordered directory bindings captured for preparation, not every addressable file reference. */
+      payload: { providerRequestId: string; providerCallId: string; pluginUris: string[]; workspaceBindingIds: string[] };
+    })
+  | (SessionEventBase & {
+      type: 'session.plugins.preparing';
+      runId: string;
+      callId: string;
+      /** Beyond this point a missing receipt cannot prove non-execution. */
+      payload: Record<string, never>;
+    })
+  | (SessionEventBase & {
+      type: 'session.plugins.failed';
+      runId: string;
+      callId: string;
+      payload: { outcome: 'failed' | 'notExecuted' | 'indeterminate'; error: LocalAgentError };
+    })
+  | (SessionEventBase & {
       type: 'session.plugins.activated';
       runId: string;
       callId: string;
@@ -1413,6 +1434,8 @@ export interface SourceReferences {
 
 interface ProjectionMessageBase {
   messageId: string;
+  /** User inputs only: the input.accepted command joined to this committed message by messageId. */
+  commandId?: string;
   content: string;
   /** Session-derived citation display. Original Provider text remains in content. */
   displayContent?: string;
@@ -2211,7 +2234,9 @@ export interface RunRuntimeSnapshot {
   subagentSettings?: AgentSettings;
   /** Captured at run preparation, independent of later Session selections. */
   mode?: SessionMode;
-  /** Model-facing coding interface selected by the Session context contribution. */
+  /** Captured presentation of newly prepared runs; absent in pre-unification snapshots. */
+  coreToolInterface?: 'shared';
+  /** Legacy coding context/turn behavior. Not the source of a new run's tool window. */
   codingTools?: true;
   /** Explicit confirmation requested for this run only. */
   planMode?: 'manual';
@@ -2251,14 +2276,22 @@ export type PreparedRequestToolView = Pick<RunRuntimeSnapshot,
 export interface PrepareRunRuntimeRequest {
   /** Session-owned wire names; consumed by the preparation adapter, never sent to Kernel. */
   previousProviderToolAliases?: readonly ProviderToolAlias[];
+  /** Same-run activation, rebind or recovery keeps captured instructions and encoding. Never sent to Kernel. */
+  existingPresentation?: Pick<RunRuntimeSnapshot, 'coreToolInterface' | 'codingTools' | 'instructions'>;
   rebindHost?: { commandId: string; expectedBinding: HostWindowBinding; hostBinding: HostWindowBinding };
   /** Refresh previously selected sources; disabled/removed sources withdraw at this request boundary. */
   refreshPlugins?: boolean;
-  /** Initial run project bindings; omitted means no project bindings. */
+  /** Ordered directories for this request. [] withdraws every project; omission keeps the prior view. */
   workspaceBindingIds?: readonly string[];
+  /** Configured source folders at run start. Directory attachments are addressable but do not supply project instructions. */
+  projectInstructionBindingIds?: readonly string[];
   environment?: JsonObject;
   hostBinding?: { hostInstanceId: string; windowLabel: string };
   restoreEnvironment?: boolean;
+  /** With restoreEnvironment, look up this still-live tool view instead of the original run snapshot. */
+  restoreToolViewRef?: string;
+  /** The explicit selections came from plugin.activate rather than the user. */
+  modelActivation?: boolean;
   sessionId: string;
   runId: string;
   profileId?: string;

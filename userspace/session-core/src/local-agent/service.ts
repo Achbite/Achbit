@@ -3,6 +3,7 @@ import { deserialize, serialize } from 'node:v8';
 import type { SessionObservationSink } from './observation.js';
 import { decodeAgentRecipe, decodeAgentSettings } from '@achbit/protocol';
 import { agentPresets } from './agentConfiguration.js';
+import { capacityInputId, type CapacityReservation } from './agentCapacity.js';
 import { reduceAgentLifecycle } from './agentLifecycle.js';
 import { AgentManager, type AgentManagementSnapshot } from './agentManager.js';
 import { admitSessionEvents } from './admission.js';
@@ -129,6 +130,7 @@ export class SessionService implements ConversationPort {
     if (agentHost) this.#agents = new AgentManager(agentHost, {
       withActor: (id, operation) => this.withActor(id, operation),
       read: id => this.agentManagement(id),
+      readCapacityStart: reservation => this.readCapacityStart(reservation),
     }, configurations, loops);
   }
 
@@ -196,10 +198,6 @@ export class SessionService implements ConversationPort {
       catch (error) {
         if (!required && isMissingSession(error)) return;
         throw error;
-      }
-      if (!events.length) {
-        if (required) throw new Error('session_not_found');
-        return;
       }
       return projectSession(recoverSession(id, events));
     };
@@ -733,6 +731,30 @@ export class SessionService implements ConversationPort {
     if (errors.length > 0) throw new AggregateError(errors, 'session_service_dispose_failed');
   }
 
+  /** Inspect only the original child after an interrupted reservation. Never open an Actor or submit another input here. */
+  private async readCapacityStart(reservation: CapacityReservation): Promise<string | null> {
+    const { agentSessionId, taskId, createsAgent } = reservation.payload;
+    let events;
+    try { events = await readSessionEvents(this.journal, agentSessionId); }
+    catch (error) { if (createsAgent && isMissingSession(error)) return null; throw error; }
+    const first = events[0];
+    const context = first?.type === 'session.created' && first.payload.agentContext;
+    if (!context || createsAgent && (context.parentSessionId !== reservation.sessionId
+      || context.parentRunId !== reservation.runId || context.parentCallId !== reservation.callId)) throw new Error('agent_lineage_mismatch');
+    const commandId = capacityInputId(taskId);
+    const input = events.find(e => e.type === 'input.accepted' && e.payload.commandId === commandId);
+    const starts = events.filter(e => e.type === 'run.started');
+    if (input?.type === 'input.accepted') {
+      const start = starts.find(e => e.payload.inputMessageId === input.payload.messageId);
+      if (start) return start.runId;
+      throw new Error('agent_child_run_missing');
+    }
+    if (events.some(e => e.type === 'input.queued' && e.payload.commandId === commandId) || createsAgent && starts.length) {
+      throw new Error('agent_task_start_identity_mismatch');
+    }
+    return null; // No accepted input with this reservation's identity in the complete child journal.
+  }
+
   /** Journal-only management reads do not activate Providers, tools or Actors. */
   private async agentRelations(sessionId: string): Promise<Omit<AgentManagementSnapshot, 'run'>> {
     const read = await this.journal.readAgentLifecycle(sessionId);
@@ -840,11 +862,13 @@ export class SessionService implements ConversationPort {
     const createComposition = async (mode: SessionMode): Promise<AgentComposition> => {
       const recipe = recipeForMode(first.payload.recipe, mode);
       const configuration = recipe.configuration ?? first.payload.agentContext?.configuration;
+      // Explicit prose selection is independent of installed Host features and executable plugins.
+      const promptRecipe = { ...recipe, productComponents: recipe.productComponents ?? [] };
       const installed = await this.compositions.create({
         sessionId,
         workspaceBindings: first.payload.workspaceBindings.map((binding) => ({ ...binding })),
-        promptContributions: this.configurations.productInstructions(recipe),
-        environmentInstructions: this.configurations.productEnvironmentInstructions(recipe),
+        promptContributions: this.configurations.productInstructions(promptRecipe),
+        environmentInstructions: this.configurations.productEnvironmentInstructions(promptRecipe),
         codingTools: configuration?.context.id === 'coding',
       });
       try {

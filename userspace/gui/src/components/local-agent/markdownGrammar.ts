@@ -1,10 +1,11 @@
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
 import remarkMath from 'remark-math';
 import type { Nodes as MarkdownNode } from 'mdast';
 
-export const markdownGrammar = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+export const markdownGrammar = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkCjkFriendly);
 
 /** Block math may put TeX beside its dollar fences; keep those delimiters on their own lines for remark-math. */
 export function displayMathFences(text: string): string {

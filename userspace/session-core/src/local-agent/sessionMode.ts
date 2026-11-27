@@ -1,10 +1,10 @@
-import type { AgentRecipe, SessionMode } from '@achbit/protocol';
+import { CORE_CODING_TOOLS, type AgentRecipe, type SessionMode } from '@achbit/protocol';
 
 /** A run-local narrowing of the immutable creation recipe; never a permission preset. */
 export function recipeForMode(base: AgentRecipe | undefined, mode: SessionMode): AgentRecipe {
   const recipe = structuredClone(base ?? {});
   if (mode === 'full') return recipe;
-  const coding = ['fs.read', 'bash', 'powershell', 'fs.edit', 'fs.write'];
+  const coding = [...CORE_CODING_TOOLS.keys()];
   return {
     ...recipe,
     tools: { kernel: coding.filter(name => !recipe.tools?.kernel || recipe.tools.kernel.includes(name)),

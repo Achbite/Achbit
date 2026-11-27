@@ -79,12 +79,16 @@ const server = createServer(async (req, res) => {
         call('shell-fails', shell, { command: win ? 'Write-Output "evidence"; exit 7' : 'printf evidence; exit 7' });
       } else if (turn === 2) {
         assert.deepEqual([...results.keys()], ['read-seed', 'edit-fails', 'edit-succeeds', 'write-independent', 'shell-fails']);
-        assert.match(results.get('edit-fails'), /not found/u);
-        assert.match(results.get('edit-succeeds'), /Successfully replaced/u);
-        assert.match(results.get('shell-fails'), /evidence[\s\S]*code 7/u);
+        assert.equal(JSON.parse(results.get('edit-fails')).error.code, 'patch_match_not_found');
+        assert.deepEqual(JSON.parse(results.get('edit-succeeds')), { path: 'seed.txt', changed: true, editCount: 1 });
+        const failedShell = JSON.parse(results.get('shell-fails'));
+        assert.equal(failedShell.result.exitCode, 7); assert.match(failedShell.result.stdout, /evidence/u);
         assert.equal(await readFile(join(workspace, 'seed.txt'), 'utf8'), 'after\n');
         call('read-window', 'read', { path: 'independent.txt', limit: 1 });
-      } else { assert.match(results.get('read-window'), /one[\s\S]*offset=2/u); answer(); }
+      } else {
+        const page = JSON.parse(results.get('read-window'));
+        assert.equal(page.content, 'one\n'); assert.equal(page.nextStartLine, 2); assert.equal(page.nextByte, 4); answer();
+      }
     } else if (body.model === 'minimal-truncated') {
       if (turn === 1) { call('must-not-write', 'write', { path: 'forbidden-partial.txt', content: 'never' }); truncate = true; }
       else if (turn === 2) {

@@ -66,7 +66,7 @@ pub fn run() -> Result<(), String> {
     writeln!(
         stream,
         "{}",
-        json!({"token":launch.token,"pid":std::process::id(),"previewEndpoint":preview_endpoint.to_string()})
+        json!({"token":launch.token,"pid":std::process::id(),"previewEndpoint":preview_endpoint.to_string(),"observationContract":"ax-default"})
     )
     .map_err(|e| e.to_string())?;
     let host = launch.host;
@@ -126,7 +126,7 @@ fn serve_previews(listener: TcpListener, host: &str, token: &str) {
             if request["input"]["action"] != "computer:preview" {
                 return Err("computer_preview_action_invalid".into());
             }
-            crate::sharing::preview(&request["binding"], &request["input"])
+            crate::driver::preview(&request["binding"], &request["input"])
         })();
         let response = match response {
             Ok(data) => json!({"ok":true,"data":data}),
@@ -147,13 +147,16 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
         }
         let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         let binding = &request["binding"];
-        let result = if !crate::protocol::binding_matches(binding, host) {
+        let bound = crate::protocol::binding_matches(binding, host);
+        let result = if !bound {
             Err("computer_host_binding_mismatch".into())
         } else {
             crate::driver::execute(gui, binding, &request["input"])
         };
         let response = match result {
-            Ok(data) => json!({"ok":true,"data":data}),
+            Ok(data) => {
+                json!({"ok":true,"data":crate::observation_output::for_host(data, &request["input"], &gui.instance)})
+            }
             Err(message) => {
                 let sck = crate::sharing::take_failure();
                 let recovery = if sck.is_some()
@@ -168,14 +171,27 @@ fn serve(gui: &MainThread, host: &str, stream: &mut TcpStream) -> Result<(), Str
                     Ok(status) => status,
                     Err(error) => json!({"statusError":error}),
                 };
+                if bound {
+                    native["hasBoundObservation"] = json!(crate::driver::owns_observation(binding));
+                }
                 native["sharing"] = match crate::sharing::status(binding) {
                     Ok(status) => status,
                     Err(error) => json!({"statusError":error}),
                 };
-                json!({"ok":false,"message":message,"diagnostics":{
+                let failure = json!({"ok":false,"message":message,"diagnostics":{
                     "phase":request["input"]["action"],"native":native,
-                    "target":if crate::protocol::binding_matches(binding, host) {crate::driver::diagnostics(gui)} else {json!({})},
-                    "screenCaptureKit":sck,"recovery":recovery}})
+                    "target":if bound {crate::driver::diagnostics(gui)} else {json!({})},
+                    "screenCaptureKit":sck,"recovery":recovery}});
+                // Only a bound Host invocation owns an archive directory.
+                crate::observation_output::failure_for_host(
+                    failure,
+                    if bound {
+                        &request["input"]
+                    } else {
+                        &Value::Null
+                    },
+                    &gui.instance,
+                )
             }
         };
         writeln!(stream, "{response}").map_err(|e| e.to_string())?;

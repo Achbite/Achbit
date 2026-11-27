@@ -91,6 +91,17 @@ test('a child review receives prior coordinator updates as evidence, not user in
   assert.equal(f.prepare().packet.delegation, undefined, 'ordinary review does not import collaborator history');
 });
 
+test('desktop review compares candidates in the input units of this run only', () => {
+  const a = { elementId: 'element:2', bounds: { x: 120, y: 120, width: 20, height: 20 }, boundsWindowPoints: { x: 60, y: 60, width: 10, height: 10 } };
+  const record = { toolName: 'computer.control', input: { action: 'observe' }, output: { app: 'qa', observationId: 'o', elements: [a], coordinateSpace: 'window screenshot pixels' } };
+  const args = { action: 'click', app: 'qa', observationId: 'o', x: 65, y: 65 };
+  const inspect = (extra, row = record) => fixture('computer.control', { ...args, ...extra }, [row]).prepare().packet.observedTarget;
+  assert.deepEqual(inspect({ coordinateSpace: 'windowPoints' }).elementsAtPoint, [a]);
+  assert.deepEqual(inspect({}).elementsAtPoint, []);
+  assert.equal(inspect({ coordinateSpace: 'windowPoints' }, { ...record, runId: 'run:previous' }), undefined);
+  assert.equal(inspect({}, { ...record, output: { ...record.output, coordinateSpace: 'windowPoints' } }).elementsAtPoint, undefined);
+});
+
 test('capture review uses the exact window from the latest current-run list, without exposing unrelated windows', () => {
   const window = { windowId: 42, owner: 'Achbit-Debug', pid: 123, title: 'Debug test', bounds: { x: 0, y: 0, width: 900, height: 600 } };
   const listed = windows => ({ toolName: 'computer.control', input: { action: 'listWindows' }, output: { windows } });

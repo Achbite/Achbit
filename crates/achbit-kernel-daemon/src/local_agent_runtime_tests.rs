@@ -19,6 +19,14 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_resolver(|gui| {
+            Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(gui))
+        })
+    }
+
+    fn with_resolver(
+        make_resolver: impl FnOnce(Arc<Mutex<GuiState>>) -> Arc<dyn WorkspaceResolverPort>,
+    ) -> Self {
         let root = std::env::temp_dir().join(
             crate::new_runtime_ref("prepare-gate-test")
                 .unwrap()
@@ -38,10 +46,12 @@ impl Fixture {
             let captured = gui.lock().unwrap();
             LocalAgentRuntime::open(
                 &captured.paths.session_store_path,
+                &crate::local_agent_store::SessionCatalogReader::open(
+                    &captured.paths.session_store_path,
+                )
+                .unwrap(),
                 &captured.paths.tool_record_store_path,
-                Arc::new(crate::local_agent_kernel::HostWorkspaceResolver::new(
-                    gui.clone(),
-                )),
+                make_resolver(gui.clone()),
                 &captured.user_settings,
                 Arc::from(random_service_token().unwrap()),
             )
@@ -354,6 +364,63 @@ fn same_run_release_drains_admitted_mcp_prepare() {
         .is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn cached_view_survives_a_removed_command_but_still_checks_model_admission() {
+    let mut f = Fixture::new();
+    // Exercise the Darwin path resolver on an owned Unix filesystem, without changing PATH.
+    #[cfg(not(target_os = "macos"))]
+    {
+        f.runtime.command_read_roots =
+            Some(achbit_kernel_runtime::shell_environment::unix_runtime_read_roots);
+    }
+    let bundle = f.root.join("bundle");
+    std::fs::create_dir(&bundle).unwrap();
+    std::fs::write(bundle.join("SKILL.md"), "---\nname: Manual\ndescription: Explicit selection only\ndisable-model-invocation: true\n---\nmanual notes").unwrap();
+    f.gui.lock().unwrap().user_settings["skills.mounts"] =
+        json!(json!([{"id":"fixture", "enabled":true, "path":bundle}]).to_string());
+    let optional = f.root.join("optional-command");
+    std::fs::write(&optional, "fixture").unwrap();
+    f.prepare("parent", false).unwrap();
+    let key = PreparedRunKey {
+        session_id: "session:parent".into(),
+        run_id: "run:parent".into(),
+    };
+    // Supply a captured command belonging only to this fixture. Do not touch system commands.
+    f.runtime
+        .prepared_runs
+        .lock()
+        .unwrap()
+        .get_mut(&key)
+        .unwrap()[0]
+        .response["environment"]["commandPaths"] = json!({"optional":optional});
+    let prepare_manual = |model| {
+        let mut request = Fixture::request("parent", false);
+        request.plugin_selections = serde_json::from_value(json!([{"selectionId":"sel:manual", "uri":"plugin://fixture-bundle-1@skill", "label":"Manual"}])).unwrap();
+        request.model_activation = model;
+        f.runtime
+            .prepare_run_runtime(&f.gui, Arc::new(UnusedReader), request)
+    };
+    let manual = prepare_manual(false).unwrap();
+    assert!(f.runtime.prepared_runs.lock().unwrap()[&key]
+        .last()
+        .unwrap()
+        .executor_config
+        .file_read_roots
+        .contains(&optional.canonicalize().unwrap()));
+    std::fs::remove_file(optional).unwrap();
+    assert_eq!(prepare_manual(false).unwrap(), manual);
+    assert_eq!(
+        prepare_manual(true).unwrap_err().code,
+        "plugin_user_selection_required"
+    );
+    let rebuild = f.prepare("parent", false).unwrap_err();
+    assert_eq!(rebuild.code, "host_command_path_failed");
+    assert!(rebuild.message.contains("optional"));
+    assert_eq!(f.runtime.prepared_runs.lock().unwrap()[&key].len(), 2);
+    Fixture::release(&f.runtime, "parent", &manual).unwrap();
+}
+
 #[test]
 fn failed_mcp_prepare_preserves_prior_view_for_release() {
     let fixture = Fixture::new();
@@ -496,10 +563,34 @@ fn user_system_prompt_is_frozen_across_plugin_refresh_and_scoped_to_top_level_ru
 fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
     let fixture = Fixture::new();
     let project = fixture.project("workspace:instructions", "project");
+    let second = fixture.project("workspace:docs", "other-source");
+    let reference = fixture.project("workspace:reference", "attached-repo");
+    let scratch = fixture.project("workspace:scratch", "session-files");
+    {
+        let mut gui = fixture.gui.lock().unwrap();
+        let managed = gui.conversation_catalog.workspaces.last_mut().unwrap();
+        managed.owner_session_id = Some("session:parent".into());
+        managed.session_workdir = true;
+    }
     let source = project.join("AGENTS.md");
     std::fs::write(&source, "Original project rules\n").unwrap();
+    std::fs::write(second.join("Agents.md"), "Second configured source").unwrap();
+    std::fs::write(reference.join("AGENTS.md"), "Reference material only").unwrap();
+    std::fs::write(scratch.join("AGENTS.md"), "Private session files").unwrap();
     let mut request = Fixture::request("parent", false);
-    request.workspace_binding_ids = vec!["workspace:instructions".into()];
+    request.workspace_binding_ids = Some(
+        [
+            "workspace:instructions",
+            "workspace:docs",
+            "workspace:scratch",
+            "workspace:reference",
+        ]
+        .map(String::from)
+        .to_vec(),
+    );
+    request.project_instruction_binding_ids = ["workspace:instructions", "workspace:docs"]
+        .map(String::from)
+        .to_vec();
     let original = fixture
         .runtime
         .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
@@ -511,6 +602,24 @@ fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
         .find(|item| item["path"].as_str() == source.to_str())
         .unwrap();
     assert_eq!(original_source["text"], "Original project rules\n");
+    let texts: Vec<_> = original["projectInstructions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["text"].as_str().unwrap())
+        .collect();
+    assert!(texts.contains(&"Second configured source"));
+    assert!(
+        !texts.contains(&"Reference material only") && !texts.contains(&"Private session files")
+    );
+    assert_eq!(
+        original["environment"]["primaryWorkspaceDirectory"],
+        json!({"workspaceId":"workspace:instructions", "path":project})
+    );
+    assert_eq!(
+        original["environment"]["sessionWorkdirId"],
+        "workspace:scratch"
+    );
 
     // A real new MCP view must not reread instructions, even when the file is now invalid.
     std::fs::write(&source, [0xff]).unwrap();
@@ -540,7 +649,8 @@ fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
     std::fs::write(&source, "Updated project rules\n").unwrap();
     let mut request = Fixture::request("parent", false);
     request.run_id = "run:next".into();
-    request.workspace_binding_ids = vec!["workspace:instructions".into()];
+    request.workspace_binding_ids = Some(vec!["workspace:instructions".into()]);
+    request.project_instruction_binding_ids = vec!["workspace:instructions".into()];
     let next = fixture
         .runtime
         .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
@@ -558,6 +668,33 @@ fn project_instructions_prepare_freezes_same_run_and_reads_the_next_run() {
             "session:parent",
             "run:next",
             next["kernelCatalogSnapshotRef"].as_str().unwrap(),
+        ))
+        .unwrap();
+
+    // With no configured source, the managed default remains a real cwd, not a
+    // source of project rules. Neither an attachment nor the old cwd takes over.
+    let mut unconfigured = Fixture::request("parent", false);
+    unconfigured.run_id = "run:unconfigured".into();
+    unconfigured.environment = Some(next["environment"].clone());
+    unconfigured.workspace_binding_ids = Some(vec![
+        "workspace:scratch".into(),
+        "workspace:reference".into(),
+    ]);
+    let view = fixture
+        .runtime
+        .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), unconfigured)
+        .unwrap();
+    assert_eq!(
+        view["environment"]["primaryWorkspaceDirectory"],
+        json!({"workspaceId":"workspace:scratch", "path":scratch})
+    );
+    assert_eq!(view["projectInstructions"], json!([]));
+    fixture
+        .runtime
+        .release_run_runtime(ReleaseToolCatalogRequest::new(
+            "session:parent",
+            "run:unconfigured",
+            view["kernelCatalogSnapshotRef"].as_str().unwrap(),
         ))
         .unwrap();
 }
@@ -581,7 +718,8 @@ fn project_instructions_read_failure_releases_locks_before_creating_mcp_resource
     )
     .unwrap();
     let mut request = Fixture::request("parent", true);
-    request.workspace_binding_ids = vec!["workspace:instructions".into()];
+    request.workspace_binding_ids = Some(vec!["workspace:instructions".into()]);
+    request.project_instruction_binding_ids = vec!["workspace:instructions".into()];
     let runtime = fixture.runtime.clone();
     let gui = fixture.gui.clone();
     let preparing = std::thread::spawn(move || {
@@ -630,10 +768,175 @@ fn project_instructions_read_failure_releases_locks_before_creating_mcp_resource
     assert!(run_gate.try_lock().is_ok());
     std::fs::write(&source, "Fixed rules").unwrap();
     let mut retry = Fixture::request("parent", false);
-    retry.workspace_binding_ids = vec!["workspace:instructions".into()];
+    retry.workspace_binding_ids = Some(vec!["workspace:instructions".into()]);
+    retry.project_instruction_binding_ids = vec!["workspace:instructions".into()];
     let prepared = fixture
         .runtime
         .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), retry)
         .unwrap();
     Fixture::release(&fixture.runtime, "parent", &prepared).unwrap();
+}
+
+#[test]
+fn project_preparation_waits_only_on_its_own_run() {
+    struct Gate {
+        resolver: crate::local_agent_kernel::HostWorkspaceResolver,
+        entered: mpsc::Sender<()>,
+        resume: Mutex<mpsc::Receiver<()>>,
+    }
+    impl WorkspaceResolverPort for Gate {
+        fn resolve(
+            &self,
+            id: &str,
+        ) -> Result<crate::local_agent_kernel::ResolvedWorkspace, LocalAgentKernelError> {
+            self.entered.send(()).unwrap();
+            self.resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            self.resolver.resolve(id)
+        }
+    }
+    let (entered, started) = mpsc::channel();
+    let (resume, paused) = mpsc::channel();
+    let f = Fixture::with_resolver(|gui| {
+        Arc::new(Gate {
+            resolver: crate::local_agent_kernel::HostWorkspaceResolver::new(gui),
+            entered,
+            resume: Mutex::new(paused),
+        })
+    });
+    let child = f.prepare("child", false).unwrap();
+    let root = f.project("workspace:gate", "project");
+    std::fs::create_dir_all(root.join(".agents/skills")).unwrap();
+    std::fs::write(
+        root.join(".agents/skills/one.md"),
+        "---\nname: one\ndescription: A fixture\n---\n",
+    )
+    .unwrap();
+    let mut request = Fixture::request("parent", false);
+    request.workspace_binding_ids = Some(vec!["workspace:gate".into()]);
+    request.plugin_selections = serde_json::from_value(
+        json!([{"uri":"plugin://one@project","label":"One","selectionId":"select:one"}]),
+    )
+    .unwrap();
+    std::thread::scope(|scope| {
+        let preparing = scope.spawn(|| {
+            f.runtime
+                .prepare_run_runtime(&f.gui, Arc::new(UnusedReader), request)
+        });
+        started.recv_timeout(Duration::from_secs(3)).unwrap();
+        let (done, released) = mpsc::channel();
+        let runtime = &f.runtime;
+        scope.spawn(move || {
+            done.send(Fixture::release(runtime, "child", &child))
+                .unwrap();
+        });
+        let receipt = released.recv_timeout(Duration::from_secs(2));
+        let gui_available = f.gui.try_lock().is_ok();
+        resume.send(()).unwrap();
+        receipt
+            .expect("independent release blocked on project preparation")
+            .unwrap();
+        assert!(gui_available);
+        Fixture::release(&f.runtime, "parent", &preparing.join().unwrap().unwrap()).unwrap();
+    });
+}
+
+#[test]
+fn project_skills_resolve_from_run_bindings_and_survive_a_refresh() {
+    let fixture = Fixture::new();
+    let project = fixture.project("workspace:skills", "skills-project");
+    let skill = project.join(".agents/skills/iteration/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        &skill,
+        "---\nname: iteration\ndescription: Iterate this product.\n---\n\n# Iteration\n",
+    )
+    .unwrap();
+    let selection = |value: Value| -> crate::local_agent_plugins::PluginSelectionInput {
+        serde_json::from_value(value).unwrap()
+    };
+    let mut request = Fixture::request("parent", false);
+    request.workspace_binding_ids = Some(vec!["workspace:skills".into()]);
+    request.plugin_selections = vec![selection(json!({
+        "selectionId": "selection:project-skill",
+        "uri": "plugin://iteration@project",
+        "label": "iteration"
+    }))];
+    let prepared = fixture
+        .runtime
+        .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
+        .unwrap();
+    let entry = prepared["selectedPlugins"]["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["uri"] == "plugin://iteration@project")
+        .expect("project Skill is prepared");
+    let entry_path = entry["skillEntryPath"].as_str().unwrap().to_string();
+    assert!(
+        std::path::Path::new(&entry_path).ends_with(".agents/skills/iteration/SKILL.md"),
+        "{entry_path}"
+    );
+
+    // Activation prepares again without workspace bindings; the run keeps its captured
+    // directories, so the selected project Skill stays resolvable in the same run.
+    let mut refresh = Fixture::request("parent", false);
+    refresh.refresh_plugins = true;
+    refresh.plugin_selections = vec![selection(json!({
+        "selectionId": "selection:project-skill",
+        "uri": "plugin://iteration@project",
+        "label": "iteration"
+    }))];
+    let refreshed = fixture
+        .runtime
+        .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), refresh)
+        .unwrap();
+    assert_eq!(
+        refreshed["selectedPlugins"]["plugins"][0]["skillEntryPath"],
+        json!(entry_path)
+    );
+    let mut remove = Fixture::request("parent", false);
+    remove.workspace_binding_ids = Some(vec![]);
+    remove.refresh_plugins = true;
+    remove.plugin_selections = vec![selection(
+        json!({"selectionId":"select:old", "uri":"plugin://iteration@project", "label":"Iteration"}),
+    )];
+    let removed = fixture
+        .runtime
+        .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), remove)
+        .unwrap();
+    let first_id = prepared["kernelCatalogSnapshotRef"].as_str().unwrap();
+    let last_id = removed["kernelCatalogSnapshotRef"].as_str().unwrap();
+    assert_ne!(first_id, last_id);
+    assert_eq!(removed["selectedPlugins"]["plugins"], json!([]));
+    fixture
+        .runtime
+        .retire_tool_views(RetireToolViewsRequest {
+            session_id: "session:parent".into(),
+            run_id: "run:parent".into(),
+            keep_kernel_catalog_snapshot_ref: last_id.into(),
+        })
+        .unwrap();
+    let lookup = |id: Option<&str>| {
+        let mut request = Fixture::request("parent", false);
+        request.restore_environment = true;
+        request.restore_tool_view_ref = id.map(str::to_owned);
+        fixture
+            .runtime
+            .prepare_run_runtime(&fixture.gui, Arc::new(UnusedReader), request)
+    };
+    assert_eq!(lookup(None).unwrap(), prepared);
+    assert_eq!(lookup(Some(last_id)).unwrap(), removed);
+    assert_eq!(
+        lookup(Some(first_id)).unwrap_err().code,
+        "provider_runtime_unavailable"
+    );
+    assert_eq!(
+        lookup(Some("catalog:missing")).unwrap_err().code,
+        "provider_runtime_unavailable"
+    );
+    Fixture::release(&fixture.runtime, "parent", &refreshed).unwrap();
 }

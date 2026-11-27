@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadGuiModelStore, installGuiFetch } from './gui-projection-contract.mjs';
+import { history } from './complete-reading-fixture.mjs';
 import { waitUntil } from '../../session-core/tests/local-agent-fixtures.mjs';
 
 const summary = (id, title = id) => ({ id, title, workspaceBindings: [], createdAt: '2026-10-26', updatedAt: '2026-10-26' });
@@ -130,4 +131,31 @@ test('catalog stream failure survives snapshot refresh and explicit retry restor
   await waitUntil(() => store.getState().catalog.sessions.length === 2);
   stop(); assert.equal(signal.aborted, true, 'original owner releases the retried subscription');
   store.getState().retryCatalogWatch(); assert.equal(connects, 2, 'unmounted owner cannot reconnect');
+});
+
+for (const lateFailure of [false, true]) test('opening an unknown session uses the newer catalog despite a late ' + (lateFailure ? 'failure' : 'snapshot'), async t => {
+  const target = summary('session:new', 'Latest title');
+  const projection = history(target.id);
+  const old = Promise.withResolvers(), started = Promise.withResolvers();
+  let reads = 0;
+  installGuiFetch(t, async url => {
+    if (url.pathname.endsWith('/projection')) return Response.json({ ok: true, data: projection });
+    assert.equal(url.pathname, '/api/conversation/catalog');
+    if (++reads === 1) {
+      started.resolve(); await old.promise;
+      if (lateFailure) throw new Error('obsolete read failed');
+      return Response.json({ ok: true, data: catalogOf() });
+    }
+    return Response.json({ ok: true, data: catalogOf(target) });
+  });
+  const store = await loadGuiModelStore(t);
+  const opening = store.getState().activateSession(target.id);
+  await started.promise;
+  await store.getState().refreshCatalog();
+  old.resolve(); await opening;
+  const state = store.getState();
+  assert.equal(state.error, null);
+  assert.equal(state.sessionId, target.id);
+  assert.equal(state.catalog.sessions[0].title, 'Latest title');
+  assert.equal(state.projection.sessionId, target.id);
 });

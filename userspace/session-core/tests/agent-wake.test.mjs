@@ -69,6 +69,300 @@ async function serviceFixture(t, ownerId, stream, options = {}) {
   return { journal, service, requests, preparations, disposed, releases, settings, get defaultReads() { return defaultReads; } };
 }
 
+// T-022/最简Loop工具集/实施/子代理增额/TCR.md: verify the real Session admission and review boundaries.
+for (const scenario of ['allow', 'deny', 'ask', 'invalid', 'manual']) test(`subagent capacity: ${scenario} reviews the exact dispatch before startup`, async t => {
+  const ownerId = `session:capacity-${scenario}`, requests = [], childInputs = [], round = { main: 0 };
+  const permissions = { 'agent.permissions.shell': scenario === 'manual' ? 'ask' : 'review',
+    'agent.permissions.shellAccess': 'workspace', 'agent.permissions.networkRead': 'allow', 'agent.permissions.external': 'review' };
+  const fixture = await serviceFixture(t, ownerId, async function* ({sessionId, request}) {
+    if (sessionId !== ownerId) { childInputs.push(sessionId); yield answer(request, 'Verified the subtask.'); }
+    else if (request.purpose === 'approvalReview') {
+      requests.push(request);
+      assert.equal(childInputs.length, 1, 'only the original child exists while reviewing');
+      assert.deepEqual(request.tools, []); assert.deepEqual(request.hostedTools, []);
+      assert.equal(request.responseFormat.name, 'subagent_capacity_decision');
+      const evidence = JSON.parse(request.messages.at(-1).content);
+      assert.equal(evidence.grant, 'thisDispatchOnly');
+      assert.equal(evidence.operation.requestCapacity, 'A second independent check is needed.');
+      assert.ok(evidence.userMessages.some(item=>item.content.includes('Check both stations')));
+      assert.deepEqual(evidence.capacity.needs.map(item=>item.resource).sort(), ['callsThisRun','openMembers']);
+      yield answer(request, scenario === 'invalid' ? '{"decision":"allow"}' : JSON.stringify({decision:scenario,reason:'Independent review of both checks.'}));
+    } else if (++round.main === 1) {
+      yield call(request, 'one', 'agent', {action:'spawn',name:'First',task:'Read station A',delivery:'wait'});
+    } else if (round.main === 2) {
+      yield call(request, 'two', 'agent', {action:'spawn',name:'Second',task:'Read station B',delivery:'wait',requestCapacity:'A second independent check is needed.'});
+    } else {
+      assert.equal(round.main, 3);
+      const result = JSON.parse(request.messages.find(m=>m.role==='tool' && m.providerCallId==='two').content);
+      if (scenario==='deny') { assert.equal(result.executed,false); assert.equal(result.status,'denied'); }
+      else { assert.equal(result.outcome,'completed'); assert.ok(result.taskId); }
+      yield answer(request, 'Station review finished.');
+    }
+    yield done(request);
+  }, {settings:{maxConcurrent:1,maxMembersPerSession:1,maxCallsPerRun:1},recipe:{permissions}});
+  await fixture.service.submit(messageCommand(ownerId, 'capacity:start', 'Check both stations independently.'));
+  if (['ask','invalid','manual'].includes(scenario)) {
+    await waitUntil(async () => (await fixture.service.snapshot(ownerId)).run?.waitingReason==='approval','capacity human fallback');
+    const state = await fixture.service.snapshot(ownerId), gate = state.pendingApproval;
+    assert.equal(state.agentTasks.length,1); assert.ok(gate); assert.equal(gate.preview.reviewPolicy.subject,'subagentCapacity');
+    assert.equal(gate.preview.authorizationScopes,undefined);
+    if (scenario!=='manual') assert.equal(gate.preview.review.decision,'ask');
+    const cmd = {schemaVersion:'achbit.command.v3',type:'approval.respond',sessionId:ownerId,commandId:'capacity:human',runId:state.run.runId,callId:gate.callId,approvalId:gate.approvalId,decision:'allow'};
+    assert.equal((await fixture.service.submit(cmd)).status,'accepted');
+    assert.equal((await fixture.service.submit(cmd)).status,'replayed');
+  }
+  const state=await completed(fixture.service,ownerId);
+  const events=await readEvents(fixture.journal,ownerId);
+  assert.equal(requests.length,scenario==='manual'?0:1);
+  assert.equal(state.agentTasks.length,scenario==='deny'?1:2);
+  assert.equal(events.filter(e=>e.type==='approval.requested').length,1);
+  const decision=events.find(e=>e.type==='approval.resolved');
+  assert.equal(decision.payload.source,['allow','deny'].includes(scenario)?'agent':'user');
+  assert.ok(events.filter(e=>e.type==='agent.task.created' && e.callId===decision.callId).every(e=>e.sequence>decision.sequence));
+  assert.equal(state.shellAuthorizations?.length ?? 0,0);
+});
+
+const capacityPermissions = { 'agent.permissions.shell': 'review', 'agent.permissions.shellAccess': 'workspace',
+  'agent.permissions.networkRead': 'allow', 'agent.permissions.external': 'review' };
+const capacitySpawn = (name, delivery = 'wait') => ({ action: 'spawn', name, task: `Verify ${name}.`, delivery,
+  requestCapacity: `An independent check of ${name} cannot reuse the first checker.` });
+const capacityDecision = (state, gate, decision) => ({ schemaVersion: 'achbit.command.v3', type: 'approval.respond',
+  sessionId: state.sessionId, runId: state.run.runId, callId: gate.callId, approvalId: gate.approvalId,
+  commandId: `answer:${gate.approvalId}`, decision });
+
+// Copy actual journal boundaries, not a live Actor, a fabricated grant or a restarted Provider turn.
+test('subagent capacity: recover the original review and dispatch without replaying side effects', { timeout: 30_000 }, async t => {
+  const root = 'session:capacity-recovery', options = { settings: { maxMembersPerSession: 1 }, recipe: { permissions: capacityPermissions } };
+  const live = await serviceFixture(t, root, async function* ({ sessionId, request }) {
+    if (sessionId !== root) yield answer(request, 'Child evidence.');
+    else if (request.purpose === 'approvalReview') yield answer(request, JSON.stringify({ decision: 'allow', reason: 'Independent check requested.' }));
+    else if (!request.messages.some(m => m.providerCallId === 'first')) yield call(request, 'first', 'agent', capacitySpawn('First'));
+    else if (!request.messages.some(m => m.providerCallId === 'second')) yield call(request, 'second', 'agent', capacitySpawn('Second'));
+    else yield answer(request, 'All checks complete.');
+    yield done(request);
+  }, options);
+  await live.service.submit(messageCommand(root, 'capacity:record', 'Check the two stations independently.'));
+  const finished = await completed(live.service, root), parent = await readEvents(live.journal, root);
+  const children = await Promise.all(finished.agentTasks.map(task => readEvents(live.journal, task.agentSessionId)));
+  const ticket = parent.find(e => e.type === 'agent.control.completed' && e.payload.result.status === 'capacityRequested');
+  const gate = parent.find(e => e.type === 'approval.requested');
+  const review = parent.find(e => e.type === 'context.composed' && e.payload.purpose === 'approvalReview');
+  const reviewedTurn = parent.find(e => e.type === 'provider.turn.settled' && e.payload.purpose === 'approvalReview');
+  const resolution = parent.find(e => e.type === 'approval.resolved');
+  const reserve = parent.find(e => e.type === 'agent.task.created' && e.callId === ticket.callId);
+  const started = parent.find(e => e.type === 'agent.task.started' && e.payload.taskId === reserve.payload.taskId);
+  const settled = parent.find(e => e.type === 'agent.capacity.settled');
+  const { admitSessionEvents } = await import('../dist/local-agent/admission.js');
+  const { loopSnapshot } = await import('../dist/local-agent/loopFacts.js');
+  const at = e => loopSnapshot(root, parent.slice(0, e.sequence));
+  assert.throws(() => admitSessionEvents(at(gate), [reserve]), /agent_capacity_dispatch_mismatch/);
+  assert.throws(() => admitSessionEvents(at(gate), [settled]), /agent_capacity_result_mismatch/);
+  assert.throws(() => admitSessionEvents(at(settled), [reserve]), /agent_capacity_already_settled/);
+  for (const [label, cut, childEvidence] of [
+    ['requested', gate], ['interrupted review', review], ['reply not decided', reviewedTurn], ['approved', resolution],
+    ['reservation before child exists', reserve], ['unused child session', reserve, 'empty'],
+    ['child committed before parent start acknowledgement', reserve, 'complete'],
+    ['cannot verify child startup', reserve, 'unreadable'], ['started', started, 'complete'], ['acknowledged', settled, 'complete'],
+  ]) await t.test(label, async t => {
+    const j = new InMemoryCommandJournal();
+    for (const history of [parent.slice(0, cut.sequence), children[0], ...(childEvidence ? [childEvidence === 'empty' ? children[1].slice(0, 1) : children[1]] : [])]) {
+      const [first, ...rest] = history;
+      await j.createSession({ sessionId: first.sessionId, ...first.payload }); await j.appendBatch(rest);
+    }
+    const childId = reserve.payload.agentSessionId;
+    if (childEvidence === 'unreadable') {
+      const read = j.read.bind(j);
+      j.read = async function* (id, ...args) { if (id === childId) throw new Error('child journal unavailable'); yield* read(id, ...args); };
+    }
+    let reviews = 0, creations = 0;
+    const recovered = await serviceFixture(t, root, async function* ({ sessionId, request }) {
+      if (request.purpose === 'approvalReview') { reviews++; yield answer(request, JSON.stringify({ decision: 'allow', reason: 'Original check required.' })); }
+      else if (sessionId !== root) yield answer(request, 'Child evidence.');
+      else {
+        const replies = request.messages.filter(m => m.role === 'tool' && m.providerCallId === 'second');
+        assert.equal(replies.length, 1);
+        const result = JSON.parse(replies[0].content);
+        if (cut === reserve && (!childEvidence || childEvidence === 'empty')) {
+          assert.equal(result.executed, false); assert.equal(result.status, 'notStarted');
+        } else assert.equal(result.outcome, 'completed', replies[0].content);
+        yield answer(request, 'Original checks accounted for.');
+      }
+      yield done(request);
+    }, { ...options, journal: j, reopen: true, beforeCreate() { creations++; } });
+    // An operator command reopens the Actor; reading archive projections by itself must not resume work.
+    await recovered.service.submit({ schemaVersion: 'achbit.command.v3', type: 'session.mode.set', sessionId: root, mode: 'full', commandId: 'recover' });
+    if (cut === review || cut === reviewedTurn) {
+      await waitUntil(async () => {
+        const state = await recovered.service.snapshot(root);
+        assert.ok(!terminal.has(state.run.status), JSON.stringify(state.terminalError));
+        return state.pendingApproval?.preview.review?.decision === 'ask';
+      }, 'human handoff for the interrupted budget-only review');
+      const state = await recovered.service.snapshot(root);
+      assert.equal(state.pendingApproval.approvalId, gate.payload.approvalId); assert.equal(creations, 0);
+      assert.equal((await recovered.service.submit(capacityDecision(state, state.pendingApproval, 'allow'))).status, 'accepted');
+    }
+    if (childEvidence === 'unreadable') {
+      await waitUntil(async () => (await readEvents(j, root)).some(e => e.type === 'run.runtime.release_failed'), 'unconfirmed cleanup reported');
+      const history = await readEvents(j, root);
+      assert.equal(history.find(e => e.type === 'run.finishing').payload.outcome, 'indeterminate');
+      assert.equal(history.some(e => e.type === 'run.runtime.released' || e.type === 'agent.capacity.settled'), false);
+      assert.equal(creations, 0);
+      // After the journal becomes readable, a new service can finish cleanup without waiting on its own opening Actor.
+      const repaired = new InMemoryCommandJournal();
+      for (const [first, ...rest] of [history, ...children]) {
+        await repaired.createSession({ sessionId: first.sessionId, ...first.payload }); await repaired.appendBatch(rest);
+      }
+      const retry = await serviceFixture(t, root, async function* () { assert.fail('cleanup must not call a Provider'); },
+        { ...options, journal: repaired, reopen: true, beforeCreate() { assert.fail('cleanup must not create a child'); } });
+      await retry.service.submit({ schemaVersion: 'achbit.command.v3', type: 'session.mode.set', sessionId: root, mode: 'full', commandId: 'retry-cleanup' });
+      const closed = await readEvents(repaired, root);
+      assert.equal(closed.find(e => e.type === 'run.settled').payload.outcome, 'indeterminate');
+      assert.equal(closed.filter(e => e.type === 'agent.task.created' && e.callId === ticket.callId).length, 1);
+      assert.equal(closed.filter(e => e.type === 'run.runtime.released').length, 1); return;
+    }
+    await completed(recovered.service, root);
+    const after = await readEvents(j, root), newTask = after.filter(e => e.type === 'agent.task.created' && e.callId === ticket.callId);
+    assert.equal(reviews, cut === gate ? 1 : 0); assert.equal(creations, cut.sequence < reserve.sequence ? 1 : 0);
+    assert.equal(newTask.length, 1); assert.equal(after.filter(e => e.type === 'agent.capacity.settled').length, 1);
+    assert.equal(after.filter(e => e.type === 'approval.resolved').length, 1);
+    assert.equal(after.filter(e => e.type === 'agent.task.completed' && e.payload.taskId === newTask[0].payload.taskId).length, 1);
+    if (cut === review) assert.equal(after.find(e => e.type === 'provider.turn.settled' && e.payload.purpose === 'approvalReview').payload.outcome, 'indeterminate');
+  });
+});
+
+for (const mode of ['compete', 'release', 'cancel']) test(`subagent capacity: fifth member at defaults, ${mode}`, async t => {
+  const root = `session:capacity-five-${mode}`, release = Promise.withResolvers();
+  let round = 0, nextRun = false;
+  const fixture = await serviceFixture(t, root, async function* ({ sessionId, request, signal }) {
+    if (sessionId !== root) {
+      await Promise.race([release.promise, new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))]);
+      signal.throwIfAborted(); yield answer(request, 'Checker done.');
+    } else if (nextRun) {
+      if (!request.messages.some(m => m.providerCallId === 'next-quota')) yield call(request, 'next-quota', 'agent', { action: 'models' });
+      else {
+        const quota = JSON.parse(request.messages.find(m => m.providerCallId === 'next-quota').content).capacity;
+        assert.deepEqual([quota.concurrentTasks.limit, quota.openMembers.limit, quota.callsThisRun.limit, quota.callsThisRun.used], [4, 4, 16, 0]);
+        assert.doesNotMatch(textOf(request), /capacityRequested|thisDispatchOnly/);
+        yield answer(request, 'Defaults unchanged.');
+      }
+    } else if (++round === 1) {
+      for (let n = 1; n <= 4; n++) yield call(request, `default:${n}`, 'agent', capacitySpawn(`Checker${n}`, 'async'));
+    } else if (round === 2) {
+      for (const name of (mode === 'compete' ? ['Fifth', 'Rival'] : ['Fifth'])) yield call(request, name, 'agent', capacitySpawn(name, 'async'));
+    } else {
+      const replies = request.messages.filter(m => m.role === 'tool');
+      const fifth = JSON.parse(replies.find(m => m.providerCallId === 'Fifth').content); assert.ok(fifth.taskId);
+      if (mode === 'compete') {
+        const rival = JSON.parse(replies.find(m => m.providerCallId === 'Rival').content);
+        assert.equal(rival.executed, false); assert.equal(rival.error.code, 'agent_capacity_scope_changed');
+      }
+      yield answer(request, 'Capacity checked.');
+    }
+    yield done(request);
+  });
+  try {
+    await fixture.service.submit(messageCommand(root, 'capacity:five', 'Coordinate the independent checks.'));
+    await waitUntil(async () => (await fixture.service.snapshot(root)).run.waitingReason === 'approval', 'one bounded decision per fifth dispatch');
+    const held = await fixture.service.snapshot(root), gates = held.pendingApprovals;
+    assert.equal(held.agentTasks.filter(x => x.status === 'running').length, 4);
+    assert.equal(gates.length, mode === 'compete' ? 2 : 1);
+    for (const g of gates) assert.deepEqual(g.preview.reviewPolicy.capacity.needs.map(n => [n.resource, n.used, n.limit, n.requested]),
+      [['concurrentTasks', 4, 4, 5], ['openMembers', 4, 4, 5]]);
+    if (mode === 'cancel') {
+      await fixture.service.submit({ schemaVersion: 'achbit.command.v3', type: 'run.cancel', sessionId: root, runId: held.run.runId, commandId: 'cancel' });
+      const cancelled = await fixture.service.snapshot(root); assert.equal(cancelled.run.status, 'cancelled'); assert.equal(cancelled.agentTasks.length, 4);
+      assert.equal(cancelled.pendingApproval, null);
+      assert.equal((await fixture.service.submit(capacityDecision(held, gates[0], 'allow'))).error.code, 'approval_not_pending');
+    } else {
+      if (mode === 'release') {
+        release.resolve(); await waitUntil(async () => (await fixture.service.snapshot(root)).agentTasks.every(x => x.status === 'completed'), 'original slots released while gate open');
+        assert.equal((await fixture.service.snapshot(root)).agentChildren.filter(c => !c.closed).length, 4);
+      }
+      for (const gate of gates) assert.equal((await fixture.service.submit(capacityDecision(held, gate, 'allow'))).status, 'accepted');
+      await waitUntil(async () => (await readEvents(fixture.journal, root)).filter(e => e.type === 'agent.capacity.settled').length === gates.length, 'competing decisions rechecked under admission');
+      release.resolve(); assert.equal((await completed(fixture.service, root)).agentTasks.length, 5);
+    }
+    const events = await readEvents(fixture.journal, root);
+    assert.equal(events.filter(e => e.type === 'agent.task.created' && gates.some(g => g.callId === e.callId)).length, mode === 'cancel' ? 0 : 1);
+    assert.equal(events.some(e => e.type === 'session.subagent-settings.updated'), false);
+    nextRun = true; await fixture.service.submit(messageCommand(root, 'capacity:defaults', 'Inspect the next run defaults.'));
+    await completed(fixture.service, root);
+  } finally { release.resolve(); }
+});
+
+test('subagent capacity: seventeenth dispatch reuses the idle member and requests only callsThisRun', async t => {
+  const root = 'session:capacity-seventeen'; let phase = 0, reviews = 0, member;
+  const fixture = await serviceFixture(t, root, async function* ({ sessionId, request }) {
+    if (sessionId !== root) yield answer(request, 'Completed one pass.');
+    else if (request.purpose === 'approvalReview') {
+      reviews++; const packet = JSON.parse(request.messages.at(-1).content);
+      assert.equal(packet.operation.action, 'assign'); assert.equal(packet.operation.agentId, member);
+      assert.deepEqual(packet.capacity.needs, [{ resource: 'callsThisRun', used: 16, limit: 16, requested: 17 }]);
+      yield answer(request, JSON.stringify({ decision: 'allow', reason: 'One more pass on the same member.' }));
+    } else if (++phase === 1) yield call(request, 'one', 'agent', capacitySpawn('Checker'));
+    else {
+      const replies = new Map(request.messages.filter(m => m.role === 'tool').map(m => [m.providerCallId, JSON.parse(m.content)]));
+      member = replies.get('one').agentId;
+      const n = Math.floor(phase / 2) + 1;
+      if (phase <= 31) {
+        if (phase % 2 === 0) yield call(request, `assign:${n}`, 'agent', { action: 'assign', agentId: member, task: `Pass ${n}` });
+        else yield call(request, `wait:${n}`, 'agent', { action: 'wait', taskIds: [replies.get(`assign:${n}`).taskId] });
+      } else if (phase === 32) yield call(request, 'no-reason', 'agent', { action: 'assign', agentId: member, task: 'Final pass' });
+      else if (phase === 33) {
+        assert.equal(replies.get('no-reason').executed, false); assert.equal(replies.get('no-reason').error.message, 'agent_run_call_limit');
+        assert.match(JSON.stringify(replies.get('no-reason').error.causes), /requestCapacity/);
+        yield call(request, 'seventeen', 'agent', { action: 'assign', agentId: member, task: 'Final pass', requestCapacity: 'The requested seventeenth pass remains.' });
+      } else { assert.equal(replies.get('seventeen').agentId, member); yield answer(request, 'All passes handled.'); }
+    }
+    yield done(request);
+  }, { recipe: { permissions: capacityPermissions } });
+  await fixture.service.submit(messageCommand(root, 'capacity:seventeen', 'Run seventeen passes in the same member.'));
+  const view = await completed(fixture.service, root); assert.equal(reviews, 1); assert.equal(view.agentTasks.length, 17);
+  assert.equal(view.agentChildren.length, 1); assert.equal(new Set(view.agentTasks.map(task => task.childRunId)).size, 17);
+});
+
+test('subagent capacity: a nested request uses root evidence and cannot buy a helper or file grant', async t => {
+  const root = 'session:capacity-nested', userTask = 'PRIVATE: independent coverage of both stations; no changes.';
+  let worker, helper, reviews = 0;
+  const fixture = await serviceFixture(t, root, async function* ({ sessionId, request, turn, journal }) {
+    if (sessionId === root && turn === 1) yield call(request, 'worker', 'agent', { ...capacitySpawn('Worker'), preset: 'collaboration',
+      capabilities: { delegation: true }, helpers: [{ id: 'checker', preset: 'analysis', maxCalls: 1 }] });
+    else if (sessionId === root) yield answer(request, 'Nested work complete.');
+    else if ((await readEvents(journal, sessionId))[0].payload.displayTitle === 'Worker') {
+      worker = sessionId;
+      if (request.purpose === 'approvalReview') {
+        const packet = JSON.parse(request.messages.at(-1).content); reviews++;
+        assert.deepEqual(request.tools, []); assert.deepEqual(request.hostedTools, []);
+        assert.ok(packet.rootUserMessages.some(m => m.content === userTask));
+        assert.ok(packet.userMessages.some(m => m.source === 'delegatedTask'));
+        assert.equal(packet.capacity.ownerSessionId, root); assert.equal(packet.caller.sessionId, worker);
+        yield answer(request, JSON.stringify({ decision: 'ask', reason: 'An extra active checker requires a human decision.' }));
+      } else {
+        assert.doesNotMatch(textOf(request), /PRIVATE: independent coverage/);
+        const replies = new Map(request.messages.filter(m => m.role === 'tool').map(m => [m.providerCallId, JSON.parse(m.content)]));
+        if (!replies.has('off-menu')) yield call(request, 'off-menu', 'agent', { ...capacitySpawn('Forbidden'), preset: 'collaboration' });
+        else if (!replies.has('checker')) {
+          assert.match(JSON.stringify(replies.get('off-menu')), /agent_helper_not_allowed/);
+          yield call(request, 'checker', 'agent', { ...capacitySpawn('Checker'), preset: 'checker' });
+        } else if (!replies.has('over-helper')) yield call(request, 'over-helper', 'agent', { ...capacitySpawn('Forbidden'), preset: 'checker' });
+        else { assert.match(JSON.stringify(replies.get('over-helper')), /agent_helper_call_limit/); yield answer(request, 'One helper only.'); }
+      }
+    } else { helper = sessionId; yield answer(request, 'Helper evidence.'); }
+    yield done(request);
+  }, { settings: { maxConcurrent: 1, maxMembersPerSession: 1, allowFullConfiguration: true },
+    preparation: { permissions: capacityPermissions }, recipe: { permissions: capacityPermissions } });
+  await fixture.service.submit(messageCommand(root, 'nested', userTask));
+  await waitUntil(async () => (await fixture.service.snapshot(root)).pendingAgentDecisions?.some(r => r.approval), 'nested human capacity decision');
+  const owner = await fixture.service.snapshot(root), child = await fixture.service.snapshot(worker), [route] = owner.pendingAgentDecisions;
+  assert.equal(route.agentSessionId, worker); assert.equal(helper, undefined); assert.equal(owner.pendingApproval, null);
+  const cmd = capacityDecision(child, child.pendingApproval, 'allow');
+  assert.equal((await fixture.service.submit({ ...cmd, commandId: 'wrong-scope', authorizationScope: 'runFiles' })).error.code, 'approval_scope_invalid');
+  assert.equal((await fixture.service.submit(cmd)).status, 'accepted');
+  await completed(fixture.service, root); assert.equal(reviews, 1); assert.ok(helper);
+  const events = await readEvents(fixture.journal, worker);
+  assert.equal(events.filter(e => e.type === 'agent.task.created').length, 1); assert.equal(events.filter(e => e.type === 'approval.requested').length, 1);
+});
+
 async function completed(service, sessionId) {
   await waitUntil(async () => terminal.has((await service.snapshot(sessionId)).run?.status), 'completed Agent task');
   const projection = await service.snapshot(sessionId);
@@ -329,7 +623,7 @@ for (const scenario of [
 // TCR: T-020/locality-fix/revision-window/self-measure-01/TCR-session-send.md.
 // These are running Session actors, not a mocked message port. Hold the recipients through
 // the mixed turn so neither an idle-member rejection nor a second assignment can fake delivery.
-for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','exclusive','agent-only','agent-only-with-read']) test(`send batch: ${kind}`, async t => {
+for (const kind of ['mixed','mixed-todo','receipt-lost','individual-failures','two-todos','exclusive','agent-only','agent-only-with-read']) test(`send batch: ${kind}`, async t => {
   const ownerId = `session:send-batch:${kind}`, unrelated = 'session:unrelated', release = Promise.withResolvers();
   const denied = ['two-todos','exclusive','agent-only-with-read'].includes(kind), failing = kind === 'individual-failures';
   const tool = {name:'fs.read',toolBindingRef:'binding:send-read',description:'Read a file.',origin:'coreBuiltin',availability:'callable',possibleEffects:['workspaceRead'],
@@ -363,6 +657,14 @@ for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','excl
       ? failedExecutionReply(request,{}, {code:'file_read_failed',message:'Original file error'}) : completedExecutionReply(request,{content:'Read once.'});
   }})});
   try {
+    if (kind === 'receipt-lost') {
+      const append = fixture.journal.append.bind(fixture.journal);
+      fixture.journal.append = async event => {
+        const committed = await append(event);
+        if (event.type === 'agent.message.received' && event.payload.text === 'North note') throw new Error('delivery_receipt_lost');
+        return committed;
+      };
+    }
     await fixture.service.createSession({sessionId:unrelated,displayTitle:'Unrelated',workspaceBindings:[]});
     await fixture.service.submit(messageCommand(ownerId,'command:send-batch','Send two notes and inspect the file.'));
     const state=await completed(fixture.service,ownerId), events=await readEvents(fixture.journal,ownerId);
@@ -377,7 +679,13 @@ for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','excl
         if (kind!=='two-todos') assert.doesNotMatch(e.error.message,/todo\.update/iu,'one or no Todo is not the incompatibility');
       }
     } else {
-      assert.deepEqual(result('letter:north'),{agentId:targetIds[0],delivered:true});
+      if (kind === 'receipt-lost') {
+        const uncertain = result('letter:north');
+        assert.equal(uncertain.status, 'indeterminate');
+        assert.equal(uncertain.error.message, 'delivery_receipt_lost');
+        assert.equal('executed' in uncertain || 'delivered' in uncertain, false);
+        assert.equal(results.find(m => m.providerCallId === 'letter:north').toolOutcome, 'indeterminate');
+      } else assert.deepEqual(result('letter:north'),{agentId:targetIds[0],delivered:true});
       if (!failing) assert.deepEqual(result('letter:south'),{agentId:targetIds[1],delivered:true});
       else { assert.match(results.find(m=>m.providerCallId==='letter:south').content,/agent_message_target_not_related/u);
         assert.match(results.find(m=>m.providerCallId==='letter:invalid').content,/agentId/u);
@@ -402,7 +710,7 @@ for (const kind of ['mixed','mixed-todo','individual-failures','two-todos','excl
   } finally { release.resolve(); }
 });
 
-test('plugin activation mixed with discovery and a read rejects the entire batch with its conflict source', async t => {
+test('plugin activation mixed with agent.models and a read rejects the entire batch with its conflict source', async t => {
   const ownerId = 'session:plugin-discovery-conflict';
   const tool = { toolBindingRef: 'binding:read-conflict', name: 'fs.read', description: 'Read evidence.',
     origin: 'coreBuiltin', availability: 'callable', possibleEffects: [],
@@ -420,9 +728,9 @@ test('plugin activation mixed with discovery and a read rejects the entire batch
       const errors = request.messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content));
       assert.equal(errors.length, 3);
       assert.ok(errors.every(error => error.executed === false && error.error.code === 'session_control_turn_conflict'));
-      assert.match(errors[0].error.message, /plugin\.activate \[exclusive:plugin\].*该调用触发冲突/u);
-      assert.match(errors[1].error.message, /plugin\.activate \[exclusive:plugin\].*本调用随批次拒绝/u);
-      assert.match(errors[2].error.message, /plugin\.activate \[exclusive:plugin\].*本调用随批次拒绝/u);
+      assert.match(errors[0].error.message, /plugin\.activate \[exclusive:plugin\].*This call caused the conflict/u);
+      assert.match(errors[1].error.message, /plugin\.activate \[exclusive:plugin\].*This call was rejected with the batch/u);
+      assert.match(errors[2].error.message, /plugin\.activate \[exclusive:plugin\].*This call was rejected with the batch/u);
       yield answer(request, 'The conflicting batch had no effects.');
     }
     yield done(request);
@@ -435,6 +743,11 @@ test('plugin activation mixed with discovery and a read rejects the entire batch
   assert.equal(executions, 0);
   const events = await readEvents(fixture.journal, ownerId);
   assert.equal(events.some(event => ['tool.requested', 'agent.control.completed', 'session.plugins.activated'].includes(event.type)), false);
+  const [sent, feedback] = fixture.requests.get(ownerId);
+  const alias = sent.tools.find(tool => tool.name === 'plugin_activate').name;
+  const source = feedback.messages.find(message => message.role === 'tool' && message.providerCallId === 'exclusive:plugin');
+  assert.ok(JSON.parse(source.content).error.message.includes(`Send ${alias} once with all needed URIs, separate from other Session controls`),
+    'the correction uses the callable alias from the rejected request, not an internal control ID');
 });
 
 test('a session control mixed with child creation is rejected before either operation starts', async t => {
@@ -459,8 +772,10 @@ test('a session control mixed with child creation is rejected before either oper
   });
   assert.equal(errors.length, 2);
   assert.ok(errors.every(error => error.executed === false && error.error.code === 'session_control_turn_conflict'));
-  assert.match(errors[0].error.message, /session\(action=schedule\) \[mixed:session\].*本调用随批次拒绝/u);
-  assert.match(errors[1].error.message, /session\(action=schedule\) \[mixed:session\].*该调用触发冲突/u);
+  assert.match(errors[0].error.message, /session\(action=schedule\) \[mixed:session\].*This call was rejected with the batch/u);
+  assert.match(errors[1].error.message, /session\(action=schedule\) \[mixed:session\].*This call caused the conflict/u);
+  const alias = fixture.requests.get(ownerId)[0].tools.find(tool => tool.name === 'session').name;
+  assert.ok(errors[1].error.message.includes(`Send ${alias} as the only tool call`));
 });
 
 test('control conflicts preserve each input, identify the source and only hold back otherwise admissible siblings', async t => {

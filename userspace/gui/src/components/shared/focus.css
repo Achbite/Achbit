@@ -14,9 +14,16 @@
 
 :root[data-product='achbit-gui'] body :is(button, [role='button'], [role='tab'], summary):not(.ac-button):focus-visible {
   box-shadow: none;
+}
+:root[data-product='achbit-gui'] body :is(button, [role='button'], [role='tab'], summary):not(.ac-button):where(:not([aria-current], [aria-pressed='true'], [aria-selected='true'], [aria-checked='true'], .is-active)):focus-visible {
   background-color: var(--ac-surface-hover);
   color: var(--ac-foreground);
 }
+:root[data-product='achbit-gui'] button:not(.ac-button):is([aria-current], [aria-pressed='true'], [aria-selected='true'], [aria-checked='true'], .is-active):focus-visible {
+  text-decoration: underline;
+  text-underline-offset: .2em;
+}
+:root[data-product='achbit-gui'] button:not(.ac-button)[aria-pressed='true']:focus-visible > svg:only-child { stroke-width: 2.5; }
 
 :root[data-product='achbit-gui'] .settings-switch > input:focus-visible + span {
   filter: brightness(.85);

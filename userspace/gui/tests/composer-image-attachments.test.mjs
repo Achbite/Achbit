@@ -27,7 +27,8 @@ test('the real composer previews pasted, selected and recovered images while ret
     canSend: true, showStopAction: false, textDecision: false, submitDraft: () => calls.push('send'),
     setPastedImages: update => { pastedImages = update(pastedImages); }, setPendingFilesystemPaths: update => { paths = update(paths); },
     removeRecoveredReference: id => calls.push(['remove', id]) };
-  const tree = capture(ConversationComposer, { composer, language: 'zh-CN', uiActionError: null, onDismissUiActionError() {}, onEditBrowserReview() {} });
+  const opens = [];
+  const tree = capture(ConversationComposer, { composer, onOpenAttachment: (...args) => opens.push(args), language: 'zh-CN', uiActionError: null, onDismissUiActionError() {}, onEditBrowserReview() {} });
   const tile = id => findReactElement(tree, node => node.type === ComposerImageAttachment && node.props.attachmentId === id);
   const pasteTile = tile(pasted.inputId), restoredTile = tile(image.referenceId), fileTile = tile('file:/chosen/Screenshot.PNG');
   assert.deepEqual(pasteTile.props.source, { dataUrl: pasted.dataUrl });
@@ -37,9 +38,14 @@ test('the real composer previews pasted, selected and recovered images while ret
   assert.match(html, /data-preview-state="ready"/);
   assert.match(html, /Notes\.txt/);
   assert.match(html, /report\.pdf/);
-  const directory = findReactElement(tree, node => node.props['data-attachment-id'] === 'directory:/chosen/folder');
-  assert.equal(directory.type, 'span');
-  assert.match(renderToStaticMarkup(directory), /目录 · folder/);
+  const directory = findReactElement(tree, node => node.props.attachmentId === 'directory:/chosen/folder');
+  const card = renderToStaticMarkup(directory);
+  assert.match(card, /<button[^>]*aria-label="打开 folder · 文件夹"/);
+  assert.match(card, /<button[^>]*aria-label="移除 folder"/);
+  assert.deepEqual(opens, []);
+  directory.props.onClick();
+  assert.equal(restoredTile.props.onOpen, undefined, 'file-backed images keep the in-place viewer');
+  assert.deepEqual(opens, [[{ path: '/chosen/folder' }, 'directory', undefined]]);
   assert.deepEqual(calls, [], 'rendering previews neither sends nor removes an attachment');
   pasteTile.props.onRemove();
   fileTile.props.onRemove();

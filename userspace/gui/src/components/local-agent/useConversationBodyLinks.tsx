@@ -2,7 +2,7 @@ import { createContext, useLayoutEffect, useRef, useState, type MouseEvent } fro
 import type { SessionProjection } from '@achbit/protocol';
 import { t, type UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
-import { useSettingsStore } from '../../state/settingsStore';
+import { openDirectory, openPreferredFile } from './fileOpening';
 import { useConversationHost, type ConversationHost } from './ConversationHost';
 import { documentFormat, imageMediaType, workspaceResourceLink } from './documentResources';
 import { bindLocalTarget, parseLocalTarget, relativeToDocument, resolveLinkRoots, resolveLocalTargets, type ResolvedLocalTarget, type SourcePosition } from './resourceLinks';
@@ -21,17 +21,9 @@ export async function openBoundResource(host: ConversationHost, sessionId: strin
 
 async function openResolvedResource(host: ConversationHost, resource: ResolvedLocalTarget, openReader: (target: ReaderTarget) => void) {
   const { workspaceId, logicalPath, line, column } = resource;
-  if (resource.kind === 'directory') {
-    if (!host.locatePath) throw new Error('Directory opening requires the desktop Host.');
-    return host.locatePath(resource.path);
-  }
-  if (useSettingsStore.getState().effectiveSettings['gui.defaultFileOpen'] === 'vscode' &&
-      documentFormat(logicalPath) !== 'pdf' && !imageMediaType(logicalPath)) {
-    if (!host.openFile) throw new Error('Open in VS Code is unavailable in this Host.');
-    return host.openFile(resource.path, { line, column });
-  }
-  openReader({ kind: 'workspace', workspaceId, logicalPath, canonicalPath: resource.path, line, column,
-    ...(resource.fragment && { fragment: resource.fragment }) });
+  if (resource.kind === 'directory') return openDirectory(host, resource.path);
+  return openPreferredFile(host, resource.path, { kind: 'workspace', workspaceId, logicalPath, canonicalPath: resource.path, line, column,
+    ...(resource.fragment && { fragment: resource.fragment }) }, openReader, { line, column }, documentFormat(logicalPath) === 'pdf' || !!imageMediaType(logicalPath));
 }
 
 type ReaderLinkSource = { sessionId: string; document: { path?: string; reference?: ResourceReference } };

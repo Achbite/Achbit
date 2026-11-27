@@ -159,8 +159,8 @@ export default function ModelEditor({ profile, adapter, defaultId, onSaved, onRe
         <div className="model-actions"><label className="model-check"><ToggleSwitch checked={selected.enabled} onChange={event => void choose({ enabled: event.target.checked })} />{text('启用', 'Enabled')}</label>
           <Button variant="secondary" disabled={!!onRemove} onClick={() => void perform(async () => { const result = requireServiceData(await probeLlmProfile({ profileId: profile.id })); if (!result.ok) throw new Error(result.error); setFeedback(`${text('连接可用', 'Connected')} · ${result.latencyMs} ms`); })}>{text('探测', 'Test')}</Button><ModelSettingsHelp>{text('使用已保存的配置发送一次短请求，计入实际用量。', 'Send a short request using saved settings. It counts towards usage.')}</ModelSettingsHelp>
           {!onRemove && profile.id !== defaultId && <Button variant="secondary" disabled={!confirmed.enabled} onClick={() => void perform(async () => { requireServiceData(await patchLlmProfiles({ defaultProfileId: profile.id })); await onSaved(); })}>{text('设为新对话默认', 'Set as new chat default')}</Button>}
-          <Button className="model-danger" onClick={() => onRemove ? onRemove() : void perform(async () => { requireServiceData(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</Button>
-          <Button className="model-primary model-push" type={onRemove || dirty ? 'submit' : 'button'} disabled={busy || !onRemove && !dirty}
+          <Button variant={onRemove ? 'ghost' : 'danger'} onClick={() => onRemove ? onRemove() : void perform(async () => { requireServiceData(await patchLlmProfiles({ removeProfileId: profile.id })); await onSaved(); })}>{onRemove ? text('取消', 'Cancel') : text('移除', 'Remove')}</Button>
+          <Button variant="primary" className="model-push" type={onRemove || dirty ? 'submit' : 'button'} disabled={busy || !onRemove && !dirty}
             onClick={event => {
               event.preventDefault();
               if (event.currentTarget.form) submitChanges(event.currentTarget.form);

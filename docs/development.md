@@ -37,7 +37,7 @@ Replace `<next-version>` with the intended semantic version, without a `v` prefi
 
 Build and package producers read the canonical version. `package-updates.py manifest` also defaults to it; an explicit `--version` remains available when preparing a feed for an isolated Debug build or an existing release. `ACHBIT_BUILD_VERSION` applies only to isolated Debug builds and leaves source metadata unchanged.
 
-A version edit changes source metadata; Git operations, builds and publication remain separate authorized actions. Existing tags and published releases retain their historical identity. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
+A version edit changes source metadata; Git operations, builds and publication remain separate authorized actions. Existing tags and published releases retain their historical identity. The Git tag and GitHub Release title both use the exact project version, such as `0.7.90`. The publisher derives both from the version and checks both after upload and publication. Release notes describe solved problems and user-visible changes; engineering evidence belongs in the development receipt.
 
 ### Daily source saves and pushes
 
@@ -96,7 +96,6 @@ This fragment is merged into the same input object; replace placeholders with th
 ```json
 {
   "release": {
-    "title": "Release <version>",
     "notes": "<solved problems and user-visible changes>",
     "platforms": ["macos", "windows", "linux"],
     "prerelease": false
@@ -261,6 +260,8 @@ For historical-session latency, measure process startup, navigation readiness an
 Function-tool usage travels with the active wire declaration and its prepared binding. A selected Host product component can contribute stable text to that declaration with `SessionProductComponent.toolGuidance`. On-demand resources use a `contributionId` to join the originating user message or tool result; the journal model view freezes that contribution once sent. Skill entry paths follow the same message/result path, so selecting or reading a Skill does not rewrite core tool declarations. The contributor receives the tools in the current stage and is shared by the main request and compaction. Tool availability, schemas and authorization remain owned by their existing producers.
 
 Product guides are ordinary Markdown files under `productDocsPath`. When selected, the product operations component contributes an on-demand documentation index using the run’s actual product guide directory, including the plugin interface guide under `../plugins/README.md`. The component also supplies Shell resource details on a successful built-in file read of the installed operations.md guide. Search and read the guides with Shell; packaging copies `docs/product` into runtime resources. Built-in Skills/references remain registered in `local_agent_product_tools.rs`. Rebuild/restart the owning Host after changing bundled resources. Keep long-lived guidance separate from task receipts.
+
+Project Skills need no registration: `local_agent_plugins.rs` scans each bound workspace directory and its ancestors for `.agents/skills` and `.achbit/skills`, nearest directory first, and admits `<name>/SKILL.md` bundles or flat `<name>.md` files whose frontmatter declares `name` and `description`. Run preparation captures the bound directories on the prepared record so a tool-view refresh resolves the same catalog; files are re-read per catalog build, so an edit applies to the next search. The GUI plugin picker and Settings list user-level registrations only.
 
 ### Loop assembly
 

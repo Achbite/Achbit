@@ -136,7 +136,7 @@ function computeChange<T>(before: string | null, after: string | null, operation
       else resolve(data.result);
     };
     worker.onerror = (event) => { dispose(); reject(new Error(event.message)); };
-    worker.onmessageerror = () => { dispose(); reject(new Error('无法读取修改行数计算结果')); };
+    worker.onmessageerror = () => { dispose(); reject(new Error('change_counts_result_unreadable')); };
     signal?.addEventListener('abort', abort, { once: true });
     try { worker.postMessage({ before, after, operation }); }
     catch (error) { dispose(); reject(error); }

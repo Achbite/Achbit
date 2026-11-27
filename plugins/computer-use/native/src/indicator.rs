@@ -14,7 +14,8 @@ const POINTER_TIP_INSET: f64 = (POINTER_CANVAS_SIZE - POINTER_GLYPH_SIZE) / 2.0 
 
 struct Feedback {
     window: u32,
-    generation: u64,
+    generation: Option<u64>,
+    binding: serde_json::Value,
     cursor: Retained<AnyObject>,
     halo: Retained<AnyObject>,
     offset: Point,
@@ -38,14 +39,8 @@ unsafe fn panel(symbol: &str, size: f64, alpha: f64) -> Result<Retained<AnyObjec
     let _: () = msg_send![&*panel, setHidesOnDeactivate:false];
     let _: () = msg_send![&*panel, setReleasedWhenClosed:false];
     let _: () = msg_send![&*panel, setLevel:0_isize];
-    // The actual arrow panel is an independently shared SCWindow. The click
-    // halo stays local; neither window receives input or acquires focus.
-    let sharing_type = if symbol == "cursorarrow" {
-        1_usize
-    } else {
-        0_usize
-    };
-    let _: () = msg_send![&*panel, setSharingType:sharing_type];
+    // Both panels are local mouse-through feedback, never capture targets.
+    let _: () = msg_send![&*panel, setSharingType:0_usize];
     if symbol == "cursorarrow" {
         let title = NSString::from_str("Achbit Agent Pointer");
         let _: () = msg_send![&*panel, setTitle:&*title];
@@ -67,16 +62,20 @@ unsafe fn panel(symbol: &str, size: f64, alpha: f64) -> Result<Retained<AnyObjec
     Ok(panel)
 }
 
-pub unsafe fn show(window: u32, cursor: Option<Point>, generation: u64) -> Result<(), String> {
+pub unsafe fn show(
+    window: u32,
+    cursor: Option<Point>,
+    binding: &serde_json::Value,
+    generation: Option<u64>,
+) -> Result<(), String> {
     let Some(point) = cursor else {
         return Ok(());
     };
     let (_, bounds) = window_snapshot(window)?;
     let mut feedback = ACTIVE.with(|slot| slot.borrow_mut().take());
-    if feedback
-        .as_ref()
-        .is_some_and(|value| value.window != window || value.generation != generation)
-    {
+    if feedback.as_ref().is_some_and(|value| {
+        value.window != window || value.generation != generation || value.binding != *binding
+    }) {
         if let Some(value) = feedback.take() {
             dismiss(value);
         }
@@ -86,6 +85,7 @@ pub unsafe fn show(window: u32, cursor: Option<Point>, generation: u64) -> Resul
         None => Feedback {
             window,
             generation,
+            binding: binding.clone(),
             cursor: panel("cursorarrow", POINTER_CANVAS_SIZE, 1.0)?,
             halo: panel("circle.fill", 38.0, 0.22)?,
             offset: Point { x: 0.0, y: 0.0 },
@@ -113,9 +113,19 @@ pub fn hide_window(window: u32, generation: u64) {
     let matches = ACTIVE.with(|slot| {
         slot.borrow()
             .as_ref()
-            .is_some_and(|value| value.window == window && value.generation == generation)
+            .is_some_and(|value| value.window == window && value.generation == Some(generation))
     });
     if matches {
+        hide();
+    }
+}
+
+pub fn hide_binding(binding: &serde_json::Value) {
+    if ACTIVE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|v| &v.binding == binding)
+    }) {
         hide();
     }
 }
@@ -133,6 +143,9 @@ pub fn refresh() {
             let Some(active) = active.as_ref() else {
                 return Ok(());
             };
+            if active.generation.is_none() && Instant::now() >= active.expires {
+                return Err("Local action feedback finished".into());
+            }
             let (_, bounds) = window_snapshot(active.window)?;
             let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
             let screen: *mut AnyObject = msg_send![screens, firstObject];
@@ -157,17 +170,15 @@ pub fn refresh() {
                     msg_send![&**panel, orderWindow:1_isize, relativeTo:active.window as isize];
                 let _: () = msg_send![&**panel, displayIfNeeded];
             }
-            let pointer_window: isize = msg_send![&*active.cursor, windowNumber];
-            let pointer_window = u32::try_from(pointer_window)
-                .map_err(|_| "The Agent pointer has an invalid WindowServer ID")?;
-            crate::sharing::pointer_feedback(
-                active.window,
-                active.generation,
-                pointer_window,
-                active.offset.x / bounds.size.width,
-                active.offset.y / bounds.size.height,
-                Instant::now() < active.expires,
-            );
+            if let Some(generation) = active.generation {
+                crate::sharing::pointer_feedback(
+                    active.window,
+                    generation,
+                    active.offset.x / bounds.size.width,
+                    active.offset.y / bounds.size.height,
+                    Instant::now() < active.expires,
+                );
+            }
             Ok(())
         }
     });

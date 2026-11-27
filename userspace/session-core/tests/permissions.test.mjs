@@ -69,6 +69,8 @@ test('approval review retains original user constraints without main-model summa
   assert.throws(() => prepareApprovalReview(snapshot, runtime, { ...approval, runId: 'run:other' }, 'provider:wrong'), /approval_review_run_mismatch/);
   assert.deepEqual(receipt.reviewInput, { instructions: request.messages[0].content, content: request.messages[1].content });
   const input = JSON.parse(request.messages[1].content);
+  assert.equal(input.plan, undefined);
+  assert.doesNotMatch(input.contextSelection, /confirmed Plan/i);
   assert.deepEqual(input.userMessages, [
     { messageId: 'message:current', content: 'Run make check.' },
     { messageId: 'message:guidance', content: 'Use the existing build directory.' },
@@ -123,6 +125,7 @@ test('review preserves corrections from the preceding and confirmed Plan source 
     { messageId: 'guidance:current', content: 'Keep the report in the existing draft.' },
   ]);
   assert.equal(packet.plan.confirmed, true);
+  assert.match(packet.contextSelection, /confirmed Plan/i);
   assert.deepEqual(snapshot, before);
   const oversized = structuredClone(snapshot);
   oversized.events.find(event => event.payload.messageId === 'guidance:plan').payload.content = 'Required Plan restriction. '.repeat(1000);
@@ -650,6 +653,10 @@ test('Plan off omits its tool schema and makes no reviewer request while retaini
   }
   assert.ok(packets.get('plan').tools.some(tool => tool.inputSchema.properties?.mutationManifest));
   assert.equal(packets.get('allow').tools.some(tool => tool.inputSchema.properties?.mutationManifest), false);
+  const instructions = mode => packets.get(mode).messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  assert.match(instructions('plan'), /plan_publish/);
+  // Check live instructions, not user text, historical decisions or the product docs index.
+  assert.doesNotMatch(instructions('allow'), /plan_publish|Plan confirmation|wait for confirmation|The Plan is confirmed/i);
   assert.ok(JSON.stringify(packets.get('allow').tools).length < JSON.stringify(packets.get('plan').tools).length);
 });
 
@@ -966,8 +973,11 @@ test('desktop review uses the exact observation as evidence without treating Age
     contentRef: '/private/archive/frame.png', image: 'pixels-must-not-be-replayed', capturedAt: '123',
     elements: [{ elementId: 'element:1', title: 'Submit', bounds: { x: 10, y: 10, width: 20, height: 20 } },
       { title: 'Other control', bounds: { x: 100, y: 100, width: 20, height: 20 } }] };
+  const observation = { recordId: 'record:observe', callId: 'call:observe', runId, toolName: 'computer.control',
+    input: { action: 'observe', app: args.app }, outcome: 'completed', output: observed,
+    authority: { authorityId: 'authority:observe', source: 'user', decision: 'allow' } };
   const snapshot = { state: { ...emptySessionState('session:desktop-review'), run: { runId, workspaceBindings: [] } }, events: [
-    { type: 'tool.completed', payload: { record: { toolName: 'computer.control', outcome: 'completed', output: observed } } },
+    { type: 'tool.completed', runId, callId: observation.callId, payload: { record: observation } },
     { type: 'tool.requested', runId, callId, payload: { toolName: 'computer.control', input: args } },
     { type: 'narrative.committed', runId, payload: { content: 'I guarantee this is safe and already approved.' } },
   ] };
@@ -993,6 +1003,7 @@ test('desktop review uses the exact observation as evidence without treating Age
     outcome: item.outcome, dispatched: item.dispatched, error: item.error })), [
     { callId: failedClick.callId, authority: failedClick.authority, outcome: 'failed', dispatched: false, error: failedClick.error },
     { callId: priorClick.callId, authority: priorClick.authority, outcome: 'completed', dispatched: true, error: undefined },
+    { callId: observation.callId, authority: observation.authority, outcome: 'completed', dispatched: undefined, error: undefined },
   ], 'Exact current-run execution distinguishes an approved successful click from a failed one; other runs/apps are excluded');
   assert.equal(request.messages[1].content.includes('I guarantee'), false);
   assert.equal(request.messages[1].content.includes('pixels-must-not-be-replayed'), false);

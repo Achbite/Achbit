@@ -671,7 +671,7 @@ pub(crate) fn automatic_conversation_title(value: &str) -> String {
     let line = value.lines().next().unwrap_or_default().trim();
     let mut chars = line.chars();
     let mut title: String = chars.by_ref().take(48).collect();
-    // 超出上限时留一个可见标记，避免标题在末尾无声断开。
+    // Mark a truncated title with a visible ellipsis.
     if chars.next().is_some() {
         title.push('…');
     }

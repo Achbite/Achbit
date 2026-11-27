@@ -1,0 +1,14 @@
+/* The desktop shell owns the window, placement and lifetime; this view only lays out its contents. */
+* { box-sizing: border-box; }
+:root[data-product='achbit-gui'] body { margin: 0; background: var(--ac-surface-raised); color: var(--ac-foreground); }
+main { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; align-content: center; gap: 8px; min-height: 100vh; padding: 10px 12px; border: 1px solid var(--ac-border); }
+.reminder-mark { display: grid; place-items: center; width: 26px; height: 26px; margin-top: 4px; border-radius: 50%; color: var(--ac-success); background: var(--ac-success-soft); font: var(--ac-weight-semibold) var(--ac-font-body)/1 var(--ac-font-ui); }
+#open { display: grid; align-content: center; justify-content: stretch; text-align: start; padding: 3px 5px; gap: 2px; min-width: 0; }
+#open > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#body { font-size: var(--ac-font-body-large); line-height: var(--ac-line-tight); font-weight: var(--ac-weight-semibold); }
+.reminder-context, #id { color: var(--ac-muted); font-size: var(--ac-font-caption); line-height: var(--ac-line-tight); }
+#id { font-family: var(--ac-font-mono); }
+#dismiss { align-self: start; }
+#open:focus-visible, #dismiss:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
+#error { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere; color: var(--ac-danger); font-size: var(--ac-font-caption); }
+#error:empty { display: none; }

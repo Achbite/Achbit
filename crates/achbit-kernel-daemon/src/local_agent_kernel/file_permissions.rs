@@ -162,9 +162,14 @@ pub(super) fn prepare_file_access(
         LocalAgentKernelError::new("tool_output_directory_failed", error.to_string())
     })?;
     files.read.push(archive);
-    // These roots only let programs start; a sandbox that cannot grant one
-    // skips it rather than refusing every Shell command.
     let config = &prepared.generation.executor_config;
+    files.read.extend(
+        config
+            .project_skill_reads
+            .iter()
+            .filter_map(|scope| scope.current_path().map(Path::to_owned)),
+    );
+    // Optional runtime roots let programs start; a sandbox that cannot grant one skips it.
     let mut best_effort = config.file_read_roots.clone();
     if let Some(path) = config.execution_path.as_ref() {
         best_effort
@@ -230,7 +235,7 @@ pub(super) fn prepare_file_access(
                 && (is_shell_tool(&prepared.operation) || !files.protects(path))
             {
                 return Err(LocalAgentKernelError::input("$.requestFileAccess.write", "workspaceWriteScope",
-                        "Project writes follow the current Plan writablePaths or workspace setting. Remove this project path from requestFileAccess; publish or extend the Plan when needed.", None));
+                        "Remove the bound project path from requestFileAccess.write. Select the owning workspace for project edits; its write policy still applies.", None));
             }
         }
     }
@@ -387,6 +392,54 @@ mod tests {
             std::fs::write(root.join(path).join("target.txt"), "original").unwrap();
         }
         Arc::new(Resources(root))
+    }
+
+    #[test]
+    fn project_skill_read_authority_is_only_the_entry_or_its_own_bundle() {
+        use crate::local_agent_kernel::attempt_control_tests::kernel_with_workspaces;
+        use achbit_kernel_runtime::file_access::SkillReadScope;
+        let resources = resources();
+        let collection = resources.0.canonicalize().unwrap().join(".agents/skills");
+        let bundle = collection.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let flat = collection.join("flat.md");
+        let sibling = collection.join("sibling.md");
+        let reference = bundle.join("reference.md");
+        for path in [&flat, &sibling, &reference] {
+            std::fs::write(path, "Fixture").unwrap();
+        }
+        for (scope, target, needs_authority) in [
+            (SkillReadScope::Entry(flat.clone()), &flat, false),
+            (SkillReadScope::Entry(flat.clone()), &sibling, true),
+            (SkillReadScope::Bundle(bundle.clone()), &reference, false),
+            (SkillReadScope::Bundle(bundle), &sibling, true),
+        ] {
+            let (kernel, request, _) = kernel_with_workspaces(
+                resources.clone(),
+                "fs.read",
+                json!({"workspaceId":"workspace:test", "path":target}),
+                crate::local_agent_product_tools::test_product_tools(),
+                KernelExecutorConfig {
+                    project_skill_reads: vec![scope],
+                    ..Default::default()
+                },
+                json!([{"workspaceId":"workspace:test","displayName":"Project"}]),
+            );
+            let effect = kernel.prepare_tool(&request).unwrap();
+            assert_eq!(
+                effect.file_authority_required,
+                needs_authority,
+                "{}",
+                target.display()
+            );
+            assert_eq!(
+                matches!(
+                    kernel.admit(&request, &effect).unwrap(),
+                    Admission::ApprovalRequired
+                ),
+                needs_authority
+            );
+        }
     }
 
     #[test]

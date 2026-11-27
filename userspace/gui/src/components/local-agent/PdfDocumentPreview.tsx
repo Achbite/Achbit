@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { AnnotationEditorType, AnnotationMode, getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { AnnotationEditorType, AnnotationMode, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { EventBus, PDFLinkService, PDFViewer } from 'pdfjs-dist/legacy/web/pdf_viewer.mjs';
-import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
+import { openPdfBytes } from './pdfDocument';
 import 'pdfjs-dist/web/pdf_viewer.css';
 import type { UiLanguage } from '../../i18n';
 import { readViewState, saveViewState } from './readerState';
 import { bindViewerZoom } from './viewerZoom';
 
-GlobalWorkerOptions.workerSrc = workerUrl;
 type ReadingPosition = { page: number; scale: string; left: number; top: number };
 const initialPosition: ReadingPosition = { page: 1, scale: 'page-width', left: 0, top: 0 };
 const fixedScales = ['0.5', '0.75', '1', '1.25', '1.5', '2'];
@@ -42,7 +41,7 @@ export default function PdfDocumentPreview({ blob, language, readingKey }: { blo
     const reader = new PDFViewer(options);
     linkService.setViewer(reader);
     viewer.current = reader;
-    let loading: ReturnType<typeof getDocument> | undefined;
+    let loading: ReturnType<typeof openPdfBytes> | undefined;
     let initialized = false;
     let resizeFrame = 0;
     let position = readingKey ? readViewState<ReadingPosition>(readingKey + ':pdf', initialPosition) : initialPosition;
@@ -112,9 +111,7 @@ export default function PdfDocumentPreview({ blob, language, readingKey }: { blo
     }, { signal });
     void blob.arrayBuffer().then(async (data) => {
       if (signal.aborted) return;
-      const assets = new URL('pdfjs/', window.document.baseURI).href;
-      loading = getDocument({ data: new Uint8Array(data), cMapUrl: `${assets}cmaps/`, cMapPacked: true,
-        standardFontDataUrl: `${assets}standard_fonts/`, wasmUrl: `${assets}wasm/` });
+      loading = openPdfBytes(data);
       const document = await loading.promise;
       if (signal.aborted) return;
       reader.setDocument(document);

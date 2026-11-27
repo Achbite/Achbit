@@ -11,28 +11,35 @@ export const ReadingBodyActive = createContext(true);
 interface ReadingBodyProps {
   sessionId: string | null;
   createdAt?: string;
+  draftCommand?: string;
   projection: SessionProjection | null;
   viewport: ConversationViewport;
   children: ReactNode;
 }
 
-type ReadingView = ReadingBodyProps & { agentNavigation: ReturnType<typeof useAgentNavigation> };
+type ReadingView = ReadingBodyProps & { mount: number; agentNavigation: ReturnType<typeof useAgentNavigation> };
 
 /** Keep the original DOM, including decoded thumbnails and sandboxed preview frames,
  * for visited histories that the Session store can still serve from memory. */
 export function ConversationBodies(props: ReadingBodyProps) {
-  const current = { ...props, agentNavigation: useAgentNavigation() };
   const retained = useLocalAgentStore(useShallow(state => state.retainedProjections()));
   const previous = useRef<ReadingView[]>([]);
+  const serial = useRef(0);
+  // Creating the first Session promotes the existing draft body; later Catalog arrival is not a switch.
+  const source = previous.current.find(view => view.sessionId === props.sessionId
+    && (!view.createdAt || !props.createdAt || view.createdAt === props.createdAt))
+    ?? previous.current.find(view => view.sessionId === null && props.sessionId && view.draftCommand
+      && (view.draftCommand === props.draftCommand || props.projection?.messages.some(m => m.commandId === view.draftCommand)));
+  const current = { ...props, mount: source?.mount ?? ++serial.current, agentNavigation: useAgentNavigation() };
   const views: ReadingView[] = [];
   for (const view of previous.current) {
-    if (view.sessionId === current.sessionId) views.push(current);
-    else if (view.projection && retained.includes(view.projection)) views.push(view);
+    if (view === source) views.push(current);
+    else if (view.sessionId !== current.sessionId && view.projection && retained.includes(view.projection)) views.push(view);
   }
   if (!views.includes(current)) views.push(current);
   useLayoutEffect(() => { previous.current = views; });
   // Stable sibling order matters: moving an iframe in the DOM restarts its document.
-  return views.map(view => <ReadingBody key={JSON.stringify([view.sessionId, view.createdAt])} view={view} active={view === current} />);
+  return views.map(view => <ReadingBody key={view.mount} view={view} active={view === current} />);
 }
 
 const ReadingBody = memo(function ReadingBody({ view, active }: { view: ReadingView; active: boolean }) {

@@ -1,6 +1,6 @@
 import { useAutoDismiss } from '../../shared/useAutoDismiss';
 import { captureFocusReturn, returnInteractionFocus, useInteractionFocus } from '../../shared/interactionFocus';
-import { DisclosureSummary, NativeSelect } from '../../../ui-components';
+import { Button, DisclosureSummary, NativeSelect } from '../../../ui-components';
 import { connectedModelReasoningEfforts, type UserSettings } from '@achbit/protocol';
 import { t } from '../../../i18n';
 import { useInterfaceReloadGuard } from '../../../services/interfaceReload';
@@ -128,8 +128,8 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
   return <>
     <div className="model-heading"><h2>{current?.name ?? (mode === 'subscription' ? text('添加 Coding Plan', 'Add Coding Plan') : text('添加 API 连接', 'Add API connection'))}</h2></div>
     {!current && onMode && <div className="model-mode-switch" role="group" aria-label={text('接入方式', 'Connection type')}>
-      <button type="button" aria-pressed={mode === 'metered'} onClick={() => onMode('metered')}>{text('API / 本地模型', 'API / local model')}</button>
-      <button type="button" aria-pressed={mode === 'subscription'} onClick={() => onMode('subscription')}>Coding Plan</button>
+      <Button aria-pressed={mode === 'metered'} onClick={() => onMode('metered')}>{text('API / 本地模型', 'API / local model')}</Button>
+      <Button aria-pressed={mode === 'subscription'} onClick={() => onMode('subscription')}>Coding Plan</Button>
     </div>}
     <form className="model-connection-form" onSubmit={e => { e.preventDefault(); void save(); }}>
       <fieldset disabled={busy}>
@@ -145,7 +145,7 @@ export function ConnectionDetail({ current, adapters, profiles, defaultId, mode,
           : draft.credentialKind === 'none' ? text('连接本机模型服务，无需 API Key。', 'Connect to a local model service without an API key.')
           : mode === 'subscription' ? text('使用对应套餐和地区的专用 API Key。套餐 Key 与按量 API Key 不通用。', 'Use the API key for this plan and region. Plan keys and metered API keys are separate.')
           : text('使用该服务的 API Key，费用按服务商规则计算。', 'Use this service’s API key. Your provider determines billing.')}</p>
-        <div className="model-actions"><span className="model-feedback" role="status">{saved ? text('已保存', 'Saved') : ''}</span><button className="model-primary model-push" type="submit">{current ? text('保存连接', 'Save connection') : draft.credentialKind === 'oauth' ? text('创建并继续登录', 'Create and continue to sign in') : text('创建连接', 'Create connection')}</button></div>
+        <div className="model-actions"><span className="model-feedback" role="status">{saved ? text('已保存', 'Saved') : ''}</span><Button className="model-push" type="submit" variant="primary">{current ? text('保存连接', 'Save connection') : draft.credentialKind === 'oauth' ? text('创建并继续登录', 'Create and continue to sign in') : text('创建连接', 'Create connection')}</Button></div>
       </fieldset>
     </form>
     {error && <div className="settings-error" role="alert">{error}</div>}
@@ -217,7 +217,7 @@ export default function LlmSection({ active = true, initialModelTarget }: { acti
       && <div className="settings-error" role="alert">{t(language, 'settings.llm.targetUnavailable')}</div>}
     {loading && <div role="status">{text('正在读取…', 'Loading…')}</div>}
     {page.kind === 'list' && <>
-      <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-connection-entry"><button ref={addButton} onClick={() => setPage({ kind: 'new', mode: 'metered' })}>+ {text('API 连接', 'API connection')}</button><button onClick={() => setPage({ kind: 'new', mode: 'subscription' })}>+ Coding Plan</button></div></div>
+      <div className="model-heading"><h2>{text('模型与服务', 'Models & services')}</h2><div className="model-connection-entry"><Button variant="secondary" ref={addButton} onClick={() => setPage({ kind: 'new', mode: 'metered' })}>+ {text('API 连接', 'API connection')}</Button><Button variant="secondary" onClick={() => setPage({ kind: 'new', mode: 'subscription' })}>+ Coding Plan</Button></div></div>
       <div className="model-actions model-subheading"><span>{text('新对话默认', 'New chat default')} · {profiles?.profiles.find(p => p.id === profiles.defaultProfileId)?.name ?? '—'}</span><button className="model-push" onClick={() => setPage({ kind: 'usage' })}>{text('用量统计', 'Usage')} ↗</button></div>
       {profiles && <ApprovalReviewerModel profiles={profiles.profiles} connections={profiles.connections} />}
       {profiles && <SubagentSettings profiles={profiles.profiles} connections={profiles.connections} />}

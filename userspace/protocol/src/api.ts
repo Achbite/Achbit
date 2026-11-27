@@ -1,6 +1,6 @@
 /**
- * API 响应通用包装
- * 遵循统一响应格式：{ ok, data?, message?, error? }
+ * Common API response envelope.
+ * Fields are ok, data, message and error.
  */
 export interface ApiResponse<T> {
   ok: boolean;
@@ -12,11 +12,11 @@ export interface ApiResponse<T> {
 import type { WorkspaceSummary } from './workspace.js';
 
 /**
- * 健康检查状态
- * GET /api/health 的响应数据类型
+ * Health status
+ * returned by GET /api/health.
  *
- * 注意：service 字面量固定为 Rust Kernel Web Host 的服务名；
- * 旧 Node server 不再作为默认 API 事实源。
+ * The service literal identifies the Rust Kernel Web Host,
+ * which serves the default API.
  */
 export interface HealthStatus {
   service: 'achbit-host-web' | 'achbit-kernel-daemon' | string;
@@ -29,6 +29,6 @@ export interface HealthStatus {
   protocolVersion?: string;
   kernel: 'ready';
   session: 'ready' | 'unavailable';
-  /** 当前活动工作区摘要；无工作区时 available=false */
+  /** Active workspace summary. An absent workspace has available=false. */
   workspace: WorkspaceSummary;
 }

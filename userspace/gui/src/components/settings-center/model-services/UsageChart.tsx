@@ -1,5 +1,6 @@
 import { useId, useMemo, useRef, useState, type MouseEvent } from 'react';
 import type { UsageBucket, UsageReport } from '@achbit/protocol';
+import { Button } from '../../../ui-components';
 import { useModelLanguage } from './modelServiceSettings';
 import { ModelSettingsHelp } from './ModelSettingsHelp';
 import { cacheHitRate, formatUsageTokens, usageTokenBreakdown } from './usageFormatting';
@@ -46,7 +47,10 @@ export default function UsageChart({ report, metric, showCost, onMetricChange, o
 
   return <>
     <div className="model-chart-heading">
-      <div className="model-segments"><button aria-pressed={isTokens} onClick={() => onMetricChange('tokens')}>Tokens</button>{showCost && <button aria-pressed={!isTokens} onClick={() => onMetricChange('cost')}>{text('费用', 'Cost')}</button>}</div>
+      <div className="model-segments" role="group" aria-label={text('用量指标', 'Usage metric')}>
+        <Button size="compact" aria-pressed={isTokens} onClick={() => onMetricChange('tokens')}>Tokens</Button>
+        {showCost && <Button size="compact" aria-pressed={!isTokens} onClick={() => onMetricChange('cost')}>{text('费用', 'Cost')}</Button>}
+      </div>
       {isTokens && <div className="model-chart-legend">{series.map(s => <span key={s.id} data-series={s.id}><i className="model-chart-swatch" aria-hidden="true" />{text(s.zh, s.en)}</span>)}</div>}
       <ModelSettingsHelp>{text('记录起始', 'Records since')}: {new Date(coverageFrom).toLocaleString(language)}{isDaily && ` · ${text('点击某天查看小时分布。', 'Select a day for hourly usage.')}`}</ModelSettingsHelp>
     </div>

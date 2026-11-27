@@ -104,11 +104,11 @@ fn tool_guidance(tool: KernelToolKind) -> (&'static str, &'static [&'static str]
             ],
         ),
         KernelToolKind::ProcessPowerShell => (
-            "Run PowerShell from the selected workspace. List or search when the target path is unknown. Project writes are limited to authorized output directories. The session working directory is writable.",
+            "Run PowerShell from the selected workspace. List or search when the target path is unknown. Project writes are limited to authorized output directories. Session scratch space is writable.",
             &[],
         ),
         KernelToolKind::ProcessShell => (
-            "Run Bash from the selected workspace. Use ls or find when the target path is unknown. Project writes are limited to authorized output directories. The session working directory is writable.",
+            "Run Bash from the selected workspace. Use ls or find when the target path is unknown. Project writes are limited to authorized output directories. Session scratch space is writable.",
             &[],
         ),
     }

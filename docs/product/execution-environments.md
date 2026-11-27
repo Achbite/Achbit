@@ -7,15 +7,15 @@ Use the run's recorded target, shell and PATH, plus the project's build instruct
 | Need | Interface or rule |
 | --- | --- |
 | Read/edit project files | File tools and the current workspace/Plan scope |
-| Test/build outputs | Plan `writablePaths` for specific output directories, not the project root | An explicit empty `writablePaths` grants no project write directory to the workspace shell.
-| Optional temporary scripts and logs | The session working directory retains files across calls. Each shell call has its own temporary directory. |
+| Test/build outputs | Plan `writablePaths` for specific output directories, not the project root. An empty list grants no project write directory to the workspace shell. |
+| Optional temporary scripts and logs | Session scratch space retains files across calls. Each shell call has its own temporary directory. |
 | Additional outside files | `requestFileAccess` with exact paths and a reason |
 | Network in the sandbox | `requestNetworkPermission`; file scope stays unchanged |
 | Host execution | `requestHostPermission`; obtain approval before executing |
 
 Under delegated review, an approved read-only `requestFileAccess` scope can be reused within the current task and file environment. A file grant covers only that file; a directory grant covers its descendants, not siblings or ancestors. Later calls may omit the request or repeat the covered paths without another file approval. Revocation, relevant permission changes and task completion end the grant. Writes, network and Host execution retain their separate gates.
 
-Project files remain read-only to workspace Shell even when file-tool edits are allowed. The session owns its working directory outside the project. Tools can return their results directly or keep intermediate files there. Shell execution follows the active permission policy. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
+Project files remain read-only to workspace Shell even when file-tool edits are allowed. The session has private scratch space separate from the project. Tools can return their results directly or keep intermediate files there. Shell execution follows the active permission policy. Writable ancestors of protected subtrees such as `.git` are rejected: request narrower output directories.
 
 Workspace Shell HOME is session-managed; it is not the application configuration root. After the built-in file reader reads operations.md from the installed Product guides directory, `Achbit product resources` supplies `achbitCli` and `hostDataDirectory` with the originating message or successful activation/read result when permitted. Use `achbitCli --host-data-dir hostDataDirectory instance`, then the required management command. Submit the Shell call with `requestHostPermission` and a specific reason, including read-only commands such as `plugins status`; the current permission policy handles authorization. These Host paths do not grant workspace-sandbox access. The CLI is unavailable in sessions that disable Host execution.
 
@@ -64,7 +64,9 @@ The quoting above fits PowerShell/POSIX shells. Profiles use `remoteShell: posix
 
 ## Bindings and update timing
 
-A consumed directory attachment or explicit workspace addition becomes a binding; a file attachment does not bind its parent. Binding grants no write permission. Project directory changes apply to its conversations and subsequent requests; in-flight calls keep their captured paths. Use Session-provided logical workspace handles.
+The source folders in **Manage project workspace** define what “this project” means. The first configured folder is the default working directory (`primary`) for relative file paths and shell commands. A new conversation without source folders starts in its session directory. A file or directory attached to a message supplements the conversation; it does not switch the default. To use an attachment, pass its listed handle and path on that call. The next call without a handle uses `primary` again.
+
+A consumed directory attachment or explicit directory addition becomes addressable; attaching a file does not bind its parent. Neither action grants write permission. Only configured source folders and their ancestors supply automatic project instructions (`AGENTS.md` or `Agents.md`), not the contents of attachments. Editing the project’s source folders changes the project bindings for subsequent requests; already-issued calls keep their captured addresses, and project instructions are read again at the next run.
 
 New runs capture runtime settings. On macOS the Host prepares PATH from the login shell at initialization or explicit environment refresh, not on every tool call. Do not change settings or reinstall tools merely because the current prepared PATH lacks a command.
 

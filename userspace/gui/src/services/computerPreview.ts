@@ -26,7 +26,7 @@ export function previewFrameConstraints(frame: PreviewFrame | undefined, width: 
   const height = Math.min(240, maxHeight);
   return { width: frame.contentKind === 'image' ? Math.min(width, height * frame.width / frame.height) : width, maxHeight: height };
 }
-export interface DesktopPreviewTarget { windowId: number; generation: number; pid: number; app: string; title: string; width: number; height: number }
+export interface DesktopPreviewTarget { windowId: number; generation?: number; observationId?: string; pid: number; app: string; title: string; width: number; height: number }
 export interface BrowserPreviewTarget { previewId: string; url: string; hostInstanceId: string; windowLabel: string; sessionId: string }
 export interface ComputerPreview<T = DesktopPreviewTarget> {
   state: string;
@@ -41,7 +41,7 @@ export interface ComputerPreview<T = DesktopPreviewTarget> {
 export function targetIdentity(target: DesktopPreviewTarget | BrowserPreviewTarget | undefined): string | undefined {
   return !target ? undefined : 'previewId' in target
     ? `${target.hostInstanceId}:${target.windowLabel}:${target.sessionId}:${target.previewId}`
-    : `${target.windowId}:${target.generation}`;
+    : `${target.windowId}:${target.generation ?? target.observationId}`;
 }
 
 /** Terminal targets have no live preview; their diagnostic response remains

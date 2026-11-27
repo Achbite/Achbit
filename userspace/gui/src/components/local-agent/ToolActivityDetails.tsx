@@ -8,7 +8,7 @@ import './shellProgress.css';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useUiOwner } from '../../ui-ownership/useUiOwner';
 import type { ActivityProjection, ArtifactProjection, ProviderHostedActivityProjection, SessionProjection } from '@achbit/protocol';
-import { t, type UiLanguage } from '../../i18n';
+import { localizedError, t, type UiLanguage } from '../../i18n';
 import AchbitShellIcon from '../shared/AchbitShellIcon';
 import { UiPluginSlotView, useDisplayTheme } from '../../ui-plugins/UiPlugins';
 import { ApprovalActivity } from './ApprovalActivity';
@@ -21,6 +21,9 @@ import { requestReader } from './readerState';
 import { resourceFilename } from './resourceLinks';
 import { useConversationRowState } from './ConversationVirtualRow';
 import { ComputerActivity, computerActivitySummary } from './ComputerActivity';
+
+// Keep quoted, otherwise invisible NULs legible without changing the rejection record.
+const rejectionText = (text: string) => text.replaceAll('\0', '\\u0000');
 
 function shellWriteScopeLabel(language: UiLanguage, writeScope: string): string {
   const key = `agent.tool.shell.writeScope.${writeScope}`;
@@ -291,8 +294,8 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
       {expanded && (
         <UiPluginSlotView slot="tool.result" input={{ kind: 'tool.result', activity, toolId: tool?.operation ?? activity.label, locale: language, theme }}>
         <div className={`local-agent__tool-entry-details${filePath ? ' local-agent__tool-entry-details--file' : ''}`}>
-          {tool?.error && <p className="local-agent__tool-error" role="status"><code>{tool.error.code}</code>: {tool.error.message}</p>}
-          {tool?.projectionError && <p className="local-agent__tool-error" role="status"><code>{tool.projectionError.code}</code>: {tool.projectionError.message}</p>}
+          {tool?.error && <p className="local-agent__tool-error" role="status"><code>{tool.error.code}</code>: <span title={tool.error.message}>{localizedError(language, tool.error.message, tool.error.code)}</span></p>}
+          {tool?.projectionError && <p className="local-agent__tool-error" role="status"><code>{tool.projectionError.code}</code>: <span title={tool.projectionError.message}>{localizedError(language, tool.projectionError.message, tool.projectionError.code)}</span></p>}
           {Boolean(tool?.shellIntents?.length) && <div className="local-agent__tool-resources">
             {tool!.shellIntents!.map((intent, index) => <div key={index}>
               <small>{t(language, intent.kind === 'search' ? 'agent.tool.shell.searchTarget' : 'agent.tool.shell.readTarget')}</small>{' '}
@@ -339,11 +342,11 @@ const ToolActivityEntry: React.FC<ToolActivityEntryProps> = ({
           {activity.notExecuted && <p role="status">{notExecutedStatus(activity, language)}</p>}
           {activity.inputRejection && (
             <div className="local-agent__input-rejection">
-              <p><code>{activity.inputRejection.code}</code>: {activity.inputRejection.message}</p>
+              <p><code>{activity.inputRejection.code}</code>: <span title={rejectionText(activity.inputRejection.message)}>{rejectionText(localizedError(language, activity.inputRejection.message, activity.inputRejection.code))}</span></p>
               {activity.inputRejection.issues.map((issue, index) => (
                 <div key={`${issue.path}:${issue.rule}:${index}`}>
-                  <code>{issue.path} · {issue.rule}</code>
-                  {issue.message !== activity.inputRejection!.message && <span>{issue.message}</span>}
+                  <code>{rejectionText(issue.path)} · {issue.rule}</code>
+                  {issue.message !== activity.inputRejection!.message && <span>{rejectionText(issue.message)}</span>}
                   {issue.expected !== undefined && <code>{JSON.stringify(issue.expected)}</code>}
                 </div>
               ))}

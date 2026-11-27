@@ -173,7 +173,7 @@ details:not([open]) > summary > .conversation-disclosure-chevron, .conversation-
 .conversation-change-dock .conversation-changes-heading strong { display: block; overflow: hidden; text-overflow: ellipsis; font-weight: 400; white-space: nowrap; }
 .conversation-change-dock:has(.local-agent__composer-disclosure) .conversation-changes--compact { max-width: calc(100% - 32px); }
 .conversation-change-dock .conversation-changes-heading > svg { display: none; }
-.conversation-change-dock .conversation-change-list { top: auto; bottom: 100%; left: 50%; transform: translateX(-50%); width: min(480px, 80vw); }
+.conversation-change-dock .conversation-change-list { top: auto; bottom: 100%; left: 50%; transform: translateX(-50%); width: min(480px, 100cqi); overscroll-behavior-y: contain; }
 .conversation-diff-counts { display: inline-flex; flex: none; align-items: center; gap: 5px; font-size: calc(12px * var(--ac-ui-font-scale, 1)); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .conversation-diff-counts .is-added { color: var(--ac-success); }
 .conversation-diff-counts .is-removed { color: var(--ac-danger); }

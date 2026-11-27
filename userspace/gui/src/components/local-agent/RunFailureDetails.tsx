@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { LocalAgentError, ProviderActivityProjection, ProviderAttemptFact, TranscriptRun, SessionProjection } from '@achbit/protocol';
 import { providerNeedsContinuation, runFailureKind } from '@achbit/protocol';
-import { t, type UiLanguage } from '../../i18n';
+import { localizedError, t, type UiLanguage } from '../../i18n';
 import { useLocalAgentStore } from '../../state/localAgentStore';
 import { Button, DisclosureSummary, UiIcon } from '../../ui-components';
 
@@ -10,6 +10,7 @@ function ErrorDetails({ error, language }: { error: LocalAgentError; language: U
   return <details className="local-agent__error-details">
     <DisclosureSummary>{language === 'zh-CN' ? '诊断信息' : 'Diagnostics'}</DisclosureSummary>
     <code>{error.code}</code>
+    <p>{error.message}</p>
     {d && <>
       <p>{d.source} · {d.phase} · {d.category}</p>
       <dl>{(['isConnect', 'isTimeout', 'isBody'] as const).map((key) => d[key] === undefined ? null : <React.Fragment key={key}><dt>{key}</dt><dd>{String(d[key])}</dd></React.Fragment>)}</dl>
@@ -168,7 +169,7 @@ export function RunFailureDetails({ projection, language, onError }: {
       {switching && <Button size="compact" disabled={busy} onClick={() => void useLocalAgentStore.getState().cancelRun().catch(cause => onError(String(cause)))}>{zh ? '停止' : 'Stop'}</Button>}
       {(error || snapshot) && <Button size="compact" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{zh ? '详情' : 'Details'}</Button>}
     </div>
-    {error && <p className="local-agent__failure-reason" data-expanded={expanded || undefined}>{error.message}</p>}
+    {error && <p className="local-agent__failure-reason" data-expanded={expanded || undefined}>{localizedError(language, error.message, error.code)}</p>}
     {expanded && <div className="local-agent__continuity-details">
       <RunFailureDiagnostics projection={projection} language={language} />
     {canContinue && <Button size="compact" disabled={busy} onClick={() => void continueTask(true)}>{zh ? '新会话接手' : 'Continue in a new session'}</Button>}
