@@ -205,6 +205,32 @@ fn shell_business_input_preserves_the_script_and_leaves_authority_to_kernel() {
 }
 
 #[test]
+fn external_write_schema_does_not_prescribe_a_project_permission_mode() {
+    let registry = KernelToolRegistry::new();
+    for name in [
+        "fs.read",
+        "fs.write",
+        "fs.edit",
+        "fs.delete",
+        "bash",
+        "powershell",
+    ] {
+        let tool = registry.descriptor(name).unwrap();
+        let write = &tool.input_schema["properties"]["requestFileAccess"]["properties"]["write"];
+        assert_eq!(write["items"]["type"], "string");
+        let hint = write["description"].as_str().unwrap();
+        assert!(
+            hint.contains("External") && hint.contains("project"),
+            "{name}: {hint}"
+        );
+        assert!(
+            !hint.contains("Plan") && !hint.contains("writablePaths"),
+            "{name}: {hint}"
+        );
+    }
+}
+
+#[test]
 fn shell_authority_fields_are_internal_and_commands_reach_kernel_admission() {
     let registry = KernelToolRegistry::new();
     for tool in ["bash", "powershell"] {

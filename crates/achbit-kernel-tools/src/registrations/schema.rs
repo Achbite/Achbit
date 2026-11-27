@@ -120,7 +120,7 @@ pub(super) fn provider_schema_for_tool(tool: KernelToolKind) -> Value {
                     "properties": {
                         "reason": { "type": "string", "minLength": 1, "maxLength": 1024, "description": "Explain why the external paths are needed." },
                         "read": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-                        "write": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "External paths only. A bound project's writes use its workspace policy or Plan writablePaths, not this field." }
+                        "write": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "External paths only. Select the owning workspace for project writes; this field does not grant them." }
                     },
                     "additionalProperties": false
                 },

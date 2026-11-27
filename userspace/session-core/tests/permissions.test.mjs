@@ -69,6 +69,8 @@ test('approval review retains original user constraints without main-model summa
   assert.throws(() => prepareApprovalReview(snapshot, runtime, { ...approval, runId: 'run:other' }, 'provider:wrong'), /approval_review_run_mismatch/);
   assert.deepEqual(receipt.reviewInput, { instructions: request.messages[0].content, content: request.messages[1].content });
   const input = JSON.parse(request.messages[1].content);
+  assert.equal(input.plan, undefined);
+  assert.doesNotMatch(input.contextSelection, /confirmed Plan/i);
   assert.deepEqual(input.userMessages, [
     { messageId: 'message:current', content: 'Run make check.' },
     { messageId: 'message:guidance', content: 'Use the existing build directory.' },
@@ -123,6 +125,7 @@ test('review preserves corrections from the preceding and confirmed Plan source 
     { messageId: 'guidance:current', content: 'Keep the report in the existing draft.' },
   ]);
   assert.equal(packet.plan.confirmed, true);
+  assert.match(packet.contextSelection, /confirmed Plan/i);
   assert.deepEqual(snapshot, before);
   const oversized = structuredClone(snapshot);
   oversized.events.find(event => event.payload.messageId === 'guidance:plan').payload.content = 'Required Plan restriction. '.repeat(1000);
@@ -650,6 +653,10 @@ test('Plan off omits its tool schema and makes no reviewer request while retaini
   }
   assert.ok(packets.get('plan').tools.some(tool => tool.inputSchema.properties?.mutationManifest));
   assert.equal(packets.get('allow').tools.some(tool => tool.inputSchema.properties?.mutationManifest), false);
+  const instructions = mode => packets.get(mode).messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  assert.match(instructions('plan'), /plan_publish/);
+  // Check live instructions, not user text, historical decisions or the product docs index.
+  assert.doesNotMatch(instructions('allow'), /plan_publish|Plan confirmation|wait for confirmation|The Plan is confirmed/i);
   assert.ok(JSON.stringify(packets.get('allow').tools).length < JSON.stringify(packets.get('plan').tools).length);
 });
 

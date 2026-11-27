@@ -230,7 +230,7 @@ pub(super) fn prepare_file_access(
                 && (is_shell_tool(&prepared.operation) || !files.protects(path))
             {
                 return Err(LocalAgentKernelError::input("$.requestFileAccess.write", "workspaceWriteScope",
-                        "Project writes follow the current Plan writablePaths or workspace setting. Remove this project path from requestFileAccess; publish or extend the Plan when needed.", None));
+                        "Remove the bound project path from requestFileAccess.write. Select the owning workspace for project edits; its write policy still applies.", None));
             }
         }
     }
