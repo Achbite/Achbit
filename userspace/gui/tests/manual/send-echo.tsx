@@ -15,6 +15,8 @@ import '../../src/theme/paletteBase.css';
 import '../../src/achbit-gui/achbitGui.css';
 
 const scenario = new URLSearchParams(location.search).get('scene');
+// This case starts with an empty draft, not attachments saved by another fixture in the same tab.
+if (scenario === 'new') sessionStorage.removeItem('achbit:composer:new:independent');
 const id = 'session:echo', other = 'session:other', epoch = '2026-01-01T00:00:00Z';
 const profile = { id: 'profile:echo', connectionId: 'connection:fixture', name: 'Fixture', model: 'fixture',
   providerFlavor: 'openai', kind: 'responses', thinking: 'disabled', enabled: true } as const;

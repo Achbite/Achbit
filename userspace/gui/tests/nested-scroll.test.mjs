@@ -106,6 +106,16 @@ test('an already clamped bottom resumes follow without scrolling up first, even 
     body.scrollHeight += 180; viewport.preserveReadingPosition(); flush();
     assert.equal(body.scrollTop, 820, `${delivered}: subsequent output must actually follow, not just hide the arrow`);
   }
+  // The compositor can hit the old tail before the next Markdown frame grows the document.
+  for (const [nativeTop, expected] of [[920, 920], [1000, 1180]]) {
+    body.scrollHeight = 1500; body.scrollTop = 740; viewport.setLatestFollowMode(false);
+    viewport.bodyHandlers.onWheel({ target: body, deltaY: 1000 });
+    body.scrollTop = nativeTop;
+    body.scrollHeight += 180;
+    viewport.bodyHandlers.onScroll({ target: body, currentTarget: body });
+    viewport.preserveReadingPosition(); flush();
+    assert.equal(body.scrollTop, expected, 'actual arrival at the pre-growth tail, not wheel distance, resumes follow');
+  }
 });
 
 test('a short page keeps the displayed jump position through layout, and a new jump uses the requested offset', async t => {

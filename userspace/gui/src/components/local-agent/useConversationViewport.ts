@@ -62,7 +62,7 @@ export function useConversationViewport({
   }
   const surface = !!projection && projection.sessionId === sessionId;
   const followingLatestRef = useRef(true);
-  const upwardGestureTop = useRef<number | null>(null);
+  const gesture = useRef<{ direction: 'up' | 'down'; edge: number } | null>(null);
   const measureJump = useCallback(() => {
     const body = bodyRef.current;
     setShowJumpToLatest(!followingLatestRef.current && !!body && body.clientHeight > 0 && tailDistance(body) > LATEST_TOLERANCE);
@@ -99,7 +99,10 @@ export function useConversationViewport({
     const body = bodyRef.current;
     if (!body) return;
     const target = Math.max(0, Math.min(top, body.scrollHeight - body.clientHeight));
-    if (Math.abs(body.scrollTop - target) > 0.5) body.scrollTop = target;
+    if (Math.abs(body.scrollTop - target) > 0.5) {
+      if (gesture.current?.direction === 'down') gesture.current = null;
+      body.scrollTop = target;
+    }
     observedScrollTopRef.current = body.scrollTop;
     if (!followingLatestRef.current) measureJump();
   }, [measureJump]);
@@ -118,7 +121,7 @@ export function useConversationViewport({
     }
   }, [anchors, writeScrollTop, rememberAnchor]);
   const applyLatestFollowMode = useCallback((following: boolean) => {
-    upwardGestureTop.current = null;
+    gesture.current = null;
     followingLatestRef.current = following;
     setFollowingLatest(following);
     measureJump();
@@ -143,18 +146,23 @@ export function useConversationViewport({
 
   const resumeAtTail = useCallback(() => {
     const body = bodyRef.current;
-    if (followingLatestRef.current || !body || body.clientHeight <= 0 || tailDistance(body) > LATEST_TOLERANCE) return false;
+    if (followingLatestRef.current || !body || body.clientHeight <= 0) return false;
+    // A native scroll can reach its tail before streamed output grows it in the same frame.
+    const reachedGestureEdge = gesture.current?.direction === 'down' && body.scrollTop > observedScrollTopRef.current
+      && Math.abs(body.scrollTop - gesture.current.edge) <= LATEST_TOLERANCE;
+    if (!reachedGestureEdge && tailDistance(body) > LATEST_TOLERANCE) return false;
     // Preserve a deliberately addressed row through temporary scroll clamping.
     // An outer reader gesture releases it; a transcript that fits has no history below.
     if (placedFor.current !== null && scrollRange(body) > LATEST_TOLERANCE) return false;
     setLatestFollowMode(true);
+    if (reachedGestureEdge) writeScrollTop(body.scrollHeight);
     return true;
-  }, [setLatestFollowMode]);
+  }, [setLatestFollowMode, writeScrollTop]);
 
   const readerLeftTail = useCallback(() => {
-    const body = bodyRef.current, start = upwardGestureTop.current;
-    if (start === null || !body || tailDistance(body) <= LATEST_TOLERANCE
-      || Math.min(start, scrollRange(body)) - body.scrollTop <= 0.5) return false;
+    const body = bodyRef.current, start = gesture.current;
+    if (start?.direction !== 'up' || !body || tailDistance(body) <= LATEST_TOLERANCE
+      || Math.min(start.edge, scrollRange(body)) - body.scrollTop <= 0.5) return false;
     setLatestFollowMode(false);
     return true;
   }, [setLatestFollowMode]);
@@ -204,7 +212,7 @@ export function useConversationViewport({
   const placeFollowing = useCallback(() => {
     const body = bodyRef.current;
     if (!body || readerLeftTail()) return;
-    if (tailDistance(body) > LATEST_TOLERANCE) upwardGestureTop.current = null;
+    if (tailDistance(body) > LATEST_TOLERANCE) gesture.current = null;
     writeScrollTop(body.scrollHeight);
   }, [writeScrollTop, readerLeftTail]);
 
@@ -349,12 +357,13 @@ export function useConversationViewport({
   };
 
   const beginReading = () => {
+    gesture.current = null;
     const body = bodyRef.current;
     if (!body || !followingLatestRef.current || pendingViewportRestoreRef.current !== null
       || scrollRange(body) <= LATEST_TOLERANCE) return;
     // Intent alone cannot create a bookmark. Passive input may arrive before or
     // after the compositor moves; compare its position to the last real tail.
-    upwardGestureTop.current = Math.min(scrollRange(body), Math.max(body.scrollTop, observedScrollTopRef.current));
+    gesture.current = { direction: 'up', edge: Math.min(scrollRange(body), Math.max(body.scrollTop, observedScrollTopRef.current)) };
     readerLeftTail();
   };
 
@@ -362,7 +371,8 @@ export function useConversationViewport({
     placedFor.current = null;
     if (direction < 0) beginReading();
     else if (direction > 0) {
-      upwardGestureTop.current = null;
+      const body = bodyRef.current;
+      gesture.current = body && !followingLatestRef.current ? { direction: 'down', edge: scrollRange(body) } : null;
       // Pushing against the bottom need not generate a scroll event.
       resumeAtTail();
     }
