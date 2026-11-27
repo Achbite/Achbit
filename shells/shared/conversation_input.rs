@@ -389,7 +389,7 @@ fn approval_decision_for_input(language: Language, input: &str) -> Result<&'stat
         "1" | "allow" | "允许" | "同意" => Ok("allow"),
         "2" | "deny" | "拒绝" | "不同意" => Ok("deny"),
         "3" | "allow-run" | "本轮允许此命令" => Ok("allow-run"),
-        "4" | "allow-host-run" | "本轮允许Host" => Ok("allow-host-run"),
+        "4" | "allow-host-run" | "本轮允许host" => Ok("allow-host-run"),
         "5" | "allow-files-run" => Ok("allow-files-run"),
         "6" | "allow-files-session" => Ok("allow-files-session"),
         _ => achbit_kernel_client::AUTHORIZATION_OPTIONS
@@ -520,6 +520,38 @@ mod tests {
                 question.interaction_id.push_str("-next");
             }
             assert!(check_reply_refresh(Language::EnUs, &shown, &changed, "/reply 1").is_err());
+        }
+    }
+
+    #[test]
+    fn run_approval_shortcuts_target_only_the_offered_scope() {
+        let mut p = approval_projection(&["human"]);
+        for (scope, input, label) in [
+            ("runCommand", "/reply 3", "/reply 本轮允许此命令"),
+            ("runHostShell", "/reply 4", "/reply 本轮允许Host"),
+        ] {
+            p.pending_approvals.as_mut().unwrap()[0]
+                .preview
+                .authorization_scopes = None;
+            assert!(reply(&p, input).is_err());
+            p.pending_approvals.as_mut().unwrap()[0]
+                .preview
+                .authorization_scopes = Some(vec![scope.to_owned()]);
+            for text in [input, label] {
+                assert_eq!(reply(&p, text).unwrap()["authorizationScope"], scope);
+            }
+        }
+        for language in [Language::ZhCn, Language::EnUs] {
+            for key in ["tui.help", "tui.commandHelp"] {
+                let help = language.text(key);
+                let (_, choices) = help.split_once("/reply 3").unwrap();
+                let (command, host) = choices.split_once("/reply 4").unwrap();
+                assert!(
+                    !command.to_ascii_lowercase().contains("host") && !command.contains("宿主")
+                );
+                let host = host.lines().next().unwrap().to_ascii_lowercase();
+                assert!(host.contains("host") || host.contains("宿主"));
+            }
         }
     }
 
