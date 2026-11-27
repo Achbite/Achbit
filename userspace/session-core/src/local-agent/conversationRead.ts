@@ -210,7 +210,7 @@ function rejectedProviderCalls(event: SessionEvent) {
 }
 
 function isToolHistory(event: SessionEvent): boolean {
-  return ['tool.completed', 'tool.not-executed', 'tool.input-rejected', 'session.control.rejected', 'approval.reviewed'].includes(event.type)
+  return ['tool.completed', 'tool.not-executed', 'tool.input-rejected', 'session.control.rejected', 'session.plugins.failed', 'approval.reviewed'].includes(event.type)
     || rejectedProviderCalls(event).length > 0;
 }
 
@@ -227,6 +227,12 @@ function readItem(event: SessionEvent, summary: boolean, events: readonly Sessio
   if (event.type === 'tool.not-executed') return { ...base, callId: event.callId, outcome: 'notExecuted', ...event.payload };
   if (event.type === 'tool.interrupted') return { ...base, callId: event.callId, attemptId: event.payload.attemptId,
     outcome: 'indeterminate', error: textExcerpt(JSON.stringify(event.payload.error), 4000) };
+  if (event.type === 'session.plugins.failed') {
+    const source = events.find(item => item.type === 'session.plugins.requested' && item.callId === event.callId && item.runId === event.runId);
+    return { ...base, callId: event.callId, toolName: 'plugin.activate', outcome: event.payload.outcome,
+      ...(source?.type === 'session.plugins.requested' ? { providerCallId: source.payload.providerCallId } : {}),
+      ...(event.payload.outcome === 'notExecuted' ? { executed: false } : {}), error: textExcerpt(JSON.stringify(event.payload.error), 4000) };
+  }
   if (event.type === 'session.control.rejected') return { ...base, callId: event.callId,
     providerCallId: event.payload.providerCallId, toolName: event.payload.toolName, outcome: 'rejected', executed: false,
     input: textExcerpt(JSON.stringify(event.payload.input), summary ? 600 : 4000),

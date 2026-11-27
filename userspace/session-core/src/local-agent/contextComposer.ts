@@ -26,7 +26,7 @@ import {
 } from '@achbit/protocol';
 import { sessionReadScope, sessionReadTool } from './sessionReading.js';
 import { LoopFailure } from './loopFailure.js';
-import { managedJobFromRecord, processResult, rejectionContent, toolResultContent } from './modelToolResult.js';
+import { managedJobFromRecord, processResult, rejectionContent, toolError, toolResultContent } from './modelToolResult.js';
 import { primaryWorkingDirectory } from './sessionEnvironment.js';
 import { stableCoreInstructions } from './coreInstructions.js';
 import { codingPromptInstructions } from './codingPrompt.js';
@@ -105,11 +105,13 @@ export function buildConversationProviderRequest(input: ConversationRequestInput
   };
   const toolTerminals = new Set(input.events.flatMap((event) => (
     event.type === 'tool.completed' || event.type === 'tool.input-rejected' || event.type === 'tool.interrupted' || event.type === 'tool.not-executed'
+    || event.type === 'session.plugins.activated' || event.type === 'session.plugins.failed'
       ? [event.callId] : []
   )));
-  const openCall = input.events.find((event) => event.type === 'tool.requested' && !toolTerminals.has(event.callId));
-  if (openCall?.type === 'tool.requested') {
-    throw new LoopFailure('tool_result_missing', `调用 ${openCall.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
+  for (const event of input.events) {
+    if ((event.type === 'tool.requested' || event.type === 'session.plugins.requested') && !toolTerminals.has(event.callId)) {
+      throw new LoopFailure('tool_result_missing', `调用 ${event.callId} 尚无终态；不能发送不完整的 Provider 历史。`);
+    }
   }
   const hasWorkspaceBindings = input.workspaceBindings.length > 0;
   const modelViewEvents = input.modelViewEvents ?? input.events;
@@ -389,6 +391,9 @@ export function messagesFromJournal(
   for (const calls of aggregateProviderTurns.values()) {
     for (const call of calls) orderedProviderCallIds.add(call.callId);
   }
+  const activationFacts = new Map(events.flatMap(event => event.type === 'session.plugins.requested'
+    || event.type === 'session.control.rejected' && event.payload.toolName === SESSION_CONTROL_PLUGIN_ACTIVATE
+    ? [[event.callId, event.type] as const] : []));
   const providerCallIdByLogicalCallId = providerCallIdsFromEvents(events);
   const interactionCallIds = new Map(events.flatMap((event) => (
     event.type === 'interaction.requested'
@@ -657,6 +662,19 @@ export function messagesFromJournal(
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
           content: JSON.stringify({ items: event.payload.items.map(item => ({ ...item, uri: `artifact://${item.artifactId}` })) }) },
       });
+    } else if (event.type === 'session.plugins.requested') {
+      if (!completedTurns.get(event.payload.providerRequestId)?.payload.orderedCallIds.includes(event.callId)) {
+        throw new LoopFailure('provider_call_result_completion_missing', '插件激活缺少所属 Provider turn 的完成事实。');
+      }
+      if (!orderedProviderCallIds.has(event.callId)) attachToolCall(messages, { callId: event.callId,
+        providerCallId: event.payload.providerCallId, name: SESSION_CONTROL_PLUGIN_ACTIVATE, input: { pluginUris: event.payload.pluginUris } });
+    } else if (event.type === 'session.plugins.failed') {
+      const { outcome, error } = event.payload;
+      messages.push({ contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件激活结果',
+        message: { role: 'tool', toolCallId: event.callId, providerCallId: requiredProviderCallId(providerCallIdByLogicalCallId, event.callId),
+          toolOutcome: outcome, content: JSON.stringify({ status: outcome, ...(outcome === 'notExecuted' ? { executed: false } : {}),
+            error: toolError(error, resultHandles(event.callId)) }) },
+      });
     } else if (event.type === 'session.plugins.activated') {
       const prepared = events.find(candidate => candidate.type === 'run.tools.prepared'
         && candidate.runId === event.runId
@@ -667,17 +685,22 @@ export function messagesFromJournal(
       const skillEntries = mountedSkillEntries(view.selectedPlugins.plugins.filter(plugin => event.payload.pluginUris.includes(plugin.uri)), view.tools);
       const guidance = resourceGuidance.get(`plugin-activation:${event.callId}`);
 
-      if (!orderedProviderCallIds.has(event.callId)) {
+      // Previously a standalone success registered the call before its Provider turn settled.
+      const registered = activationFacts.get(event.callId) === 'session.plugins.requested';
+      if (!registered && !orderedProviderCallIds.has(event.callId)) {
         attachToolCall(messages, { callId: event.callId, providerCallId: event.payload.providerCallId,
           name: SESSION_CONTROL_PLUGIN_ACTIVATE, input: { pluginUris: event.payload.pluginUris } });
       }
-      completionResults.set(event.callId, {
+      const result: ContextMessageContribution = {
         contributionId: `plugin-activation:${event.callId}`, contributionKind: 'journalMessages', label: '插件已加载',
         sourceSequence: event.sequence,
         message: { role: 'tool', toolCallId: event.callId, providerCallId: event.payload.providerCallId,
+          ...(registered ? { toolOutcome: 'completed' } : {}),
           content: JSON.stringify({ activated: event.payload.pluginUris, tools: activatedTools.filter(tool => tool.availability === 'callable').map(tool => ({ name: tool.name })),
             ...(skillEntries.length ? { skillEntries } : {}), ...(guidance ? { guidance } : {}) }) },
-      });
+      };
+      if (registered) messages.push(result);
+      else completionResults.set(event.callId, result);
     } else if (event.type === 'agent.control.completed' || event.type === 'session.control.completed') {
       const view = controlResults.get(event.callId)!;
       if (!orderedProviderCallIds.has(event.callId)) {
@@ -902,13 +925,13 @@ export function messagesFromJournal(
     );
   }
   applyProviderTurnCompletions(messages, events);
-  // Execution facts keep completion order; the coding model sees PI's original batch order.
-  for (const event of events) {
-    if (event.type !== 'provider.turn.settled' || event.payload.outcome !== 'completed') continue;
-    const ids = event.payload.toolCallInputs?.map(call => call.callId)
-      ?? event.payload.orderedOutputBlocks?.flatMap(block => 'callId' in block ? [block.callId] : [])
-      ?? event.payload.orderedCallIds;
-    if (!ids.some(id => callCodecs?.get(id)?.sharedCoreTools || callCodecs?.get(id)?.codingTools)) continue;
+  // Journal facts keep completion order. Coding calls and mixed activations replay in the Provider's source order.
+  for (const { payload: turn } of completedTurns.values()) {
+    const inputs = turn.toolCallInputs ?? turn.orderedOutputBlocks?.filter(block => 'callId' in block);
+    const ids = inputs?.map(call => call.callId) ?? turn.orderedCallIds;
+    if (ids.length < 2) continue;
+    if (!inputs?.some(call => call.toolName === SESSION_CONTROL_PLUGIN_ACTIVATE)
+      && !ids.some(id => activationFacts.has(id) || callCodecs?.get(id)?.sharedCoreTools || callCodecs?.get(id)?.codingTools)) continue;
     const order = new Map(ids.map((id, index) => [id, index]));
     const positions = messages.flatMap((item, index) => item.message.role === 'tool'
       && order.has(item.message.toolCallId ?? '') ? [index] : []);
@@ -1081,6 +1104,7 @@ function providerCallIdsFromEvents(events: readonly SessionEvent[]): Map<string,
       && event.type !== 'plan.published'
       && event.type !== 'session.control.rejected'
       && event.type !== 'session.plugins.activated'
+      && event.type !== 'session.plugins.requested'
       && event.type !== 'artifacts.presented'
       && event.type !== 'agent.control.completed'
       && event.type !== 'session.control.completed'

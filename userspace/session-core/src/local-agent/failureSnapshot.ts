@@ -14,7 +14,8 @@ export function failureSnapshotEvent(snapshot: LoopSnapshot, runId: string, erro
       providerAttemptIds: [...new Set(attempts.map((event) => event.payload.providerAttemptId))],
       ...(lastMessage ? { lastMessageId: lastMessage.messageId } : {}),
       toolRecordIds: tools.map((event) => event.payload.record.recordId),
-      pendingCallIds: pendingToolRequests(events, runId).map((event) => event.callId),
+      pendingCallIds: [...pendingToolRequests(events, runId).map(event => event.callId),
+        ...(snapshot.state.pendingPluginActivation?.runId === runId ? [snapshot.state.pendingPluginActivation.callId] : [])],
       queuedMessageIds: snapshot.state.queuedInputs.filter((input) => input.runId === runId).map((input) => input.messageId),
       planRef: snapshot.state.activePlanRef ? { ...snapshot.state.activePlanRef } : null,
     } };
