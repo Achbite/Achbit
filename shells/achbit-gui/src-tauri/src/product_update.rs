@@ -1,4 +1,5 @@
 //! Native product updates. Session remains the authority for task activity.
+mod feed;
 #[cfg(any(target_os = "macos", test))]
 mod macos;
 
@@ -146,7 +147,7 @@ pub fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 if updates.enabled.load(Ordering::SeqCst)
                     && (manual || (automatic && Instant::now() >= next_check))
                 {
-                    if let Err(error) = check(&app).await {
+                    if let Err(error) = check(&app, manual).await {
                         updates.publish(&app, "error", None, Some(error));
                     }
                     next_check = Instant::now() + Duration::from_secs(30 * 60);
@@ -293,10 +294,10 @@ fn update_error(stage: &str, error: tauri_plugin_updater::Error) -> String {
     details.join(": ")
 }
 
-async fn check(app: &AppHandle) -> Result<(), String> {
+async fn check(app: &AppHandle, manual_check: bool) -> Result<(), String> {
     let state = app.state::<ProductUpdates>();
     state.publish(app, "checking", None, None);
-    let builder = app.updater_builder().timeout(Duration::from_secs(180));
+    let builder = app.updater_builder().timeout(feed::ATTEMPT_TIMEOUT);
     #[cfg(feature = "debug-control")]
     let builder = {
         let url = std::env::var("ACHBIT_DEBUG_UPDATE_URL").map_err(|error| error.to_string())?;
@@ -331,12 +332,12 @@ async fn check(app: &AppHandle) -> Result<(), String> {
             .ok_or("Installation directory is unavailable")?;
         builder.installer_arg(format!("/D={}", root.display()))
     };
-    let Some(update) = builder
-        .build()
-        .map_err(|error| error.to_string())?
-        .check()
-        .await
-        .map_err(|error| update_error("Check for updates", error))?
+    let updater = builder.build().map_err(|error| error.to_string())?;
+    let Some(update) = feed::check(&updater, || {
+        manual_check || state.automatic.load(Ordering::SeqCst)
+    })
+    .await
+    .map_err(|error| update_error("Check for updates", error))?
     else {
         state.publish(app, "current", None, None);
         return Ok(());
