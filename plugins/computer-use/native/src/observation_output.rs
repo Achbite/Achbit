@@ -124,6 +124,18 @@ fn archive(data: &Value, input: &Value, instance: &str) -> io::Result<std::path:
     Ok(path)
 }
 
+fn archive_view(data: &Value, input: &Value, instance: &str, bytes: usize) -> Value {
+    match archive(data, input, instance) {
+        Ok(path) => json!({"truncated":true,"fullOutput":{"path":path,"bytes":bytes}}),
+        Err(error) => json!({"truncated":true,"archiveError":{"message":error.to_string()}}),
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+mod failure;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) use failure::failure_for_host;
+
 /// Small results pass through unchanged. Oversized observations (including post-action
 /// verification without a new screenshot) keep exact identity, native coverage and effects.
 /// No re-observation, new input, or change to the native handle table occurs here.
@@ -135,10 +147,16 @@ pub(crate) fn for_host(mut data: Value, input: &Value, instance: &str) -> Value 
     if raw_bytes <= INLINE_BYTES {
         return data;
     }
-    let full = archive(&data, input, instance);
-    let width = data["width"].as_f64().unwrap_or_default();
-    let height = data["height"].as_f64().unwrap_or_default();
-    let mut view = json!({"truncated":true});
+    let mut view = archive_view(&data, input, instance, raw_bytes);
+    // Element bounds and viewport must be measured in the same units. Do not
+    // invent image dimensions for semantic observations with no screenshot.
+    let extent = if data["coordinateSpace"] == "windowPoints" {
+        &data["window"]["bounds"]
+    } else {
+        &data
+    };
+    let width = extent["width"].as_f64().unwrap_or_default();
+    let height = extent["height"].as_f64().unwrap_or_default();
     for key in ["errors", "candidateErrors"] {
         if let Some(errors) = data["accessibility"][key].as_array() {
             view["diagnosticCounts"][key] = json!(errors.len());
@@ -157,14 +175,9 @@ pub(crate) fn for_host(mut data: Value, input: &Value, instance: &str) -> Value 
             *value = preview(value);
         }
     }
-    match full {
-        Ok(path) => view["fullOutput"] = json!({"path":path,"bytes":raw_bytes}),
-        Err(error) => {
-            view["archiveError"] = json!({"message":error.to_string()});
-            // Retain an existing verification/observation error and dispatched=true. The
-            // existing Host failure contract reports incomplete evidence without retrying input.
-            fields.entry("observationError").or_insert_with(|| json!({"message":"Could not archive the complete desktop observation. Only the inline sample is available; do not repeat a dispatched action to recover it."}));
-        }
+    if view.get("archiveError").is_some() {
+        // A missing archive neither undoes dispatch nor replaces a verification error.
+        fields.entry("observationError").or_insert_with(|| json!({"message":"Could not archive the complete desktop observation. Only the inline sample is available; do not repeat a dispatched action to recover it."}));
     }
     fields.insert("observationView".into(), view);
     if let Some(Value::Array(nodes)) = elements {

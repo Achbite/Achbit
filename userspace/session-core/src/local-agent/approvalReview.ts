@@ -272,16 +272,19 @@ function desktopEvidence(snapshot: LoopSnapshot, args: Record<string, unknown>) 
   }
   if (typeof args.observationId !== 'string') return undefined;
   for (const event of [...snapshot.events].reverse()) {
-    if (event.type !== 'tool.completed' || event.payload.record.toolName !== 'computer.control'
+    if (event.type !== 'tool.completed' || event.runId !== snapshot.state.run?.runId || event.payload.record.toolName !== 'computer.control'
       || event.payload.record.outcome !== 'completed') continue;
     const value = event.payload.record.output;
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
     const output = value as Record<string, unknown>;
     if (output.observationId !== args.observationId || output.app !== args.app) continue;
-    const elements = Array.isArray(output.elements) && typeof args.x === 'number' && typeof args.y === 'number'
+    // Only explicit macOS units select the new geometry. Legacy image/Windows
+    // replies continue using their original bounds; never compare pixels to points.
+    const usable = output.coordinateSpace !== 'windowPoints' || args.coordinateSpace === 'windowPoints';
+    const rectKey = args.coordinateSpace === 'windowPoints' ? 'boundsWindowPoints' : args.coordinateSpace === 'imagePixels' ? 'boundsImagePixels' : 'bounds';
+    const elements = usable && Array.isArray(output.elements) && typeof args.x === 'number' && typeof args.y === 'number'
       ? output.elements.filter((element: unknown) => {
-        if (!element || typeof element !== 'object' || !('bounds' in element)) return false;
-        const rect = element.bounds as Record<string, unknown> | undefined;
+        const rect = objectValue(objectValue(element)?.[rectKey]);
         return rect && typeof rect.x === 'number' && typeof rect.y === 'number'
           && typeof rect.width === 'number' && typeof rect.height === 'number'
           && (args.x as number) >= rect.x && (args.y as number) >= rect.y
@@ -292,7 +295,7 @@ function desktopEvidence(snapshot: LoopSnapshot, args: Record<string, unknown>) 
       selectedElement: typeof args.elementId === 'string' && Array.isArray(output.elements)
         ? output.elements.find(element => element && typeof element === 'object' && !Array.isArray(element) && element.elementId === args.elementId)
         : undefined,
-      capturedAt: output.capturedAt, coordinateSpace: output.coordinateSpace, elementsAtPoint: elements,
+      capturedAt: output.capturedAt, coordinateSpace: args.coordinateSpace ?? output.coordinateSpace, elementsAtPoint: elements,
       observation: { recordId: event.payload.record.recordId, sequence: event.sequence, completedAt: event.payload.record.completedAt },
       accessibility: accessibilityEvidence(output.accessibility),
       priorOperations: desktopOperationHistory(snapshot, args.app),

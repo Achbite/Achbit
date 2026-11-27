@@ -6,6 +6,14 @@
 #import <CoreImage/CoreImage.h>
 #import <CoreVideo/CoreVideo.h>
 #include <stdatomic.h>
+#include <mach/mach_time.h>
+
+// Monotonic executor diagnostics at the actual capture call sites; no probe or content in status.
+static atomic_uint_fast64_t Enumerations, TargetStarts, PointerStarts, SingleShots, PNGWrites;
+static NSDictionary *CaptureCounts(void) {
+    return @{@"enumerations":@(atomic_load(&Enumerations)), @"targetStreamStarts":@(atomic_load(&TargetStarts)),
+        @"pointerStreamStarts":@(atomic_load(&PointerStarts)), @"singleShots":@(atomic_load(&SingleShots)), @"pngWrites":@(atomic_load(&PNGWrites))};
+}
 
 extern void ac_computer_feedback_clear(uint32_t window, uint64_t generation);
 static void Main(dispatch_block_t block) {
@@ -24,7 +32,7 @@ static NSDictionary *NativeFailure(NSString *stage, NSError *error) {
     return @{ @"ok": @NO, @"error": NativeError(error), @"diagnostics": NativeDetails(stage, error) };
 }
 
-// Draw explicit pointer pixels into the shared window's own backing surface,
+// Draw explicit pointer pixels into the local feedback panel's backing surface,
 // independently of NSImageView template-image state and appearance tinting.
 @interface ACPointerView : NSView
 @end
@@ -43,9 +51,8 @@ static NSDictionary *NativeFailure(NSString *stage, NSError *error) {
     [arrow lineToPoint:NSMakePoint(12, 15)];
     [arrow lineToPoint:NSMakePoint(21, 15)];
     [arrow closePath];
-    // Keep the desktop arrow at 26pt while the same shared window supplies
-    // transparent padding for the system preview. Its tip remains at (3, 3)
-    // within the centered glyph, matching indicator.rs's panel anchor.
+    // Keep the local desktop arrow at 26pt. Its tip is at (3, 3) within
+    // the centered glyph, matching indicator.rs's panel anchor.
     NSAffineTransform *position = [NSAffineTransform transform];
     [position translateXBy:(NSWidth(self.bounds) - 26.0) / 2.0 yBy:(NSHeight(self.bounds) - 26.0) / 2.0];
     [arrow transformUsingAffineTransform:position];
@@ -99,11 +106,12 @@ void ac_computer_install_pointer_content(void *window) {
 @property uint64_t generation;
 @property BOOL selectedByUser;
 @property BOOL pointerSource;
-@property BOOL pointerWindowLookupPending;
-@property NSTimeInterval pointerWindowDeadline;
+// Tool bitmap and display timestamp are replaced together; preview JPEG is separate.
+@property NSDictionary *toolFrame;
+@property uint64_t notBefore;
 @property ACShare *pointer;
 @property (weak) ACShare *owner;
-@property NSDictionary *pointerPosition;
+@property (nonatomic) NSDictionary *pointerPosition;
 @property NSDictionary *previewMetadata;
 @property NSDictionary *latestFrame;
 @property NSString *frameError;
@@ -179,7 +187,13 @@ static void Stop(ACShare *share, void (^complete)(NSError *)) {
 @synthesize phase = _phase;
 @synthesize pointerPosition = _pointerPosition;
 - (NSString *)phase { @synchronized (self) { return _phase; } }
-- (void)setPhase:(NSString *)phase { @synchronized (self) { _phase = phase; } [self publish]; }
+- (void)setPhase:(NSString *)phase {
+    @synchronized (self) {
+        _phase = phase;
+        if (![phase isEqual:@"active"]) { self.toolFrame = nil; self.latestFrame = nil; self.frameError = nil; }
+    }
+    [self publish];
+}
 - (void)setPointerPosition:(NSDictionary *)position { _pointerPosition = position; [self publish]; }
 - (void)publish {
     if (self.pointerSource) { [self.owner publish]; return; }
@@ -190,7 +204,8 @@ static void Stop(ACShare *share, void (^complete)(NSError *)) {
     } mutableCopy];
     if ([self.phase isEqual:@"active"] && self.pointerPosition) {
         NSMutableDictionary *pointer = [self.pointerPosition mutableCopy];
-        pointer[@"sharing"] = self.pointer ? self.pointer.snapshot : @{ @"state": @"inactive" };
+        // Run-local overlay metadata. No separate sharing item is created.
+        if (self.pointer) pointer[@"sharing"] = self.pointer.snapshot;
         metadata[@"pointer"] = pointer;
     }
     @synchronized (self) { self.previewMetadata = [metadata copy]; }
@@ -228,7 +243,8 @@ static void Stop(ACShare *share, void (^complete)(NSError *)) {
     @autoreleasepool {
         NSArray *attachments = (__bridge NSArray *)CMSampleBufferGetSampleAttachmentsArray(sample, false);
         NSNumber *status = attachments.firstObject[SCStreamFrameInfoStatus];
-        if (!status || status.integerValue != SCFrameStatusComplete) return;
+        NSNumber *time = attachments.firstObject[SCStreamFrameInfoDisplayTime];
+        if (!status || status.integerValue != SCFrameStatusComplete || !time.unsignedLongLongValue) return;
         CVPixelBufferRef pixels = CMSampleBufferGetImageBuffer(sample);
         if (!pixels) return;
         uint64_t generation = self.generation;
@@ -238,22 +254,33 @@ static void Stop(ACShare *share, void (^complete)(NSError *)) {
             @synchronized (self) { self.frameError = @"The shared window frame could not be decoded"; }
             return;
         }
-        NSBitmapImageRep *representation = [[NSBitmapImageRep alloc] initWithCGImage:bitmap];
+        const double scale = MIN(1., 720. / MAX(CGImageGetWidth(bitmap), CGImageGetHeight(bitmap)));
+        CIImage *small = [image imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
+        CGImageRef thumbnail = [self.imageContext createCGImage:small fromRect:CGRectIntegral(small.extent)];
+        NSBitmapImageRep *representation = thumbnail ? [[NSBitmapImageRep alloc] initWithCGImage:thumbnail] : nil;
         NSData *jpeg = [representation representationUsingType:NSBitmapImageFileTypeJPEG
             properties:@{NSImageCompressionFactor: @0.7}];
+        NSNumber *sequence = @(atomic_fetch_add(&FrameSequence, 1) + 1);
+        NSDictionary *tool = @{@"bitmap":CFBridgingRelease(bitmap), @"displayTime":time, @"sequence":sequence,
+            @"contentRect":attachments.firstObject[SCStreamFrameInfoContentRect] ?: @{},
+            @"scaleFactor":attachments.firstObject[SCStreamFrameInfoScaleFactor] ?: @0,
+            @"contentScale":attachments.firstObject[SCStreamFrameInfoContentScale] ?: @0};
         NSDictionary *frame = jpeg ? @{
-            @"sequence": @(atomic_fetch_add(&FrameSequence, 1) + 1),
+            @"sequence": sequence,
             @"capturedAt": [NSString stringWithFormat:@"%.0f", NSDate.date.timeIntervalSince1970 * 1000],
-            @"width": @(CGImageGetWidth(bitmap)), @"height": @(CGImageGetHeight(bitmap)),
+            @"width": @(CGImageGetWidth(thumbnail)), @"height": @(CGImageGetHeight(thumbnail)),
             @"dataUrl": [@"data:image/jpeg;base64," stringByAppendingString:[jpeg base64EncodedStringWithOptions:0]]
         } : nil;
-        CGImageRelease(bitmap);
+        NSString *previewError = thumbnail ? @"The shared window frame could not be encoded" : @"The shared window preview could not be created";
+        if (thumbnail) CGImageRelease(thumbnail);
         @synchronized (self) {
-            if (self.stream == stream && self.generation == generation && [self.phase isEqual:@"active"]) {
-                // Only the latest frame is retained. It is never a tool image or
-                // a journal artifact; observations still use SCScreenshotManager.
+            if (self.stream == stream && self.generation == generation && time.unsignedLongLongValue > self.notBefore &&
+                ([self.phase isEqual:@"active"] || [self.phase isEqual:@"starting"])) {
+                // The complete surface is the tool image; a missing thumbnail or encoding only
+                // affects the GUI preview and must not discard a frame an observation can use.
+                self.toolFrame = tool;
                 self.latestFrame = frame;
-                self.frameError = frame ? nil : @"The shared window frame could not be encoded";
+                self.frameError = frame ? nil : previewError;
             }
         }
     }
@@ -269,6 +296,10 @@ static SCStreamConfiguration *Configuration(SCContentFilter *filter, BOOL previe
     config.width = MAX(1, lround(width * scale)); config.height = MAX(1, lround(height * scale));
     config.showsCursor = NO; config.capturesAudio = NO;
     config.ignoreShadowsSingleWindow = YES;
+    // The full independent window fills the output. No shadow, display clipping,
+    // padded destination or letterboxing; refuse unverified geometry at readout.
+    config.ignoreGlobalClipSingleWindow = YES; config.scalesToFit = YES;
+    config.preservesAspectRatio = NO;
     config.minimumFrameInterval = CMTimeMake(1, preview ? 8 : 2);
     config.queueDepth = 3;
     return config;
@@ -297,7 +328,7 @@ static SCStreamConfiguration *Configuration(SCContentFilter *filter, BOOL previe
             }
             return;
         }
-        if (filter.includedWindows.count != 1) {
+        if (filter.style != SCShareableContentStyleWindow || filter.includedWindows.count != 1) {
             share.reason = @"Select exactly one window"; Stop(share, ^(NSError *error) {}); return;
         }
         SCWindow *window = filter.includedWindows.firstObject;
@@ -305,8 +336,9 @@ static SCStreamConfiguration *Configuration(SCContentFilter *filter, BOOL previe
         share.pointerPosition = nil;
         @synchronized (share) { share.latestFrame = nil; share.frameError = nil; }
         share.generation = NextGeneration(); share.phase = @"updating";
+        uint64_t changing = share.generation;
         void (^update)(NSError *) = ^(NSError *pointerError) {
-            if (share.stream != stream || ![share.phase isEqual:@"updating"]) return;
+            if (share.stream != stream || share.generation != changing || ![share.phase isEqual:@"updating"]) return;
             if (pointerError) {
                 // Retain the failed companion under its run owner for release.
                 share.reason = NativeError(pointerError);
@@ -315,12 +347,18 @@ static SCStreamConfiguration *Configuration(SCContentFilter *filter, BOOL previe
             share.pointer = nil;
             [stream updateContentFilter:filter completionHandler:^(NSError *error) {
                 Main(^{
-                    if (share.stream != stream || ![share.phase isEqual:@"updating"]) return;
+                    if (share.stream != stream || share.generation != changing || ![share.phase isEqual:@"updating"]) return;
                     if (error) { share.reason = NativeError(error); Stop(share, ^(NSError *ignored) {}); return; }
-                    share.filter = filter; share.window = window.windowID;
-                    share.pid = window.owningApplication.processID; share.app = window.owningApplication.bundleIdentifier;
-                    share.title = window.title;
-                    share.selectedByUser = YES; share.phase = @"active";
+                    [stream updateConfiguration:Configuration(filter, NO) completionHandler:^(NSError *resizeError) { Main(^{
+                        if (share.stream != stream || share.generation != changing || ![share.phase isEqual:@"updating"]) return;
+                        if (resizeError) { share.reason = NativeError(resizeError); Stop(share, ^(NSError *ignored) {}); return; }
+                        share.filter = filter; share.window = window.windowID;
+                        share.pid = window.owningApplication.processID; share.app = window.owningApplication.bundleIdentifier;
+                        share.title = window.title;
+                        // Queued old samples keep their original WindowServer display time.
+                        share.notBefore = mach_absolute_time();
+                        share.selectedByUser = YES; share.phase = @"active";
+                    }); }];
                 });
             }];
         };
@@ -329,22 +367,31 @@ static SCStreamConfiguration *Configuration(SCContentFilter *filter, BOOL previe
 }
 @end
 
-static void Screenshot(SCContentFilter *filter, NSString *path, ACReply *reply) {
+static void Screenshot(SCContentFilter *filter, NSString *path, ACReply *reply, BOOL (^stillAllowed)(void)) {
+    atomic_fetch_add(&SingleShots, 1);
     [SCScreenshotManager captureImageWithFilter:filter configuration:Configuration(filter, NO) completionHandler:^(CGImageRef image, NSError *error) {
         if (![reply pending]) return;
         if (error || !image) { [reply finish:error ? NativeFailure(@"captureImage", error) : Failure(@"Screenshot returned no image")]; return; }
         NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCGImage:image];
         NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-        NSError *writeError = nil;
-        if (!png || ![png writeToFile:path options:NSDataWritingAtomic error:&writeError]) {
-            [reply finish:writeError ? NativeFailure(@"writePNG", writeError) : Failure(@"PNG encoding failed")]; return;
-        }
-        [reply finish:Success(@{ @"width": @(CGImageGetWidth(image)), @"height": @(CGImageGetHeight(image)) })];
+        NSUInteger width = CGImageGetWidth(image), height = CGImageGetHeight(image);
+        Main(^{
+            if (!reply.pending || !stillAllowed()) { [reply finish:Failure(@"Sharing changed during one-shot capture")]; return; }
+            NSError *writeError = nil;
+            if (!png || ![png writeToFile:path options:NSDataWritingAtomic error:&writeError]) {
+                [reply finish:writeError ? NativeFailure(@"writePNG", writeError) : Failure(@"PNG encoding failed")]; return;
+            }
+            atomic_fetch_add(&PNGWrites, 1);
+            [reply finish:Success(@{ @"width": @(width), @"height": @(height) })];
+        });
     }];
 }
 
 static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, ACReply *reply) {
     if (![reply pending]) return;
+    if (!window || !filter || CGRectIsEmpty(filter.contentRect) || !isfinite(filter.pointPixelScale) || filter.pointPixelScale <= 0) {
+        [reply finish:Failure(@"Invalid exact-window capture geometry")]; return;
+    }
     if (!PickerObserver) {
         PickerObserver = [ACPicker new];
         [SCContentSharingPicker.sharedPicker addObserver:PickerObserver];
@@ -358,7 +405,8 @@ static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, ACRe
     share.generation = NextGeneration(); share.phase = @"starting";
     share.imageContext = [CIContext contextWithOptions:nil];
     share.outputQueue = dispatch_queue_create("com.achbite.achbit.control-preview", DISPATCH_QUEUE_SERIAL);
-    SCStream *stream = [[SCStream alloc] initWithFilter:filter configuration:Configuration(filter, YES) delegate:share];
+    share.notBefore = mach_absolute_time();
+    SCStream *stream = [[SCStream alloc] initWithFilter:filter configuration:Configuration(filter, NO) delegate:share];
     share.stream = stream; Shares[key] = share;
     @synchronized (ACShare.class) {
         if (!PreviewSources) PreviewSources = [NSMutableDictionary new];
@@ -373,6 +421,7 @@ static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, ACRe
     picker.allowsChangingSelectedContent = YES;
     [SCContentSharingPicker.sharedPicker setConfiguration:picker forStream:stream];
     UpdatePicker();
+    atomic_fetch_add(share.pointerSource ? &PointerStarts : &TargetStarts, 1);
     [stream startCaptureWithCompletionHandler:^(NSError *error) {
         Main(^{
             if (error) { if (share.stream == stream && [share.phase isEqual:@"starting"]) [share ended:NativeError(error)]; [reply finish:NativeFailure(@"startCapture", error)]; return; }
@@ -383,10 +432,9 @@ static void Begin(NSString *key, SCWindow *window, SCContentFilter *filter, ACRe
     }];
 }
 
-// Called only on the AppKit thread after the real pointer panel is displayed.
-// The companion has its own SCWindow and stream, but never an input binding.
+// The mouse-through AppKit panel is local; GUI thumbnails draw these coordinates.
 void ac_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneration,
-                                uint32_t pointerWindow, double x, double y, bool pulse) {
+                                double x, double y, bool pulse) {
     ACShare *owner = nil;
     for (ACShare *candidate in Shares.allValues) {
         if (candidate.window == targetWindow && candidate.generation == targetGeneration && [candidate.phase isEqual:@"active"]) {
@@ -395,91 +443,10 @@ void ac_sharing_pointer_feedback(uint32_t targetWindow, uint64_t targetGeneratio
     }
     if (!owner) return;
     owner.pointerPosition = @{ @"x": @(x), @"y": @(y), @"coordinateSpace": @"target-normalized", @"pulse": @(pulse) };
-    // In particular, a system-stopped pointer stream stays stopped for this
-    // target binding. Rendering another action cannot silently re-share it.
-    ACShare *pointer = owner.pointer;
-    if (!pointer) {
-        pointer = [ACShare new];
-        pointer.key = owner.key; pointer.pointerSource = YES; pointer.owner = owner;
-        pointer.window = pointerWindow; pointer.pid = NSProcessInfo.processInfo.processIdentifier;
-        pointer.app = NSBundle.mainBundle.bundleIdentifier;
-        pointer.title = @"Achbit Agent Pointer";
-        pointer.generation = NextGeneration(); pointer.phase = @"starting";
-        pointer.pointerWindowDeadline = NSProcessInfo.processInfo.systemUptime + 2.0;
-        owner.pointer = pointer;
-        [owner publish];
-        // The deadline also settles startup if local feedback is hidden before
-        // the next tick. A released or system-stopped binding is never revived.
-        ACShare *pending = pointer;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            if (Shares[owner.key] == owner && owner.pointer == pending && owner.generation == targetGeneration && [owner.phase isEqual:@"active"] && [pending.phase isEqual:@"starting"] && !pending.stream) {
-                [pending ended:@"The Agent pointer window did not publish valid capture geometry within 2 seconds"]; pending.phase = @"failed";
-            }
-        });
-    }
-    if (![pointer.phase isEqual:@"starting"] || pointer.stream) return;
-    if (!pointerWindow || pointer.window != pointerWindow) {
-        [pointer ended:@"The Agent pointer WindowServer identity changed during startup"]; pointer.phase = @"failed"; return;
-    }
-    if (NSProcessInfo.processInfo.systemUptime >= pointer.pointerWindowDeadline) {
-        [pointer ended:@"The Agent pointer window did not publish valid capture geometry within 2 seconds"]; pointer.phase = @"failed"; return;
-    }
-    if (pointer.pointerWindowLookupPending) return;
-    pointer.pointerWindowLookupPending = YES;
-    uint64_t pointerGeneration = pointer.generation;
-    // A newly ordered panel can already have an ID while WindowServer still
-    // reports a zero-size SCWindow. The existing feedback tick waits for its
-    // real geometry before creating the one stream; it never restarts a stream.
-    [SCShareableContent getCurrentProcessShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
-        Main(^{
-            if (Shares[owner.key] != owner || owner.pointer != pointer || owner.generation != targetGeneration || pointer.generation != pointerGeneration || ![owner.phase isEqual:@"active"] || ![pointer.phase isEqual:@"starting"] || pointer.stream) return;
-            pointer.pointerWindowLookupPending = NO;
-            if (error) { [pointer ended:NativeError(error)]; pointer.phase = @"failed"; return; }
-            if (NSProcessInfo.processInfo.systemUptime >= pointer.pointerWindowDeadline) {
-                [pointer ended:@"The Agent pointer window did not publish valid capture geometry within 2 seconds"]; pointer.phase = @"failed"; return;
-            }
-            SCWindow *window = nil;
-            for (SCWindow *candidate in content.windows) {
-                if (candidate.windowID == pointerWindow && candidate.owningApplication.processID == pointer.pid) { window = candidate; break; }
-            }
-            if (!window || !isfinite(window.frame.size.width) || !isfinite(window.frame.size.height) || CGRectIsEmpty(window.frame)) return;
-            SCContentFilter *filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:window];
-            CGSize size = filter.contentRect.size;
-            double scale = filter.pointPixelScale;
-            if (!isfinite(scale) || scale <= 0 || !isfinite(size.width * scale) || !isfinite(size.height * scale) || size.width * scale < 1 || size.height * scale < 1) return;
-            pointer.filter = filter;
-            SCStreamConfiguration *configuration = Configuration(filter, NO);
-            configuration.pixelFormat = kCVPixelFormatType_32BGRA;
-            configuration.backgroundColor = NSColor.clearColor.CGColor;
-            configuration.shouldBeOpaque = NO;
-            // Preserve this window's transparent padding when the pointer is
-            // near a display edge; the input target and tip do not move.
-            configuration.ignoreGlobalClipSingleWindow = YES;
-            configuration.minimumFrameInterval = CMTimeMake(1, 8);
-            SCStream *stream = [[SCStream alloc] initWithFilter:pointer.filter configuration:configuration delegate:pointer];
-            pointer.stream = stream;
-            pointer.outputQueue = dispatch_queue_create("com.achbite.achbit.pointer-share", DISPATCH_QUEUE_SERIAL);
-            NSError *outputError = nil;
-            if (![stream addStreamOutput:pointer type:SCStreamOutputTypeScreen sampleHandlerQueue:pointer.outputQueue error:&outputError]) {
-                [pointer ended:NativeError(outputError)]; pointer.phase = @"failed"; return;
-            }
-            SCContentSharingPickerConfiguration *picker = [SCContentSharingPickerConfiguration new];
-            picker.allowedPickerModes = SCContentSharingPickerModeSingleWindow;
-            picker.allowsChangingSelectedContent = NO;
-            [SCContentSharingPicker.sharedPicker setConfiguration:picker forStream:stream];
-            UpdatePicker();
-            [stream startCaptureWithCompletionHandler:^(NSError *startError) {
-                Main(^{
-                    // Stop/release owns invalidated streams; a late startup
-                    // callback must not overwrite or restart their state.
-                    if (Shares[owner.key] != owner || owner.pointer != pointer || owner.generation != targetGeneration || pointer.generation != pointerGeneration || pointer.stream != stream || ![owner.phase isEqual:@"active"] || ![pointer.phase isEqual:@"starting"]) return;
-                    if (startError) { [pointer ended:NativeError(startError)]; pointer.phase = @"failed"; return; }
-                    pointer.phase = @"active";
-                });
-            }];
-        });
-    }];
+
 }
+
+#include "tool_frame.h"
 
 static NSDictionary *Preview(ACShare *share, NSDictionary *request) {
     if (!share) return @{ @"state": @"inactive" };
@@ -517,13 +484,19 @@ static void HandleRequest(NSDictionary *request, ACReply *reply) {
     }
     NSString *key = [@[session, run] componentsJoinedByString:@"\n"];
     ACShare *share = Shares[key];
-    if ([operation isEqual:@"status"]) { [reply finish:Success(share ? share.snapshot : @{ @"state": @"inactive" })]; return; }
+    if ([operation isEqual:@"status"]) {
+        NSMutableDictionary *value = [share.snapshot mutableCopy] ?: [@{@"state":@"inactive"} mutableCopy];
+        value[@"executorCaptureCounts"] = CaptureCounts(); [reply finish:Success(value)]; return;
+    }
+    if ([operation isEqual:@"frame"]) {
+        ReadToolFrame(share, request, reply, NSProcessInfo.processInfo.systemUptime + 2.0); return;
+    }
     if ([operation isEqual:@"preview"]) { [reply finish:Success(Preview(share, request))]; return; }
-    if ([operation isEqual:@"release"]) {
+    if ([operation isEqual:@"release"] || [operation isEqual:@"enterAX"]) {
         if (!share) { [reply finish:Success(@{ @"released": @YES })]; return; }
-        if ([request[@"forImageReplacement"] boolValue] && (![share.phase isEqual:@"active"] || share.selectedByUser ||
+        if (([operation isEqual:@"enterAX"] || [request[@"forImageReplacement"] boolValue]) && (![share.phase isEqual:@"active"] || share.selectedByUser ||
                 (share.pointer && ![share.pointer.phase isEqual:@"active"] && ![share.pointer.phase isEqual:@"starting"]))) {
-            [reply finish:Failure(@"Executor image replaced; sharing was stopped, changed or unavailable. Finish this run; its selection will not be restarted.")]; return;
+            [reply finish:Failure(@"Sharing was stopped, changed or unavailable. Finish this run; its selection will not be restarted.")]; return;
         }
         Stop(share, ^(NSError *error) {
             if (!error && Shares[key] == share) {
@@ -557,6 +530,7 @@ static void HandleRequest(NSDictionary *request, ACReply *reply) {
         [reply finish:Failure([NSString stringWithFormat:@"Use the window selected by the user: %@", share.snapshot])]; return;
     }
     uint64_t generation = share.generation;
+    atomic_fetch_add(&Enumerations, 1);
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO completionHandler:^(SCShareableContent *content, NSError *error) {
         Main(^{
             if (![reply pending]) return;
@@ -575,7 +549,11 @@ static void HandleRequest(NSDictionary *request, ACReply *reply) {
                 }
             }
             if (!filter) { [reply finish:Failure(@"The exact capture target is unavailable")]; return; }
-            if (!ensure) { Screenshot(filter, request[@"path"], reply); return; }
+            if (!ensure) {
+                Screenshot(filter,request[@"path"],reply,^BOOL{
+                    return !share || (Shares[key] == share && share.generation == generation && [share.phase isEqual:@"active"]);
+                }); return;
+            }
             if (share) Stop(share, ^(NSError *stopError) {
                 if (stopError) [reply finish:NativeFailure(@"stopCapture", stopError)]; else Begin(key, window, filter, reply);
             }); else Begin(key, window, filter, reply);

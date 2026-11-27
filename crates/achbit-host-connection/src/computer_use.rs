@@ -156,6 +156,8 @@ struct Connection {
     executable_modified: SystemTime,
     #[cfg(target_os = "macos")]
     image: macos_image::ExecutorImage,
+    #[cfg(target_os = "macos")]
+    ax_default: bool,
     failure: Option<String>,
 }
 
@@ -547,6 +549,8 @@ impl ComputerUseHost {
             executable_modified: installed,
             #[cfg(target_os = "macos")]
             image,
+            #[cfg(target_os = "macos")]
+            ax_default: handshake["observationContract"] == "ax-default",
             failure: None,
         })
     }
@@ -645,12 +649,28 @@ impl ComputerUseHost {
         let connection = slot.as_mut().expect("started component");
         #[cfg(target_os = "macos")]
         if input["action"] == "computer:observe" {
+            if !connection.ax_default {
+                return Err("The connected Computer Use helper predates the AX-only contract. Update the helper and Host together; no observation was sent.".into());
+            }
             connection.image.acquire(binding);
         }
         #[cfg(target_os = "macos")]
         if input["action"] == "computer:releaseRun" && !connection.image.owns(binding) {
             return Ok(json!({"ok":true,"data":{"released":true}}));
         }
+        #[cfg(target_os = "macos")]
+        let negotiated;
+        #[cfg(target_os = "macos")]
+        let input = if input["action"] == "computer:observe" {
+            negotiated = {
+                let mut args = input.clone();
+                args["observationContract"] = json!("ax-default");
+                args
+            };
+            &negotiated
+        } else {
+            input
+        };
         let result = Self::exchange(connection, binding, input);
         #[cfg(target_os = "macos")]
         let result = result.map(|mut r| {
@@ -661,11 +681,14 @@ impl ComputerUseHost {
         });
         #[cfg(target_os = "macos")]
         if result.as_ref().is_ok_and(|r| {
-            (input["action"] == "computer:releaseRun"
+            // A failed re-observe can leave a prior semantic observation alive.
+            // No active visual share is not proof of release of AX handles.
+            input["action"] == "computer:releaseRun"
                 && r["ok"] == true
-                && r["data"]["released"] == true)
+                && r["data"]["released"] == true
                 || (input["action"] == "computer:observe"
                     && r["ok"] == false
+                    && r["diagnostics"]["native"]["hasBoundObservation"] == false
                     && r["diagnostics"]["native"]["sharing"]["state"] == "inactive")
         }) {
             connection.image.release(binding);

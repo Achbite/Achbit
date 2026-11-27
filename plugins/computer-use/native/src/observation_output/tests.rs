@@ -106,6 +106,96 @@ fn unicode_and_json_escaping_are_bounded_with_native_order_and_ids() {
 }
 
 #[test]
+fn failed_replies_preserve_the_cause_and_archive_only_over_budget() {
+    let dir = Sandbox::new();
+    let small = json!({"ok":false,"message":"No exact window match","diagnostics":{
+        "phase":"computer:observe","native":{"permissions":{"accessibility":true,"screenCapture":true},"sharing":{"state":"inactive"}},
+        "target":{"stage":"AXWindowIdentity","nativeCode":-25202,"windowId":17,"targetPid":31},
+        "screenCaptureKit":null,"recovery":"Observe the correct window"}});
+    assert_eq!(failure_for_host(small.clone(), &dir.input(), "qa"), small);
+    assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+    let row = json!({"index":0,"nativeCode":-25202,"message":"窗口🦀\"\n".repeat(90)});
+    let mut large = small.clone();
+    for key in ["errors", "candidateErrors"] {
+        large["diagnostics"]["target"][key] = json!(vec![&row; 91]);
+    }
+    for input in [dir.input(), json!({})] {
+        let out = failure_for_host(large.clone(), &input, "qa");
+        assert!(size(&out) <= INLINE_BYTES);
+        assert_eq!(out["ok"], false);
+        assert_eq!(out["message"], small["message"]);
+        assert!(out.get("data").is_none());
+        let d = &out["diagnostics"];
+        for key in ["phase", "native", "screenCaptureKit", "recovery"] {
+            assert_eq!(d[key], small["diagnostics"][key]);
+        }
+        let view = &d["observationView"];
+        for key in ["stage", "nativeCode", "targetPid", "windowId"] {
+            assert_eq!(d["target"][key], small["diagnostics"]["target"][key]);
+        }
+        for key in ["errors", "candidateErrors"] {
+            assert_eq!(view["diagnosticCounts"][key], 91);
+            assert!((1..=SAMPLE_COUNT).contains(&d["target"][key].as_array().unwrap().len()));
+            assert_eq!(d["target"][key][0]["nativeCode"], -25202);
+        }
+        if input == dir.input() {
+            dir.check_full(&large, d);
+        } else {
+            assert!(view["fullOutput"].is_null());
+            assert!(view["archiveError"]["message"].is_string());
+        }
+    }
+    // A large failure can also be a scalar message without even one AX row.
+    large["message"] = json!("雪\n".repeat(INLINE_BYTES));
+    large["diagnostics"]["screenCaptureKit"] = json!({"stage":"startCapture","nativeDomain":"SCStreamErrorDomain","nativeCode":-3801,"message":"denied"});
+    let out = failure_for_host(large.clone(), &dir.input(), "qa");
+    assert!(size(&out) <= INLINE_BYTES);
+    assert_eq!(
+        out["diagnostics"]["screenCaptureKit"],
+        large["diagnostics"]["screenCaptureKit"]
+    );
+    assert_eq!(out["diagnostics"]["native"]["sharing"]["state"], "inactive");
+    dir.check_full(&large, &out["diagnostics"]);
+}
+
+#[test]
+fn compacted_failure_preserves_observation_ownership_without_inferring_it_from_sharing() {
+    for bound in [Some(false), Some(true), None] {
+        let mut failure = json!({"ok":false,"message":"x".repeat(INLINE_BYTES + 1),
+            "diagnostics":{"phase":"computer:observe","native":{"sharing":{"state":"inactive"}}}});
+        if let Some(value) = bound {
+            failure["diagnostics"]["native"]["hasBoundObservation"] = json!(value);
+        }
+        let reply = failure_for_host(failure, &json!({}), "qa");
+        assert!(size(&reply) <= INLINE_BYTES);
+        assert_eq!(reply["ok"], false);
+        let native = &reply["diagnostics"]["native"];
+        assert_eq!(native["sharing"]["state"], "inactive");
+        assert_eq!(
+            native.get("hasBoundObservation").cloned(),
+            bound.map(Value::Bool)
+        );
+    }
+}
+
+#[test]
+fn enabled_visible_button_survives_competition_with_disabled_press_targets() {
+    let dir = Sandbox::new();
+    let mut nodes: Vec<_> = (0..240).map(|i| json!({"elementId":format!("element:{i}"), "title":"gray".repeat(240), "bounds":{"x":4,"y":4,"width":25,"height":20}, "actions":["AXPress"], "enabled":false})).collect();
+    let mut enabled = nodes.last().unwrap().clone();
+    enabled["elementId"] = json!("element:240");
+    enabled.as_object_mut().unwrap().remove("enabled"); // Native sparse flag, as on Windows.
+    nodes.push(enabled);
+    let data = json!({"observationId":"mac","width":640,"height":480,"elements":nodes});
+    let out = for_host(data.clone(), &dir.input(), "qa");
+    dir.check_full(&data, &out);
+    let kept = out["elements"].as_array().unwrap();
+    assert!(kept.len() < 241 && kept.len() > 1);
+    assert_eq!(kept[0]["enabled"], false);
+    assert_eq!(kept.last().unwrap()["elementId"], "element:240");
+}
+
+#[test]
 fn oversized_verification_and_missing_archive_cannot_reverse_dispatch() {
     let dir = Sandbox::new();
     let data = json!({"action":"setValue","dispatched":true,"valueVerification":{"matched":false,"expected":"雪".repeat(30000),"actual":"x"},"actionError":{"message":"write did not match"},"observationError":{"message":"window closed"}});
