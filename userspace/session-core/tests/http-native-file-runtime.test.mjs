@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { KERNEL_REPLY_VERSION, LOCAL_AGENT_PROTOCOL_VERSION } from '../../protocol/dist/index.js';
+import { isLocalAgentErrorValue, KERNEL_REPLY_VERSION, LOCAL_AGENT_PROTOCOL_VERSION } from '../../protocol/dist/index.js';
 import { buildAgentProviderRequest } from '../dist/local-agent/contextComposer.js';
 import { corePromptInstructions } from '../dist/local-agent/coreInstructions.js';
 import { createHash } from 'node:crypto';
@@ -14,7 +14,8 @@ import { prepareContextCompaction } from '../dist/local-agent/compaction.js';
 import { achbitProductComponents } from '../dist/local-agent/productInstructions.js';
 import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
 import { HttpRunPreparationPort } from '../dist/local-agent/httpPorts.js';
-import { actorWith, createSession, emptyKernel, readEvents, runtimeSnapshot } from './local-agent-fixtures.mjs';
+import { actorWith, completedExecutionReply, createSession, emptyKernel, fakeRunPreparation, messageCommand,
+  providerEvent, readEvents, runtimeSnapshot, waitForProjection, waitUntil } from './local-agent-fixtures.mjs';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
 
@@ -259,6 +260,88 @@ test('HTTP preparation preserves stable token calibration keys for the provider 
     await assert.rejects(fixture.port.prepare(fixture.request), /provider_runtime_snapshot_invalid/);
   }
   assert.equal(fixture.releases.length, 5, 'invalid calibration metadata must release the prepared runtime');
+});
+
+test('an invalid model-activation reply cannot release the existing run or assert nothing executed', async t => {
+  const fixture = await httpPreparation(t);
+  await fixture.port.prepare(fixture.request);
+  fixture.useProvider({ inputTokenCalibrationKey: 42 });
+  await assert.rejects(fixture.port.prepare({ ...fixture.request, modelActivation: true }), error =>
+    error.code === 'plugin_activation_outcome_unknown' && error.message.includes('provider_runtime_snapshot_invalid'));
+  assert.deepEqual(fixture.releases, [], 'only run finalization can release the existing run and its siblings');
+});
+
+test('a corrupt same-run refresh or rebind must not release previously acquired resources', async t => {
+  for (const mode of ['refresh', 'queued selection', 'rebind']) await t.test(mode, async t => {
+    const f = await httpPreparation(t);
+    const { runtimeSnapshot: runtime } = await f.port.prepare(f.request);
+    // Model the Kernel lifetime of an already returned job handle. Only the real /release-run call can end it.
+    const job = new AbortController(), release = f.port.release.bind(f.port);
+    f.port.release = async input => { const receipt = await release(input); job.abort(); return receipt; };
+    f.useProvider({ inputTokenCalibrationKey: 42 });
+    const change = mode === 'rebind' ? { rebindHost: { commandId: 'command:rebind',
+      expectedBinding: { hostInstanceId: 'host:a', windowLabel: 'first' }, hostBinding: { hostInstanceId: 'host:b', windowLabel: 'next' } } }
+      : { refreshPlugins: mode === 'refresh' };
+    await assert.rejects(f.port.prepare({ ...f.request, existingPresentation: { instructions: runtime.instructions }, ...change }), /provider_runtime_snapshot_invalid/);
+    assert.equal(job.signal.aborted, false, 'a failed view change invalidated the existing job handle');
+    assert.deepEqual(f.releases, []);
+    await f.port.release({ sessionId: f.request.sessionId, runId: f.request.runId, kernelCatalogSnapshotRef: runtime.kernelCatalogSnapshotRef });
+    assert.equal(job.signal.aborted, true);
+    assert.equal(f.releases.length, 1);
+  });
+});
+
+test('activation preserves a drained HTTP rejection independently of cancellation; malformed replies settle as unknown', async t => {
+  for (const [label, envelope, cancel, expected] of [
+    ['cancelled with rejection', { error: 'plugin_selection_unavailable', message: 'Plugin was disabled.' }, true, 'failed'],
+    ['empty code', { error: '', message: 'Disabled.' }, false, 'indeterminate'],
+    ['invalid code whitespace', { error: ' invalid ', message: 'Disabled.' }, false, 'indeterminate'],
+    ['invalid error text', { error: 'plugin_selection_unavailable', message: 'stderr:\0broken' }, false, 'indeterminate'],
+    ['cancelled with malformed reply', { error: 'bad', message: '\0' }, true, 'indeterminate'],
+  ]) await t.test(label, { timeout: 6000 }, async t => {
+    const sessionId = 'session:drained-rejection', journal = new InMemoryCommandJournal();
+    await createSession(journal, sessionId);
+    const entered = Promise.withResolvers(), answer = Promise.withResolvers();
+    const tool = bound('plugin.search', 'localRead', {}, []);
+    const base = fakeRunPreparation({ tools: [tool], contextWindowTokens: 32_000 });
+    const http = new HttpRunPreparationPort({ apiBase: 'http://fixture', serviceToken: 'fixture', stableCoreInstructions: [],
+      fetchImpl: async (_url, init) => { entered.resolve(JSON.parse(init.body)); await answer.promise;
+        return Response.json({ ok: false, ...envelope }, { status: 400 }); } });
+    let executions = 0; const requests = [];
+    const actor = actorWith(journal, sessionId, { async *stream(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        yield providerEvent(request.requestId, 'tool.call', { callId: 'native:plugin', name: 'plugin_activate', input: { pluginUris: ['plugin://example@local'] } });
+        yield providerEvent(request.requestId, 'tool.call', { callId: 'native:peer', name: 'plugin_search', input: {} });
+      } else yield providerEvent(request.requestId, 'text.delta', { text: 'Done.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    } }, emptyKernel({ async execute(r) { executions++; return completedExecutionReply(r, { plugins: [] }); } }),
+    { ...base.port, prepare: r => r.modelActivation ? http.prepare(r) : base.port.prepare(r) }, 'drain');
+    t.after(async () => { answer.resolve(); await actor.dispose(); });
+    await actor.submit(messageCommand(sessionId, 'cmd:batch', 'Use the existing tool and activate the plugin.'));
+    const { runId } = await entered.promise;
+    let cancellation;
+    if (cancel) {
+      cancellation = actor.submit({ type: 'run.cancel', schemaVersion: 'achbit.command.v3', sessionId, runId, commandId: 'cmd:cancel' });
+      await waitUntil(async () => (await journal.readCommand(sessionId, 'cmd:cancel'))?.reply.status === 'accepted', 'cancellation accepted while the reply is pending');
+    }
+    answer.resolve(); await cancellation;
+    const final = await waitForProjection(actor, p => ['completed', 'cancelled', 'failed', 'indeterminate'].includes(p.run?.status));
+    assert.equal(final.run.status, cancel ? 'cancelled' : 'completed', JSON.stringify(final.terminalError));
+    const events = await readEvents(journal, sessionId);
+    const terminal = events.filter(e => e.type === 'session.plugins.failed');
+    assert.deepEqual(terminal.map(e => e.payload.outcome), [expected]);
+    const { error } = terminal[0].payload;
+    assert.equal(isLocalAgentErrorValue(error), true, 'the diagnostic must be journalable');
+    if (expected === 'failed') assert.deepEqual(error, { code: envelope.error, message: envelope.message });
+    else assert.equal(error.code, 'plugin_activation_outcome_unknown');
+    assert.equal(executions, 1); assert.equal(base.released.length, 1);
+    assert.equal(events.filter(e => e.type === 'tool.completed').length, 1);
+    assert.equal(events.some(e => e.type === 'session.plugins.activated'), false);
+    assert.equal(requests.length, cancel ? 1 : 2);
+    if (!cancel) assert.deepEqual(requests[1].messages.filter(m => m.role === 'tool').map(m => [m.providerCallId, m.toolOutcome]),
+      [['native:plugin', expected], ['native:peer', 'completed']]);
+  });
 });
 
 test('real HTTP run preparation accepts omitted, empty and PDF file capabilities for provider and reviewer', async t => {

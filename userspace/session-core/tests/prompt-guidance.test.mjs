@@ -139,7 +139,8 @@ test('delivery and workflow tool descriptions retain their contracts without add
   assert.match(tools.get('plugin.activate').description, /installation, enablement, task activation and execution permission are separate/u);
   assert.match(tools.get('session').description, /statement about later work does not schedule/u);
   assert.match(tools.get('agent').description, /tightly coupled work local[\s\S]*verify final results/u);
-  for (const name of ['artifact.present', 'plugin.activate', 'interaction.request', 'plan.publish', 'session']) {
+  assert.match(tools.get('plugin.activate').description, /one call per response.*[Oo]nly ordinary tools declared for this request.*next request/u);
+  for (const name of ['artifact.present', 'interaction.request', 'plan.publish', 'session']) {
     assert.match(tools.get(name).description, /Submit alone/u);
   }
 });
@@ -170,10 +171,11 @@ test('minimal and full requests keep selected delivery guidance and actual alias
   assert.match(full.messages.map(message => message.content).join('\n'), /review as clickable links.*outputs table/u);
   assert.match(full.tools.find(tool => tool.name === 'deliver_review').description, /returned references as clickable Markdown links/u);
   assert.equal(full.tools.some(tool => tool.name === 'artifact.present'), false);
-  for (const name of ['deliver_review', 'plugin_activate']) {
-    assert.match(full.tools.find(tool => tool.name === name).description, /only tool call in (?:this|the) response/iu);
-    assert.match(full.tools.find(tool => tool.name === name).description, /outside (?:any|a) parallel batch/iu);
-  }
+  const delivery = full.tools.find(tool => tool.name === 'deliver_review').description;
+  assert.match(delivery, /only tool call in (?:this|the) response/iu);
+  assert.match(delivery, /outside (?:any|a) parallel batch/iu);
+  assert.doesNotMatch(full.tools.find(tool => tool.name === 'plugin_activate').description, /Submit alone/iu);
+  assert.equal(minimal.tools.some(tool => tool.name === 'plugin_activate'), false);
   assert.doesNotMatch(minimal.messages.map(message => message.content).join('\n'), /only tool call in (?:this|the) response/iu);
 });
 

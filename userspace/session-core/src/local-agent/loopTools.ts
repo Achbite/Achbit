@@ -18,6 +18,7 @@ import { consumeTextProvider, consumeProvider } from './loopProvider.js';
 import { confirmationFacts } from './planStage.js';
 import { canonicalJsonValue } from './providerToolCodec.js';
 import type { AgentComposition } from './plugins.js';
+import { interruptedActivation } from './pluginActivation.js';
 
 function selectedPlanAuthorities(events: readonly SessionEvent[], runId: string): PlanAuthority[] {
   const confirmed = events.findLast(
@@ -163,7 +164,6 @@ async function acceptToolReply(deps: AgentLoopDeps, requestEvent: ToolRequestEve
   const commit = async (events: NewSessionEvent | readonly NewSessionEvent[] | ((current: LoopSnapshot) => readonly NewSessionEvent[])) => {
     snapshot = await deps.commit(events);
   };
-  if (reply.callId !== requestEvent.callId) throw new LoopFailure('kernel_call_identity_mismatch', 'Kernel 返回了其他工具调用的结果。');
   if (reply.status === 'inputRejected') {
     assertToolRecordIdentity(reply.rejection, expectedToolRecordIdentity(snapshot, requestEvent));
     await commit({ type: 'tool.input-rejected', sessionId: snapshot.state.sessionId, runId,
@@ -444,10 +444,20 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
   if (signal.aborted) onAbort();
   const fileGrants = (snapshot: LoopSnapshot) => JSON.stringify(snapshot.state.shellAuthorizations
     .filter(grant => grant.scope === 'runFiles' || grant.scope === 'sessionFiles').map(grant => grant.authorityId));
-  type Completion = { event: ToolRequestEvent; permissions: string; fileGrants: string; reply?: ToolExecutionReply; error?: unknown };
+  type Gate = { reply: Extract<ToolExecutionReply, { status: 'approvalRequired' }>; permissions: string; fileGrants: string };
+  type Completion = { event: ToolRequestEvent } & (
+    | { reply: ToolExecutionReply; permissions: string; fileGrants: string }
+    | { accepted: Awaited<ReturnType<typeof acceptToolReply>>; permissions: string }
+    | { error: unknown });
   const active = new Map<string, Promise<Completion>>();
+  const queuedGates = new Map<string, Gate>();
+  let reviewing: string | undefined;
   const approvals = new Map(segment.flatMap(({ callId }) => priorWaits.has(callId) ? [[callId, priorWaits.get(callId)!] as const] : []));
   let failure: { error: unknown } | undefined;
+  const stop = (error: unknown) => {
+    if (!failure || signal.aborted && failure.error === signal.reason) failure = { error };
+    controller.abort(error);
+  };
   const markNotExecuted = async (event: ToolRequestEvent, predecessorCallId?: string) => {
     await deps.commit({ type: 'tool.not-executed', sessionId: event.sessionId, runId, callId: event.callId,
       payload: { attemptId: event.payload.attemptId, reason: predecessorCallId ? 'dependencyFailed' : 'cancelled',
@@ -474,12 +484,27 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
           approvals.delete(event.callId);
         }
         if (deps.toolExecution !== 'parallel' && active.size >= 4) continue;
+        const gate = queuedGates.get(event.callId);
+        if (gate) {
+          if (reviewing) continue;
+          queuedGates.delete(event.callId);
+          // Keep one gate processor in the existing pool. Its Provider/evidence reads may take
+          // time; the other slots must still publish terminals and admit independent successors.
+          if (gate.fileGrants === fileGrants(snapshot)) {
+            reviewing = event.callId;
+            active.set(event.callId, acceptToolReply(deps, event, gate.reply, controller.signal).then(
+              accepted => ({ event, accepted, permissions: gate.permissions }), error => ({ event, error })));
+            continue;
+          }
+          // A sibling granted files after this attempt. Recheck with Kernel, never infer coverage.
+        }
         const request = executionRequest(snapshot, event, deps);
         const permissions = JSON.stringify(snapshot.state.publishedPermissions ?? snapshot.state.permissionOverrides);
         const grantedFiles = fileGrants(snapshot);
-        active.set(event.callId, executeUntilAbort(deps, request, controller.signal)
-          .then(reply => ({ event, permissions, fileGrants: grantedFiles, reply }),
-            error => ({ event, permissions, fileGrants: grantedFiles, error })));
+        active.set(event.callId, executeUntilAbort(deps, request, controller.signal).then(reply => {
+          if (reply.callId !== event.callId) throw new LoopFailure('kernel_call_identity_mismatch', 'Kernel 返回了其他工具调用的结果。');
+          return { event, permissions, fileGrants: grantedFiles, reply };
+        }).catch(error => ({ event, error })));
       }
       // Subscribe from the revision used to decide which gates were blocked.
       // A newer snapshot could already contain the only answer that wakes us.
@@ -507,39 +532,34 @@ async function executeToolSegment(deps: AgentLoopDeps, segment: ToolRequestEvent
         controller.signal.removeEventListener('abort', wakeAbort);
       }
       if (!completed) continue;
-      active.delete(completed.event.callId);
-      if ('error' in completed) {
-        failure ??= { error: completed.error };
-        controller.abort(completed.error);
-        // The dispatched call remains unresolved until Kernel runtime release proves its final result.
-        segment = segment.filter(event => event.callId !== completed!.event.callId);
-        continue;
-      }
-      if (completed.reply!.status === 'approvalRequired' && controller.signal.aborted) {
-        await markNotExecuted(completed.event);
+      const { event } = completed;
+      active.delete(event.callId);
+      const wasReview = reviewing === event.callId;
+      if (wasReview) reviewing = undefined;
+      if ('accepted' in completed) {
+        if (completed.accepted === 'approval') approvals.set(event.callId, completed.permissions);
         continue;
       }
       try {
-        // An approvalRequired reply proves this attempt did not execute. Another
-        // concurrent read may since have granted its files: ask Kernel to admit
-        // it again rather than review a stale request or infer coverage here.
-        if (completed.reply!.status === 'approvalRequired'
-          && completed.fileGrants !== fileGrants(await deps.readSnapshot())) continue;
-        const accepted = await acceptToolReply(deps, completed.event, completed.reply!, controller.signal);
-        if (accepted === 'approval') {
-          approvals.set(completed.event.callId, completed.permissions);
-        }
+        if ('error' in completed) throw completed.error;
+        if (completed.reply.status === 'approvalRequired') {
+          if (controller.signal.aborted) await markNotExecuted(event);
+          else queuedGates.set(event.callId, { reply: completed.reply, permissions: completed.permissions, fileGrants: completed.fileGrants });
+        } else await acceptToolReply(deps, event, completed.reply, controller.signal);
       } catch (error) {
-        failure ??= { error }; controller.abort(error);
-        segment = segment.filter(event => event.callId !== completed!.event.callId);
+        stop(error);
+        // The Kernel gate already proved non-execution; only a dispatched Kernel attempt needs reconciliation.
+        if (!wasReview) segment = segment.filter(candidate => candidate.callId !== event.callId);
       }
     }
   } catch (error) {
-    failure ??= { error }; controller.abort(error);
+    stop(error);
     // Broadcast abort first; each execution owner receives cancellation before any drain is awaited.
-    const completed = await Promise.all(active.values());
-    for (const item of completed) if (item.reply) {
-      if (item.reply.status === 'approvalRequired') await markNotExecuted(item.event);
+    for (const item of await Promise.all(active.values())) {
+      if ('error' in item) {
+        stop(item.error);
+        if (reviewing === item.event.callId) await markNotExecuted(item.event);
+      } else if ('accepted' in item || item.reply.status === 'approvalRequired') await markNotExecuted(item.event);
       else await acceptToolReply(deps, item.event, item.reply, controller.signal);
     }
     const current = await deps.readSnapshot();
@@ -763,6 +783,8 @@ export async function terminalToolEvents(
       });
     }
   }
+  const activation = snapshot.state.pendingPluginActivation;
+  if (activation?.runId === runId) events.push(interruptedActivation(snapshot.state.sessionId, activation));
   return events;
 }
 

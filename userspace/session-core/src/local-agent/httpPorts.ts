@@ -70,6 +70,9 @@ interface HttpPortOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** A decoded error envelope, distinct from losing or failing to decode the reply. */
+class RemoteRejection extends LoopFailure {}
+
 class LocalAgentHttpPort {
   readonly apiBase: string;
   readonly serviceToken: string;
@@ -126,6 +129,13 @@ class LocalAgentHttpPort {
     if (!response.ok || !envelope.ok) {
       const code = typeof envelope.error === 'string' ? envelope.error : 'local_agent_http_failed';
       const message = typeof envelope.message === 'string' ? envelope.message : code;
+      if (!envelope.ok && typeof envelope.error === 'string') {
+        if (code !== code.trim() || !isLocalAgentErrorValue({ code, message })
+          || envelope.message !== undefined && typeof envelope.message !== 'string') {
+          throw new LoopFailure('local_agent_http_error_invalid', `${method} ${path} returned a malformed error (HTTP ${response.status}).`);
+        }
+        throw new RemoteRejection(code, message);
+      }
       throw new LoopFailure(code, message);
     }
     return envelope.data as T;
@@ -576,6 +586,17 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
   }
 
   async prepare(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime> {
+    try { return await this.prepareView(request); }
+    catch (cause) {
+      if (!request.modelActivation || cause instanceof RemoteRejection) throw cause;
+      const error = errorFact(cause);
+      const detail = isLocalAgentErrorValue(error) ? error : undefined;
+      throw new LoopFailure('plugin_activation_outcome_unknown', 'No conclusive plugin preparation receipt; do not automatically retry.'
+        + (detail ? ` ${detail.code}: ${detail.message}` : ''), detail?.diagnostics);
+    }
+  }
+
+  private async prepareView(request: PrepareRunRuntimeRequest): Promise<PreparedRunRuntime> {
     const { previousProviderToolAliases, existingPresentation, ...kernelRequest } = request;
     const shared = !existingPresentation || existingPresentation.coreToolInterface === 'shared';
     const coding = existingPresentation ? existingPresentation.codingTools === true : this.#codingTools;
@@ -691,8 +712,10 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         }),
       };
     } catch (error) {
-      // Catalog recovery only reads an existing identity. Its failure is settled by the Actor.
-      if (request.restoreEnvironment) throw error;
+      // Only initial acquisition owns whole-run rollback. A captured presentation or an
+      // explicit same-run operation borrows resources that still serve other calls and jobs.
+      if (existingPresentation || request.restoreEnvironment || request.modelActivation
+        || request.rebindHost || request.refreshPlugins !== undefined) throw error;
       try {
         await this.release(releaseRequest);
       } catch (releaseError) {

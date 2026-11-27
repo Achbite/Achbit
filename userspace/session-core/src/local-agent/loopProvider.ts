@@ -1,10 +1,10 @@
 import {
-  SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_AGENT,
+  SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_PLUGIN_ACTIVATE, SESSION_CONTROL_AGENT,
   SESSION_CONTROL_TODO_UPDATE, CONTROL_TURN_ISSUE, decodeProviderNativeReplay,
 } from '@achbit/protocol';
 import type {
   ProviderRequest, ProviderEvent, ProviderTokenUsage, ProviderNativeReplay, JsonObject, ProviderOutputBlock, ProviderToolCallInput,
-  AssistantDraftProjection, ProviderActivityProjection, AssistantDraftBlockProjection,
+  AssistantDraftProjection, ProviderActivityProjection, AssistantDraftBlockProjection, ModelToolOutcome,
 } from '@achbit/protocol';
 import type {
   AgentLoopDeps, ProviderTurnCompletion, ProviderTurn, DecodedProviderOutputBlock, ProviderDispatchCall,
@@ -439,8 +439,6 @@ async function consumeProviderOutput(
     return id;
   };
   const controlWires = new Set(toolCodec.controlDefinitions.map(tool => tool.name));
-  const isDeclaredControl = (block: DecodedProviderOutputBlock) =>
-    typeof block.item.name === 'string' && controlWires.has(block.item.name);
   const decodeControl = (callId: string, name: string, input: JsonObject) => {
     const wire = toolCodec.wireByCanonical.get(name);
     return wire && controlWires.has(wire) ? installedControls(controls).decode(callId, name, input) : null;
@@ -449,23 +447,7 @@ async function consumeProviderOutput(
   const inputBlocks = [...decodedOutputBlocks, ...aggregateBlocks].filter((block) => (
     block.kind === 'toolCall' || block.kind === 'toolCallRejected'
   ));
-  // Batch policy is a property of this request's control binding, never of an undeclared wire spelling.
-  const controlBlocks = inputBlocks.filter(isDeclaredControl);
-  const exclusiveCalls = controlBlocks.filter((block) => (
-    soloControls.has(block.name)
-      || block.name === SESSION_CONTROL_AGENT && (block.kind !== 'toolCall'
-        || agentTurnPolicy(block.input) === 'exclusive')
-  ));
-  const incompatibleAgentCalls = controlBlocks.filter(block => block.name === SESSION_CONTROL_AGENT
-    && block.kind === 'toolCall' && agentTurnPolicy(block.input) === 'agents'
-    && inputBlocks.some(other => !isDeclaredControl(other) || other.name !== SESSION_CONTROL_AGENT && other.name !== SESSION_CONTROL_TODO_UPDATE));
-  const conflictSources = exclusiveCalls.length > 0 ? exclusiveCalls : incompatibleAgentCalls;
-  const todoCalls = controlBlocks.filter((block) => block.name === SESSION_CONTROL_TODO_UPDATE);
-  const conflict = conflictSources.length > 0 && inputBlocks.length > 1
-    ? { calls: conflictSources, reason: exclusiveCalls.length ? 'Submit an exclusive control on its own' : 'Submit this agent operation and ordinary tools in separate batches' }
-    : todoCalls.length > 1
-      ? { calls: todoCalls, reason: 'Merge progress updates into one todo.update per provider turn' }
-      : undefined;
+  const conflict = controlBatchConflict(inputBlocks, controlWires);
   if (conflict) {
     const sources = conflict.calls.map(block => `${block.name}${block.kind === 'toolCall' && typeof block.input.action === 'string' ? `(action=${block.input.action})` : ''} [${block.providerCallId}]`).join(', ');
     for (const blocks of [decodedOutputBlocks, aggregateBlocks]) {
@@ -482,7 +464,7 @@ async function consumeProviderOutput(
             error = { code: cause.code, message: cause.message, issues: cause.issues };
           }
         }
-        const correction = source && !error && exclusiveCalls.length
+        const correction = source && !error && conflict.exclusive
           ? ` Send ${block.item.name} as the only tool call in a new response if still needed.` : '';
         const message = `${conflict.reason}. Conflict source: ${sources}. ${source ? 'This call caused the conflict' : 'This call was rejected with the batch'}. No calls in this batch were executed.${correction}`;
         const role = { path: '$', rule: source ? CONTROL_TURN_ISSUE.source : CONTROL_TURN_ISSUE.peer, message };
@@ -556,13 +538,16 @@ async function consumeProviderOutput(
   );
   const seenCalls = new Set<string>();
   if (replaying) {
-    // Compaction can omit a tool result from the model view. Its execution
-    // remains in the journal of this run or a predecessor it continued.
+    // Compaction can hide the result. A replay must not assign a fresh logical ID to work
+    // known to have completed or whose effects remain unknown in this run or its continuation chain.
+    const holdsReplayId = (outcome?: ModelToolOutcome) => outcome === 'completed' || outcome === 'indeterminate';
     const snapshot = await deps.readSnapshot();
     let sourceRunId = runId;
     for (let i = snapshot.events.length - 1; i >= 0; i--) {
       const event = snapshot.events[i]!;
-      if (event.type === 'tool.completed' && event.runId === sourceRunId && event.payload.record.outcome === 'completed') {
+      if ((event.type === 'tool.completed' && holdsReplayId(event.payload.record.outcome)
+        || event.type === 'tool.interrupted' || event.type === 'session.plugins.activated'
+        || event.type === 'session.plugins.failed' && event.payload.outcome === 'indeterminate') && event.runId === sourceRunId) {
         seenCalls.add(snapshot.state.providerCallFacts[event.callId]!.providerCallId);
       } else if (event.type === 'run.started' && event.runId === sourceRunId) {
         if (!event.payload.continuation) break;
@@ -570,7 +555,7 @@ async function consumeProviderOutput(
       }
     }
     for (const message of request.messages) {
-      if (message.role === 'tool' && message.toolOutcome === 'completed' && message.providerCallId) {
+      if (message.role === 'tool' && holdsReplayId(message.toolOutcome) && message.providerCallId) {
         seenCalls.add(message.providerCallId);
       }
     }
@@ -730,16 +715,17 @@ async function consumeProviderOutput(
       : {}),
   };
 
-  const controlCalls: Array<SessionControlCall & { providerCallId: string }> = [];
+  let control: (Exclude<SessionControlCall, { kind: 'pluginActivate' | 'todoUpdate' }> & { providerCallId: string }) | undefined;
   const dispatchCalls: ProviderDispatchCall[] = [];
   const agentBatch = calls.length > 1 && calls.every(call => call.name === SESSION_CONTROL_AGENT || call.name === SESSION_CONTROL_TODO_UPDATE);
   let progress: Extract<ProviderTurn, { kind: 'tools' }>['progress'];
   for (const call of calls) {
     try {
-      const control = decodeControl(call.callId, call.name, call.input);
-      if (control?.kind === 'todoUpdate') progress = { ...control, providerCallId: call.providerCallId };
-      else if (control?.kind === 'agent' && (agentBatch || agentTurnPolicy(call.input) === 'tools')) dispatchCalls.push({ ...call, owner: 'agent', operation: control.operation });
-      else if (control) controlCalls.push({ ...control, providerCallId: call.providerCallId });
+      const decoded = decodeControl(call.callId, call.name, call.input);
+      if (decoded?.kind === 'pluginActivate') dispatchCalls.push({ ...call, owner: 'activation', pluginUris: decoded.pluginUris });
+      else if (decoded?.kind === 'todoUpdate') progress = { ...decoded, providerCallId: call.providerCallId };
+      else if (decoded?.kind === 'agent' && (agentBatch || agentTurnPolicy(call.input) === 'tools')) dispatchCalls.push({ ...call, owner: 'agent', operation: decoded.operation });
+      else if (decoded) control = { ...decoded, providerCallId: call.providerCallId };
       else dispatchCalls.push({ ...call, owner: 'kernel' });
     } catch (error) {
       if (!(error instanceof SessionControlError)) throw error;
@@ -756,7 +742,10 @@ async function consumeProviderOutput(
         progress = { kind: 'controlRejected', rejection };
         continue;
       }
-      if (call.name === SESSION_CONTROL_AGENT && (agentBatch || agentTurnPolicy(call.input) === 'tools')) { dispatchCalls.push({ ...call, owner: 'rejected', error: rejection.error }); continue; }
+      if (call.name === SESSION_CONTROL_PLUGIN_ACTIVATE || call.name === SESSION_CONTROL_AGENT && (agentBatch || agentTurnPolicy(call.input) === 'tools')) {
+        dispatchCalls.push({ ...call, owner: 'rejected', error: rejection.error });
+        continue;
+      }
       return {
         kind: 'controlRejected',
         rejection,
@@ -772,8 +761,7 @@ async function consumeProviderOutput(
     completion,
     ...(orderedNarratives.length > 0 ? { narratives: orderedNarratives } : {}),
   };
-  const control = controlCalls[0];
-  if (control?.kind === 'pluginActivate' || control?.kind === 'artifactPresent' || control?.kind === 'agent' || control?.kind === 'session') {
+  if (control?.kind === 'artifactPresent' || control?.kind === 'agent' || control?.kind === 'session') {
     return { ...control, providerCallId: control.providerCallId, ...common };
   }
   if (control?.kind === 'interaction') {
@@ -829,6 +817,29 @@ async function consumeProviderOutput(
     ...(answer.messageId ? { messageId: answer.messageId } : {}),
     ...common,
   };
+}
+
+type CallBlock = Extract<DecodedProviderOutputBlock, { kind: 'toolCall' | 'toolCallRejected' }>;
+
+function controlBatchConflict(blocks: readonly CallBlock[], controlWires: ReadonlySet<string>):
+  { calls: CallBlock[]; reason: string; exclusive?: true } | undefined {
+  if (blocks.length < 2) return;
+  // Only this request's declared controls impose batch rules. An unknown wire name retains its own input error.
+  const controls = blocks.filter(block => typeof block.item.name === 'string' && controlWires.has(block.item.name));
+  const exclusive = controls.filter(block => soloControls.has(block.name) || block.name === SESSION_CONTROL_AGENT
+    && (block.kind !== 'toolCall' || agentTurnPolicy(block.input) === 'exclusive'));
+  if (exclusive.length) return { calls: exclusive, reason: 'Submit an exclusive control on its own', exclusive: true };
+
+  const activations = controls.filter(block => block.name === SESSION_CONTROL_PLUGIN_ACTIVATE);
+  if (activations.length && controls.length > 1) return { calls: activations,
+    reason: `Send ${activations[0]!.item.name} once with all needed URIs, separate from other Session controls; only ordinary tools declared for this request may accompany it` };
+
+  if (controls.length !== blocks.length || controls.some(block => block.name !== SESSION_CONTROL_AGENT && block.name !== SESSION_CONTROL_TODO_UPDATE)) {
+    const agentOnly = controls.filter(block => block.name === SESSION_CONTROL_AGENT && block.kind === 'toolCall' && agentTurnPolicy(block.input) === 'agents');
+    if (agentOnly.length) return { calls: agentOnly, reason: 'Submit this agent operation and ordinary tools in separate batches' };
+  }
+  const todos = controls.filter(block => block.name === SESSION_CONTROL_TODO_UPDATE);
+  if (todos.length > 1) return { calls: todos, reason: 'Merge progress updates into one todo.update per provider turn' };
 }
 
 function trackProviderActivity(request: ProviderRequest, deps: AgentLoopDeps): {

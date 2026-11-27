@@ -23,6 +23,7 @@ import { stageForRequest } from './sessionCapabilities.js';
 import { consumeProvider } from './loopProvider.js';
 import { capacityTicket, CapacityStartUnknown } from './agentCapacity.js';
 import { TruncatedToolOutput } from './truncatedOutput.js';
+import { finishPluginActivation, interruptedActivation } from './pluginActivation.js';
 export type { LoopSnapshot } from './loopTypes.js';
 export type { LoopCommand } from './loopTypes.js';
 export type { LoopResult } from './loopTypes.js';
@@ -78,6 +79,14 @@ export async function runAgentLoop(
   let restoreApprovals: 'resume' | 'recover' | undefined = command.type === 'resume' || command.type === 'recover' ? command.type : undefined;
   try {
     if (command.type === 'fail') throw command.error;
+    const activation = snapshot.state.pendingPluginActivation;
+    if (activation && activation.phase === 'preparing') {
+      const error = interruptedActivation(snapshot.state.sessionId, activation).payload.error;
+      const settlement = { outcome: 'indeterminate' as const, error };
+      await commit({ type: 'run.finishing', sessionId: snapshot.state.sessionId, runId, payload: settlement });
+      return finishingResult(runId, settlement);
+    }
+    if (activation && command.type === 'recover') await commit(interruptedActivation(snapshot.state.sessionId, activation));
     for (const requestEvent of pendingToolRequests(snapshot.events, runId)) {
       const existing = await deps.composition.kernel.readRecord(requestEvent.callId);
       if (existing) {
@@ -142,7 +151,7 @@ export async function runAgentLoop(
           if ('status' in prepared) return prepared;
           snapshot = prepared;
         }
-        const pendingCompaction = capabilities.compaction && pendingContextCompaction(snapshot.events, runId);
+        const pendingCompaction = !snapshot.state.pendingPluginActivation && capabilities.compaction && pendingContextCompaction(snapshot.events, runId);
         if (pendingCompaction) {
           await performContextCompaction(snapshot, pendingCompaction, runId, deps, signal, commit);
           continue;
@@ -150,6 +159,8 @@ export async function runAgentLoop(
         const waitingForTools = await dispatchPendingTools(snapshot, deps, runId, signal, restoreApprovals);
         restoreApprovals = undefined;
         if (waitingForTools) return waitingForTools;
+        const pendingActivation = snapshot.state.pendingPluginActivation;
+        if (pendingActivation) await finishPluginActivation(snapshot, pendingActivation, capabilities.controls, deps, signal);
         if (deps.activity) await deps.activity.waitPending(await deps.readSnapshot(), signal);
 
         throwIfAborted(signal);

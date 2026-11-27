@@ -57,9 +57,12 @@ class Provider(h.MockProviderHandler):
             elif s.turn == 4:
                 require(results['attached']['plugins'] == [{'uri': URI, 'displayName': 'saffron-added',
                     'shortDescription': 'Read the saffron fixture guide.'}], results['attached'])
-                self._send_tool_calls([('activate', 'plugin_activate', {'pluginUris': [URI]})])
+                self._send_tool_calls([('activate', 'plugin_activate', {'pluginUris': [URI]}),
+                                       ('old-read', 'read', {'path': 'AGENTS.md'})])
             elif s.turn == 5:
-                require(results['activate']['skillEntries'] == [{'uri': URI, 'path': str(s.entry)}], results['activate'])
+                require(results['activate'].get('skillEntries') == [{'uri': URI, 'path': str(s.entry)}], results['activate'])
+                require(results['old-read'] == CHANGED, results['old-read'])
+                require(list(results)[-2:] == ['activate', 'old-read'], 'mixed results did not retain native call order')
                 self._send_tool_calls([('entry', 'read', {'path': str(s.entry)}),
                                        ('reference', 'read', {'path': str(s.entry.parent / 'reference.txt')})])
             elif s.turn == 6:
@@ -153,6 +156,14 @@ def main():
                 for rid,_ in runs:
                     require([kind for kind,r,p in rows if r == rid and kind in ('run.runtime.released','run.settled')] ==
                             ['run.runtime.released','run.settled'], 'run did not release and settle once')
+                activation = next(p for k, rid, p in rows if k == 'session.plugins.requested' and p['providerCallId'] == 'activate')
+                steps = [(k, p) for k, rid, p in rows if rid == runs[0][0]]
+                ordered = [next(i for i, (k, p) in enumerate(steps) if k == kind and match(p)) for kind, match in [
+                    ('provider.turn.settled', lambda p: p['providerRequestId'] == activation['providerRequestId']),
+                    ('tool.completed', lambda p: p['record']['toolName'] == 'fs.read' and p['record']['input'].get('path') == 'AGENTS.md'),
+                    ('session.plugins.preparing', lambda p: True),
+                    ('session.plugins.activated', lambda p: p['providerCallId'] == 'activate')]]
+                require(ordered == sorted(ordered), 'published plugin view before independent read completed')
                 require(state.turn == 9, 'missing fixture request')
                 print('[project-skills-cli] PASS 2 runs, 9 provider requests: attach/detach, captured searches, activation, ancestor reads, frozen instructions, release')
 

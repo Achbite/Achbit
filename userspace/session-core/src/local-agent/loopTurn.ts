@@ -1,10 +1,10 @@
 import type { LoopSnapshot, ProviderTurn, AgentLoopDeps, LoopResult } from './loopTypes.js';
 import {
-  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_PLUGIN_ACTIVATE,
+  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT,
   SESSION_CONTROL_PLAN_PUBLISH, SESSION_CONTROL_AGENT,
 } from '@achbit/protocol';
 import type {
-  ContextCompositionReceipt, RunRuntimeSnapshot, NewSessionEvent, PreparedRunRuntime, KernelPort,
+  ContextCompositionReceipt, RunRuntimeSnapshot, NewSessionEvent, KernelPort,
   AgentOperation,
 } from '@achbit/protocol';
 import type { SessionCapabilities } from './plugins.js';
@@ -103,41 +103,6 @@ export async function settleProviderTurn(
           input: { items: turn.items }, error: localAgentError(error) });
       }
       await commit([fact, providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion), ...completionDerivedFacts]);
-      break;
-    }
-    case 'pluginActivate': {
-      let prepared: PreparedRunRuntime;
-      try {
-        throwIfAborted(signal);
-        prepared = await installedControls(capabilities.controls).preparePlugins({
-          sessionId: snapshot.state.sessionId, runId, runtime, pluginUris: turn.pluginUris,
-          workspaceBindingIds: requestDirectoryIds,
-          nextId: deps.nextId, preparation: deps.composition.runPreparation,
-        });
-        // An admitted preparation must drain before the run releases its resources.
-        throwIfAborted(signal);
-      } catch (error) {
-        throwIfAborted(signal);
-        await commit([
-          controlRejectionFact(snapshot.state.sessionId, runId, { callId: turn.callId,
-            providerCallId: turn.providerCallId, toolName: SESSION_CONTROL_PLUGIN_ACTIVATE,
-            input: { pluginUris: turn.pluginUris }, error: localAgentError(error) }),
-          providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-          ...completionDerivedFacts,
-        ]);
-        break;
-      }
-      const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-        toolPromptContributions, providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
-      await commit([
-        { type: 'session.plugins.activated', sessionId: snapshot.state.sessionId, runId, callId: turn.callId,
-          payload: { providerCallId: turn.providerCallId, pluginUris: turn.pluginUris, kernelCatalogSnapshotRef } },
-        providerTurnSettledEvent(snapshot.state.sessionId, runId, turn.completion),
-        ...completionDerivedFacts,
-        { type: 'run.tools.prepared', sessionId: snapshot.state.sessionId, runId,
-          payload: { toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-            toolPromptContributions, providerToolAliases, selectedPlugins } } },
-      ]);
       break;
     }
     case 'continuation': {
@@ -309,6 +274,12 @@ export async function settleProviderTurn(
         seenCalls.add(call.callId);
         if (call.owner === 'rejected') {
           callFacts.push(controlRejectionFact(snapshot.state.sessionId, runId, { ...call, toolName: call.name }));
+          continue;
+        }
+        if (call.owner === 'activation') {
+          callFacts.push({ type: 'session.plugins.requested', sessionId: snapshot.state.sessionId, runId, callId: call.callId,
+            payload: { providerRequestId: receipt.providerRequestId, providerCallId: call.providerCallId,
+              pluginUris: call.pluginUris, workspaceBindingIds: [...requestDirectoryIds] } });
           continue;
         }
         if (call.owner === 'agent') {

@@ -710,7 +710,7 @@ for (const kind of ['mixed','mixed-todo','receipt-lost','individual-failures','t
   } finally { release.resolve(); }
 });
 
-test('plugin activation mixed with discovery and a read rejects the entire batch with its conflict source', async t => {
+test('plugin activation mixed with agent.models and a read rejects the entire batch with its conflict source', async t => {
   const ownerId = 'session:plugin-discovery-conflict';
   const tool = { toolBindingRef: 'binding:read-conflict', name: 'fs.read', description: 'Read evidence.',
     origin: 'coreBuiltin', availability: 'callable', possibleEffects: [],
@@ -746,7 +746,7 @@ test('plugin activation mixed with discovery and a read rejects the entire batch
   const [sent, feedback] = fixture.requests.get(ownerId);
   const alias = sent.tools.find(tool => tool.name === 'plugin_activate').name;
   const source = feedback.messages.find(message => message.role === 'tool' && message.providerCallId === 'exclusive:plugin');
-  assert.ok(JSON.parse(source.content).error.message.includes(`Send ${alias} as the only tool call`),
+  assert.ok(JSON.parse(source.content).error.message.includes(`Send ${alias} once with all needed URIs, separate from other Session controls`),
     'the correction uses the callable alias from the rejected request, not an internal control ID');
 });
 
@@ -774,6 +774,8 @@ test('a session control mixed with child creation is rejected before either oper
   assert.ok(errors.every(error => error.executed === false && error.error.code === 'session_control_turn_conflict'));
   assert.match(errors[0].error.message, /session\(action=schedule\) \[mixed:session\].*This call was rejected with the batch/u);
   assert.match(errors[1].error.message, /session\(action=schedule\) \[mixed:session\].*This call caused the conflict/u);
+  const alias = fixture.requests.get(ownerId)[0].tools.find(tool => tool.name === 'session').name;
+  assert.ok(errors[1].error.message.includes(`Send ${alias} as the only tool call`));
 });
 
 test('control conflicts preserve each input, identify the source and only hold back otherwise admissible siblings', async t => {

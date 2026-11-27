@@ -314,8 +314,7 @@ export function agentOperationDefinitions({ messaging, delegation, continuation 
 
 // The declaration and pre-dispatch gate share this policy. `agent` has per-action rules instead.
 export const soloControls: ReadonlySet<string> = new Set([
-  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_PLUGIN_ACTIVATE,
-  SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH,
+  SESSION_CONTROL_SESSION, SESSION_CONTROL_ARTIFACT_PRESENT, SESSION_CONTROL_INTERACTION_REQUEST, SESSION_CONTROL_PLAN_PUBLISH,
 ]);
 
 export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, canDelegate = true): readonly ProviderToolDefinition[] {
@@ -350,7 +349,7 @@ export function sessionControlToolDefinitions(capabilities?: AgentCapabilities, 
     },
     {
       name: SESSION_CONTROL_PLUGIN_ACTIVATE,
-      description: 'Activate exact discovered URIs. The result lists prepared capabilities; call only names declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate.',
+      description: 'Activate exact discovered URIs in one call per response. Only ordinary tools declared for this request may accompany it; they settle first. The result lists prepared capabilities; call new tools only when declared on the next request. Discovery, installation, enablement, task activation and execution permission are separate.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['pluginUris'], properties: {
         pluginUris: { type: 'array', minItems: 1, uniqueItems: true,
           items: { type: 'string', pattern: '^plugin://[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$' } },
@@ -443,7 +442,7 @@ export function decodeSessionControlCall(
     if (!Array.isArray(input.pluginUris) || input.pluginUris.length < 1
       || input.pluginUris.some(uri => typeof uri !== 'string' || !/^plugin:\/\/[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(uri))
       || new Set(input.pluginUris).size !== input.pluginUris.length) {
-      throw new SessionControlError('plugin_selection_invalid', 'pluginUris 必须包含 至少一个不重复的已发现插件 URI。');
+      throw new SessionControlError('plugin_selection_invalid', 'pluginUris 必须包含至少一个不重复的已发现插件 URI。', '$.pluginUris');
     }
     return { kind: 'pluginActivate', callId: canonicalCallId, pluginUris: input.pluginUris as string[] };
   }

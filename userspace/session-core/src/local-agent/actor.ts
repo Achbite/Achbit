@@ -21,7 +21,7 @@ import { errorFact, LoopFailure } from './loopFailure.js';
 import { LiveReasoning } from './reasoningRead.js';
 import { LiveToolOutput } from './liveToolOutput.js';
 import type { AgentSessionRuntime } from './agentManager.js';
-import { linkedReaderUris } from './pluginActivation.js';
+import { interruptedActivation, linkedReaderUris, preparedToolView } from './pluginActivation.js';
 import { savedSessionEnvironment } from './sessionEnvironment.js';
 import { capacityTicket, terminalCapacityEvents, type CapacityReservation } from './agentCapacity.js';
 import { reviewInputs } from './reviewInputs.js';
@@ -166,6 +166,17 @@ export class SessionActor {
         if (!settlement) throw new Error('run_finishing_settlement_missing');
         await this.withRuntimeActivity(() => this.finalizeRunRuntime(snapshot, run.runId, settlement));
         return;
+      }
+      const activation = snapshot.state.pendingPluginActivation;
+      if (activation?.phase === 'preparing') {
+        // No ordinary call is still in flight at this boundary. Reconcile and release;
+        // do not restore/recreate an executor to find out whether preparation ran.
+        this.startLoop({ type: 'recover', runId: run.runId });
+        return;
+      }
+      if (activation && run.status === 'waiting') {
+        // A human gate can outlive the process without immediately starting the Loop.
+        await this.appendLifecycleEvents([interruptedActivation(this.sessionId, activation)]);
       }
       const restored = await this.restoreRunRuntime(snapshot, run.runId);
       signal?.throwIfAborted();
@@ -685,15 +696,13 @@ export class SessionActor {
       const failure = errorFact(asError(error));
       return this.recordRejection(command, failure.code, failure.message);
     }
-    const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools, toolPromptContributions,
-      providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
     const preparedBinding = prepared.runtimeSnapshot.environment.hostBinding as typeof command.hostBinding | undefined;
     if (!same(preparedBinding, command.hostBinding)) {
       return this.recordRejection(command, 'host_rebind_preparation_mismatch', '准备的工具目录未绑定到所选窗口。');
     }
     return this.commitCommand(command, [{ type: 'run.host.rebound', sessionId: this.sessionId, runId: command.runId,
       payload: { commandId: command.commandId, previousBinding: command.expectedHostBinding, hostBinding: command.hostBinding,
-        toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools, toolPromptContributions, providerToolAliases, selectedPlugins } },
+        toolView: preparedToolView(prepared.runtimeSnapshot) },
     }], acceptedReply(command));
   }
 
@@ -1643,11 +1652,8 @@ export class SessionActor {
             if (queued.length !== captured.queued.length) throw new Error('run_runtime_preparation_stale');
             const events: NewSessionEvent[] = [];
             if (prepared) {
-              const { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools, toolPromptContributions,
-                providerToolAliases, selectedPlugins } = prepared.runtimeSnapshot;
-              if (kernelCatalogSnapshotRef !== activeView.kernelCatalogSnapshotRef) events.push({ type: 'run.tools.prepared', sessionId: this.sessionId, runId,
-                payload: { toolView: { extensionGenerationRef, kernelCatalogSnapshotRef, instructions, tools,
-                  toolPromptContributions, providerToolAliases, selectedPlugins } } });
+              if (prepared.runtimeSnapshot.kernelCatalogSnapshotRef !== activeView.kernelCatalogSnapshotRef) events.push({
+                type: 'run.tools.prepared', sessionId: this.sessionId, runId, payload: { toolView: preparedToolView(prepared.runtimeSnapshot) } });
             }
             events.push(...queued.flatMap<NewSessionEvent>((input) => [{
               type: 'input.accepted', sessionId: this.sessionId,

@@ -75,8 +75,10 @@ test('Agent plugin activation and explicit user mentions coexist across request 
     assert.deepEqual(new Set(preparation.prepared.at(-1).pluginSelections.map(selection => selection.uri)),
       new Set([mentioned.uri, browserUri]));
     assert.equal(done.messages.at(-1).content, 'Preview inspected.');
-    assert.equal(done.activities.some(activity => activity.label === 'plugin.activate'), false,
-      'Session activation must not invent a completed Kernel tool record');
+    const activation = done.activities.filter(activity => activity.label === 'plugin.activate');
+    assert.deepEqual(activation.map(activity => [activity.callId, activity.status, activity.tool?.recordId]),
+      [[events.find(event => event.type === 'session.plugins.activated').callId, 'completed', undefined]],
+      'one completed Session activation must not invent a Kernel tool record');
     assert.equal(preparation.released.length, 1);
   }
 });
@@ -371,6 +373,9 @@ test('cancelled explicit plugin activation drains preparation without committing
   assert.equal((await actor.snapshot()).run.status, 'cancelled');
   const events = await readEvents(journal, sessionId);
   assert.equal(events.some(event => event.type === 'session.plugins.activated' || event.type === 'run.tools.prepared'), false);
+  const failed = events.filter(event => event.type === 'session.plugins.failed');
+  assert.deepEqual(failed.map(event => event.payload.outcome), ['indeterminate'], 'preparation crossed the effect boundary, no publication was committed');
+  assert.ok(events.find(event => event.type === 'run.runtime.released').sequence < failed[0].sequence);
   assert.equal(requests, 1);
   assert.equal(preparation.released.length, 1);
 });

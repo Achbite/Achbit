@@ -145,13 +145,17 @@ export type ProviderDispatchCall = {
   providerCallId: string;
   name: string;
   input: Record<string, unknown>;
-} & ({ owner: 'kernel' } | { owner: 'agent'; operation: AgentOperation } | { owner: 'rejected'; error: LocalAgentError });
+} & (
+  | { owner: 'kernel' }
+  | { owner: 'activation'; pluginUris: string[] }
+  | { owner: 'agent'; operation: AgentOperation }
+  | { owner: 'rejected'; error: LocalAgentError }
+);
 
 export type ProviderTurn =
   | ({ kind: 'agent'; callId: string; providerCallId: string; operation: AgentOperation } & ProviderTurnCommon)
   | ({ kind: 'session'; callId: string; providerCallId: string; operation: SessionOperation } & ProviderTurnCommon)
   | ({ kind: 'artifactPresent'; callId: string; providerCallId: string; items: ArtifactPresentationInput[] } & ProviderTurnCommon)
-  | ({ kind: 'pluginActivate'; callId: string; providerCallId: string; pluginUris: string[] } & ProviderTurnCommon)
   | ({ kind: 'answer'; content: string; messageId?: string } & ProviderTurnCommon)
   | ({ kind: 'continuation' } & ProviderTurnCommon)
   | {
