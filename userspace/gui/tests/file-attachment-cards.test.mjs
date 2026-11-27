@@ -36,7 +36,7 @@ test('thumbnail budgets, encoding failure and cancellation never manufacture con
   const [{readAttachmentThumbnail:read,thumbnailFormat}] = await loadGuiModules(t,['/src/components/local-agent/attachmentPreview.ts']);
   const signal=new AbortController().signal, calls=[];
   const host={readLocalFile:async path=>{calls.push(path);return new Blob(['local excerpt']);},resources:{
-    readResourceReference:async (...args)=>{calls.push(args);return {content:'retained excerpt'};},readResourceBlob:assert.fail}};
+    readResourceReference:async (...args)=>{calls.push(args);return {content:'retained excerpt', sizeBytes:16, fileSizeBytes:16};},readResourceBlob:assert.fail}};
   assert.equal(thumbnailFormat('UPPER.HTM'),'html'); assert.equal(thumbnailFormat('file','application/pdf'),'pdf');
   assert.deepEqual(await read(host,bound,'pdf',4*1024*1024,signal),{kind:'large'});
   assert.deepEqual(await read(host,local,'binary',undefined,signal),{kind:'unsupported'});assert.deepEqual(calls,[]);
@@ -44,5 +44,14 @@ test('thumbnail budgets, encoding failure and cancellation never manufacture con
   assert.deepEqual(await read(host,bound,'text',15,signal),{kind:'text',text:'retained excerpt'});
   assert.deepEqual(calls,[local.path,['session:A',{workspaceId:'input:one',logicalPath:'report.PDF'},signal]]);
   await assert.rejects(read({readLocalFile:async()=>new Blob([new Uint8Array([0xff,0,0x62])])},local,'text',undefined,signal),/encoding_unsupported/);
+  const limit = 256 * 1024;
+  const retained = fileSizeBytes => ({resources: {readResourceReference: async () => ({
+    content: 'first page', sizeBytes: 10, fileSizeBytes, truncated: true, nextByte: 10,
+  })}});
+  assert.deepEqual(await read(retained(limit),bound,'text',1,signal),{kind:'text',text:'first page'});
+  for (const previousSize of [1, undefined]) {
+    assert.deepEqual(await read(retained(limit + 1),bound,'text',previousSize,signal),{kind:'large'},
+      'the read receipt is authoritative if the file grew or no picker size was recorded');
+  }
   const cancel=new AbortController();await assert.rejects(read({readLocalFile:async()=>{cancel.abort();return new Blob(['late']);}},local,'text',undefined,cancel.signal),e=>e.name==='AbortError');
 });

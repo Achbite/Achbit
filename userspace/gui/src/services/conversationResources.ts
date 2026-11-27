@@ -23,7 +23,8 @@ export const resolveResourceReference = (sessionId: string, resource: ResourceRe
 
 export async function readResourceReference(sessionId: string, resource: ResourceReference, signal?: AbortSignal, startByte?: number, startLine?: number): Promise<ConversationResourceReadResult> {
   const value = await request<ConversationResourceReadResult>(endpoint(sessionId, 'read'), { method: 'POST', signal, body: JSON.stringify({ ...resource, startByte, startLine }) });
-  if (typeof value.content !== 'string' || typeof value.logicalPath !== 'string' || !Number.isSafeInteger(value.sizeBytes)
+  if (typeof value.content !== 'string' || typeof value.logicalPath !== 'string' || !Number.isSafeInteger(value.sizeBytes) || value.sizeBytes < 0
+    || !Number.isSafeInteger(value.fileSizeBytes) || value.fileSizeBytes < value.sizeBytes
     || !Number.isSafeInteger(value.startLine) || !Number.isSafeInteger(value.endLine)) throw new Error('conversation_resource_response_invalid');
   return value;
 }

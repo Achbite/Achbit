@@ -20,7 +20,8 @@ import { HostRebind } from './HostRebind';
 import { useDismissibleLayer } from '../shared/useDismissibleLayer';
 import { ComposerImageAttachment } from './ComposerImageAttachment';
 import { FileAttachmentCard } from './FileAttachmentCard';
-import { attachmentName, attachmentPath, retainedAttachment, type AttachmentSource } from './attachmentPreview';
+import { attachmentPath, retainedAttachment, type AttachmentSource } from './attachmentPreview';
+import { resourceFilename } from './resourceLinks';
 import { imageMediaType } from './documentResources';
 import type { OpenAttachment } from './fileOpening';
 import { QueuedInputPreview } from './QueuedInputPreview';
@@ -509,7 +510,7 @@ export function ConversationComposer({
                 onClick={() => composer.removeRecoveredGuidance(reference.referenceId)} />
             </span>)}
             {pendingFilesystemPaths.filter(ref => !annotations.some(note => note.browserReview?.screenshot === ref.path)).map(ref =>
-              attachmentCard(`${ref.kind}:${ref.path}`, attachmentName(ref.path), ref.kind, { path: ref.path },
+              attachmentCard(`${ref.kind}:${ref.path}`, resourceFilename(ref.path), ref.kind, { path: ref.path },
                 () => setPendingFilesystemPaths(current => current.filter(item => item.path !== ref.path || item.kind !== ref.kind))))}
           </div>
         )}

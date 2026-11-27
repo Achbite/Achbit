@@ -67,6 +67,7 @@ export interface ConversationResourceReadResult {
   logicalPath: string;
   content: string;
   sizeBytes: number;
+  fileSizeBytes: number;
   startLine: number;
   endLine: number;
   nextByte?: number;

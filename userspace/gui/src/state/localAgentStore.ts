@@ -33,7 +33,7 @@ import { ChildDeliveryIndex } from '../components/local-agent/childDeliveryIndex
 import { writePosition, type ReadingPosition } from './readingPosition';
 import { dismissUnappliedInputs } from './unappliedInputReminders';
 import { pastedTextTitle, type PastedTextInput } from '../services/pastedText';
-import { attachmentName } from '../components/local-agent/attachmentPreview';
+import { resourceFilename } from '../components/local-agent/resourceLinks';
 import { stillLocal, type LocalInput } from './localInputs';
 import { supportsNativeFileInput } from '../services/modelFileInput';
 import {
@@ -1133,7 +1133,7 @@ async function submitNewRun(
   const local: LocalInput | undefined = type === 'message.submit' && !planMode && retained.submissionId ? {
     sessionId: initial.sessionId, commandId, submissionId: retained.submissionId, text,
     attachmentNames: [...(retained.filesystemReferences ?? []).map(ref => ref.displayName),
-      ...filesystemPaths.map(file => attachmentName(file.path)), ...pastedTexts.map(paste => pastedTextTitle(paste.text)),
+      ...filesystemPaths.map(file => resourceFilename(file.path)), ...pastedTexts.map(paste => pastedTextTitle(paste.text)),
       ...pastedImages.map(image => image.name)],
   } : undefined;
   const showLocal = () => {

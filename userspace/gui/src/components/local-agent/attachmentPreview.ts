@@ -8,7 +8,6 @@ export type AttachmentSource = { path: string } | { sessionId: string | null; wo
 export const retainedAttachment = (sessionId: string | null, ref: FilesystemReference): AttachmentSource =>
   ({ sessionId, workspaceId: ref.workspaceId, logicalPath: ref.logicalPath });
 export const attachmentPath = (source: AttachmentSource) => 'path' in source ? source.path : source.logicalPath;
-export const attachmentName = (path: string) => path.replace(/[\\/]+$/u, '').split(/[\\/]/u).at(-1) || path;
 
 export const isImageAttachment = (ref: FilesystemReference) => ref.kind === 'file'
   && (ref.mediaType.startsWith('image/') || !!imageMediaType(ref.logicalPath));
@@ -57,6 +56,7 @@ export async function readAttachmentThumbnail(host: ConversationHost, source: At
     if (format === 'text') {
       const result = await host.resources.readResourceReference(source.sessionId, ref, signal);
       signal.throwIfAborted();
+      if (result.fileSizeBytes > limit) return { kind: 'large' };
       return { kind: 'text', text: textExcerpt(result.content, format) };
     }
     blob = await host.resources.readResourceBlob(source.sessionId, ref, 'document', signal);

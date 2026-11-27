@@ -50,7 +50,7 @@ export function attachmentWorkbench(host: ConversationHost, session: string, mod
       if (!('workspaceId' in ref)) throw Error('unexpected resource');
       await host.resolveResource(id, ref.workspaceId, ref.logicalPath); reads.push(`text:${id}:${ref.logicalPath}`);
       const blob = read(ref.logicalPath), content = await blob.text(); if (content.includes('\0')) throw Error('file_encoding_unsupported');
-      return { logicalPath:ref.logicalPath, content, sizeBytes:blob.size,startLine:1,endLine:content.split('\n').length };
+      return { logicalPath:ref.logicalPath, content, sizeBytes:blob.size, fileSizeBytes:blob.size, startLine:1,endLine:content.split('\n').length };
     },
   };
   const draft = emptyComposerState(); draft.draft = '保留原草稿\n第二行还有选择范围\n第三行';
