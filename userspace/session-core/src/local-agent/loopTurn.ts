@@ -29,7 +29,7 @@ import { pendingControlWait, controlWait, inputAfter, pendingWakeups } from './s
 export async function settleProviderTurn(
   initial: LoopSnapshot, turn: ProviderTurn, receipt: ContextCompositionReceipt, runtime: RunRuntimeSnapshot,
   capabilities: SessionCapabilities, lease: SessionCapabilityLease, agentEvidenceRevision: number,
-  runId: string, deps: AgentLoopDeps, signal: AbortSignal,
+  runId: string, requestDirectoryIds: readonly string[], deps: AgentLoopDeps, signal: AbortSignal,
 ): Promise<LoopResult | undefined> {
   let snapshot = initial;
   const commit = async (event: Parameters<AgentLoopDeps['commit']>[0]): Promise<void> => {
@@ -111,6 +111,7 @@ export async function settleProviderTurn(
         throwIfAborted(signal);
         prepared = await installedControls(capabilities.controls).preparePlugins({
           sessionId: snapshot.state.sessionId, runId, runtime, pluginUris: turn.pluginUris,
+          workspaceBindingIds: requestDirectoryIds,
           nextId: deps.nextId, preparation: deps.composition.runPreparation,
         });
         // An admitted preparation must drain before the run releases its resources.

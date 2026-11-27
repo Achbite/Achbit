@@ -674,7 +674,9 @@ export class SessionActor {
         sessionId: this.sessionId, runId: command.runId, profileId: runtime.provider.profileId,
         environment: runtime.environment,
         ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
-        ...recoveryPluginSelection(snapshot, command.runId, runtime),
+        pluginSelections: viewPluginSelections(snapshot, command.runId, snapshot.state.runToolViews[command.runId] ?? runtime),
+        refreshPlugins: true,
+        workspaceBindingIds: run.workspaceBindings.map(binding => binding.workspaceId),
         previousProviderToolAliases: (snapshot.state.runToolViews[command.runId] ?? runtime).providerToolAliases,
         existingPresentation: capturedPresentation(runtime),
         rebindHost: { commandId: command.commandId, expectedBinding: command.expectedHostBinding, hostBinding: command.hostBinding },
@@ -1589,39 +1591,50 @@ export class SessionActor {
             const runtime = current.state.runRuntimeSnapshots[runId];
             if (!runtime) throw new Error('run_runtime_snapshot_missing');
             const activeView = current.state.runToolViews[runId] ?? runtime;
-            const initialSelections = recoveryPluginSelection(current, runId, runtime).pluginSelections ?? [];
-            const selections = [...new Map([...initialSelections, ...queued.flatMap((input) => input.pluginSelections)]
+            const initialSelections = viewPluginSelections(current, runId, activeView);
+            const explicit = queued.flatMap(input => input.pluginSelections);
+            // A previously selected project can disappear when the user changes directories,
+            // even while another new selection is required by a queued input.
+            const optional = initialSelections.filter(s => explicit.length && s.uri.endsWith('@project') && !explicit.some(e => e.uri === s.uri));
+            const selections = [...new Map([...initialSelections.filter(s => !optional.includes(s)), ...explicit]
               .map((selection) => [selection.uri, selection])).values()];
             const recipe = recipeForMode(current.state.recipe, current.state.mode);
             const linked = [...new Set(queued.flatMap(input => linkedReaderUris(input.text, recipe)))];
-            return { queued, runtime, activeView, selections, linked };
+            const directories = queued.flatMap(input => input.filesystemReferences.filter(ref => ref.kind === 'directory'));
+            const bindingIds = (bindings: typeof current.state.workspaceBindings) => appendResourceBindings(bindings, directories).map(b => b.workspaceId);
+            if (current.state.run?.runId !== runId) throw new Error('run_runtime_preparation_stale');
+            return { queued, runtime, activeView, selections, optional, linked, bindingIds, initialIds: bindingIds(current.state.run.workspaceBindings) };
           });
           const { runtime, activeView, selections, linked } = captured;
           signal.throwIfAborted();
           // Preparation owns run resources. Drain admitted I/O before cancellation
           // releases the run; never hold the Actor write queue while it is pending.
-          const prepared = selections.length || activeView.selectedPlugins.plugins.length
+          const prepare = (workspaceBindingIds: string[]) => selections.length || activeView.selectedPlugins.plugins.length
             || activeView.tools.some(tool => tool.name === 'plugin.search' && tool.availability === 'callable')
-            ? await this.prepareRun({
+            ? this.prepareRun({
               sessionId: this.sessionId, runId, profileId: runtime.provider.profileId,
               environment: runtime.environment,
               ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
+              workspaceBindingIds,
               pluginSelections: selections,
-              ...(linked.length ? { inheritedPluginSelections: linked.map(uri => ({
+              inheritedPluginSelections: [...captured.optional, ...linked.map(uri => ({
                 selectionId: this.#nextId('plugin-selection'), uri, label: uri.slice(0, 160),
-              })) } : {}),
+              }))],
               previousProviderToolAliases: activeView.providerToolAliases,
               existingPresentation: capturedPresentation(runtime),
               refreshPlugins: !captured.queued.some(input => input.pluginSelections.length),
             }) : undefined;
-          signal.throwIfAborted();
-          return this.withWrite(async () => {
+          const publish = (prepared: Awaited<ReturnType<typeof prepare>>, ids: string[]) => this.withWrite(async () => {
             const current = await this.loadSnapshot();
             signal.throwIfAborted();
             const currentView = current.state.runToolViews[runId] ?? current.state.runRuntimeSnapshots[runId];
             if (current.state.run?.runId !== runId || isTerminal(current.state.run.status)
               || currentView?.kernelCatalogSnapshotRef !== activeView.kernelCatalogSnapshotRef) {
               throw new Error('run_runtime_preparation_stale');
+            }
+            if (prepared) {
+              const now = captured.bindingIds(current.state.run.workspaceBindings);
+              if (now.length !== ids.length || now.some((id, i) => id !== ids[i])) return { retryWith: now };
             }
             // Inputs arriving during preparation belong to a later request boundary.
             const capturedIds = new Set(captured.queued.map(input => input.commandId));
@@ -1654,8 +1667,15 @@ export class SessionActor {
               bindings = appendResourceBindings(bindings, directories);
             }
             if (events.length) await this.appendEvents(events, current);
-            return await this.loadSnapshot();
+            return { snapshot: await this.loadSnapshot() };
           });
+          let ids = captured.initialIds;
+          while (true) {
+            signal.throwIfAborted();
+            const result = await publish(await prepare(ids), ids);
+            if (result.snapshot) return result.snapshot;
+            ids = result.retryWith;
+          }
         },
         updateAssistantDraft: (draft) => {
           if (draft && draft.runId !== command.runId) {
@@ -1727,41 +1747,33 @@ export class SessionActor {
     const runtime = snapshot.state.runRuntimeSnapshots[runId];
     if (!runtime) throw new Error('run_runtime_snapshot_missing');
     decodeAgentCapabilities(runtime.agentCapabilities);
-    let prepared;
+    const active = snapshot.state.runToolViews[runId];
+    // The original provider binding can outlive retirement of its first tool catalog.
+    // Check that identity first, then locate the journal's active catalog without preparing a new one.
+    const views = active ? [runtime, active] : [runtime];
     try {
-      prepared = await this.prepareRun({
-        sessionId: this.sessionId,
-        runId,
-        profileId: runtime.provider.profileId,
-        environment: runtime.environment,
-        restoreEnvironment: true,
-        existingPresentation: capturedPresentation(runtime),
-        ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
-        ...recoveryPluginSelection(snapshot, runId, runtime),
-        previousProviderToolAliases: (snapshot.state.runToolViews[runId] ?? runtime).providerToolAliases,
-      });
+      for (const view of views) {
+        const { runtimeSnapshot: restored } = await this.prepareRun({
+          sessionId: this.sessionId, runId, profileId: runtime.provider.profileId, environment: runtime.environment,
+          restoreEnvironment: true, ...(view !== runtime ? { restoreToolViewRef: view.kernelCatalogSnapshotRef } : {}),
+          existingPresentation: capturedPresentation(runtime), previousProviderToolAliases: view.providerToolAliases,
+          ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
+          pluginSelections: viewPluginSelections(snapshot, runId, view),
+        });
+        if (restored.provider.providerRuntimeRef !== runtime.provider.providerRuntimeRef
+          || providerRuntimeForPurpose(restored, 'approvalReview').providerRuntimeRef !== providerRuntimeForPurpose(runtime, 'approvalReview').providerRuntimeRef
+          || restored.kernelCatalogSnapshotRef !== view.kernelCatalogSnapshotRef
+          || restored.extensionGenerationRef !== view.extensionGenerationRef
+          || canonicalJson(restored.selectedPlugins) !== canonicalJson(view.selectedPlugins)) {
+          throw new Error('run_runtime_recovery_identity_mismatch');
+        }
+      }
+      return true;
     } catch (error) {
+      // A restore does not create a binding to roll back. The original run owns final release.
       await this.settleRecoveryFailure(runId, error);
       return false;
     }
-    const restored = prepared.runtimeSnapshot;
-    if (restored.provider.providerRuntimeRef !== runtime.provider.providerRuntimeRef
-      || providerRuntimeForPurpose(restored, 'approvalReview').providerRuntimeRef !== providerRuntimeForPurpose(runtime, 'approvalReview').providerRuntimeRef
-      || restored.kernelCatalogSnapshotRef !== runtime.kernelCatalogSnapshotRef
-      || restored.extensionGenerationRef !== runtime.extensionGenerationRef) {
-      const mismatch = new Error('run_runtime_recovery_identity_mismatch');
-      try {
-        await this.#composition.runPreparation.release({
-          sessionId: this.sessionId,
-          runId,
-          kernelCatalogSnapshotRef: prepared.runtimeSnapshot.kernelCatalogSnapshotRef,
-        });
-      } finally {
-        await this.settleRecoveryFailure(runId, mismatch);
-      }
-      return false;
-    }
-    return true;
   }
 
   private async settleRecoveryFailure(runId: string, error: unknown): Promise<void> {
@@ -2185,13 +2197,11 @@ function isTerminal(status: string): boolean {
   return ['completed', 'failed', 'cancelled', 'indeterminate'].includes(status);
 }
 
-function recoveryPluginSelection(
+function viewPluginSelections(
   snapshot: LoopSnapshot,
   runId: string,
-  runtime: LoopSnapshot['state']['runRuntimeSnapshots'][string],
-): {
-  pluginSelections?: Extract<ConversationCommand, { type: 'message.submit' }>['pluginSelections'];
-} {
+  view: Pick<LoopSnapshot['state']['runRuntimeSnapshots'][string], 'selectedPlugins'>,
+) {
   const started = snapshot.events.find((event): event is Extract<
     SessionEvent,
     { type: 'run.started' }
@@ -2204,15 +2214,10 @@ function recoveryPluginSelection(
     event.type === 'input.accepted'
     && event.payload.messageId === started.payload.inputMessageId
   ));
-  const active = snapshot.state.runToolViews[runId]?.selectedPlugins ?? runtime.selectedPlugins;
-  const selections = active.plugins.map((plugin, index) => (
+  return view.selectedPlugins.plugins.map((plugin, index) => (
     input?.payload.pluginSelections?.find(selection => selection.uri === plugin.uri)
     ?? { selectionId: `plugin-selection:${runId}:${index}`, uri: plugin.uri, label: plugin.uri.slice(0, 160) }
   ));
-  if (selections.length === 0) return {};
-  return {
-    pluginSelections: selections.map((selection) => ({ ...selection })),
-  };
 }
 
 function closesAssistantDraft(

@@ -1890,7 +1890,7 @@
     },
     "skills.mounts": {
       "label": "Project Skill Mounts",
-      "description": "JSON array of additional Skill mount definitions available to Agent runs."
+      "description": "JSON array of additional Skill mount definitions available to Agent runs. Skills under the workspace's .achbit/skills or .agents/skills are discovered automatically; mounts add other locations."
     },
     "mcp.servers": {
       "label": "Project MCP Servers",

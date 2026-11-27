@@ -1,13 +1,25 @@
+#[cfg(test)]
+mod project_skill_tests;
+mod project_skills;
+
 use crate::local_agent_mcp::McpServerSource;
 use achbit_host_connection::plugin_artifact::skill_metadata;
+use achbit_kernel_runtime::file_access::SkillReadScope;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MAX_SKILL_BYTES: u64 = 512 * 1024;
+
+/// Project Skill directories inside one workspace directory, lowest precedence first.
+/// `.agents/skills` is the shared convention (Codex, DeepSeek Harness); `.achbit/skills`
+/// is this product's own directory and wins when both define the same Skill.
+const PROJECT_SKILL_DIRECTORIES: [&str; 2] = [".agents/skills", ".achbit/skills"];
+/// URI authority for Skills discovered in a bound workspace rather than installed.
+const PROJECT_SKILL_SCOPE: &str = "project";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,12 +107,17 @@ impl PluginCatalogEntry {
 
 #[derive(Debug, Clone)]
 enum PluginContribution {
-    Skill,
+    Skill {
+        project_read: Option<SkillReadScope>,
+        manual_only: bool,
+    },
     Host,
     Container,
     Document,
     SessionDiagnostics,
-    Mcp { plugin_uri: String },
+    Mcp {
+        plugin_uri: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +136,16 @@ struct PluginSource {
 impl PluginSource {
     fn file_entry(&self) -> Option<&Path> {
         self.implementation.get("path")?.as_str().map(Path::new)
+    }
+
+    fn manual_only(&self) -> bool {
+        matches!(
+            self.contribution,
+            PluginContribution::Skill {
+                manual_only: true,
+                ..
+            }
+        )
     }
 
     fn same_input(&self, other: &Self) -> bool {
@@ -140,9 +167,45 @@ impl ResolvedPluginSelection {
     pub(crate) fn file_read_roots(&self) -> Vec<PathBuf> {
         self.plugins
             .iter()
+            .filter(|plugin| {
+                matches!(
+                    plugin.contribution,
+                    PluginContribution::Skill {
+                        project_read: None,
+                        ..
+                    }
+                )
+            })
             .filter_map(|plugin| plugin.file_entry()?.parent().map(Path::to_path_buf))
             .collect()
     }
+    pub(crate) fn project_reads(&self) -> Vec<SkillReadScope> {
+        self.plugins
+            .iter()
+            .filter_map(|plugin| match &plugin.contribution {
+                PluginContribution::Skill { project_read, .. } => project_read.clone(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn check_model_activation(
+        &self,
+        requested: &[PluginSelectionInput],
+    ) -> Result<(), String> {
+        if let Some(source) = self
+            .plugins
+            .iter()
+            .find(|p| p.manual_only() && requested.iter().any(|s| s.uri == p.public.uri))
+        {
+            return Err(format!(
+                "plugin_user_selection_required: {} requires explicit user selection",
+                source.public.uri
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn same_inputs(&self, other: &Self) -> bool {
         self.plugins.len() == other.plugins.len()
             && self
@@ -208,14 +271,14 @@ impl ResolvedPluginSelection {
 }
 
 pub(crate) fn plugin_catalog_projection(settings: &Value) -> Result<Value, String> {
-    let (revision, sources, _) = plugin_catalog(settings)?;
+    let (revision, sources, _) = plugin_catalog(settings, &[])?;
     let mut plugins: Vec<Value> = sources
         .into_values()
         .map(|source| {
             let kind = match &source {
                 PluginCatalogEntry::Skill(_) => "skill",
                 PluginCatalogEntry::Loaded(source)
-                    if matches!(source.contribution, PluginContribution::Skill) =>
+                    if matches!(source.contribution, PluginContribution::Skill { .. }) =>
                 {
                     "skill"
                 }
@@ -263,17 +326,33 @@ pub(crate) fn plugin_allowed_for_session(uri: &str, is_child_agent: bool) -> boo
     !is_child_agent || uri != "plugin://computer-use@builtin"
 }
 
+/// Discovery covers installed plugins, user Skill mounts and the run's project Skill roots.
+/// `project_skill_roots` are the bound workspace directories whose ancestors may hold
+/// `.agents/skills` or `.achbit/skills`; an unrelated caller passes none.
 pub(crate) fn search_plugins(
     settings: &Value,
+    project_skill_roots: &[PathBuf],
     query: &str,
     limit: usize,
     offset: usize,
     is_child_agent: bool,
 ) -> Result<Value, String> {
-    let (revision, sources, _) = plugin_catalog(settings)?;
+    let (revision, sources, _) = plugin_catalog(settings, project_skill_roots)?;
     let words = query.to_lowercase();
     let mut matches = Vec::new();
     for source in sources.into_values() {
+        let source = match source {
+            PluginCatalogEntry::Skill(locator) if locator.public.enabled => {
+                match skill_plugin(&locator) {
+                    Ok(source) => PluginCatalogEntry::Loaded(source),
+                    Err(_) => continue,
+                }
+            }
+            source => source,
+        };
+        if matches!(&source, PluginCatalogEntry::Loaded(source) if source.manual_only()) {
+            continue;
+        }
         let capabilities = match &source {
             PluginCatalogEntry::Loaded(source) => source.capability_summary.clone(),
             _ => String::new(),
@@ -309,7 +388,7 @@ pub(crate) fn search_plugins(
 /// It does not activate an MCP server or a binary plugin while opening the page.
 pub(crate) fn skill_settings_projection(settings: &Value) -> Result<Value, String> {
     let mut skills = crate::local_agent_product_tools::bundled_skill_settings();
-    for entry in skill_catalog_entries(settings, &disabled_plugin_ids(settings)?)? {
+    for entry in skill_catalog_entries(settings, &disabled_plugin_ids(settings)?)?.0 {
         let source = entry.into_public();
         let builtin = source.uri.ends_with("@builtin");
         skills.push(json!({
@@ -326,7 +405,7 @@ pub(crate) fn plugin_uri_for_activation_media_type(
     settings: &Value,
     media_type: &str,
 ) -> Result<Option<String>, String> {
-    let (_, sources, _) = plugin_catalog(settings)?;
+    let (_, sources, _) = plugin_catalog(settings, &[])?;
     for entry in sources.into_values() {
         let source = entry.public();
         if source.enabled
@@ -373,8 +452,11 @@ pub(crate) fn same_registration_settings(left: &Value, right: &Value) -> bool {
         .all(|key| left.get(*key) == right.get(*key))
 }
 
+/// Admission of explicit, refreshed and inherited selections against this run's catalog.
+/// Project selections resolve against the directories captured for this request.
 pub(crate) fn resolve_plugin_selection(
     settings: &Value,
+    project_skill_roots: &[PathBuf],
     selections: &mut Vec<PluginSelectionInput>,
     refresh: bool,
     inherited: &[PluginSelectionInput],
@@ -387,7 +469,18 @@ pub(crate) fn resolve_plugin_selection(
             mcp_sources: Vec::new(),
         });
     }
-    let (revision, sources, mcp_sources) = plugin_catalog(settings)?;
+    let needs_projects = selections
+        .iter()
+        .chain(inherited)
+        .any(|s| s.uri.ends_with("@project"));
+    let (revision, sources, mcp_sources) = plugin_catalog(
+        settings,
+        if needs_projects {
+            project_skill_roots
+        } else {
+            &[]
+        },
+    )?;
     if refresh {
         selections.retain(|selection| {
             sources
@@ -425,6 +518,12 @@ pub(crate) fn resolve_plugin_selection(
                 selection.uri
             )
         })?;
+        if matches!(&entry, PluginCatalogEntry::Skill(locator) if !locator.public.enabled) {
+            return Err(format!(
+                "plugin_selection_disabled: 插件未启用：{}",
+                selection.uri
+            ));
+        }
         let mut source = match entry {
             PluginCatalogEntry::Skill(locator) => {
                 skill_plugin(&locator).map_err(|message| format!("skill_load_failed: {message}"))?
@@ -486,7 +585,7 @@ pub(crate) fn selected_plugin_snapshot(
                 "extensionGenerationRef": extension_generation_ref,
                 "capabilityRefs": plugin.capability_refs,
             });
-            if let (PluginContribution::Skill, Some(entry)) = (&plugin.contribution, plugin.file_entry()) {
+            if let (PluginContribution::Skill { .. }, Some(entry)) = (&plugin.contribution, plugin.file_entry()) {
                 item["skillEntryPath"] = json!(achbit_kernel_runtime::file_access::process_visible_path(entry));
             }
             item
@@ -496,6 +595,7 @@ pub(crate) fn selected_plugin_snapshot(
 
 fn plugin_catalog(
     settings: &Value,
+    project_skill_roots: &[PathBuf],
 ) -> Result<
     (
         String,
@@ -622,7 +722,11 @@ fn plugin_catalog(
             content: Arc::from(description.as_bytes()),
         }),
     )?;
-    for source in skill_catalog_entries(settings, &disabled_plugins)? {
+    let (registered, claims) = skill_catalog_entries(settings, &disabled_plugins)?;
+    for source in registered {
+        insert_plugin_source(&mut sources, source)?;
+    }
+    for source in project_skills::discover(project_skill_roots, &claims) {
         insert_plugin_source(&mut sources, source)?;
     }
     let mcp_sources = crate::local_agent_mcp::available_server_sources(settings)
@@ -726,16 +830,32 @@ fn frontend_design_skill(disabled: &[String]) -> Result<PluginCatalogEntry, Stri
     }))
 }
 
+#[derive(Default)]
+struct MountClaims {
+    entries: HashSet<PathBuf>,
+    disabled: Vec<PathBuf>,
+}
+
+impl MountClaims {
+    fn disabled(&self, entry: &Path) -> bool {
+        self.disabled.iter().any(|root| entry.starts_with(root))
+    }
+    fn owns(&self, entry: &Path) -> bool {
+        self.entries.contains(entry) || self.disabled(entry)
+    }
+}
+
 fn skill_catalog_entries(
     settings: &Value,
     disabled: &[String],
-) -> Result<Vec<PluginCatalogEntry>, String> {
+) -> Result<(Vec<PluginCatalogEntry>, MountClaims), String> {
     let encoded = settings
         .get("skills.mounts")
         .and_then(Value::as_str)
         .unwrap_or("[]");
     let mounts: Vec<SkillMountSetting> = serde_json::from_str(encoded)
         .map_err(|error| format!("解析 skills.mounts 失败：{error}"))?;
+    let mut claims = MountClaims::default();
     let mut files = BTreeMap::new();
     let mut entries = vec![frontend_design_skill(disabled)?];
     for mount in mounts {
@@ -754,6 +874,11 @@ fn skill_catalog_entries(
             error: None,
         };
         if !mount.enabled {
+            if !mount.path.trim().is_empty() {
+                if let Ok(path) = fs::canonicalize(mount.path.trim()) {
+                    claims.disabled.push(path);
+                }
+            }
             entries.push(PluginCatalogEntry::Unavailable(public));
             continue;
         }
@@ -787,6 +912,9 @@ fn skill_catalog_entries(
         }
     }
     for (index, (path, (mount_id, activation_media_types))) in files.into_iter().enumerate() {
+        // Preserve the index and URI assigned by explicit registration, even on overlap.
+        let enabled = !claims.disabled(&path);
+        claims.entries.insert(path.clone());
         let id = skill_id(&mount_id, &path, index);
         entries.push(PluginCatalogEntry::Skill(SkillLocator {
             public: PublicPluginCatalogItem {
@@ -796,7 +924,7 @@ fn skill_catalog_entries(
                 icon_ref: None,
                 management: Some(json!({"key":"skills.mounts","id":mount_id,"path":path})),
                 activation_media_types,
-                enabled: true,
+                enabled,
                 available: false,
                 error: None,
             },
@@ -804,22 +932,63 @@ fn skill_catalog_entries(
             path,
         }));
     }
-    Ok(entries)
+    Ok((entries, claims))
+}
+
+fn project_skill_source(
+    path: &Path,
+    slug: &str,
+    name: &str,
+    description: &str,
+    instructions: String,
+    scope: SkillReadScope,
+) -> Result<PluginSource, String> {
+    let id = format!("{PROJECT_SKILL_SCOPE}-{slug}");
+    Ok(PluginSource {
+        public: PublicPluginCatalogItem {
+            uri: format!("plugin://{slug}@{PROJECT_SKILL_SCOPE}"),
+            display_name: truncate_utf8(name, 160),
+            short_description: truncate_utf8(description, 240),
+            icon_ref: None,
+            management: None,
+            activation_media_types: Vec::new(),
+            enabled: true,
+            available: true,
+            error: None,
+        },
+        plugin_artifact_ref: crate::utils::new_runtime_ref("plugin-artifact")?,
+        plugin_instance_ref: String::new(),
+        capability_refs: vec![format!("skill:{id}")],
+        capability_summary: instructions.clone(),
+        tool_prompt_provider: None,
+        contribution: PluginContribution::Skill {
+            project_read: Some(scope),
+            manual_only: false,
+        },
+        implementation: json!({"id": id, "path": path}),
+        content: Arc::from(instructions.as_bytes()),
+    })
 }
 
 fn skill_plugin(locator: &SkillLocator) -> Result<PluginSource, String> {
     let path = &locator.path;
-    let metadata = fs::metadata(path)
-        .map_err(|error| format!("读取 Skill 元数据 {} 失败：{error}", path.display()))?;
-    if metadata.len() > MAX_SKILL_BYTES {
-        return Err(format!("Skill 文件 {} 超过大小上限", path.display()));
-    }
-    let instructions = fs::read_to_string(path)
+    let project_read = project_skills::mounted_scope(path);
+    let file = if project_read.is_some() {
+        project_skills::open_entry(path)
+    } else {
+        fs::File::open(path)
+    };
+    let instructions = file
+        .and_then(project_skills::read_entry)
         .map_err(|error| format!("读取 Skill {} 失败：{error}", path.display()))?;
     if instructions.trim().is_empty() {
         return Err(format!("Skill 文件 {} 不能为空", path.display()));
     }
-    let (name, description) = skill_metadata(path, &instructions);
+    let declared = achbit_host_connection::plugin_artifact::skill_frontmatter(&instructions)?
+        .unwrap_or_default();
+    let manual_only = declared.manual_only;
+    let (name, description) =
+        achbit_host_connection::plugin_artifact::skill_labels(path, &instructions, declared);
     let display_name = truncate_utf8(&name, 160);
     let short_description = truncate_utf8(&description, 240);
     path.to_str()
@@ -837,7 +1006,10 @@ fn skill_plugin(locator: &SkillLocator) -> Result<PluginSource, String> {
         capability_refs: vec![format!("skill:{}", locator.id)],
         capability_summary: instructions.clone(),
         tool_prompt_provider: None,
-        contribution: PluginContribution::Skill,
+        contribution: PluginContribution::Skill {
+            project_read,
+            manual_only,
+        },
         implementation: json!({"id": locator.id, "path": path}),
         content: Arc::from(instructions.as_bytes()),
     })
@@ -875,7 +1047,7 @@ fn collect_skill_files(path: &Path, output: &mut Vec<PathBuf>) -> Result<(), Str
         return Ok(());
     }
     let direct = path.join("SKILL.md");
-    if direct.is_file() {
+    if fs::symlink_metadata(&direct).is_ok_and(|meta| meta.is_file()) {
         output.push(direct);
     }
     let mut entries = fs::read_dir(path)
@@ -907,6 +1079,22 @@ fn skill_id(mount_id: &str, path: &Path, index: usize) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("skill");
     format!("{mount_id}-{parent}-{}", index + 1)
+}
+
+fn project_skill_slug(name: &str) -> String {
+    // Any ASCII name that earlier scans already turned into a URI keeps that URI, including
+    // punctuation that collapsed to a separator.
+    if name.is_ascii()
+        && name
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
+    {
+        return plugin_slug(name);
+    }
+    // Legacy ASCII slugs are lowercase, so the literal U reserves a disjoint namespace
+    // without taking any existing name. Encode the declared UTF-8, not its path or body.
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    format!("localized-U{}", URL_SAFE_NO_PAD.encode(name))
 }
 
 fn plugin_slug(value: &str) -> String {
@@ -1002,14 +1190,14 @@ mod tests {
             ("stock counts", "plugin://warehouse@cli"),
             ("ambient temperature", "plugin://lab@mcp"),
         ] {
-            let found = search_plugins(&settings, query, 20, 0, false).unwrap();
+            let found = search_plugins(&settings, &[], query, 20, 0, false).unwrap();
             assert_eq!(found["total"], 1, "{query}");
             assert_eq!(found["plugins"][0]["uri"], uri);
             assert_eq!(found["plugins"][0].as_object().unwrap().len(), 3);
             assert!(found["plugins"][0]["displayName"].is_string());
             assert!(found["plugins"][0]["shortDescription"].is_string());
         }
-        let missing = search_plugins(&settings, "stock ambient", 20, 0, false).unwrap();
+        let missing = search_plugins(&settings, &[], "stock ambient", 20, 0, false).unwrap();
         assert_eq!(
             missing["total"], 0,
             "all keywords must match the same plugin"
@@ -1025,13 +1213,13 @@ mod tests {
     #[test]
     fn catalog_browsing_can_continue_until_all_results_are_read() {
         let settings = json!({});
-        let all = search_plugins(&settings, "", usize::MAX, 0, false).unwrap();
+        let all = search_plugins(&settings, &[], "", usize::MAX, 0, false).unwrap();
         let expected = all["plugins"].as_array().unwrap();
         assert!(expected.len() > 2);
         let mut seen = Vec::new();
         let mut offset = 0;
         loop {
-            let page = search_plugins(&settings, "", 2, offset, false).unwrap();
+            let page = search_plugins(&settings, &[], "", 2, offset, false).unwrap();
             assert_eq!(page["total"], all["total"]);
             let plugins = page["plugins"].as_array().unwrap();
             assert!(!plugins.is_empty());
@@ -1043,7 +1231,7 @@ mod tests {
             offset = next as usize;
         }
         assert_eq!(&seen, expected);
-        let exhausted = search_plugins(&settings, "", 2, expected.len(), false).unwrap();
+        let exhausted = search_plugins(&settings, &[], "", 2, expected.len(), false).unwrap();
         assert_eq!(exhausted["plugins"], json!([]));
         assert!(exhausted["nextOffset"].is_null());
     }
@@ -1057,7 +1245,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(|p| p["uri"] == SESSION_DIAGNOSTICS_URI && p["available"] == true));
-        let browse = search_plugins(&settings, "", usize::MAX, 0, false).unwrap();
+        let browse = search_plugins(&settings, &[], "", usize::MAX, 0, false).unwrap();
         assert!(!browse["plugins"]
             .as_array()
             .unwrap()
@@ -1069,7 +1257,7 @@ mod tests {
             label: "Diagnostics".into(),
         }];
         assert!(
-            resolve_plugin_selection(&settings, &mut selections, false, &[])
+            resolve_plugin_selection(&settings, &[], &mut selections, false, &[])
                 .unwrap()
                 .diagnostics_instance()
                 .is_some()
@@ -1098,7 +1286,8 @@ mod tests {
             uri: "plugin://computer-use@builtin".into(),
             label: "Computer Use".into(),
         }];
-        let selected = resolve_plugin_selection(&json!({}), &mut selections, false, &[]).unwrap();
+        let selected =
+            resolve_plugin_selection(&json!({}), &[], &mut selections, false, &[]).unwrap();
         assert!(selected.computer_use_instance().is_some());
         assert!(selected
             .mcp_sources
@@ -1106,14 +1295,22 @@ mod tests {
             .all(|source| source.descriptor.uri != "plugin://computer-use@builtin"));
         assert!(resolve_plugin_selection(
             &json!({"plugins.disabled":"[\"plugin://computer-use@builtin\"]"}),
+            &[],
             &mut selections,
             false,
             &[]
         )
         .is_err());
         let disabled = json!({"plugins.disabled":"[\"plugin://computer-use@builtin\"]"});
-        let found =
-            search_plugins(&disabled, "plugin://computer-use@builtin", 20, 0, false).unwrap();
+        let found = search_plugins(
+            &disabled,
+            &[],
+            "plugin://computer-use@builtin",
+            20,
+            0,
+            false,
+        )
+        .unwrap();
         assert_eq!(found["total"], 0);
         assert_eq!(found["plugins"], json!([]));
         assert!(found["nextOffset"].is_null());
@@ -1126,7 +1323,7 @@ mod tests {
             .unwrap();
         assert_eq!(item["enabled"], false);
         assert!(
-            resolve_plugin_selection(&json!({}), &mut vec![], false, &[])
+            resolve_plugin_selection(&json!({}), &[], &mut vec![], false, &[])
                 .unwrap()
                 .computer_use_instance()
                 .is_none()
@@ -1171,7 +1368,7 @@ mod tests {
             selection("new:containers", containers),
         ];
         let selected =
-            resolve_plugin_selection(&settings, &mut explicit, false, &inherited).unwrap();
+            resolve_plugin_selection(&settings, &[], &mut explicit, false, &inherited).unwrap();
         assert_eq!(explicit.len(), 2);
         assert_eq!(explicit[0].selection_id, "new:computer");
         assert_eq!(
@@ -1182,7 +1379,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![computer, containers]
         );
-        let next = resolve_plugin_selection(&settings, &mut vec![], false, &inherited).unwrap();
+        let next =
+            resolve_plugin_selection(&settings, &[], &mut vec![], false, &inherited).unwrap();
         assert_eq!(next.plugins.len(), 1);
         assert_ne!(
             selected.computer_use_instance(),
@@ -1191,6 +1389,7 @@ mod tests {
         );
         assert!(resolve_plugin_selection(
             &settings,
+            &[],
             &mut vec![selection("new:disabled", documents)],
             false,
             &inherited
@@ -1199,6 +1398,7 @@ mod tests {
         .starts_with("plugin_selection_disabled:"));
         assert!(resolve_plugin_selection(
             &settings,
+            &[],
             &mut vec![selection("new:missing", "plugin://removed@local")],
             false,
             &inherited
@@ -1211,6 +1411,7 @@ mod tests {
     fn empty_selection_does_not_load_the_plugin_catalog() {
         let selected = resolve_plugin_selection(
             &json!({"skills.mounts":"not JSON", "mcp.servers":"not JSON"}),
+            &[],
             &mut vec![],
             false,
             &[],
@@ -1270,7 +1471,7 @@ mod tests {
             .unwrap();
         assert_eq!(good["available"], true);
         let found =
-            search_plugins(&settings, "Good Skill selected document", 10, 0, false).unwrap();
+            search_plugins(&settings, &[], "Good Skill selected document", 10, 0, false).unwrap();
         assert_eq!(found["total"], 1);
         for key in ["uri", "displayName", "shortDescription"] {
             assert_eq!(found["plugins"][0][key], good[key]);
@@ -1297,7 +1498,7 @@ mod tests {
                 .find(|plugin| plugin["displayName"] == expected_name)
                 .unwrap();
             assert_eq!(listed["shortDescription"], inspected["description"]);
-            let found = search_plugins(&settings, expected_name, 10, 0, false).unwrap();
+            let found = search_plugins(&settings, &[], expected_name, 10, 0, false).unwrap();
             assert_eq!(found["total"], 1);
             assert_eq!(found["plugins"][0]["uri"], listed["uri"]);
             assert_eq!(
@@ -1305,7 +1506,7 @@ mod tests {
                 inspected["description"]
             );
             let selected =
-                resolve_plugin_selection(&settings, &mut vec![selection(listed)], false, &[])
+                resolve_plugin_selection(&settings, &[], &mut vec![selection(listed)], false, &[])
                     .unwrap();
             let config = local_agent_plugin_config(&settings, &selected).unwrap();
             assert_eq!(
@@ -1318,7 +1519,8 @@ mod tests {
             );
         }
         let selected =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
+            resolve_plugin_selection(&settings, &[], &mut vec![selection(good)], false, &[])
+                .unwrap();
         assert_eq!(selected.plugins.len(), 1);
         assert_eq!(selected.plugins[0].public.uri, good["uri"]);
 
@@ -1333,17 +1535,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(&original_error));
-        let found = search_plugins(&settings, bad["uri"].as_str().unwrap(), 10, 0, false).unwrap();
+        let found =
+            search_plugins(&settings, &[], bad["uri"].as_str().unwrap(), 10, 0, false).unwrap();
         assert_eq!(found["total"], 0);
         assert_eq!(found["plugins"], json!([]));
         assert!(found["nextOffset"].is_null());
         let rejected =
-            resolve_plugin_selection(&settings, &mut vec![selection(bad)], false, &[]).unwrap_err();
+            resolve_plugin_selection(&settings, &[], &mut vec![selection(bad)], false, &[])
+                .unwrap_err();
         assert!(rejected.contains(&original_error));
 
         fs::write(&unreadable, "# Repaired Skill\nAn unrelated skill changed.").unwrap();
         let selected_after_unrelated_change =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
+            resolve_plugin_selection(&settings, &[], &mut vec![selection(good)], false, &[])
+                .unwrap();
         assert_eq!(
             selected_after_unrelated_change.plugins[0].capability_summary,
             selected.plugins[0].capability_summary
@@ -1355,7 +1560,8 @@ mod tests {
         );
         fs::write(directory.0.join("good/SKILL.md"), &revised_instructions).unwrap();
         let selected_after_content_change =
-            resolve_plugin_selection(&settings, &mut vec![selection(good)], false, &[]).unwrap();
+            resolve_plugin_selection(&settings, &[], &mut vec![selection(good)], false, &[])
+                .unwrap();
         assert_eq!(
             selected_after_content_change.plugins[0].capability_summary,
             revised_instructions
@@ -1369,11 +1575,15 @@ mod tests {
             .unwrap();
         assert_eq!(disabled["available"], false);
         assert!(disabled.get("error").is_none());
-        assert!(
-            resolve_plugin_selection(&settings, &mut vec![selection(disabled)], false, &[])
-                .unwrap_err()
-                .starts_with("plugin_selection_disabled:")
-        );
+        assert!(resolve_plugin_selection(
+            &settings,
+            &[],
+            &mut vec![selection(disabled)],
+            false,
+            &[]
+        )
+        .unwrap_err()
+        .starts_with("plugin_selection_disabled:"));
 
         let broken_mcp = plugins
             .iter()
@@ -1390,6 +1600,289 @@ mod tests {
         ) {
             Err(error) => assert_eq!(error.code, "mcp_server_command_missing"),
             Ok(_) => panic!("selected invalid MCP server must fail before process startup"),
+        }
+    }
+
+    fn write_skill(path: &Path, name: &str, description: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nBody.\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn project_skills_follow_the_bound_workspace_and_its_directory_precedence() {
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = Directory(std::env::temp_dir().join(format!(
+            "achbit-project-skills-{}-{}",
+            std::process::id(),
+            crate::now_millis()
+        )));
+        fs::create_dir_all(&directory.0).unwrap();
+        let workspace = directory.0.canonicalize().unwrap().join("workspace");
+        let project = workspace.join("project");
+        let other = directory.0.canonicalize().unwrap().join("other");
+        // A shared cross-tool directory above the bound project still applies.
+        write_skill(
+            &workspace.join(".agents/skills/from-workspace/SKILL.md"),
+            "from-workspace",
+            "Shared guidance for every project below this directory.",
+        );
+        // Within one directory the product directory wins over the shared one.
+        write_skill(
+            &workspace.join(".agents/skills/override/SKILL.md"),
+            "override",
+            "Shared variant.",
+        );
+        write_skill(
+            &workspace.join(".achbit/skills/override/SKILL.md"),
+            "override",
+            "Product variant.",
+        );
+        // A nearer directory wins over every ancestor.
+        write_skill(
+            &project.join(".agents/skills/override/SKILL.md"),
+            "override",
+            "Nearest variant.",
+        );
+        // A flat Markdown file is a Skill too.
+        write_skill(
+            &project.join(".achbit/skills/flat.md"),
+            "flat",
+            "Flat file guidance.",
+        );
+        // Noise stays out: hidden directories, dependency trees and files without frontmatter.
+        write_skill(
+            &project.join(".agents/skills/.hidden/SKILL.md"),
+            "hidden",
+            "Hidden guidance.",
+        );
+        write_skill(
+            &project.join(".agents/skills/node_modules/SKILL.md"),
+            "dependencies",
+            "Dependency guidance.",
+        );
+        fs::create_dir_all(project.join(".agents/skills/no-description")).unwrap();
+        fs::write(
+            project.join(".agents/skills/no-description/SKILL.md"),
+            "---\nname: no-description\n---\n\n# Missing description\n",
+        )
+        .unwrap();
+        write_skill(
+            &other.join(".agents/skills/override/SKILL.md"),
+            "override",
+            "Other workspace variant.",
+        );
+
+        let settings = json!({});
+        let found =
+            search_plugins(&settings, &[project.clone()], "", usize::MAX, 0, false).unwrap();
+        let mut project_skills: Vec<(String, String)> = found["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|plugin| plugin["uri"].as_str().unwrap().ends_with("@project"))
+            .map(|plugin| {
+                (
+                    plugin["displayName"].as_str().unwrap().to_string(),
+                    plugin["shortDescription"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        project_skills.sort();
+        assert_eq!(
+            project_skills,
+            vec![
+                ("flat".into(), "Flat file guidance.".into()),
+                (
+                    "from-workspace".into(),
+                    "Shared guidance for every project below this directory.".into()
+                ),
+                ("override".into(), "Nearest variant.".into()),
+            ]
+        );
+        assert!(found["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|plugin| plugin["uri"] == "plugin://override@project"));
+
+        // The first bound workspace wins; the shadowed variant is not discoverable.
+        let shared = search_plugins(
+            &settings,
+            &[project.clone(), other.clone()],
+            "other workspace",
+            20,
+            0,
+            false,
+        )
+        .unwrap();
+        assert!(!shared["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|plugin| plugin["uri"].as_str().unwrap().ends_with("@project")));
+        let other_only =
+            search_plugins(&settings, &[other.clone()], "", usize::MAX, 0, false).unwrap();
+        let variant = other_only["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|plugin| plugin["uri"] == "plugin://override@project")
+            .unwrap();
+        assert_eq!(variant["shortDescription"], "Other workspace variant.");
+
+        // Without bound workspaces nothing outside the installed catalog is advertised.
+        let unscoped = search_plugins(&settings, &[], "", usize::MAX, 0, false).unwrap();
+        assert!(!unscoped["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|plugin| plugin["uri"].as_str().unwrap().ends_with("@project")));
+
+        // Activation resolves the same entry to the file the reader opens.
+        let mut selections = vec![PluginSelectionInput {
+            selection_id: "user:selection".into(),
+            uri: "plugin://override@project".into(),
+            label: "override".into(),
+        }];
+        let selected =
+            resolve_plugin_selection(&settings, &[project.clone()], &mut selections, false, &[])
+                .unwrap();
+        assert_eq!(selected.plugins.len(), 1);
+        assert_eq!(selected.plugins[0].public.uri, "plugin://override@project");
+        assert_eq!(
+            selected.plugins[0].capability_summary,
+            fs::read_to_string(project.join(".agents/skills/override/SKILL.md")).unwrap()
+        );
+        let snapshot = selected_plugin_snapshot(&selected, "extension-generation:test");
+        let entry = snapshot["plugins"][0]["skillEntryPath"].as_str().unwrap();
+        assert!(
+            Path::new(entry).ends_with(".agents/skills/override/SKILL.md"),
+            "{entry}"
+        );
+    }
+
+    #[test]
+    fn localized_project_skill_names_keep_distinct_stable_identities() {
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = Directory(std::env::temp_dir().join(format!(
+            "achbit-localized-skills-{}-{}",
+            std::process::id(),
+            crate::now_millis()
+        )));
+        fs::create_dir_all(&directory.0).unwrap();
+        let project = directory
+            .0
+            .canonicalize()
+            .unwrap()
+            .join("workspace/project");
+        let entries = [
+            (
+                project.join(".agents/skills/build/SKILL.md"),
+                "构建",
+                "Build guidance.",
+            ),
+            (
+                project.join(".agents/skills/release/SKILL.md"),
+                "发布",
+                "Release guidance.",
+            ),
+            (
+                project.join(".agents/skills/plugin/SKILL.md"),
+                "plugin",
+                "Plugin guidance.",
+            ),
+            (
+                project.join(".agents/skills/build-guide/SKILL.md"),
+                "Build Guide",
+                "Spaced ASCII guidance.",
+            ),
+        ];
+        for (path, name, description) in &entries {
+            write_skill(path, name, description);
+        }
+        let settings = json!({});
+        let discover = || {
+            search_plugins(&settings, &[project.clone()], "", usize::MAX, 0, false).unwrap()
+                ["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|plugin| plugin["uri"].as_str().unwrap().ends_with("@project"))
+                .map(|plugin| {
+                    (
+                        plugin["displayName"].as_str().unwrap().to_string(),
+                        plugin["uri"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let uri = |name: &str, found: &[(String, String)]| {
+            found
+                .iter()
+                .find(|(label, _)| label == name)
+                .unwrap()
+                .1
+                .clone()
+        };
+        let mut first = discover();
+        first.sort();
+        assert_eq!(
+            first
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["Build Guide", "plugin", "发布", "构建"]
+        );
+        let ids = first
+            .iter()
+            .map(|(_, uri)| uri.clone())
+            .collect::<HashSet<_>>();
+        assert_eq!(ids.len(), 4, "localized names collapsed onto one URI");
+        assert_eq!(uri("plugin", &first), "plugin://plugin@project");
+        assert_eq!(uri("Build Guide", &first), "plugin://build-guide@project");
+        assert!(first
+            .iter()
+            .filter(|(name, _)| !matches!(name.as_str(), "plugin" | "Build Guide"))
+            .all(|(_, uri)| uri.starts_with("plugin://localized-")));
+        // A rescan keeps every identity; activation by a discovered URI opens that entry alone.
+        let second = discover();
+        for (name, id) in &first {
+            assert_eq!(uri(name, &second), *id);
+        }
+        for (path, name, _) in &entries {
+            let mut selections = vec![PluginSelectionInput {
+                selection_id: "user:selection".into(),
+                uri: uri(name, &first),
+                label: (*name).to_string(),
+            }];
+            let selected = resolve_plugin_selection(
+                &settings,
+                &[project.clone()],
+                &mut selections,
+                false,
+                &[],
+            )
+            .unwrap();
+            assert_eq!(selected.plugins.len(), 1, "{name}");
+            assert_eq!(selected.plugins[0].public.uri, uri(name, &first));
+            assert_eq!(
+                selected.plugins[0].capability_summary,
+                fs::read_to_string(path).unwrap()
+            );
         }
     }
 }

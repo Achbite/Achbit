@@ -1890,7 +1890,7 @@
     },
     "skills.mounts": {
       "label": "项目 Skill 挂载",
-      "description": "可供 Agent 运行使用的额外 Skill 挂载定义 JSON 数组。"
+      "description": "可供 Agent 运行使用的额外 Skill 挂载定义 JSON 数组。工作区的 .achbit/skills 与 .agents/skills 会被自动发现，这里用于补充其他位置。"
     },
     "mcp.servers": {
       "label": "项目 MCP 服务",

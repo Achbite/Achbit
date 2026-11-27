@@ -2261,11 +2261,15 @@ export interface PrepareRunRuntimeRequest {
   rebindHost?: { commandId: string; expectedBinding: HostWindowBinding; hostBinding: HostWindowBinding };
   /** Refresh previously selected sources; disabled/removed sources withdraw at this request boundary. */
   refreshPlugins?: boolean;
-  /** Initial run project bindings; omitted means no project bindings. */
+  /** Ordered directories for this request. [] withdraws every project; omission keeps the prior view. */
   workspaceBindingIds?: readonly string[];
   environment?: JsonObject;
   hostBinding?: { hostInstanceId: string; windowLabel: string };
   restoreEnvironment?: boolean;
+  /** With restoreEnvironment, look up this still-live tool view instead of the original run snapshot. */
+  restoreToolViewRef?: string;
+  /** The explicit selections came from plugin.activate rather than the user. */
+  modelActivation?: boolean;
   sessionId: string;
   runId: string;
   profileId?: string;

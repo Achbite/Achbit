@@ -18,6 +18,7 @@ pub(crate) struct ProductTools {
     reader: Arc<dyn SessionReadPort>,
     resources: Option<crate::local_agent_resources::SessionResources>,
     plugin_settings: Value,
+    project_skill_roots: Vec<std::path::PathBuf>,
     is_child_agent: bool,
     pub(crate) browser_binding: Option<Value>,
     pub(crate) desktop: Option<crate::desktop_tools::DesktopRun>,
@@ -34,6 +35,7 @@ impl ProductTools {
             reader,
             resources: None,
             plugin_settings: json!({}),
+            project_skill_roots: Vec::new(),
             is_child_agent: false,
             browser_binding: None,
             desktop: None,
@@ -48,6 +50,12 @@ impl ProductTools {
     pub(crate) fn with_plugin_settings(mut self, settings: Value, is_child_agent: bool) -> Self {
         self.plugin_settings = settings;
         self.is_child_agent = is_child_agent;
+        self
+    }
+
+    /// Bound workspace directories captured by this request's tool catalog.
+    pub(crate) fn with_project_skill_roots(mut self, roots: Vec<std::path::PathBuf>) -> Self {
+        self.project_skill_roots = roots;
         self
     }
 
@@ -145,6 +153,7 @@ impl ProductTools {
                 let offset = input["offset"].as_u64().unwrap_or(0) as usize;
                 crate::local_agent_plugins::search_plugins(
                     &self.plugin_settings,
+                    &self.project_skill_roots,
                     query,
                     limit,
                     offset,
@@ -158,7 +167,7 @@ impl ProductTools {
 
     pub(crate) fn definitions() -> Vec<(&'static str, String, Value)> {
         vec![
-            ("plugin.search", "Discover enabled tools and Skills by capability. Search by file format or operation before installing a helper. All words must match the same plugin's name, URI or capability text, case-insensitively. If results are empty or do the wrong job, try fewer words or omit query to browse. nextOffset continues the same query; total counts all matches. Discovery returns references; activation loads the selected tools or Skill entry for the next request. User mentions are optional. For existing PDF text look for a reader; Documents creates new files. For frontend pages or interactive previews use Frontend Design and read its Skill. Host-managed service and display plugin status is available through the product CLI.".into(), json!({
+            ("plugin.search", "Discover enabled tools and Skills by capability, including Skills declared by the bound workspace under .achbit/skills or .agents/skills. Search by file format or operation before installing a helper. All words must match the same plugin's name, URI or capability text, case-insensitively. If results are empty or do the wrong job, try fewer words or omit query to browse. nextOffset continues the same query; total counts all matches. Discovery returns references; activation loads the selected tools or Skill entry for the next request. User mentions are optional. For existing PDF text look for a reader; Documents creates new files. For frontend pages or interactive previews use Frontend Design and read its Skill. Host-managed service and display plugin status is available through the product CLI.".into(), json!({
                 "type":"object", "additionalProperties":false, "properties":{
                     "query":{"type":"string","maxLength":240,"description":"Short literal keywords; all must match. Omit to browse the catalog."},
                     "limit":{"type":"integer","minimum":1,"description":"Page size; defaults to 20. More results remain accessible through nextOffset."},

@@ -690,6 +690,8 @@ export class HttpRunPreparationPort extends LocalAgentHttpPort implements RunPre
         }),
       };
     } catch (error) {
+      // Catalog recovery only reads an existing identity. Its failure is settled by the Actor.
+      if (request.restoreEnvironment) throw error;
       try {
         await this.release(releaseRequest);
       } catch (releaseError) {
@@ -869,7 +871,7 @@ function decodeSelectedPluginSnapshot(
   const requested = request.pluginSelections ?? [];
   const admitted = new Set([...requested, ...(request.inheritedPluginSelections ?? [])].map(selection => selection.uri));
   if (
-    admitted.size > 0
+    (admitted.size > 0 || request.restoreEnvironment)
     && (
       (!request.refreshPlugins && requested.some(selection => !seen.has(selection.uri)))
       || plugins.some(plugin => !admitted.has(plugin.uri))

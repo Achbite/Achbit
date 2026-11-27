@@ -154,6 +154,9 @@ export async function runAgentLoop(
 
         throwIfAborted(signal);
         snapshot = await deps.takeQueuedInputs(runId);
+        // Keep the directories published with the prepared catalog, not a later activity snapshot.
+        const workspaceContext = runWorkspaceContext(snapshot, runId);
+        const requestDirectoryIds = workspaceContext.directoryBindings.map(binding => binding.workspaceId);
         if (deps.activity) {
           await deps.activity.sync();
           snapshot = await deps.readSnapshot();
@@ -188,7 +191,7 @@ export async function runAgentLoop(
           responseConstraint: 'normal',
           toolGuidance: deps.composition.toolGuidance,
           toolStage: stageForRequest(capabilities, runtime, snapshot.state),
-          ...runWorkspaceContext(snapshot, runId),
+          ...workspaceContext,
           providerRequestId: deps.nextId('provider-request'),
         }, signal);
         const request = prepareTurnBudget(snapshot, runId, runtime, preparedProviderRequest.receipt, capabilities, deps.nextId);
@@ -198,12 +201,18 @@ export async function runAgentLoop(
           continue;
         }
         throwIfAborted(signal);
-        await commit({
-          type: 'context.composed',
-          sessionId: snapshot.state.sessionId,
-          runId,
-          payload: preparedProviderRequest.receipt,
+        let directoriesChanged = false;
+        await commit(current => {
+          // An edit can land during activity sync, view retirement or context composition.
+          // Before issuing the request, retry with a matching catalog and workspace receipt.
+          // After this commit, activation must use the captured list regardless of later edits.
+          const run = current.state.run;
+          directoriesChanged = run?.runId === runId && (run.workspaceBindings.length !== requestDirectoryIds.length
+            || run.workspaceBindings.some((binding, i) => binding.workspaceId !== requestDirectoryIds[i]));
+          return directoriesChanged ? [] : [{ type: 'context.composed', sessionId: current.state.sessionId,
+            runId, payload: preparedProviderRequest.receipt }];
         });
+        if (directoriesChanged) continue;
         let turn;
         try {
           turn = await consumeProvider(preparedProviderRequest.request, preparedProviderRequest.toolCodec,
@@ -217,7 +226,7 @@ export async function runAgentLoop(
           continue;
         }
         const result = await settleProviderTurn(snapshot, turn, preparedProviderRequest.receipt, runtime,
-          capabilities, lease, agentEvidenceRevision, runId, deps, signal);
+          capabilities, lease, agentEvidenceRevision, runId, requestDirectoryIds, deps, signal);
         if (result) return result;
       } catch (error) {
         requestFailure = { error };

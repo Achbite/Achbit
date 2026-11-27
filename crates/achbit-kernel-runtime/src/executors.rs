@@ -37,6 +37,8 @@ pub struct KernelExecutorConfig {
     /// Shared package cache of workspace Shells across Sessions.
     pub shell_cache_root: Option<PathBuf>,
     pub file_read_roots: Vec<PathBuf>,
+    /// Discovered guidance has an exact entry or a validated bundle, never a mount-wide grant.
+    pub project_skill_reads: Vec<crate::file_access::SkillReadScope>,
     pub wsl: Option<crate::wsl_execution::WslExecution>,
 }
 

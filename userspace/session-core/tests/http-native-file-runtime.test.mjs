@@ -14,7 +14,8 @@ import { prepareContextCompaction } from '../dist/local-agent/compaction.js';
 import { achbitProductComponents } from '../dist/local-agent/productInstructions.js';
 import { SessionConfigurationRegistry } from '../dist/local-agent/sessionConfiguration.js';
 import { HttpRunPreparationPort } from '../dist/local-agent/httpPorts.js';
-import { runtimeSnapshot } from './local-agent-fixtures.mjs';
+import { actorWith, createSession, emptyKernel, readEvents, runtimeSnapshot } from './local-agent-fixtures.mjs';
+import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { assertRuntimeContract } from './support/runtimeContract.mjs';
 
 // Exercise the production HTTP adapter with the same envelope fields emitted by
@@ -71,6 +72,7 @@ async function httpPreparation(t, promptContributions, codingTools = false, envi
     useShell(name) { seed.environment.shell = {tool:name, dialect:name, executable:name}; },
     useProjectInstructions(value) { projectInstructions = value; },
     useUserSystemPrompt(value) { userSystemPrompt = value; },
+    useGeneration(name) { seed.kernelCatalogSnapshotRef = `catalog:${name}`; seed.extensionGenerationRef = `extension:${name}`; },
     usePlugins(uris) { seed.selectedPlugins.plugins = uris.map(uri => ({ uri,
       pluginArtifactRef: `artifact:${uri}`, pluginInstanceRef: `instance:${uri}`,
       extensionGenerationRef: seed.extensionGenerationRef, capabilityRefs: [] })); },
@@ -189,6 +191,54 @@ test('HTTP preparation admits enabled inherited plugins while requiring every ne
   for (const unavailable of [[retained], [explicit, 'plugin://unrequested@local']]) {
     fixture.usePlugins(unavailable);
     await assert.rejects(fixture.port.prepare(request), /selected_plugin_snapshot_identity_mismatch/);
+  }
+});
+
+test('actor recovery checks original and active HTTP bindings separately without rolling back a lookup', async t => {
+  const uri = 'plugin://guidance@project', selection = { selectionId: 'select:guidance', uri, label: 'Guidance' };
+  for (const failure of [undefined, 'unexpected-initial', 'wrong-active-instance', 'missing-active']) {
+    const f = await httpPreparation(t);
+    const { sessionId, runId } = f.request;
+    const journal = new InMemoryCommandJournal();
+    await createSession(journal, sessionId);
+    f.useGeneration('first');
+    const { runtimeSnapshot: first } = await f.port.prepare(f.request);
+    f.useGeneration('second'); f.usePlugins([uri]);
+    const { runtimeSnapshot: second } = await f.port.prepare({ ...f.request, pluginSelections: [selection] });
+    const { kernelCatalogSnapshotRef, extensionGenerationRef, selectedPlugins, instructions, tools, providerToolAliases, toolPromptContributions } = second;
+    const toolView = { kernelCatalogSnapshotRef, extensionGenerationRef, selectedPlugins, instructions, tools, providerToolAliases, toolPromptContributions };
+    if (failure === 'wrong-active-instance') toolView.selectedPlugins.plugins[0].pluginInstanceRef = 'instance:other';
+    await journal.appendBatch([
+      { type:'message.committed', sessionId, payload:{messageId:'message:task',role:'user',content:'Read the guide.'} },
+      { type:'run.started', sessionId, runId, payload:{inputMessageId:'message:task',workspaceBindings:[],runtimeSnapshot:first} },
+      { type:'run.tools.prepared', sessionId, runId, payload:{toolView} },
+      { type:'run.waiting', sessionId, runId, payload:{reason:'approval',detail:'Waiting for the user.'} },
+    ]);
+    const before = await readEvents(journal, sessionId);
+    const port = {
+      async prepare(input) {
+        assert.equal(input.restoreEnvironment, true);
+        const active = input.restoreToolViewRef !== undefined;
+        if (active) assert.equal(input.restoreToolViewRef, kernelCatalogSnapshotRef);
+        f.useGeneration(active ? 'second' : 'first');
+        f.usePlugins((active && failure !== 'missing-active' || !active && failure === 'unexpected-initial') ? [uri] : []);
+        return f.port.prepare(input);
+      }, release: input => f.port.release(input),
+    };
+    const actor = actorWith(journal, sessionId, { async *stream() { assert.fail('waiting recovery must not issue a Provider request'); } }, emptyKernel(), port, 'recover-skills');
+    t.after(() => actor.dispose());
+    await actor.recover();
+    const lookups = f.requests.filter(r => r.restoreEnvironment);
+    assert.deepEqual(lookups.map(r => r.pluginSelections.map(s => s.uri)), failure === 'unexpected-initial' ? [[]] : [[], [uri]]);
+    const after = await readEvents(journal, sessionId);
+    if (!failure) {
+      assert.equal((await actor.snapshot()).run.status, 'waiting');
+      assert.deepEqual(after, before); assert.deepEqual(f.releases, []);
+    } else {
+      assert.equal(after.at(-1).type, 'run.settled');
+      assert.equal(after.at(-1).payload.error.code, failure === 'wrong-active-instance' ? 'run_runtime_recovery_identity_mismatch' : 'selected_plugin_snapshot_identity_mismatch');
+      assert.deepEqual(f.releases.map(r => r.kernelCatalogSnapshotRef), [first.kernelCatalogSnapshotRef], 'only run finalization owns the release');
+    }
   }
 });
 

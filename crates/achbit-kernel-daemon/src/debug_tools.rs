@@ -85,9 +85,13 @@ pub(crate) async fn dispatch(
             .debug_release(control, string(&params, "operationId")?)
             .map_err(error),
         "components.list" | "components.inspect" => {
-            let gui = state.gui.lock().map_err(|_| "gui_state_lock_failed")?;
-            let catalog =
-                crate::local_agent_plugins::plugin_catalog_projection(&gui.user_settings)?;
+            let settings = state
+                .gui
+                .lock()
+                .map_err(|_| "gui_state_lock_failed")?
+                .user_settings
+                .clone();
+            let catalog = crate::local_agent_plugins::plugin_catalog_projection(&settings)?;
             if method == "components.list" {
                 return Ok(catalog);
             }
@@ -145,8 +149,10 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         .transpose()
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
+    let roots = vec![workspace.canonicalize().map_err(|e| e.to_string())?];
     let plugins = crate::local_agent_plugins::resolve_plugin_selection(
         &settings,
+        &roots,
         &mut selections,
         false,
         &[],
@@ -156,6 +162,7 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         serde_json::from_value(environment["shell"].clone()).map_err(|e| e.to_string())?;
     config.execution_path = Some(string(&environment, "executionPath")?.into());
     config.file_read_roots = plugins.file_read_roots();
+    config.project_skill_reads = plugins.project_reads();
     if let Some(path) = environment["productDocsPath"].as_str() {
         config.file_read_roots.push(path.into());
     }
@@ -198,6 +205,7 @@ fn prepare_control(state: &AppState, params: &Value, replace: bool) -> Result<Va
         state.session_service.clone(),
     ))
     .with_plugin_settings(settings.clone(), false)
+    .with_project_skill_roots(roots)
     .with_documents(plugins.document_instance())
     .with_containers(plugins.container_instance())
     .with_computer_use(plugins.computer_use_instance());

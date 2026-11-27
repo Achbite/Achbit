@@ -234,21 +234,59 @@ fn inspect_directory(path: &str) -> Result<serde_json::Value, String> {
         root.join("SKILL.md")
     };
     let instructions = read_utf8(&skill, 512 * 1024)?;
-    let (name, description) = skill_metadata(&skill, &instructions);
+    let declared = skill_frontmatter(&instructions)?.unwrap_or_default();
+    let (name, description) = skill_labels(&skill, &instructions, declared);
     Ok(
         json!({"kind":"guidance","manifestPath":skill,"path":skill,"id":name,"name":name,"description":description}),
     )
 }
 
-/// Shared Skill metadata. Names stay untruncated because inspection also uses them as artifact IDs.
+/// Only a closed, leading YAML document declares Skill metadata. Indented `---` is YAML content.
+#[derive(Debug, Default, Deserialize)]
+pub struct SkillFrontmatter {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    #[serde(default, rename = "disable-model-invocation")]
+    pub manual_only: bool,
+}
+
+pub fn skill_frontmatter(text: &str) -> Result<Option<SkillFrontmatter>, String> {
+    let mut lines = text.trim_start_matches('\u{feff}').split_inclusive('\n');
+    if lines.next().is_none_or(|line| line.trim_end() != "---") {
+        return Ok(None);
+    }
+    let mut header = String::new();
+    for line in lines {
+        if line.trim_end() == "---" {
+            // Preserve YAML scalar types: a numeric/list field is not declared text.
+            let fields: serde_yaml::Mapping =
+                serde_yaml::from_str(&header).map_err(|e| e.to_string())?;
+            return serde_yaml::from_value(serde_yaml::Value::Mapping(fields))
+                .map(Some)
+                .map_err(|e| e.to_string());
+        }
+        header.push_str(line);
+    }
+    Err("Unclosed Skill YAML frontmatter".into())
+}
+
+/// Already registered Markdown without frontmatter retains its heading/paragraph fallback.
 pub fn skill_metadata(path: &Path, instructions: &str) -> (String, String) {
-    let field = |key: &str| {
-        instructions
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(&format!("{key}:")))
-            .map(|line| line.trim().trim_matches(['\'', '"']).to_string())
-    };
-    let name = field("name")
+    let declared = skill_frontmatter(instructions)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    skill_labels(path, instructions, declared)
+}
+
+pub fn skill_labels(
+    path: &Path,
+    instructions: &str,
+    declared: SkillFrontmatter,
+) -> (String, String) {
+    let name = declared
+        .name
+        .filter(|s| !s.trim().is_empty())
         .or_else(|| {
             instructions
                 .lines()
@@ -261,7 +299,10 @@ pub fn skill_metadata(path: &Path, instructions: &str) -> (String, String) {
                 .to_string_lossy()
                 .into_owned()
         });
-    let description = field("description")
+    let description = declared
+        .description
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty())
         .or_else(|| {
             instructions
                 .lines()

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InMemoryCommandJournal } from './support/memoryJournal.mjs';
 import { createProviderToolAliases } from '../dist/local-agent/providerToolCodec.js';
-import { sessionControlToolDefinitions } from '../dist/index.js';
+import { SessionActor, runAgentLoop, sessionControlToolDefinitions } from '../dist/index.js';
 import {
   actorWith, fakeRunPreparation, emptyKernel, completedExecutionReply, providerEvent,
   createSession, messageCommand, readEvents, waitForProjection, waitUntil, workspaceBinding,
@@ -306,6 +306,39 @@ test('input captured before refresh is applied once and later input waits for th
   }
 });
 
+test('a directory attached while preparation waits replaces the pending view before the first Provider request', { timeout: 5000 }, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:binding-during-prepare';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const extra = { workspaceId: 'workspace:added', displayName: 'Added' };
+  const prep = fakeRunPreparation({ tools: [discoveryTool] });
+  const waiting = Promise.withResolvers(), resume = Promise.withResolvers();
+  const wanted = [workspaceBinding.workspaceId, extra.workspaceId];
+  const seen = [];
+  const port = { ...prep.port, async prepare(input) {
+    seen.push(input.workspaceBindingIds);
+    if (seen.length === 2) { waiting.resolve(); await resume.promise; }
+    const prepared = await prep.port.prepare(input);
+    prepared.runtimeSnapshot.kernelCatalogSnapshotRef = `catalog:directories:${seen.length}`;
+    return prepared;
+  } };
+  let turns = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    turns++; assert.deepEqual(seen.at(-1), wanted);
+    yield providerEvent(request.requestId, 'text.delta', { text:'Both directories are available.' });
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), port, 'binding-change');
+  t.after(async () => { resume.resolve(); await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:begin', 'Check the directories.'));
+  await waiting.promise;
+  const reply = await actor.submit({schemaVersion:'achbit.command.v3',type:'session.directory-index.attach',sessionId,commandId:'command:add',workspaceBinding:extra});
+  assert.equal(reply.status, 'accepted'); resume.resolve();
+  await waitForProjection(actor, p => p.run?.status === 'completed');
+  assert.equal(turns, 1);
+  assert.deepEqual(seen, [[workspaceBinding.workspaceId],[workspaceBinding.workspaceId],wanted]);
+  const views = (await readEvents(journal, sessionId)).filter(e => e.type === 'run.tools.prepared');
+  assert.deepEqual(views.map(e => e.payload.toolView.kernelCatalogSnapshotRef), ['catalog:directories:3']);
+});
+
 test('cancelled explicit plugin activation drains preparation without committing its tool view', { timeout: 5_000 }, async t => {
   const journal = new InMemoryCommandJournal(), sessionId = 'session:cancel-plugin-activation';
   await createSession(journal, sessionId, [workspaceBinding]);
@@ -340,4 +373,116 @@ test('cancelled explicit plugin activation drains preparation without committing
   assert.equal(events.some(event => event.type === 'session.plugins.activated' || event.type === 'run.tools.prepared'), false);
   assert.equal(requests, 1);
   assert.equal(preparation.released.length, 1);
+});
+
+test('an in-flight activation keeps the directories captured for its request', { timeout: 5000 }, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:captured-activation-directories';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const attached = { workspaceId: 'workspace:in-flight', displayName: 'In-flight directory' };
+  const uri = 'plugin://shifted@project';
+  const preparation = fakeRunPreparation({ tools: [discoveryTool], contextWindowTokens: 8192 });
+  let turns = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    turns += 1;
+    if (turns === 1) {
+      assert.deepEqual(request.workspaceBindings.map(b => b.workspaceId), [workspaceBinding.workspaceId]);
+      assert.deepEqual(preparation.prepared.at(-1).workspaceBindingIds, [workspaceBinding.workspaceId]);
+      // Accepted while this request is unanswered: it applies from the next request.
+      const reply = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.directory-index.attach',
+        sessionId, commandId: 'command:in-flight-attach', workspaceBinding: attached });
+      assert.equal(reply.status, 'accepted');
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'native:in-flight', name: 'plugin_activate',
+        input: { pluginUris: [uri] } });
+    } else {
+      assert.equal(turns, 2);
+      assert.deepEqual(preparation.prepared.at(-1).workspaceBindingIds, [workspaceBinding.workspaceId, attached.workspaceId]);
+      yield providerEvent(request.requestId, 'text.delta', { text: 'Activated against the captured directories.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), preparation.port, 'captured-activation');
+  t.after(async () => { await actor.dispose(); });
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Use the project skill.'));
+  const done = await waitForProjection(actor, state => state.run?.status === 'completed');
+  const activations = preparation.prepared.filter(request => request.modelActivation === true);
+  assert.equal(activations.length, 1);
+  assert.equal(activations[0].pluginSelections[0].uri, uri);
+  assert.deepEqual(activations[0].workspaceBindingIds, [workspaceBinding.workspaceId],
+    'activation adopted a directory attached after its request was issued');
+  assert.deepEqual(done.run.workspaceBindings.map(binding => binding.workspaceId),
+    [workspaceBinding.workspaceId, attached.workspaceId]);
+  assert.equal(done.messages.at(-1).content, 'Activated against the captured directories.');
+});
+
+test('detaching a directory during a Provider request changes the next view, not its activation', { timeout: 5000 }, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:in-flight-detach';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const extra = { workspaceId: 'workspace:removable', displayName: 'Removable project' };
+  const before = [workspaceBinding.workspaceId, extra.workspaceId], after = [workspaceBinding.workspaceId];
+  const prep = fakeRunPreparation({ tools: [discoveryTool] });
+  const uri = 'plugin://removable@project';
+  let turns = 0;
+  const actor = actorWith(journal, sessionId, { async *stream(request) {
+    if (++turns === 1) {
+      assert.deepEqual(request.workspaceBindings.map(b => b.workspaceId), before);
+      assert.deepEqual(prep.prepared.at(-1).workspaceBindingIds, before);
+      const detached = await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.directory-index.detach',
+        sessionId, commandId: 'command:detach', workspaceId: extra.workspaceId });
+      assert.equal(detached.status, 'accepted');
+      yield providerEvent(request.requestId, 'tool.call', { callId: 'native:detach', name: 'plugin_activate', input: { pluginUris: [uri] } });
+    } else {
+      assert.equal(turns, 2);
+      assert.deepEqual(request.workspaceBindings.map(b => b.workspaceId), after);
+      assert.deepEqual(prep.prepared.at(-1).workspaceBindingIds, after);
+      yield providerEvent(request.requestId, 'text.delta', { text: 'Completed after detachment.' });
+    }
+    yield providerEvent(request.requestId, 'completed', {});
+  } }, emptyKernel(), prep.port, 'in-flight-detach');
+  t.after(() => actor.dispose());
+  assert.equal((await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.directory-index.attach',
+    sessionId, commandId: 'command:attach', workspaceBinding: extra })).status, 'accepted');
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Use the removable project skill.'));
+  await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.deepEqual(prep.prepared.filter(p => p.modelActivation).map(p => p.workspaceBindingIds), [before]);
+  assert.equal(turns, 2);
+});
+
+test('activity synchronization cannot mix a newly attached directory into an already prepared catalog', { timeout: 5000 }, async t => {
+  const journal = new InMemoryCommandJournal(), sessionId = 'session:directory-after-view';
+  await createSession(journal, sessionId, [workspaceBinding]);
+  const extra = { workspaceId: 'workspace:during-sync', displayName: 'During sync' };
+  const before = [workspaceBinding.workspaceId], after = [...before, extra.workspaceId];
+  const prep = fakeRunPreparation({ tools: [discoveryTool] });
+  let attached = false, turns = 0;
+  const issuedViews = [];
+  const actor = new SessionActor(sessionId, journal, {
+    kernel: emptyKernel(), runPreparation: prep.port, async dispose() {},
+    runner: { run: (initial, command, deps, signal) => runAgentLoop(initial, command, { ...deps, activity: {
+      async waitPending() {}, checkpoint() {}, needsContinuation: () => false, async wait() {},
+      async sync() {
+        if (attached) return;
+        assert.deepEqual(prep.prepared.at(-1).workspaceBindingIds, before);
+        attached = true;
+        assert.equal((await actor.submit({ schemaVersion: 'achbit.command.v3', type: 'session.directory-index.attach',
+          sessionId, commandId: 'command:during-sync', workspaceBinding: extra })).status, 'accepted');
+      },
+    } }, signal) },
+    provider: { async *stream(request) {
+      assert.ok(++turns <= 2 && attached);
+      // The edit won admission before this request: reprepare instead of sending an old catalog.
+      issuedViews.push(prep.prepared.at(-1).workspaceBindingIds);
+      assert.deepEqual(request.workspaceBindings.map(b => b.workspaceId), after);
+      assert.deepEqual(issuedViews.at(-1), after);
+      if (turns === 1) yield providerEvent(request.requestId, 'tool.call', { callId: 'native:sync', name: 'plugin_activate',
+        input: { pluginUris: ['plugin://existing@project'] } });
+      else yield providerEvent(request.requestId, 'text.delta', { text: 'Done.' });
+      yield providerEvent(request.requestId, 'completed', {});
+    } },
+  });
+  t.after(() => actor.dispose());
+  await actor.submit(messageCommand(sessionId, 'command:start', 'Check the prepared view.'));
+  await waitForProjection(actor, state => state.run?.status === 'completed');
+  assert.deepEqual(prep.prepared.filter(p => p.modelActivation).map(p => p.workspaceBindingIds), [after]);
+  assert.deepEqual(issuedViews, [after, after]);
+  assert.equal((await readEvents(journal, sessionId)).filter(e => e.type === 'context.composed').length, 2);
+  assert.equal(turns, 2);
 });

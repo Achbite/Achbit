@@ -33,13 +33,15 @@ export function preparePluginActivation(input: PluginActivationInput) {
   if (input.pluginUris.includes(SESSION_DIAGNOSTICS_URI) && !selected.includes(SESSION_DIAGNOSTICS_URI)) {
     throw new LoopFailure('plugin_user_selection_required', 'Session Diagnostics requires an explicit user selection.');
   }
-  const uris = [...new Set([...selected, ...input.pluginUris])];
+  const selection = (uri: string) => ({ selectionId: nextId('plugin-selection'), uri: uri as PluginUri, label: uri.slice(0, 160) });
   return preparation.prepare({
     sessionId, runId, profileId: runtime.provider.profileId,
     environment: runtime.environment,
     ...(runtime.provider.reasoningEffortOverride ? { reasoningEffortOverride: runtime.provider.reasoningEffortOverride } : {}),
     previousProviderToolAliases: runtime.providerToolAliases,
     existingPresentation: capturedPresentation(runtime),
-    pluginSelections: uris.map(uri => ({ selectionId: nextId('plugin-selection'), uri: uri as PluginUri, label: uri.slice(0, 160) })),
+    workspaceBindingIds: input.workspaceBindingIds, modelActivation: true,
+    pluginSelections: input.pluginUris.map(selection),
+    inheritedPluginSelections: selected.filter(uri => !input.pluginUris.includes(uri)).map(selection),
   });
 }

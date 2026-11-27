@@ -15,12 +15,17 @@ use axum::http::HeaderMap;
 
 const SESSION_SERVICE_TOKEN_HEADER: &str = "x-achbit-session-service-token";
 
+#[cfg(unix)]
+type CommandReadRoots = fn(&FsPath) -> std::io::Result<Vec<PathBuf>>;
+
 #[derive(Clone)]
 pub(crate) struct LocalAgentRuntime {
     token: Arc<str>,
     pub(crate) journal: LocalAgentJournal,
     pub(crate) kernel: LocalAgentKernel,
     provider_runtimes: ProviderRuntimeRegistry,
+    #[cfg(unix)]
+    command_read_roots: Option<CommandReadRoots>,
     pub(crate) provider_transport: crate::provider_transport::ProviderTransport,
     runtime_transition: Arc<Mutex<()>>,
     // Keep separately committed edits in order until their new-root defaults are published.
@@ -58,6 +63,9 @@ impl LocalAgentRuntime {
             journal,
             kernel,
             provider_runtimes: ProviderRuntimeRegistry::default(),
+            #[cfg(unix)]
+            command_read_roots: cfg!(target_os = "macos")
+                .then_some(achbit_kernel_runtime::shell_environment::unix_runtime_read_roots),
             provider_transport: crate::provider_transport::ProviderTransport::new()
                 .map_err(|error| format!("provider_client_init_failed: {error}"))?,
             runtime_transition: Arc::new(Mutex::new(())),
@@ -153,6 +161,36 @@ impl LocalAgentRuntime {
         let _run_transition = run_transition.lock().map_err(|_| {
             RunPreparationError::new("run_transition_lock_failed", "Run transition 锁已损坏。")
         })?;
+        // Recovery is an identity lookup, never registration discovery or instance creation.
+        if request.restore_environment {
+            let runs = self.prepared_runs.lock().map_err(|_| {
+                RunPreparationError::new(
+                    "prepared_run_registry_lock_failed",
+                    "Prepared run registry 锁已损坏。",
+                )
+            })?;
+            return runs
+                .get(&key)
+                .and_then(|views| match &request.restore_tool_view_ref {
+                    None => views.first(),
+                    Some(id) => views
+                        .iter()
+                        .find(|view| view.mcp.is_some() && &view.kernel_catalog_snapshot_ref == id),
+                })
+                .map(|view| view.response.clone())
+                .ok_or_else(|| {
+                    RunPreparationError::new(
+                        "provider_runtime_unavailable",
+                        "当前 run 的运行时绑定已丢失；历史记录仍可读取，请开始新的会话。",
+                    )
+                });
+        }
+        if request.restore_tool_view_ref.is_some() {
+            return Err(RunPreparationError::new(
+                "run_runtime_identity_invalid",
+                "restoreToolViewRef requires restoreEnvironment",
+            ));
+        }
         let agent_context = self
             .journal
             .agent_context(&request.session_id)
@@ -241,18 +279,6 @@ impl LocalAgentRuntime {
             .map_err(|error| RunPreparationError::new(error.code, error.message))?;
         merge_object(&mut settings, &permissions);
         let settings = &settings;
-        if request.restore_environment {
-            return prepared_runs
-                .get(&key)
-                .and_then(|views| views.first())
-                .map(|prepared| prepared.response.clone())
-                .ok_or_else(|| {
-                    RunPreparationError::new(
-                        "provider_runtime_unavailable",
-                        "当前 run 的运行时绑定已丢失；历史记录仍可读取，请开始新的会话。",
-                    )
-                });
-        }
         if !recipe.tools.plugins
             && (!request.plugin_selections.is_empty()
                 || !request.inherited_plugin_selections.is_empty())
@@ -262,40 +288,6 @@ impl LocalAgentRuntime {
                 "This task does not admit plugin activation.",
             ));
         }
-        let mut plugin_selection = crate::local_agent_plugins::resolve_plugin_selection(
-            settings,
-            &mut request.plugin_selections,
-            request.refresh_plugins,
-            &request.inherited_plugin_selections,
-        )
-        .map_err(|message| {
-            RunPreparationError::new("extension_snapshot_prepare_failed", message)
-        })?;
-        if (!policy_constraints.allow_external_tools || !policy_constraints.allow_host_execution)
-            && (!plugin_selection.mcp_plugin_instances().is_empty()
-                || plugin_selection.computer_use_instance().is_some())
-        {
-            return Err(RunPreparationError::new("agent_plugin_isolation_required",
-                "The selected policy prohibits Host CLI/MCP processes. No plugin process was started."));
-        }
-        if !policy_constraints.allow_host_execution
-            && plugin_selection.container_instance().is_some()
-        {
-            return Err(RunPreparationError::new(
-                "permission_policy_denied",
-                "Container tools require a Host execution route.",
-            ));
-        }
-        let requested_host = request
-            .rebind_host
-            .as_ref()
-            .map(|change| &change.host_binding)
-            .or_else(|| {
-                previous
-                    .as_ref()
-                    .and_then(|view| view.response.pointer("/environment/hostBinding"))
-            })
-            .or(request.host_binding.as_ref());
         if let Some(prepared) = &previous {
             let effective_profile_id = prepared
                 .response
@@ -327,21 +319,6 @@ impl LocalAgentRuntime {
                     "run_runtime_identity_conflict",
                     "当前 run 已使用不同推理强度完成运行时准备。",
                 ));
-            }
-            if let Some(existing) = prepared_runs.get(&key).and_then(|views| {
-                views.iter().rev().take(1).find(|view| {
-                    view.mcp
-                        .as_ref()
-                        .is_some_and(|mcp| !mcp.has_catalog_changes())
-                        && crate::local_agent_plugins::same_registration_settings(
-                            &view.runtime_settings,
-                            settings,
-                        )
-                        && view.plugin_selection.same_inputs(&plugin_selection)
-                        && view.response.pointer("/environment/hostBinding") == requested_host
-                })
-            }) {
-                return Ok(existing.response.clone());
             }
         }
         // Catalog changes cannot recapture an active run's delegation settings.
@@ -486,25 +463,14 @@ impl LocalAgentRuntime {
                 )
             })
         };
-        if let Some(previous) = &previous {
-            plugin_selection.retain_prepared(&previous.plugin_selection);
-        }
-        let mut plugin_config =
-            crate::local_agent_plugins::local_agent_plugin_config(settings, &plugin_selection)
-                .map_err(|message| {
-                    RunPreparationError::new("extension_snapshot_prepare_failed", message)
-                })?;
-        let extension_generation_ref = crate::utils::new_runtime_ref("extension-generation")
+        // Only a first preparation needs GUI-owned executor settings and secrets.
+        let initial_executor = previous
+            .is_none()
+            .then(|| crate::runtime_tool_configuration(&gui))
+            .transpose()
             .map_err(|message| {
-                RunPreparationError::new("extension_identity_prepare_failed", message)
-            })?;
-        let (mut executor_config, mut secrets) = if let Some(previous) = &previous {
-            (previous.executor_config.clone(), previous.secrets.clone())
-        } else {
-            crate::runtime_tool_configuration(&gui).map_err(|message| {
                 RunPreparationError::new("kernel_runtime_config_prepare_failed", message)
-            })?
-        };
+            })?;
         let context = recipe.configuration.as_ref().or_else(|| {
             agent_context
                 .as_ref()
@@ -514,7 +480,6 @@ impl LocalAgentRuntime {
             .and_then(|config| config.pointer("/context/id"))
             .and_then(Value::as_str)
             == Some("coding");
-        executor_config.read_images = provider_binding.profile().image_input && coding_context;
         if previous.is_none() && !request.restore_environment {
             let facts = environment.as_object_mut().expect("prepared environment");
             facts.remove("primaryWorkspaceDirectory");
@@ -552,6 +517,99 @@ impl LocalAgentRuntime {
                 });
             }
         }
+        let mut permissions = LocalAgentPermissionPolicy::from_settings(settings)
+            .map_err(RunPreparationError::from)?;
+        permissions.constraints = policy_constraints;
+        permissions.file_scope = recipe.file_scope.clone();
+        let session_workdir = if previous.is_none() {
+            crate::local_agent_mcp::session_workdir_for_run(
+                &gui.conversation_catalog,
+                &request.session_id,
+            )
+            .map_err(|error| RunPreparationError::new(error.code, error.message))?
+        } else {
+            None
+        };
+        let captured_active_settings = self.active_runtime_settings().map_err(|message| {
+            RunPreparationError::new("active_runtime_settings_lock_failed", message)
+        })?;
+        // Provider, permissions, environment and registrations are now captured.
+        // Keep only this run's lifecycle gate across out-of-process preparation.
+        drop(prepared_runs);
+        drop(gui);
+        drop(_transition);
+        // A supplied empty binding list withdraws every project. An omitted list keeps the
+        // last captured directories (e.g. a prepare retry without a changed workspace view).
+        let bound_project_roots = match &request.workspace_binding_ids {
+            Some(ids) => self
+                .kernel
+                .project_instruction_roots(ids)
+                .map_err(RunPreparationError::from)?,
+            None => previous
+                .as_ref()
+                .map(|view| view.bound_project_roots.clone())
+                .unwrap_or_default(),
+        };
+        let model_requests = request
+            .model_activation
+            .then(|| request.plugin_selections.clone());
+        let mut plugin_selection = crate::local_agent_plugins::resolve_plugin_selection(
+            settings,
+            &bound_project_roots,
+            &mut request.plugin_selections,
+            request.refresh_plugins,
+            &request.inherited_plugin_selections,
+        )
+        .map_err(|message| {
+            RunPreparationError::new("extension_snapshot_prepare_failed", message)
+        })?;
+        if let Some(model_requests) = model_requests {
+            plugin_selection
+                .check_model_activation(&model_requests)
+                .map_err(|message| {
+                    RunPreparationError::new("plugin_user_selection_required", message)
+                })?;
+        }
+        if (!permissions.constraints.allow_external_tools
+            || !permissions.constraints.allow_host_execution)
+            && (!plugin_selection.mcp_plugin_instances().is_empty()
+                || plugin_selection.computer_use_instance().is_some())
+        {
+            return Err(RunPreparationError::new("agent_plugin_isolation_required", "The selected policy prohibits Host CLI/MCP processes. No plugin process was started."));
+        }
+        if !permissions.constraints.allow_host_execution
+            && plugin_selection.container_instance().is_some()
+        {
+            return Err(RunPreparationError::new(
+                "permission_policy_denied",
+                "Container tools require a Host execution route.",
+            ));
+        }
+        if let Some(view) = &previous {
+            if view
+                .mcp
+                .as_ref()
+                .is_some_and(|mcp| !mcp.has_catalog_changes())
+                && crate::local_agent_plugins::same_registration_settings(
+                    &view.runtime_settings,
+                    settings,
+                )
+                && view.bound_project_roots == bound_project_roots
+                && view.plugin_selection.same_inputs(&plugin_selection)
+                && view.response.pointer("/environment/hostBinding")
+                    == environment.get("hostBinding")
+            {
+                return Ok(view.response.clone());
+            }
+            plugin_selection.retain_prepared(&view.plugin_selection);
+        }
+        // A cache hit reuses an admitted, already configured executor. Only a new
+        // generation needs to assemble its environment and resolve system paths again.
+        let (mut executor_config, mut secrets) = initial_executor.unwrap_or_else(|| {
+            let view = previous.as_ref().expect("captured executor inputs");
+            (view.executor_config.clone(), view.secrets.clone())
+        });
+        executor_config.read_images = provider_binding.profile().image_input && coding_context;
         executor_config.sandbox_backend =
             if recipe.workspace_sandbox.backend_id == "platform-default" {
                 None
@@ -603,29 +661,20 @@ impl LocalAgentRuntime {
             &provider_binding.profile(),
             &provider_runtime.profile_id,
         );
-        executor_config.file_read_roots = plugin_selection.file_read_roots();
+        let web_search = if recipe.tools.allows_kernel("web.search") {
+            prepare_web_search_binding(
+                &provider_runtime,
+                permissions.clone(),
+                web_search_availability(&executor_config) == ToolAvailability::Callable,
+            )
+        } else {
+            json!({"owner":"unavailable"})
+        };
+        let enable_kernel_web_search =
+            web_search.get("owner").and_then(Value::as_str) == Some("kernelAdapter");
+        executor_config.file_read_roots.clear();
         if let Some(path) = environment["productDocsPath"].as_str() {
             executor_config.file_read_roots.push(path.into());
-        }
-        #[cfg(target_os = "macos")]
-        if let Some(commands) = environment["commandPaths"].as_object() {
-            for (name, path) in commands {
-                let roots = achbit_kernel_runtime::shell_environment::unix_runtime_read_roots(
-                    std::path::Path::new(path.as_str().ok_or_else(|| {
-                        RunPreparationError::new(
-                            "host_command_path_invalid",
-                            format!("Invalid path for {name}"),
-                        )
-                    })?),
-                )
-                .map_err(|error| {
-                    RunPreparationError::new(
-                        "host_command_path_failed",
-                        format!("Resolve {name}: {error}"),
-                    )
-                })?;
-                executor_config.file_read_roots.extend(roots);
-            }
         }
         #[cfg(windows)]
         if environment["executionTarget"]["kind"] == "native" {
@@ -643,52 +692,51 @@ impl LocalAgentRuntime {
                 }
             }
         }
-        let mut permissions = LocalAgentPermissionPolicy::from_settings(settings)
-            .map_err(RunPreparationError::from)?;
-        permissions.constraints = policy_constraints;
-        permissions.file_scope = recipe.file_scope.clone();
-        let web_search = if recipe.tools.allows_kernel("web.search") {
-            prepare_web_search_binding(
-                &provider_runtime,
-                permissions.clone(),
-                web_search_availability(&executor_config) == ToolAvailability::Callable,
-            )
-        } else {
-            json!({"owner":"unavailable"})
-        };
-        let enable_kernel_web_search =
-            web_search.get("owner").and_then(Value::as_str) == Some("kernelAdapter");
-        let session_workdir = if previous.is_none() {
-            crate::local_agent_mcp::session_workdir_for_run(
-                &gui.conversation_catalog,
-                &request.session_id,
-            )
-            .map_err(|error| RunPreparationError::new(error.code, error.message))?
-        } else {
-            None
-        };
-        let captured_active_settings = self.active_runtime_settings().map_err(|message| {
-            RunPreparationError::new("active_runtime_settings_lock_failed", message)
-        })?;
-        // Provider, permissions, environment and registrations are now captured.
-        // Keep only this run's lifecycle gate across out-of-process preparation.
-        drop(prepared_runs);
-        drop(gui);
-        drop(_transition);
-        // Project instructions are run-owned, independent of request-time plugin changes.
-        // Resolve/read them before creating external resources, without shared locks.
+        #[cfg(unix)]
+        if let (Some(resolve), Some(commands)) = (
+            self.command_read_roots,
+            environment["commandPaths"].as_object(),
+        ) {
+            for (name, path) in commands {
+                let roots = resolve(std::path::Path::new(path.as_str().ok_or_else(|| {
+                    RunPreparationError::new(
+                        "host_command_path_invalid",
+                        format!("Invalid path for {name}"),
+                    )
+                })?))
+                .map_err(|error| {
+                    RunPreparationError::new(
+                        "host_command_path_failed",
+                        format!("Resolve {name}: {error}"),
+                    )
+                })?;
+                executor_config.file_read_roots.extend(roots);
+            }
+        }
+        let mut plugin_config =
+            crate::local_agent_plugins::local_agent_plugin_config(settings, &plugin_selection)
+                .map_err(|message| {
+                    RunPreparationError::new("extension_snapshot_prepare_failed", message)
+                })?;
+        let extension_generation_ref = crate::utils::new_runtime_ref("extension-generation")
+            .map_err(|message| {
+                RunPreparationError::new("extension_identity_prepare_failed", message)
+            })?;
+        executor_config
+            .file_read_roots
+            .extend(plugin_selection.file_read_roots());
+        executor_config.project_skill_reads = plugin_selection.project_reads();
+        // Only the first preparation reads project instructions.
         let project_instructions = if let Some(previous) = &previous {
             previous.response.get("projectInstructions").cloned()
         } else {
-            let roots = self
-                .kernel
-                .project_instruction_roots(&request.workspace_binding_ids)
-                .map_err(RunPreparationError::from)?;
-            Some(json!(crate::project_instructions::read_projects(&roots)
-                .map_err(|message| RunPreparationError::new(
-                    "project_instructions_read_failed",
-                    message
-                ),)?))
+            Some(json!(crate::project_instructions::read_projects(
+                &bound_project_roots
+            )
+            .map_err(|message| RunPreparationError::new(
+                "project_instructions_read_failed",
+                message
+            ),)?))
         };
         let mcp = if let Some(previous) = &previous {
             previous
@@ -734,6 +782,7 @@ impl LocalAgentRuntime {
                         resource_catalog,
                     ))
                     .with_plugin_settings(settings.clone(), agent_context.is_some())
+                    .with_project_skill_roots(bound_project_roots.clone())
                     .with_computer_use(plugin_selection.computer_use_instance())
                     .with_desktop(
                         self.kernel
@@ -906,6 +955,7 @@ impl LocalAgentRuntime {
                 provider_binding,
                 approval_reviewer_binding,
                 plugin_selection,
+                bound_project_roots,
                 mcp: Some(mcp),
             });
         Ok(response)
@@ -1182,6 +1232,8 @@ struct PreparedRunRecord {
     approval_reviewer_binding:
         Result<crate::local_agent_provider_runtime::ProviderRuntimeBinding, String>,
     plugin_selection: crate::local_agent_plugins::ResolvedPluginSelection,
+    // Request-owned discovery roots; instructions are frozen separately in the first response.
+    bound_project_roots: Vec<std::path::PathBuf>,
     // None after retirement; immutable response identity remains available for restore/release.
     mcp: Option<crate::local_agent_mcp::McpRuntime>,
     kernel_catalog_snapshot_ref: String,
@@ -1232,7 +1284,7 @@ pub(crate) struct PrepareRunRuntimeRequest {
     session_id: String,
     run_id: String,
     #[serde(default)]
-    workspace_binding_ids: Vec<String>,
+    workspace_binding_ids: Option<Vec<String>>,
     profile_id: Option<String>,
     reasoning_effort_override: Option<String>,
     environment: Option<Value>,
@@ -1240,6 +1292,9 @@ pub(crate) struct PrepareRunRuntimeRequest {
     rebind_host: Option<RebindHostRequest>,
     #[serde(default)]
     restore_environment: bool,
+    restore_tool_view_ref: Option<String>,
+    #[serde(default)]
+    model_activation: bool,
     #[serde(default)]
     refresh_plugins: bool,
     #[serde(default)]
